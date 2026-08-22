@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Shadow Layer -->
+    <group android:translateY="0.8">
+        <!-- Left Eye Shadow -->
+        <path
+            android:fillColor="#40000000"
+            android:pathData="M37.5,42h9c0.83,0 1.5,0.67 1.5,1.5v9c0,0.83 -0.67,1.5 -1.5,1.5h-9c-0.83,0 -1.5,-0.67 -1.5,-1.5v-9c0,-0.83 0.67,-1.5 1.5,-1.5z"/>
+        <!-- Right Eye Shadow -->
+        <path
+            android:fillColor="#40000000"
+            android:pathData="M61.5,42h9c0.83,0 1.5,0.67 1.5,1.5v9c0,0.83 -0.67,1.5 -1.5,1.5h-9c-0.83,0 -1.5,-0.67 -1.5,-1.5v-9c0,-0.83 0.67,-1.5 1.5,-1.5z"/>
+        <!-- Nose Shadow -->
+        <path
+            android:fillColor="#40000000"
+            android:pathData="M49.5,54h9c0.83,0 1.5,0.67 1.5,1.5v3c0,0.83 -0.67,1.5 -1.5,1.5h-9c-0.83,0 -1.5,-0.67 -1.5,-1.5v-3c0,-0.83 0.67,-1.5 1.5,-1.5z"/>
+        <!-- Mouth Bar Shadow -->
+        <path
+            android:fillColor="#40000000"
+            android:pathData="M43.5,60h21c0.83,0 1.5,0.67 1.5,1.5v9c0,0.83 -0.67,1.5 -1.5,1.5h-21c-0.83,0 -1.5,-0.67 -1.5,-1.5v-9c0,-0.83 0.67,-1.5 1.5,-1.5z"/>
+        <!-- Left Leg Shadow -->
+        <path
+            android:fillColor="#40000000"
+            android:pathData="M43.5,72h3c0.83,0 1.5,0.67 1.5,1.5v3c0,0.83 -0.67,1.5 -1.5,1.5h-3c-0.83,0 -1.5,-0.67 -1.5,-1.5v-3c0,-0.83 0.67,-1.5 1.5,-1.5z"/>
+        <!-- Right Leg Shadow -->
+        <path
+            android:fillColor="#40000000"
+            android:pathData="M61.5,72h3c0.83,0 1.5,0.67 1.5,1.5v3c0,0.83 -0.67,1.5 -1.5,1.5h-3c-0.83,0 -1.5,-0.67 -1.5,-1.5v-3c0,-0.83 0.67,-1.5 1.5,-1.5z"/>
+    </group>
+
+    <!-- Main Features -->
+    <!-- Left Eye (2x2) -->
+    <path
+        android:fillColor="#0F3911"
+        android:pathData="M37.5,42h9c0.83,0 1.5,0.67 1.5,1.5v9c0,0.83 -0.67,1.5 -1.5,1.5h-9c-0.83,0 -1.5,-0.67 -1.5,-1.5v-9c0,-0.83 0.67,-1.5 1.5,-1.5z"/>
+    <!-- Right Eye (2x2) -->
+    <path
+        android:fillColor="#0F3911"
+        android:pathData="M61.5,42h9c0.83,0 1.5,0.67 1.5,1.5v9c0,0.83 -0.67,1.5 -1.5,1.5h-9c-0.83,0 -1.5,-0.67 -1.5,-1.5v-9c0,-0.83 0.67,-1.5 1.5,-1.5z"/>
+    <!-- Nose (2x1) -->
+    <path
+        android:fillColor="#0F3911"
+        android:pathData="M49.5,54h9c0.83,0 1.5,0.67 1.5,1.5v3c0,0.83 -0.67,1.5 -1.5,1.5h-9c-0.83,0 -1.5,-0.67 -1.5,-1.5v-3c0,-0.83 0.67,-1.5 1.5,-1.5z"/>
+    <!-- Mouth Bar (4x2) -->
+    <path
+        android:fillColor="#0F3911"
+        android:pathData="M43.5,60h21c0.83,0 1.5,0.67 1.5,1.5v9c0,0.83 -0.67,1.5 -1.5,1.5h-21c-0.83,0 -1.5,-0.67 -1.5,-1.5v-9c0,-0.83 0.67,-1.5 1.5,-1.5z"/>
+    <!-- Left Leg (1x1) -->
+    <path
+        android:fillColor="#0F3911"
+        android:pathData="M43.5,72h3c0.83,0 1.5,0.67 1.5,1.5v3c0,0.83 -0.67,1.5 -1.5,1.5h-3c-0.83,0 -1.5,-0.67 -1.5,-1.5v-3c0,-0.83 0.67,-1.5 1.5,-1.5z"/>
+    <!-- Right Leg (1x1) -->
+    <path
+        android:fillColor="#0F3911"
+        android:pathData="M61.5,72h3c0.83,0 1.5,0.67 1.5,1.5v3c0,0.83 -0.67,1.5 -1.5,1.5h-3c-0.83,0 -1.5,-0.67 -1.5,-1.5v-3c0,-0.83 0.67,-1.5 1.5,-1.5z"/>
+</vector>

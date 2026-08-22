@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <!-- Background Squircle -->
+  <rect width="512" height="512" rx="122.88" fill="#2E7D32"/>
+  <!-- Linear Highlight -->
+  <path d="M 0 122.88 C 0 55.01 55.01 0 122.88 0 L 389.12 0 C 456.99 0 512 55.01 512 122.88 L 512 256 L 0 256 Z" fill="white" opacity="0.08"/>
+  <!-- Eyes -->
+  <rect x="148.48" y="184.32" width="71.68" height="71.68" rx="17.92" fill="#103612"/>
+  <rect x="291.84" y="184.32" width="71.68" height="71.68" rx="17.92" fill="#103612"/>
+  <!-- Nose & Mouth (Continuous Geometric Grid) -->
+  <rect x="220.16" y="238.08" width="71.68" height="64.51" rx="14.34" fill="#103612"/>
+  <rect x="184.32" y="291.84" width="143.36" height="43.01" rx="14.34" fill="#103612"/>
+  <rect x="184.32" y="327.68" width="35.84" height="53.76" rx="14.34" fill="#103612"/>
+  <rect x="291.84" y="327.68" width="35.84" height="53.76" rx="14.34" fill="#103612"/>
+</svg>

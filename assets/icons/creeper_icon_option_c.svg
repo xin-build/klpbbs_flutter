@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <!-- Background -->
+  <rect width="512" height="512" rx="122.88" fill="#2E7D32"/>
+  <!-- 8x8 Soft Rounded Pixel Cells -->
+  <g fill="#103612">
+    <!-- Row 2 Eyes -->
+    <rect x="141.44" y="141.44" width="34.40" height="34.40" rx="9.60"/>
+    <rect x="179.84" y="141.44" width="34.40" height="34.40" rx="9.60"/>
+    <rect x="295.04" y="141.44" width="34.40" height="34.40" rx="9.60"/>
+    <rect x="333.44" y="141.44" width="34.40" height="34.40" rx="9.60"/>
+    <!-- Row 3 Eyes -->
+    <rect x="141.44" y="179.84" width="34.40" height="34.40" rx="9.60"/>
+    <rect x="179.84" y="179.84" width="34.40" height="34.40" rx="9.60"/>
+    <rect x="295.04" y="179.84" width="34.40" height="34.40" rx="9.60"/>
+    <rect x="333.44" y="179.84" width="34.40" height="34.40" rx="9.60"/>
+    <!-- Row 4 Nose -->
+    <rect x="218.24" y="218.24" width="34.40" height="34.40" rx="9.60"/>
+    <rect x="256.64" y="218.24" width="34.40" height="34.40" rx="9.60"/>
+    <!-- Row 5 Mouth Mid -->
+    <rect x="179.84" y="256.64" width="34.40" height="34.40" rx="9.60"/>
+    <rect x="218.24" y="256.64" width="34.40" height="34.40" rx="9.60"/>
+    <rect x="256.64" y="256.64" width="34.40" height="34.40" rx="9.60"/>
+    <rect x="295.04" y="256.64" width="34.40" height="34.40" rx="9.60"/>
+    <!-- Row 6 Mouth Mid -->
+    <rect x="179.84" y="295.04" width="34.40" height="34.40" rx="9.60"/>
+    <rect x="218.24" y="295.04" width="34.40" height="34.40" rx="9.60"/>
+    <rect x="256.64" y="295.04" width="34.40" height="34.40" rx="9.60"/>
+    <rect x="295.04" y="295.04" width="34.40" height="34.40" rx="9.60"/>
+    <!-- Row 7 Mouth Legs -->
+    <rect x="179.84" y="333.44" width="34.40" height="34.40" rx="9.60"/>
+    <rect x="295.04" y="333.44" width="34.40" height="34.40" rx="9.60"/>
+  </g>
+</svg>

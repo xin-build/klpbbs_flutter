@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <!-- Background -->
+  <rect width="512" height="512" rx="122.88" fill="#2E7D32"/>
+  <!-- Inner Subtle Border -->
+  <rect x="40.96" y="40.96" width="430.08" height="430.08" rx="88.47" fill="none" stroke="#81C784" stroke-width="12.29" opacity="0.35"/>
+  <!-- Star Accent -->
+  <path d="M 389.12 81.92 L 404.48 112.64 L 435.20 128.00 L 404.48 143.36 L 389.12 174.08 L 373.76 143.36 L 343.04 128.00 L 373.76 112.64 Z" fill="#81C784"/>
+  <!-- Eyes -->
+  <rect x="156.67" y="189.44" width="66.56" height="66.56" rx="15.36" fill="#103612"/>
+  <rect x="288.77" y="189.44" width="66.56" height="66.56" rx="15.36" fill="#103612"/>
+  <!-- Nose & Mouth -->
+  <rect x="222.72" y="239.36" width="66.56" height="59.90" rx="13.31" fill="#103612"/>
+  <rect x="189.44" y="289.28" width="133.12" height="39.94" rx="13.31" fill="#103612"/>
+  <rect x="189.44" y="322.56" width="33.28" height="49.92" rx="13.31" fill="#103612"/>
+  <rect x="288.77" y="322.56" width="33.28" height="49.92" rx="13.31" fill="#103612"/>
+</svg>

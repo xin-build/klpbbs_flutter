@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <!-- Background Squircle -->
+  <rect width="512" height="512" rx="122.88" fill="#2E7D32"/>
+  <!-- Top Highlight -->
+  <path d="M 0 122.88 C 0 55.01 55.01 0 122.88 0 L 389.12 0 C 456.99 0 512 55.01 512 122.88 L 512 256 L 0 256 Z" fill="white" opacity="0.10"/>
+  
+  <!-- Subtle Shadow Layer (Material You Inset Depth) -->
+  <g fill="#000000" opacity="0.30">
+    <rect x="144.54" y="187.39" width="74.24" height="74.24" rx="8.91"/>
+    <rect x="293.02" y="187.39" width="74.24" height="74.24" rx="8.91"/>
+    <rect x="218.78" y="261.63" width="74.24" height="37.12" rx="8.91"/>
+    <rect x="181.66" y="298.75" width="148.48" height="74.24" rx="8.91"/>
+    <rect x="181.66" y="372.99" width="37.12" height="37.12" rx="8.91"/>
+    <rect x="293.02" y="372.99" width="37.12" height="37.12" rx="8.91"/>
+  </g>
+
+  <!-- Foreground Creeper Face Features (Strict 8x8 Integer Grid) -->
+  <g fill="#0F3911">
+    <!-- Left Eye (2x2) -->
+    <rect x="144.54" y="181.66" width="74.24" height="74.24" rx="8.91"/>
+    <!-- Right Eye (2x2) -->
+    <rect x="293.02" y="181.66" width="74.24" height="74.24" rx="8.91"/>
+    <!-- Nose (2x1) -->
+    <rect x="218.78" y="255.90" width="74.24" height="37.12" rx="8.91"/>
+    <!-- Mouth Bar (4x2) -->
+    <rect x="181.66" y="293.02" width="148.48" height="74.24" rx="8.91"/>
+    <!-- Left Leg (1x1) -->
+    <rect x="181.66" y="367.26" width="37.12" height="37.12" rx="8.91"/>
+    <!-- Right Leg (1x1) -->
+    <rect x="293.02" y="367.26" width="37.12" height="37.12" rx="8.91"/>
+  </g>
+</svg>

@@ -1,0 +1,255 @@
+name: Build Multi-Platform Releases
+
+on:
+  push:
+    branches: [ master, main ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ==========================================
+  # 1. Android Build (APK)
+  # ==========================================
+  build-android:
+    name: Build Android
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.5'
+          channel: 'stable'
+          cache: true
+
+      - name: Doctor and Licenses
+        run: |
+          flutter doctor -v
+          yes | flutter doctor --android-licenses || true
+
+      - name: Get Dependencies
+        run: flutter pub get
+
+      - name: Build Android APK
+        run: flutter build apk --release
+
+      - name: Locate and Package Android APK
+        run: |
+          mkdir -p android-dist
+          APK_FILE=$(find build/app/outputs -name "*.apk" -type f | head -n 1)
+          echo "Found APK: $APK_FILE"
+          cp "$APK_FILE" android-dist/klpbbs-android-release.apk
+          ls -lh android-dist/
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: klpbbs-android-apk
+          path: android-dist/klpbbs-android-release.apk
+
+  # ==========================================
+  # 2. Windows Build (x64 Release ZIP)
+  # ==========================================
+  build-windows:
+    name: Build Windows
+    runs-on: windows-2022
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.5'
+          channel: 'stable'
+          cache: true
+
+      - name: Doctor Check
+        run: flutter doctor -v
+
+      - name: Enable Windows Desktop Support
+        run: flutter config --enable-windows-desktop
+
+      - name: Get Dependencies
+        run: flutter pub get
+
+      - name: Build Windows Release
+        shell: pwsh
+        env:
+          PreferredToolArchitecture: x64
+        run: |
+          flutter build windows --release
+
+      - name: Package Windows Binary
+        shell: pwsh
+        run: |
+          $releaseDir = Resolve-Path "build\windows\*\runner\Release" | Select-Object -ExpandProperty Path -First 1
+          if (-not $releaseDir) { $releaseDir = Resolve-Path "build\windows\runner\Release" | Select-Object -ExpandProperty Path -First 1 }
+          Write-Host "Found Release Dir: $releaseDir"
+          Get-ChildItem -Path $releaseDir | Compress-Archive -DestinationPath "klpbbs-windows-x64.zip" -Force
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: klpbbs-windows-x64
+          path: klpbbs-windows-x64.zip
+
+  # ==========================================
+  # 3. macOS Build (.app ZIP)
+  # ==========================================
+  build-macos:
+    name: Build macOS
+    runs-on: macos-14
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.5'
+          channel: 'stable'
+          cache: true
+
+      - name: Enable macOS Desktop Support
+        run: flutter config --enable-macos-desktop
+
+      - name: Get Dependencies
+        run: flutter pub get
+
+      - name: Build macOS Release
+        run: flutter build macos --release
+
+      - name: Package macOS Binary
+        run: |
+          APP_PATH=$(find build/macos -name "*.app" -type d | head -n 1)
+          cd "$(dirname "$APP_PATH")"
+          zip -r "$GITHUB_WORKSPACE/klpbbs-macos.zip" "$(basename "$APP_PATH")"
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: klpbbs-macos
+          path: klpbbs-macos.zip
+
+  # ==========================================
+  # 4. iOS Build (Unsigned IPA)
+  # ==========================================
+  build-ios:
+    name: Build iOS
+    runs-on: macos-14
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.5'
+          channel: 'stable'
+          cache: true
+
+      - name: Enable iOS Support
+        run: flutter config --enable-ios
+
+      - name: Get Dependencies
+        run: flutter pub get
+
+      - name: Build iOS Release (Unsigned)
+        run: flutter build ios --release --no-codesign
+
+      - name: Package iOS IPA
+        run: |
+          mkdir -p Payload
+          APP_PATH=$(find build/ios -name "*.app" -type d | head -n 1)
+          cp -r "$APP_PATH" Payload/
+          zip -r klpbbs-ios-unsigned.ipa Payload
+
+      - name: Upload iOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: klpbbs-ios-unsigned
+          path: klpbbs-ios-unsigned.ipa
+
+  # ==========================================
+  # 5. Linux Build (x64 TAR.GZ)
+  # ==========================================
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Linux Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libmpv-dev mpv libnotify-dev libayatana-appindicator3-dev libsecret-1-dev libjsoncpp-dev
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.5'
+          channel: 'stable'
+          cache: true
+
+      - name: Enable Linux Desktop Support
+        run: flutter config --enable-linux-desktop
+
+      - name: Get Dependencies
+        run: flutter pub get
+
+      - name: Build Linux Release
+        run: flutter build linux --release
+
+      - name: Package Linux Binary
+        run: |
+          RELEASE_DIR=$(find build/linux -name "bundle" -type d | head -n 1)
+          tar -czvf klpbbs-linux-x64.tar.gz -C "$RELEASE_DIR" .
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: klpbbs-linux-x64
+          path: klpbbs-linux-x64.tar.gz
+
+  # ==========================================
+  # 6. Create GitHub Release
+  # ==========================================
+  release:
+    name: Publish Release Artifacts
+    needs: [build-android, build-windows, build-macos, build-ios, build-linux]
+    if: always() && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./release-files
+
+      - name: Flatten Artifacts Directory
+        run: |
+          mkdir -p ./all-releases
+          find ./release-files -type f -not -name "*.log" -exec cp {} ./all-releases/ \;
+          ls -lh ./all-releases
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./all-releases/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          make_latest: true
