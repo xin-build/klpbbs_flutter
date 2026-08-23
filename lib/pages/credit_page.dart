@@ -26,11 +26,11 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
 
   // Tab 3: 积分记录
   int _logPage = 1;
-  String _subop = 'income'; // income, reward, all
-  late Future<List<CreditLogEntry>> _logsFuture;
+  String _subop = ''; // 全部, income, reward, payment
+  Future<List<CreditLogEntry>>? _logsFuture;
 
   // Tab 1: 我的积分
-  late Future<CreditBaseInfo?> _baseFuture;
+  Future<CreditBaseInfo?>? _baseFuture;
   int? _myIron;
 
   // Tab 2: 转账表单
@@ -43,17 +43,34 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
   @override
   void initState() {
     super.initState();
+    final initialIdx = widget.initialTabIndex.clamp(0, 2);
     _tabController = TabController(
       length: 3,
       vsync: this,
-      initialIndex: widget.initialTabIndex.clamp(0, 2),
+      initialIndex: initialIdx,
     );
-    _reloadLogs();
-    _reloadBase();
+    _tabController.addListener(_onTabChanged);
+    _loadTab(initialIdx);
+  }
+
+  void _onTabChanged() {
+    if (_tabController.indexIsChanging) return;
+    _loadTab(_tabController.index);
+  }
+
+  void _loadTab(int index) {
+    if (index == 0 && _baseFuture == null) {
+      _reloadBase();
+    } else if (index == 1 && _baseFuture == null) {
+      _reloadBase();
+    } else if (index == 2 && _logsFuture == null) {
+      _reloadLogs();
+    }
   }
 
   @override
   void dispose() {
+    _tabController.removeListener(_onTabChanged);
     _tabController.dispose();
     _toUserCtrl.dispose();
     _amountCtrl.dispose();
@@ -70,31 +87,7 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
 
   void _reloadBase() {
     setState(() {
-      _baseFuture = KlpbbsApi.getCreditBase().then((info) async {
-        final myUid = await KlpbbsApi.getMyUid();
-        if (myUid != null && myUid > 0) {
-          final space = await KlpbbsApi.getUserSpace(myUid);
-          if (space != null) {
-            final ironStr = space.creditsDetail['铁粒'] ?? space.stats['铁粒'];
-            final ironVal = ironStr != null ? int.tryParse(ironStr) : null;
-            if (mounted && ironVal != null) {
-              setState(() => _myIron = ironVal);
-            }
-            if (info == null || info.details.isEmpty) {
-              return CreditBaseInfo(
-                totalCredits: space.credits.isNotEmpty ? space.credits : (space.creditsDetail['经验'] ?? '0'),
-                details: {
-                  '铁粒': space.creditsDetail['铁粒'] ?? '0',
-                  '经验': space.creditsDetail['经验'] ?? (space.credits.isNotEmpty ? space.credits : '0'),
-                  '铁锭[已弃用]': space.creditsDetail['铁锭[已弃用]'] ?? space.creditsDetail['铁锭'] ?? '0',
-                  '贡献': space.creditsDetail['贡献'] ?? '0',
-                  '钻石': space.creditsDetail['钻石'] ?? '0',
-                },
-                ruleFormula: '总积分=经验',
-              );
-            }
-          }
-        }
+      _baseFuture = KlpbbsApi.getCreditBase().then((info) {
         if (info != null && info.details.containsKey('铁粒')) {
           final ironVal = int.tryParse(info.details['铁粒']!);
           if (ironVal != null && mounted) {
@@ -218,50 +211,93 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
 
     return Column(
       children: [
-        // 子分类栏：积分收益 / 系统奖励
+        // 子分类栏：全部 / 积分收益 / 系统奖励 / 积分支出
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           alignment: Alignment.centerLeft,
-          child: Row(
-            children: [
-              InkWell(
-                onTap: () {
-                  setState(() {
-                    _subop = 'income';
-                    _logPage = 1;
-                  });
-                  _reloadLogs();
-                },
-                child: Text(
-                  '积分收益',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: _subop == 'income' ? FontWeight.bold : FontWeight.normal,
-                    color: _subop == 'income' ? colorScheme.primary : colorScheme.outline,
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                InkWell(
+                  onTap: () {
+                    setState(() {
+                      _subop = '';
+                      _logPage = 1;
+                    });
+                    _reloadLogs();
+                  },
+                  child: Text(
+                    '全部',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: _subop.isEmpty ? FontWeight.bold : FontWeight.normal,
+                      color: _subop.isEmpty ? colorScheme.primary : colorScheme.outline,
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Text('/', style: TextStyle(color: colorScheme.outlineVariant)),
-              const SizedBox(width: 8),
-              InkWell(
-                onTap: () {
-                  setState(() {
-                    _subop = 'reward';
-                    _logPage = 1;
-                  });
-                  _reloadLogs();
-                },
-                child: Text(
-                  '系统奖励',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: _subop == 'reward' ? FontWeight.bold : FontWeight.normal,
-                    color: _subop == 'reward' ? colorScheme.primary : colorScheme.outline,
+                const SizedBox(width: 8),
+                Text('/', style: TextStyle(color: colorScheme.outlineVariant)),
+                const SizedBox(width: 8),
+                InkWell(
+                  onTap: () {
+                    setState(() {
+                      _subop = 'income';
+                      _logPage = 1;
+                    });
+                    _reloadLogs();
+                  },
+                  child: Text(
+                    '积分收益',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: _subop == 'income' ? FontWeight.bold : FontWeight.normal,
+                      color: _subop == 'income' ? colorScheme.primary : colorScheme.outline,
+                    ),
                   ),
                 ),
-              ),
-            ],
+                const SizedBox(width: 8),
+                Text('/', style: TextStyle(color: colorScheme.outlineVariant)),
+                const SizedBox(width: 8),
+                InkWell(
+                  onTap: () {
+                    setState(() {
+                      _subop = 'reward';
+                      _logPage = 1;
+                    });
+                    _reloadLogs();
+                  },
+                  child: Text(
+                    '系统奖励',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: _subop == 'reward' ? FontWeight.bold : FontWeight.normal,
+                      color: _subop == 'reward' ? colorScheme.primary : colorScheme.outline,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text('/', style: TextStyle(color: colorScheme.outlineVariant)),
+                const SizedBox(width: 8),
+                InkWell(
+                  onTap: () {
+                    setState(() {
+                      _subop = 'payment';
+                      _logPage = 1;
+                    });
+                    _reloadLogs();
+                  },
+                  child: Text(
+                    '积分支出',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: _subop == 'payment' ? FontWeight.bold : FontWeight.normal,
+                      color: _subop == 'payment' ? colorScheme.primary : colorScheme.outline,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
         const Divider(height: 1),

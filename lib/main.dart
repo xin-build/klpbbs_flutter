@@ -26,6 +26,7 @@ import 'pages/search_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/notice_page.dart';
 import 'pages/sign_rank_page.dart';
+import 'pages/user_center_page.dart';
 import 'pages/user_space_page.dart';
 import 'services/download_service.dart';
 import 'services/push_notification_service.dart';
@@ -556,8 +557,8 @@ class _MainShellState extends State<_MainShell> {
         label: '版块',
       ),
       const NavItem(
-        icon: Icons.emoji_events_outlined,
-        selectedIcon: Icons.emoji_events_rounded,
+        icon: Icons.event_available_outlined,
+        selectedIcon: Icons.event_available_rounded,
         label: '签到',
       ),
       const NavItem(
@@ -569,26 +570,6 @@ class _MainShellState extends State<_MainShell> {
         icon: Icons.person_outline,
         selectedIcon: Icons.person,
         label: '个人中心',
-      ),
-      NavItem(
-        icon: Icons.auto_fix_high_outlined,
-        selectedIcon: Icons.auto_fix_high,
-        label: '道具',
-        onTap: () {
-          Navigator.of(
-            context,
-          ).push(MaterialPageRoute(builder: (_) => const MagicPage()));
-        },
-      ),
-      NavItem(
-        icon: Icons.account_balance_wallet_outlined,
-        selectedIcon: Icons.account_balance_wallet,
-        label: '积分',
-        onTap: () {
-          Navigator.of(
-            context,
-          ).push(MaterialPageRoute(builder: (_) => const CreditPage(initialTabIndex: 0)));
-        },
       ),
       NavItem(
         icon: Icons.local_fire_department_outlined,
@@ -659,7 +640,7 @@ class _MainShellState extends State<_MainShell> {
       const RepaintBoundary(child: ForumsPage()),
       const RepaintBoundary(child: SignRankPage()),
       const RepaintBoundary(child: MedalPage()),
-      const RepaintBoundary(child: MySpacePage()),
+      const RepaintBoundary(child: UserCenterPage()),
     ];
 
     return AdaptiveScaffold(

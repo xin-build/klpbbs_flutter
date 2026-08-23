@@ -11,8 +11,8 @@ import '../widgets/global_nav.dart';
 import '../widgets/inline_html_text.dart';
 import '../widgets/thread_card.dart';
 import 'credit_page.dart';
-import 'facemall_page.dart';
 import 'friend_page.dart';
+import 'homestyle_page.dart';
 import 'login_page.dart';
 import 'magic_page.dart';
 import 'medal_page.dart';
@@ -1451,8 +1451,9 @@ class _UserSpacePageState extends State<UserSpacePage> {
                           onPressed: () {
                             Navigator.of(context).push(
                               MaterialPageRoute(
-                                builder: (_) => FacemallPage(
+                                builder: (_) => HomeStylePage(
                                   uid: widget.uid,
+                                  username: user.username,
                                 ),
                               ),
                             ).then((_) => _loadData());

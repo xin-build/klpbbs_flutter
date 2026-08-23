@@ -28,9 +28,18 @@ android {
         multiDexEnabled = true
     }
 
+    signingConfigs {
+        create("release") {
+            keyAlias = "klpbbs"
+            keyPassword = "klpbbs123456"
+            storeFile = file("klpbbs_release.jks")
+            storePassword = "klpbbs123456"
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             isShrinkResources = false
         }

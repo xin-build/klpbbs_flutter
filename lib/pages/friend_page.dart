@@ -289,6 +289,18 @@ class _FriendPageState extends State<FriendPage> {
                       ],
                     ),
                     const SizedBox(height: 4),
+                    if (f.credits.isNotEmpty && (f.credits.startsWith('[') || f.credits.length > 5 || !RegExp(r'^\d+$').hasMatch(f.credits))) ...[
+                      Text(
+                        f.credits,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: theme.colorScheme.onSurfaceVariant.withAlpha(200),
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                    ],
                     Row(
                       children: [
                         Text(
@@ -298,7 +310,7 @@ class _FriendPageState extends State<FriendPage> {
                             color: theme.colorScheme.outline,
                           ),
                         ),
-                        if (f.credits.isNotEmpty) ...[
+                        if (f.credits.isNotEmpty && RegExp(r'^\d+$').hasMatch(f.credits)) ...[
                           const SizedBox(width: 10),
                           Text(
                             '积分: ${f.credits}',

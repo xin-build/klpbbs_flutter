@@ -89,6 +89,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   @override
   void initState() {
     super.initState();
+    AppConfig.instance.addListener(_onConfigChanged);
     _loadAndInit();
     KlpbbsApi.getMyUid()
         .then((uid) {
@@ -100,6 +101,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       final show = _scrollCtrl.offset > 120;
       if (show != _scrolled) setState(() => _scrolled = show);
     });
+  }
+
+  void _onConfigChanged() {
+    if (mounted) setState(() {});
   }
 
   void _loadAndInit({bool forceRefresh = false}) {
@@ -158,6 +163,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
 
   @override
   void dispose() {
+    AppConfig.instance.removeListener(_onConfigChanged);
     // 退出帖子页时停止 B站/网易云等内嵌播放器
     BiliVideoPlayer.stopAll();
     NetEaseMusicPlayer.stopAll();
@@ -1656,29 +1662,38 @@ class _FloorViewState extends State<_FloorView> {
   }
 
   Widget _buildSignature(ThemeData theme) {
-    final sigHtml = ComiisParser.bbcodeToHtml(floor.signature);
+    final rawSig = floor.signature.trim();
+    if (rawSig.isEmpty) return const SizedBox.shrink();
+    final sigHtml = rawSig.contains('<') ? rawSig : ComiisParser.bbcodeToHtml(rawSig);
+
     return Container(
-      margin: const EdgeInsets.only(top: 10),
-      padding: const EdgeInsets.only(top: 8),
+      margin: const EdgeInsets.only(top: 10, bottom: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        border: Border(
-          top: BorderSide(
-            color: theme.colorScheme.outlineVariant.withAlpha(40),
-            width: 0.8,
-          ),
+        color: theme.colorScheme.surfaceContainerHighest.withAlpha(50),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: theme.colorScheme.outlineVariant.withAlpha(60),
+          width: 0.8,
         ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'SIGNATURE',
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 1.2,
-              color: theme.colorScheme.outline.withAlpha(120),
-            ),
+          Row(
+            children: [
+              Icon(Icons.edit_note, size: 14, color: theme.colorScheme.primary.withAlpha(180)),
+              const SizedBox(width: 4),
+              Text(
+                '个性签名',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.8,
+                  color: theme.colorScheme.primary.withAlpha(200),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 4),
           InlineHtmlText(
@@ -1686,9 +1701,9 @@ class _FloorViewState extends State<_FloorView> {
             baseStyle: TextStyle(
               fontSize: 12,
               height: 1.4,
-              color: theme.colorScheme.outline,
+              color: theme.colorScheme.onSurfaceVariant,
             ),
-            emojiSize: 16,
+            emojiSize: 18,
           ),
         ],
       ),
@@ -1754,31 +1769,32 @@ class _FloorViewState extends State<_FloorView> {
               ],
             ),
           ),
-          // 楼中楼
-          InkWell(
-            borderRadius: BorderRadius.circular(6),
-            onTap: () => _onReplyFloorWrite(),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.subdirectory_arrow_right,
-                  size: 15,
-                  color: theme.colorScheme.primary,
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  floor.replyFloors.isNotEmpty
-                      ? '楼中楼 (${floor.replyFloors.length})'
-                      : '发起楼中楼',
-                  style: theme.textTheme.bodySmall?.copyWith(
+          // 楼中楼（仅 2 楼及以上常规楼层支持发起楼中楼，首楼楼主为主题帖）
+          if (!widget.isFirstFloor && floor.floorNumber != '1' && floor.floorNumber != '楼主' && floor.floorNumber != '1#')
+            InkWell(
+              borderRadius: BorderRadius.circular(6),
+              onTap: () => _onReplyFloorWrite(),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.subdirectory_arrow_right,
+                    size: 15,
                     color: theme.colorScheme.primary,
-                    fontWeight: FontWeight.w600,
                   ),
-                ),
-              ],
+                  const SizedBox(width: 4),
+                  Text(
+                    floor.replyFloors.isNotEmpty
+                        ? '楼中楼 (${floor.replyFloors.length})'
+                        : '发起楼中楼',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.primary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
           // 回复
           InkWell(
             borderRadius: BorderRadius.circular(6),
@@ -2167,8 +2183,15 @@ class _FloorViewState extends State<_FloorView> {
             if (floor.comments.isNotEmpty)
               _CommentsSection(comments: floor.comments),
             // 签名档
-            if (AppConfig.showFloorSignature && floor.signature.isNotEmpty)
-              _buildSignature(theme),
+            ListenableBuilder(
+              listenable: AppConfig.instance,
+              builder: (context, _) {
+                if (AppConfig.showFloorSignature && floor.signature.isNotEmpty) {
+                  return _buildSignature(theme);
+                }
+                return const SizedBox.shrink();
+              },
+            ),
             // 操作栏
             _buildActionRow(context, theme),
           ],
@@ -2432,11 +2455,11 @@ class _FloorViewState extends State<_FloorView> {
             const Divider(height: 1),
             ListTile(
               leading: const Icon(Icons.forum_outlined),
-              title: const Text('楼中楼回复'),
-              subtitle: const Text('引用该楼层进行回复'),
+              title: Text((index == 0 || floor.floorNumber == '1' || floor.floorNumber == '楼主' || floor.floorNumber == '1#') ? '回复主题' : '楼中楼回复'),
+              subtitle: Text((index == 0 || floor.floorNumber == '1' || floor.floorNumber == '楼主' || floor.floorNumber == '1#') ? '回复楼主发表的主题内容' : '引用该楼层进行楼中楼回复'),
               onTap: () {
                 Navigator.of(ctx).pop();
-                _openReply(context, quote: true);
+                _openReply(context, quote: !(index == 0 || floor.floorNumber == '1' || floor.floorNumber == '楼主' || floor.floorNumber == '1#'));
               },
             ),
             const Divider(height: 1),

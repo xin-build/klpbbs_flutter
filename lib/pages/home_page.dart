@@ -1469,7 +1469,7 @@ class _QuickActions extends StatelessWidget {
     // 快捷入口：版块/签到/勋章/导读/搜索/封神榜/排行
     final items = [
       (Icons.forum_outlined, '版块', const Color(0xFF008AC5), 1),
-      (Icons.emoji_events, '签到', const Color(0xFFFFB300), 2),
+      (Icons.event_available, '签到', const Color(0xFF00A2FF), 2),
       (Icons.military_tech, '勋章', const Color(0xFF9C27B0), 3),
       (Icons.local_fire_department, '导读', const Color(0xFFFF7043), 10),
       (Icons.search, '搜索', const Color(0xFF2E7D32), 11),

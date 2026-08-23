@@ -23,7 +23,7 @@ class UserAvatarWidget extends StatelessWidget {
     this.faceUrl,
   });
 
-  /// 规范化与清洗挂件 URL（自动处理 ##SJ## 分隔符、相对路径、空字符与特殊格式）
+  /// 规范化与清洗挂件 URL（自动处理 ##SJ## 分隔符、相对路径并映射到原站真实附件路径）
   static String? sanitizeFaceUrl(String? rawUrl) {
     if (rawUrl == null || rawUrl.trim().isEmpty) return null;
     var url = rawUrl.trim();
@@ -35,7 +35,23 @@ class UserAvatarWidget extends StatelessWidget {
         return null;
       }
     }
-    if (url.isEmpty || url == 'none') return null;
+    if (url.isEmpty || url == 'none' || url == '0') return null;
+
+    // 智能映射：苦力怕论坛 sunju_facemall 挂件真实存储路径为 data/attachment/sunju_facemall/...
+    if (url.contains('keishi_klp_') || url.contains('sunju_facemall/')) {
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        final base = AppConfig.baseUrl.endsWith('/') ? AppConfig.baseUrl : '${AppConfig.baseUrl}/';
+        return '$base${url.startsWith('/') ? url.substring(1) : url}';
+      }
+      return url;
+    }
+
+    final m = RegExp(r'(?:template/img/|img/|fm_)?(\d+)\.png$', caseSensitive: false).firstMatch(url);
+    if (m != null) {
+      final id = m.group(1)!;
+      return '${AppConfig.baseUrl}data/attachment/sunju_facemall/fm_$id.png';
+    }
+
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
       final base = AppConfig.baseUrl.endsWith('/') ? AppConfig.baseUrl : '${AppConfig.baseUrl}/';
       url = '$base${url.startsWith('/') ? url.substring(1) : url}';
@@ -127,14 +143,12 @@ class UserAvatarWidget extends StatelessWidget {
 
     // 解析挂件有效 URL（若组件未直接传入且为「我」，则自动使用全局设置的挂件）
     final cleanUrl = sanitizeFaceUrl(
-      (faceUrl != null && faceUrl!.trim().isNotEmpty)
-          ? faceUrl
-          : (author == '我' ? AppConfig.myFaceUrl : null),
+      faceUrl ?? (author == '我' ? AppConfig.myFaceUrl : null),
     );
 
-    // 头像挂件（sunju_facemall）：头像中心对齐叠一层 1.38x 挂件图（对齐 Discuz 138% 标准）
+    // 头像挂件（sunju_facemall）：按官方 7/4 (1.75x) 比例居中叠放真实挂件图
     if (cleanUrl != null && cleanUrl.isNotEmpty) {
-      final faceSize = size * 1.38;
+      final faceSize = size * 1.75;
       return SizedBox(
         width: size,
         height: size,
@@ -154,8 +168,8 @@ class UserAvatarWidget extends StatelessWidget {
                   width: faceSize,
                   height: faceSize,
                   fit: BoxFit.contain,
-                  placeholder: (_, __) => _buildFallbackPendantRing(cleanUrl, faceSize),
-                  errorWidget: (_, __, ___) => _buildFallbackPendantRing(cleanUrl, faceSize),
+                  placeholder: (_, __) => const SizedBox.shrink(),
+                  errorWidget: (_, __, ___) => const SizedBox.shrink(),
                 ),
               ),
             ),
@@ -164,64 +178,6 @@ class UserAvatarWidget extends StatelessWidget {
       );
     }
     return avatar;
-  }
-
-  /// 当挂件资源离线或加载未完成时，渲染精致贴合的主题光环挂件
-  static Widget _buildFallbackPendantRing(String url, double faceSize) {
-    Color ringColor = const Color(0xFF3BA55D);
-    IconData icon = Icons.shield_outlined;
-    if (url.contains('11') || url.contains('creeper')) {
-      ringColor = const Color(0xFF00E676);
-      icon = Icons.bolt;
-    } else if (url.contains('12') || url.contains('diamond')) {
-      ringColor = const Color(0xFF00B0FF);
-      icon = Icons.diamond_outlined;
-    } else if (url.contains('13') || url.contains('dragon')) {
-      ringColor = const Color(0xFF9C27B0);
-      icon = Icons.flight_takeoff;
-    } else if (url.contains('16') || url.contains('klee')) {
-      ringColor = const Color(0xFFFF5252);
-      icon = Icons.local_fire_department;
-    } else if (url.contains('1') || url.contains('seven')) {
-      ringColor = const Color(0xFFFF9800);
-      icon = Icons.content_cut;
-    } else if (url.contains('2') || url.contains('yotsuba')) {
-      ringColor = const Color(0xFF4CAF50);
-      icon = Icons.eco;
-    }
-
-    return Container(
-      width: faceSize,
-      height: faceSize,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        border: Border.all(color: ringColor, width: (faceSize * 0.06).clamp(1.5, 3.5)),
-        boxShadow: [
-          BoxShadow(
-            color: ringColor.withAlpha(80),
-            blurRadius: 3,
-            spreadRadius: 0.5,
-          ),
-        ],
-      ),
-      child: Align(
-        alignment: Alignment.topCenter,
-        child: Container(
-          width: (faceSize * 0.28).clamp(8.0, 16.0),
-          height: (faceSize * 0.28).clamp(8.0, 16.0),
-          decoration: BoxDecoration(
-            color: ringColor,
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 1),
-          ),
-          child: Icon(
-            icon,
-            size: (faceSize * 0.16).clamp(5.0, 10.0),
-            color: Colors.white,
-          ),
-        ),
-      ),
-    );
   }
 }
 

@@ -303,7 +303,7 @@ class _SignRankPageState extends State<SignRankPage>
                   isSigned
                       ? (_todaySignReward != null
                           ? '本月已累计签到 ${_signedDays.length} 天 · 奖励入账于 ${_todaySignReward!.timeText}'
-                          : '本月已累计签到 ${_signedDays.length} 天，连续签到奖励更多！')
+                          : '本月已累计签到 ${_signedDays.length} 天')
                       : '每日签到可领取铁粒与经验值奖励！',
                   style: TextStyle(
                     fontSize: 11.5,
@@ -571,8 +571,7 @@ class _SignRankPageState extends State<SignRankPage>
                           ],
                         ),
                         subtitle: Text(
-                          '总天数 ${e.totalDays} 天 · 月天数 ${e.monthDays} 天'
-                          '${e.rewardText.isNotEmpty ? ' · 奖励 ${e.rewardText}' : ''}',
+                          '总天数 ${e.totalDays} 天 · 月天数 ${e.monthDays} 天',
                         ),
                       );
                     },

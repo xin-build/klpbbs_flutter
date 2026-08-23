@@ -84,8 +84,20 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
   void _reloadMybox() {
     setState(() {
       _myboxFuture = KlpbbsApi.getMyMagics().then((res) {
-        if (mounted) setState(() => _currentBag = res.bag);
-        return res;
+        var bag = res.bag;
+        if (bag.usedCapacity == 0 && res.magics.isNotEmpty) {
+          final calculatedUsed = res.magics.fold<int>(
+            0,
+            (sum, item) => sum + item.count * (item.weight > 0 ? item.weight : 10),
+          );
+          bag = MagicBagInfo(
+            usedCapacity: calculatedUsed,
+            totalCapacity: bag.totalCapacity > 0 ? bag.totalCapacity : 500,
+            ironCount: bag.ironCount,
+          );
+        }
+        if (mounted) setState(() => _currentBag = bag);
+        return (magics: res.magics, bag: bag);
       });
     });
   }

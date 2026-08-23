@@ -21,7 +21,7 @@ void showGlobalNavSheet(BuildContext context) {
   final items = <(IconData, IconData, String, int)>[
     (Icons.home_outlined, Icons.home_rounded, '首页', 0),
     (Icons.forum_outlined, Icons.forum_rounded, '版块', 1),
-    (Icons.emoji_events_outlined, Icons.emoji_events_rounded, '签到', 2),
+    (Icons.event_available_outlined, Icons.event_available_rounded, '签到', 2),
     (Icons.military_tech_outlined, Icons.military_tech, '勋章中心', 3),
     (Icons.auto_fix_high_outlined, Icons.auto_fix_high, '道具中心', 15),
     (Icons.account_balance_wallet_outlined, Icons.account_balance_wallet, '积分中心', 14),

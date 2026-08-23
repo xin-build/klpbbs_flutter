@@ -27,6 +27,8 @@ import '../models/usergroup_comparison.dart';
 ///
 /// 结构依据逆向文档 docs/REVERSE_ENGINEERING.md §3 与 docs/API_CONTRACT.md §3。
 class ComiisParser {
+  /// 作者个性签名缓存（按 uid 缓存，跨楼层复用）
+  static final Map<int, String> authorSigCache = {};
   /// 将相对 URL 解析为绝对 URL（去除重复斜杠，避免 https://klpbbs.com// 导致 404）
   static String? _absolute(String? url) {
     if (url == null || url.isEmpty) return null;
@@ -301,9 +303,9 @@ class ComiisParser {
 
     // 2. PC / 移动端表格结构（table.dt tr, table.tfm tr, table tr）
     if (out.isEmpty) {
-      for (final tr in doc.querySelectorAll('table.dt tr, table.tfm tr, table tr')) {
+      for (final tr in doc.querySelectorAll('table.dt tr, table.tfm tr, table.tl tr, table tr')) {
         final tds = tr.querySelectorAll('td');
-        if (tds.length < 3) continue;
+        if (tds.length < 2) continue;
         final rawText = tds.map((td) => td.text.trim()).toList();
         String creditType = '铁粒';
         String amount = '';
@@ -311,34 +313,55 @@ class ComiisParser {
         String detail = '';
         String timeText = '';
 
-        for (final text in rawText) {
-          final tm = RegExp(r'\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2})?').firstMatch(text);
-          if (tm != null && timeText.isEmpty) {
-            timeText = tm.group(0)!;
-            continue;
-          }
-          final cm = RegExp(r'(铁粒|金粒|绿宝石|贡献|人气)\s*([+-]?\d+)').firstMatch(text);
-          if (cm != null && amount.isEmpty) {
+        if (tds.length >= 3) {
+          operation = tds[0].text.trim();
+          final creditCol = tds[1].text.trim();
+          final cm = RegExp(r'(铁粒|金粒|绿宝石|贡献|人气|经验)\s*([+-]?\d+)').firstMatch(creditCol);
+          if (cm != null) {
             creditType = cm.group(1)!;
             amount = cm.group(2)!;
-            continue;
+          } else {
+            final vm = RegExp(r'([+-]?\d+)').firstMatch(creditCol);
+            if (vm != null) amount = vm.group(1)!;
           }
-          final vm = RegExp(r'^([+-]\d+)$').firstMatch(text);
-          if (vm != null && amount.isEmpty) {
-            amount = vm.group(1)!;
-            continue;
-          }
-          if (operation.isEmpty && text.isNotEmpty) {
-            operation = text;
-          } else if (detail.isEmpty && text.isNotEmpty) {
-            detail = text;
+          if (tds.length >= 4) {
+            detail = tds[2].text.trim();
+            timeText = tds.last.text.trim();
+          } else {
+            timeText = tds[2].text.trim();
           }
         }
 
-        if (amount.isNotEmpty) {
+        if (amount.isEmpty || operation.isEmpty) {
+          for (final text in rawText) {
+            final tm = RegExp(r'\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2})?').firstMatch(text);
+            if (tm != null && timeText.isEmpty) {
+              timeText = tm.group(0)!;
+              continue;
+            }
+            final cm = RegExp(r'(铁粒|金粒|绿宝石|贡献|人气|经验)\s*([+-]?\d+)').firstMatch(text);
+            if (cm != null && amount.isEmpty) {
+              creditType = cm.group(1)!;
+              amount = cm.group(2)!;
+              continue;
+            }
+            final vm = RegExp(r'^([+-]?\d+)$').firstMatch(text);
+            if (vm != null && amount.isEmpty && !text.contains('-') && text.length < 8) {
+              amount = vm.group(1)!;
+              continue;
+            }
+            if (operation.isEmpty && text.isNotEmpty && !text.contains('202') && !text.contains(':')) {
+              operation = text;
+            } else if (detail.isEmpty && text.isNotEmpty && !text.contains('202')) {
+              detail = text;
+            }
+          }
+        }
+
+        if (operation.isNotEmpty || amount.isNotEmpty) {
           out.add(CreditLogEntry(
             creditType: creditType,
-            amount: amount.startsWith('+') || amount.startsWith('-') ? amount : '+$amount',
+            amount: amount.isEmpty ? '+0' : (amount.startsWith('+') || amount.startsWith('-') ? amount : '+$amount'),
             operation: operation.isNotEmpty ? operation : '积分变动',
             detail: detail,
             timeText: timeText,
@@ -356,16 +379,19 @@ class ComiisParser {
     final details = <String, String>{};
     String? formula;
 
-    // 1. 顶部总积分（对应图三：积分: 6994）
-    final totalM = RegExp(r'(?:总积分|积分)\s*[:：\s]*(\d+)').firstMatch(html);
+    final doc = html_parser.parse(html);
+    final text = doc.body?.text ?? html;
+
+    // 1. 顶部总积分（对应：积分: 6994）
+    final totalM = RegExp(r'(?:总积分|积分)\s*[:：\s]*(\d+)').firstMatch(text);
     if (totalM != null) {
       totalCredits = totalM.group(1)!;
     }
 
-    // 2. 细项提取（对应图三、图四：铁粒:12805 粒、经验:6994 EP、铁锭[已弃用]:0 块、贡献:0 点、钻石:0 个）
+    // 2. 细项提取（对应：铁粒:12805 粒、经验:6994 EP、铁锭[已弃用]:0 块、贡献:0 点、钻石:0 个）
     final matches = RegExp(
       r'(铁粒|经验|铁锭\[已弃用\]|铁锭|贡献|钻石|人气|威望|金币|金粒)\s*[:：\s]*(\d+)\s*(?:粒|EP|块|点|个)?',
-    ).allMatches(html);
+    ).allMatches(text);
     for (final m in matches) {
       final name = m.group(1)!;
       final val = m.group(2)!;
@@ -538,16 +564,19 @@ class ComiisParser {
     int total = 500;
     int iron = defaultIron ?? 0;
 
-    final capM = RegExp(r'(?:我的道具包容量|道具包容量|容量)[:：\s]*(\d+)\s*/\s*(\d+)').firstMatch(html);
+    final doc = html_parser.parse(html);
+    final text = doc.body?.text ?? html;
+
+    final capM = RegExp(r'(?:我的道具包容量|道具包容量|容量)[:：\s]*(\d+)\s*/\s*(\d+)').firstMatch(text);
     if (capM != null) {
       used = int.tryParse(capM.group(1)!) ?? 0;
       total = int.tryParse(capM.group(2)!) ?? 500;
     } else {
-      final usedM = RegExp(r'(?:已用容量|当前容量)[:：\s]*(\d+)').firstMatch(html);
+      final usedM = RegExp(r'(?:已用容量|当前容量)[:：\s]*(\d+)').firstMatch(text);
       if (usedM != null) used = int.tryParse(usedM.group(1)!) ?? 0;
     }
 
-    final ironM = RegExp(r'(?:目前有|现有|账户|拥有)?\s*铁粒\s*[:：\s]*(\d+)|铁粒\s*(\d+)\s*粒').firstMatch(html);
+    final ironM = RegExp(r'(?:目前有|现有|账户|拥有)?\s*铁粒\s*[:：\s]*(\d+)|铁粒\s*(\d+)\s*粒').firstMatch(text);
     if (ironM != null) {
       iron = int.tryParse(ironM.group(1) ?? ironM.group(2) ?? '') ?? iron;
     }
@@ -565,23 +594,20 @@ class ComiisParser {
     final out = <MagicItem>[];
     final seenNames = <String>{};
 
-    // 遍历所有含有道具图片的节点容器
     for (final imgEl in doc.querySelectorAll('img')) {
       final src = _absolute(imgEl.attributes['src']) ?? '';
       if (!src.contains('/magic/') && !src.contains('magic') && !src.contains('small.gif')) continue;
 
-      // 向上寻找该道具卡片的容器 (li, tr, div)
+      // 向上寻找该道具卡片的最外层容器 (li 或 tr)
       html_dom.Element? container = imgEl.parent;
-      for (int i = 0; i < 5; i++) {
-        if (container == null) break;
-        if (container.localName == 'li' || container.localName == 'tr' || container.id.startsWith('magic_') || container.className.contains('box')) {
-          break;
-        }
-        if (container.parent != null) {
-          container = container.parent;
-        } else {
-          break;
-        }
+      while (container != null &&
+          container.localName != 'li' &&
+          container.localName != 'tr' &&
+          container.parent != null &&
+          container.parent!.localName != 'ul' &&
+          container.parent!.localName != 'tbody' &&
+          container.parent!.localName != 'body') {
+        container = container.parent;
       }
       final box = container ?? imgEl.parent ?? imgEl;
 
@@ -601,9 +627,9 @@ class ComiisParser {
       }
       if (name.isEmpty || !seenNames.add(name)) continue;
 
-      // 提取数量
+      // 提取数量（如 数量: 9 或 拥有 9 张）
       int count = 1;
-      final countM = RegExp(r'数量[:：\s]*(\d+)|拥有\s*(\d+)\s*张|(\d+)\s*张').firstMatch(box.text);
+      final countM = RegExp(r'数量[:：\s]*(\d+)|拥有\s*(\d+)|(\d+)\s*张').firstMatch(box.text);
       if (countM != null) {
         count = int.tryParse(countM.group(1) ?? countM.group(2) ?? countM.group(3) ?? '') ?? 1;
       }
@@ -621,10 +647,11 @@ class ComiisParser {
 
       String desc = box.querySelector('p.txt, .xg1')?.text.trim() ?? '';
 
-      // 操作权限
-      final boxText = box.text;
-      final hasUseLink = box.querySelector('a[href*="operation=use"]') != null;
-      final bool canUse = (hasUseLink || boxText.contains('使用')) && !name.contains('提升卡');
+      // 操作权限判定：
+      // 在苦力怕论坛中，提升卡只能在帖子详情中提升主题，背包中只有[赠送|出售]
+      // 附件增容卡、改名卡、补签卡等可以在背包直接使用，显示[使用|赠送|出售]
+      final bool isBump = name.contains('提升卡');
+      final bool canUse = !isBump;
       const bool canGive = true;
       const bool canDrop = true;
 
@@ -771,46 +798,141 @@ class ComiisParser {
     return out;
   }
 
-  /// 解析好友列表（支持 Discuz/克米全端 li.bbda, div.avt, h4 a, p.maxh 等完整结构）
-  static List<FriendItem> parseFriends(String html) {
+  /// 解析好友列表（精确支持 Discuz PC 端 ul#friend_ul li.bbda 与移动端全结构，对齐截图一）
+  static List<FriendItem> parseFriends(String html, {int? excludeUid}) {
+    if (html.isEmpty) return const [];
     final doc = html_parser.parse(html);
+
+    // 移除全局非内容节点（页头、页脚、侧边栏、浮动菜单、导航），防止误解析非好友链接
+    doc.querySelectorAll(
+      '#nv, #toptb, #hd, #ft, #comiis_nav, .comiis_nav, .comiis_foot, .comiis_footer, '
+      '.comiis_head, .comiis_header, .comiis_sidenv, .comiis_menu, .comiis_gobtn_tbox, '
+      '.comiis_sidenv_box, .comiis_nav_box, #comiis_foot_menu, script, style, header, footer',
+    ).forEach((e) => e.remove());
+
     final out = <FriendItem>[];
     final seen = <int>{};
 
-    // 1. 结构化好友列表项（li.bbda 或 li[class*="bbda"] 或 li[class*="friend"]）
-    for (final li in doc.querySelectorAll(
-      'li.bbda, li[class*="bbda"], ul#friend_ul li, div.buddy_list li, ul.buddy li, li[class*="friend"]',
-    )) {
+    // 1. 优先解析 Discuz PC 经典好友结构（ul#friend_ul li.bbda, ul.buddy li, div#friend_ul li）
+    final pcFriends = doc.querySelectorAll(
+      'ul#friend_ul > li, ul.buddy > li, div#friend_ul li, li.bbda, div.bbda',
+    );
+
+    for (final li in pcFriends) {
       final a = li.querySelector(
-        'h4 a, div.avt a, a[href*="space-uid-"], a[href*="mod=space&uid="]',
+        'h4 a[href*="space-uid-"]:not([href*="changenum"]):not([href*="op="]), '
+        'h4 a[href*="mod=space&uid="]:not([href*="changenum"]):not([href*="op="]), '
+        'div.avt a[href*="space-uid-"], div.avt a[href*="mod=space&uid="], '
+        'a.xi2, a[href*="space-uid-"]:not([href*="changenum"]):not([href*="op="])',
       );
       if (a == null) continue;
       final href = a.attributes['href'] ?? '';
       final uidM = RegExp(r'space-uid-(\d+)\.html|(?:uid=)(\d+)').firstMatch(href);
       if (uidM == null) continue;
       final uid = int.tryParse(uidM.group(1) ?? uidM.group(2) ?? '');
-      if (uid == null || uid <= 0 || !seen.add(uid)) continue;
+      if (uid == null || uid <= 0 || (excludeUid != null && uid == excludeUid) || !seen.add(uid)) continue;
 
-      final nameEl = li.querySelector('h4 a, h4, p.title, a.xi2');
-      var name = nameEl?.text.trim() ?? '';
+      // 提取真实昵称 (必须严格排除「热度(...)」和 changenum 链接)
+      var name = '';
+      final h4Links = li.querySelectorAll('h4 a');
+      for (final h4a in h4Links) {
+        final t = h4a.text.trim();
+        final h = h4a.attributes['href'] ?? '';
+        if (t.isNotEmpty && !t.startsWith('热度') && !h.contains('changenum') && !h.contains('op=')) {
+          name = t;
+          break;
+        }
+      }
+      if (name.isEmpty) {
+        final t = a.text.trim();
+        if (t.isNotEmpty && !t.startsWith('热度')) name = t;
+      }
       if (name.isEmpty) {
         final img = li.querySelector('img');
         name = img?.attributes['alt'] ?? '';
       }
-      if (name.isEmpty) name = 'UID: $uid';
+      if (name.isEmpty || name.startsWith('热度') || name.contains('http') || name.length > 40) {
+        name = '坛友 $uid';
+      }
 
-      final imgEl = li.querySelector('div.avt img, img');
-      final avatar = _avatarUrl(
-            imgEl?.attributes['src'] ?? imgEl?.attributes['data-src'],
-          ) ??
-          AppConfig.avatarUrl(uid, size: 'small');
+      // 提取头像
+      final imgEl = li.querySelector('div.avt img, img[src*="avatar"], img[data-src*="avatar"], img');
+      final rawImg = imgEl?.attributes['src'] ?? imgEl?.attributes['data-src'];
+      final avatar = _avatarUrl(rawImg) ?? AppConfig.avatarUrl(uid, size: 'middle');
 
-      final maxhEl = li.querySelector('p.maxh, p.xg1, div.xg1');
+      // 提取热度（如：热度(10002)）
+      String hotText = '';
+      final hotEl = li.querySelector('span.xg1, span.hot, a[href*="changenum"]');
+      if (hotEl != null && hotEl.text.contains('热度')) {
+        hotText = hotEl.text.trim();
+      }
+
+      // 提取附注/动态签名（排除自身名字重复）
+      String signature = '';
+      final descEl = li.querySelector('p.maxh, p.xg1, div.xg1, .desc');
+      if (descEl != null) {
+        final t = descEl.text.trim().replaceAll('\u00a0', ' ');
+        if (t.isNotEmpty && !t.contains('热度') && !t.contains('收听TA') && t != name && t != '$name ()') {
+          signature = t;
+        }
+      }
+
+      out.add(
+        FriendItem(
+          uid: uid,
+          username: _cleanTitle(name),
+          avatarUrl: avatar,
+          usergroup: _cleanTitle(hotText),
+          credits: signature,
+        ),
+      );
+    }
+
+    if (out.isNotEmpty) return out;
+
+    // 2. 移动端 Comiis 好友列表结构
+    final mobileFriends = doc.querySelectorAll(
+      '.comiis_friend_list li, .comiis_friend_list div.comiis_flex, '
+      '.comiis_userlist div.comiis_flex, .comiis_user_list div.comiis_flex, '
+      '.comiis_mh_userlist div.comiis_flex, .comiis_mh_userlist li, '
+      '.comiis_p12 div.comiis_flex, .comiis_p12 li, .comiis_box div.comiis_flex, '
+      '.comiis_box li, div.b_b, li.b_b, div.comiis_flex',
+    );
+
+    for (final el in mobileFriends) {
+      final a = el.querySelector(
+        'h4 a, div.avt a, a.xi2, a[href*="space-uid-"], a[href*="mod=space&uid="]',
+      );
+      if (a == null) continue;
+      final href = a.attributes['href'] ?? '';
+      final uidM = RegExp(r'space-uid-(\d+)\.html|(?:uid=)(\d+)').firstMatch(href);
+      if (uidM == null) continue;
+      final uid = int.tryParse(uidM.group(1) ?? uidM.group(2) ?? '');
+      if (uid == null || uid <= 0 || (excludeUid != null && uid == excludeUid) || !seen.add(uid)) continue;
+
+      var name = a.text.trim();
+      if (name.isEmpty || name == '好友' || name == '空间' || name == '个人资料') {
+        final nameEl = el.querySelector('h4, p.title, .f16, .f15, .f14, strong, a.xi2');
+        name = nameEl?.text.trim() ?? '';
+      }
+      if (name.isEmpty) {
+        final img = el.querySelector('img');
+        name = img?.attributes['alt'] ?? '';
+      }
+      if (name.isEmpty || name.contains('http') || name.length > 30) {
+        name = '坛友 $uid';
+      }
+
+      final imgEl = el.querySelector('img[src*="avatar"], img[data-src*="avatar"], div.avt img, img');
+      final rawImg = imgEl?.attributes['src'] ?? imgEl?.attributes['data-src'];
+      final avatar = _avatarUrl(rawImg) ?? AppConfig.avatarUrl(uid, size: 'middle');
+
       String group = '';
       String credits = '';
-      if (maxhEl != null) {
-        final fullText = maxhEl.text.replaceAll('\u00a0', ' ').trim();
-        final fontEl = maxhEl.querySelector('font');
+      final infoEl = el.querySelector('p.maxh, p.xg1, div.xg1, .f12, .desc, .km_time');
+      if (infoEl != null) {
+        final fullText = infoEl.text.replaceAll('\u00a0', ' ').trim();
+        final fontEl = infoEl.querySelector('font, span.xi1, .b_ok');
         if (fontEl != null && fontEl.text.trim().isNotEmpty) {
           group = fontEl.text.trim();
         }
@@ -820,7 +942,7 @@ class ComiisParser {
         }
         if (group.isEmpty) {
           final groupM = RegExp(
-            r'(Lv\.\d+[^积分]+|版主|超级版主|管理员|荣誉会员|贵宾会员)',
+            r'(Lv\.\d+[^积分\s]+|版主|超级版主|管理员|荣誉会员|贵宾会员|金牌会员|元老会员|普通会员)',
           ).firstMatch(fullText);
           if (groupM != null) {
             group = groupM.group(1)!.trim();
@@ -837,35 +959,6 @@ class ComiisParser {
           credits: credits,
         ),
       );
-    }
-
-    // 2. 备选通用链接模式
-    if (out.isEmpty) {
-      for (final a in doc.querySelectorAll(
-        'a[href*="space-uid-"], a[href*="mod=space&uid="]',
-      )) {
-        final href = a.attributes['href'] ?? '';
-        final uidM = RegExp(r'space-uid-(\d+)\.html|(?:uid=)(\d+)').firstMatch(href);
-        if (uidM == null) continue;
-        final uid = int.tryParse(uidM.group(1) ?? uidM.group(2) ?? '');
-        if (uid == null || uid <= 0 || !seen.add(uid)) continue;
-        final name = a.text.trim();
-        if (name.isEmpty ||
-            name.length > 30 ||
-            name.contains('http') ||
-            name == '好友' ||
-            name == '空间' ||
-            name == '个人资料') {
-          continue;
-        }
-        out.add(
-          FriendItem(
-            uid: uid,
-            username: name,
-            avatarUrl: AppConfig.avatarUrl(uid, size: 'small'),
-          ),
-        );
-      }
     }
 
     return out;
@@ -3154,12 +3247,22 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
-    // 楼层容器：div.comiis_postli（PC与手机版通用兜底：div[id^="post_"], table[id^="pid"], div[id^="pid"], .plc, .postitem）
+    // 楼层容器：优先 div.comiis_postli，其次 Discuz 严格 post_DIGITS 或 table[id^="pid"]
     var postElements = doc.querySelectorAll('div.comiis_postli');
     if (postElements.isEmpty) {
-      postElements = doc.querySelectorAll(
-        'div[id^="post_"], table[id^="pid"], div[id^="pid"], .plc, .postitem',
-      );
+      postElements = doc
+          .querySelectorAll('div[id^="post_"]')
+          .where((el) => RegExp(r'^post_\d+$').hasMatch(el.id))
+          .toList();
+    }
+    if (postElements.isEmpty) {
+      postElements = doc
+          .querySelectorAll('table[id^="pid"]')
+          .where((el) => RegExp(r'^pid\d+$').hasMatch(el.id))
+          .toList();
+    }
+    if (postElements.isEmpty) {
+      postElements = doc.querySelectorAll('div[id^="pid"], .plc, .postitem');
     }
     for (final post in postElements) {
       if (post.id == 'post_new' ||
@@ -3349,11 +3452,20 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         if (ipm != null) ipText = ipm.group(1)!.trim();
       }
 
-      // 签名档（.sign / .signature / .comiis_sign）
+      // 签名档（.sign / .signature / .comiis_sign / .comiis_qm / .qm / .kmqm / .signtext / div[id^="signature_"]）
       String signature = '';
-      final signEl = post.querySelector('.sign, .signature, div.comiis_sign');
+      final signEl = post.querySelector(
+        '.sign, .signature, div.comiis_sign, div.comiis_qm, div.qm, div.kmqm, .comiis_authi .qm, .signtext, .comiis_mh_sign, div[id^="signature_"], div.signature_content, .user_signature, .signaturetext',
+      ) ?? post.parent?.querySelector(
+        '.sign, .signature, div.comiis_sign, div.comiis_qm, div.qm, div.kmqm, .signtext',
+      );
       if (signEl != null) {
         signature = (signEl.innerHtml.isNotEmpty ? signEl.innerHtml : signEl.text).trim();
+      }
+      if (signature.isNotEmpty && uid != null && uid > 0) {
+        authorSigCache[uid] = signature;
+      } else if (signature.isEmpty && uid != null && uid > 0 && authorSigCache.containsKey(uid)) {
+        signature = authorSigCache[uid]!;
       }
 
       // 提取分类信息（模组/皮肤/附加包/软件资源等发布表单卡片）
@@ -4427,13 +4539,18 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
+    final cleanSig = _cleanSignature(signature);
+    if (cleanSig.isNotEmpty && uid > 0) {
+      authorSigCache[uid] = cleanSig;
+    }
+
     return UserSpace(
       uid: uid,
       username: _cleanTitle(username),
       credits: credits,
       regdate: regdate,
       lastvisit: lastvisit,
-      signature: _cleanSignature(signature),
+      signature: cleanSig,
       level: _cleanTitle(level),
       levelName: _cleanTitle(levelName),
       medals: medals,

@@ -945,14 +945,20 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
                 title: const Text('显示楼层个性签名档'),
                 subtitle: const Text('在帖子详情楼层底部渲染用户签名'),
                 value: AppConfig.showFloorSignature,
-                onChanged: (v) => AppConfig.setShowFloorSignature(v),
+                onChanged: (v) {
+                  AppConfig.setShowFloorSignature(v);
+                  setState(() {});
+                },
               ),
               const Divider(height: 1),
               SwitchListTile(
                 title: const Text('启动时自动签到'),
                 subtitle: const Text('每次启动应用自动尝试完成每日签到 (k_misign)'),
                 value: AppConfig.autoCheckin,
-                onChanged: (v) => AppConfig.setAutoCheckin(v),
+                onChanged: (v) {
+                  AppConfig.setAutoCheckin(v);
+                  setState(() {});
+                },
               ),
               const Divider(height: 1),
               ListTile(

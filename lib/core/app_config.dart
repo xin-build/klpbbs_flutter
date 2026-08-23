@@ -390,15 +390,6 @@ class AppConfig extends ChangeNotifier {
     instance.notifyListeners();
   }
 
-  static Future<void> setMinimizeToTrayOnClose(bool v) async {
-    minimizeToTrayOnClose = v;
-    instance.notifyListeners();
-    try {
-      final sp = await SharedPreferences.getInstance();
-      await sp.setBool('minimize_to_tray_on_close', v);
-    } catch (_) {}
-  }
-
   static Future<void> setSpaceWallpaper(String? url) async {
     spaceWallpaper = url;
     final sp = await SharedPreferences.getInstance();
@@ -409,6 +400,16 @@ class AppConfig extends ChangeNotifier {
     }
     instance.notifyListeners();
   }
+
+  static Future<void> setMinimizeToTrayOnClose(bool v) async {
+    minimizeToTrayOnClose = v;
+    instance.notifyListeners();
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setBool('minimize_to_tray_on_close', v);
+    } catch (_) {}
+  }
+
   static Future<void> setBaseUrl(String url) async {
     baseUrl = url;
     final sp = await SharedPreferences.getInstance();
