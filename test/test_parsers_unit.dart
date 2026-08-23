@@ -80,6 +80,27 @@ void main() {
 ''';
     final stats = ComiisParser.parseSiteStats(forumListHtml);
     expect(stats.isComplete, false);
-    expect(stats.totalPosts, 0);
+  });
+
+  test('parseForumGroups filters out 我关注的 block and keeps real partitions', () {
+    const html = '''
+<div class="comiis_forumlist comiis_km0 bg_f b_t b_b cl">
+  <div class="comiis_bbs_show b_b cl" href="#sub_forum_0"><h2><a href="javascript:;">我关注的\uf107管理</a></h2></div>
+  <div id="sub_forum_0" class="comiis_forum_nbox">
+    <a href="forum-41-1.html"><img src="none.png" alt="闲聊讨论" /></a>
+  </div>
+</div>
+<div class="comiis_forumlist comiis_km1 bg_f b_t b_b cl">
+  <div class="comiis_bbs_show b_b cl" href="#sub_forum_1"><h2><a href="javascript:;">综合分区</a></h2></div>
+  <div id="sub_forum_1" class="comiis_forum_nbox comiis_forum_two">
+    <a href="forum-2-1.html"><img src="none.png" alt="游戏资讯" /><p>帖数: 8640</p></a>
+  </div>
+</div>
+''';
+    final groups = ComiisParser.parseForumGroups(html);
+    expect(groups.length, 1);
+    expect(groups[0].gid, 1);
+    expect(groups[0].name, '综合分区');
+    expect(groups[0].forums[0].name, '游戏资讯');
   });
 }

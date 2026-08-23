@@ -338,9 +338,9 @@ class ComiisParser {
       out.add(
         FriendItem(
           uid: uid,
-          username: name,
+          username: _cleanTitle(name),
           avatarUrl: avatar,
-          usergroup: group,
+          usergroup: _cleanTitle(group),
           credits: credits,
         ),
       );
@@ -1971,10 +1971,6 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     );
   }
 
-  /// 解析社区版块树（分区 → 版块）
-  ///
-  /// 结构：`div.comiis_bbs_show[href="#sub_forum_{gid}"]`（分区头）
-  /// + `div#sub_forum_{gid} ul li a[href="forum-{fid}-1.html"]`（版块，含图标/帖数）。
   /// 解析土豪霸屏广播（从首页 script 标签内 var data = [...] 或 DOM 中动态提取）
   static ({String author, String avatarUrl, String message, String linkUrl, int tid})?
   parseTuhaoBanner(String html) {
@@ -2011,9 +2007,9 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
             if (name.isNotEmpty && msg.isNotEmpty) {
               return (
-                author: name,
+                author: _cleanTitle(name),
                 avatarUrl: avatarUrl,
-                message: msg,
+                message: _cleanTitle(msg),
                 linkUrl: linkUrl,
                 tid: tid,
               );
@@ -2031,7 +2027,17 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     final groups = <ForumGroup>[];
     final seenGids = <int>{};
 
-    // 1. 移动端克米模板：div.comiis_forumlist 与 div.comiis_km{gid}
+    const standardGroupNames = {
+      1: '综合分区',
+      110: '灵感交流',
+      37: 'BE资源分区',
+      36: 'JE资源分区',
+      38: '多人游戏',
+      40: '其他分区',
+      39: '论坛事务',
+    };
+
+    // 1. 移动端克米模板：div.comiis_forumlist 与 div.comiis_fl
     for (final fl in doc.querySelectorAll('div.comiis_forumlist, div.comiis_fl')) {
       int gid = 0;
       for (final c in fl.classes) {
@@ -2043,15 +2049,28 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
 
       final show = fl.querySelector('div.comiis_bbs_show, .comiis_fl_title, h2');
-      var name = (show?.querySelector('h2 a, h2, a')?.text ?? show?.text ?? '').trim();
-      name = name.replaceAll(RegExp(r'[\r\n\t]+'), ' ').trim();
       if (gid == 0 && show != null) {
         final href = show.attributes['href'] ?? '';
         final m = RegExp(r'sub_forum_(\d+)').firstMatch(href);
         if (m != null) gid = int.tryParse(m.group(1)!) ?? 0;
       }
-      if (name.isEmpty) continue;
-      if (gid == 0) gid = groups.length + 1;
+
+      var name = (show?.querySelector('h2 a, h2, a')?.text ?? show?.text ?? '').trim();
+      name = _cleanTitle(name);
+      name = name
+          .replaceAll(RegExp(r'(?:\[?管理\]?|展开|收起|设置|更多)$'), '')
+          .replaceAll(RegExp(r'[\r\n\t]+'), ' ')
+          .trim();
+
+      // 严格跳过「我关注的」以及非正常分区（gid == 0 或名称包含关注）
+      if (gid <= 0 || name.isEmpty || name.contains('关注')) {
+        continue;
+      }
+
+      if (standardGroupNames.containsKey(gid)) {
+        name = standardGroupNames[gid]!;
+      }
+
       if (!seenGids.add(gid)) continue;
 
       final forums = <Forum>[];
@@ -2076,6 +2095,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
             final raw = (a.querySelector('p')?.text ?? a.querySelector('span')?.text ?? a.text).trim();
             fname = raw.replaceAll(RegExp(r'今日[:：]?\s*\d+|帖数[:：]?\s*\d+|\d+'), '').trim();
           }
+          fname = _cleanTitle(fname);
           if (fname.isEmpty) continue;
 
           if (img != null) {
@@ -2096,7 +2116,6 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
           var threadCount = -1;
           var todayCount = -1;
-          String desc = '';
           final aText = a.text.trim();
           final tm = RegExp(r'今日[:：]?\s*(\d+)').firstMatch(aText);
           if (tm != null) {
@@ -2113,9 +2132,10 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
             threadCount = int.tryParse(thm.group(1)!) ?? -1;
           }
 
+          String desc = '';
           final descM = RegExp(r'别名[:：]?(.*)').firstMatch(aText);
           if (descM != null) {
-            desc = '别名: ${descM.group(1)!.trim()}';
+            desc = '别名: ${_cleanTitle(descM.group(1)!.trim())}';
           }
 
           forums.add(
@@ -2141,10 +2161,13 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     if (groups.isEmpty) {
       for (final block in doc.querySelectorAll('.bm.bmw.cl, table.fl_tb, div.fl')) {
         final h2 = block.querySelector('.bm_h h2 a, .bm_h h2, h2 a, h2');
-        final name = h2?.text.trim() ?? '';
-        if (name.isEmpty || name == '论坛' || name.contains('小喇叭')) continue;
+        var name = _cleanTitle(h2?.text ?? '');
+        if (name.isEmpty || name == '论坛' || name.contains('小喇叭') || name.contains('关注')) continue;
         final gidM = RegExp(r'gid=(\d+)').firstMatch(h2?.attributes['href'] ?? '');
         final gid = gidM != null ? int.tryParse(gidM.group(1)!) ?? (groups.length + 1) : (groups.length + 1);
+        if (standardGroupNames.containsKey(gid)) {
+          name = standardGroupNames[gid]!;
+        }
         if (!seenGids.add(gid)) continue;
 
         final forums = <Forum>[];
@@ -2157,7 +2180,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           final fid = int.tryParse(fm.group(1) ?? fm.group(2) ?? '');
           if (fid == null || fid <= 0 || forums.any((f) => f.fid == fid)) continue;
 
-          final fname = a.text.trim();
+          final fname = _cleanTitle(a.text.trim());
           if (fname.isEmpty) continue;
 
           var today = -1;
@@ -3798,13 +3821,13 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
     return UserSpace(
       uid: uid,
-      username: username,
+      username: _cleanTitle(username),
       credits: credits,
       regdate: regdate,
       lastvisit: lastvisit,
-      signature: signature,
-      level: level,
-      levelName: levelName,
+      signature: _cleanTitle(signature),
+      level: _cleanTitle(level),
+      levelName: _cleanTitle(levelName),
       medals: medals,
       faceUrl: faceUrl,
       bgUrl: bgUrl ?? '',
