@@ -16,12 +16,14 @@ class InlineHtmlText extends StatelessWidget {
   final String html;
   final TextStyle? baseStyle;
   final double? emojiSize;
+  final TextAlign? textAlign;
 
   const InlineHtmlText({
     super.key,
     required this.html,
     this.baseStyle,
     this.emojiSize,
+    this.textAlign,
   });
 
   @override
@@ -37,9 +39,17 @@ class InlineHtmlText extends StatelessWidget {
     final spans = _htmlToSpans(context, html, base, theme);
     if (spans.isEmpty) return const SizedBox.shrink();
 
+    final effectiveAlign = textAlign ??
+        (html.contains('align="center"') ||
+                html.contains('align=center') ||
+                html.contains('<center>')
+            ? TextAlign.center
+            : TextAlign.start);
+
     return Text.rich(
       TextSpan(children: spans),
       style: base,
+      textAlign: effectiveAlign,
     );
   }
 
@@ -140,7 +150,17 @@ class InlineHtmlText extends StatelessWidget {
               if (size != null) {
                 final s = double.tryParse(size);
                 if (s != null) {
-                  style = style.copyWith(fontSize: base.fontSize != null ? base.fontSize! * (0.8 + s * 0.1) : 13);
+                  const sizeMap = {
+                    1: 11.0,
+                    2: 13.0,
+                    3: 15.0,
+                    4: 17.5,
+                    5: 21.0,
+                    6: 25.0,
+                    7: 32.0,
+                  };
+                  final resolvedSize = sizeMap[s.toInt()] ?? (base.fontSize != null ? base.fontSize! * (0.8 + s * 0.1) : 13.5);
+                  style = style.copyWith(fontSize: resolvedSize);
                 }
               }
               break;

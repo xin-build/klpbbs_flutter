@@ -64,6 +64,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       String? stamp,
       String? stampUrl,
       String? coverUrl,
+      bool isFavorited,
+      bool isLiked,
     })
   >
   _future;
@@ -123,15 +125,23 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
 
     final likedList = prefs.getStringList('liked_tids') ?? const [];
     final isLocalLiked = likedList.contains('${widget.tid}');
-    final isServerLiked = (r.floors.isNotEmpty && r.floors.first.isLiked && _page == 1);
+    final isServerLiked = (r.isLiked == true) || (r.floors.isNotEmpty && r.floors.first.isLiked && _page == 1);
     if (_page == 1) {
       _liked = isLocalLiked || isServerLiked;
+      if (isServerLiked && !isLocalLiked) {
+        _saveState('liked_tids', '${widget.tid}', true);
+      }
       final rawLikes = r.likes > 0 ? r.likes : (r.floors.isNotEmpty ? r.floors.first.likes : 0);
       _likes = rawLikes > 0 ? rawLikes : (_liked ? 1 : 0);
     }
 
     final favList = prefs.getStringList('fav_tids') ?? const [];
-    _favored = favList.contains('${widget.tid}');
+    final isLocalFav = favList.contains('${widget.tid}');
+    final isServerFav = r.isFavorited == true;
+    _favored = isLocalFav || isServerFav;
+    if (isServerFav && !isLocalFav) {
+      _saveState('fav_tids', '${widget.tid}', true);
+    }
 
     _favorites = r.favorites;
     _views = r.views;
@@ -878,6 +888,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                 String? stamp,
                 String? stampUrl,
                 String? coverUrl,
+                bool isFavorited,
+                bool isLiked,
               })
             >(
               future: _future,
@@ -3040,7 +3052,7 @@ class _FloorViewState extends State<_FloorView> {
                     if (!confirmed || !context.mounted) return;
                     final messenger = ScaffoldMessenger.of(context);
                     try {
-                      final ok = await KlpbbsApi.useMagic(
+                      final ok = await KlpbbsApi.useMagicOnPost(
                         mid: m.mid,
                         idtype: m.idtype,
                         id: m.id,

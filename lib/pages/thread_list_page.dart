@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
@@ -34,6 +35,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
   int? _selectedType;
   String? _orderby;
   int? _selectedTid;
+  bool _isFav = false;
 
   List<Forum> _allForums = [];
   List<Forum> _subForums = [];
@@ -41,10 +43,46 @@ class _ThreadListPageState extends State<ThreadListPage> {
   @override
   void initState() {
     super.initState();
+    _loadFavStatus();
     _future = _fetchData();
     _loadTypes();
     _loadAllForums();
     _loadSubForums();
+  }
+
+  Future<void> _loadFavStatus() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList('fav_forums') ?? [];
+      final isFav = list.contains('${widget.fid}');
+      if (mounted) setState(() => _isFav = isFav);
+    } catch (_) {}
+  }
+
+  Future<void> _toggleFav() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = (prefs.getStringList('fav_forums') ?? []).toSet();
+      final nextFav = !_isFav;
+      if (nextFav) {
+        list.add('${widget.fid}');
+      } else {
+        list.remove('${widget.fid}');
+      }
+      await prefs.setStringList('fav_forums', list.toList());
+      if (mounted) {
+        setState(() => _isFav = nextFav);
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(nextFav ? '已收藏版块「${widget.title}」' : '已取消收藏「${widget.title}」'),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      KlpbbsApi.favoriteForum(widget.fid).catchError((_) => false);
+    } catch (_) {}
   }
 
   Future<void> _loadAllForums() async {
@@ -64,9 +102,19 @@ class _ThreadListPageState extends State<ThreadListPage> {
       ),
       KlpbbsApi.getForumHeader(widget.fid),
     ]);
+    final header = results[1] as ForumHeaderInfo;
+    if (header.isFavorited && !_isFav && mounted) {
+      setState(() => _isFav = true);
+      SharedPreferences.getInstance().then((prefs) {
+        final list = (prefs.getStringList('fav_forums') ?? []).toSet();
+        if (list.add('${widget.fid}')) {
+          prefs.setStringList('fav_forums', list.toList());
+        }
+      }).catchError((_) {});
+    }
     return (
       threads: results[0] as List<ThreadSummary>,
-      header: results[1] as ForumHeaderInfo,
+      header: header,
     );
   }
 
@@ -349,6 +397,17 @@ class _ThreadListPageState extends State<ThreadListPage> {
                           },
                         ),
                         IconButton(
+                          icon: Icon(
+                            _isFav ? Icons.star_rounded : Icons.star_border_rounded,
+                            size: 22,
+                            color: _isFav ? const Color(0xFFFFB300) : null,
+                          ),
+                          tooltip: _isFav ? '已收藏版块（点击取消）' : '收藏版块',
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                          onPressed: _toggleFav,
+                        ),
+                        IconButton(
                           icon: const Icon(Icons.refresh, size: 20),
                           tooltip: '刷新',
                           padding: EdgeInsets.zero,
@@ -437,6 +496,14 @@ class _ThreadListPageState extends State<ThreadListPage> {
         appBar: AppBar(
           title: Text(widget.title),
           actions: [
+            IconButton(
+              icon: Icon(
+                _isFav ? Icons.star_rounded : Icons.star_border_rounded,
+                color: _isFav ? const Color(0xFFFFB300) : null,
+              ),
+              tooltip: _isFav ? '已收藏版块（点击取消）' : '收藏版块',
+              onPressed: _toggleFav,
+            ),
             if (_allForums.isNotEmpty)
               IconButton(
                 icon: const Icon(Icons.swap_horiz),

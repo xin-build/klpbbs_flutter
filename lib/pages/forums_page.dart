@@ -9,6 +9,7 @@ import '../models/forum.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/skeleton_list.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'thread_list_page.dart';
 
 /// 社区版块大全 / 版块导航中心
@@ -30,6 +31,7 @@ class _ForumsPageState extends State<ForumsPage> {
   @override
   void initState() {
     super.initState();
+    _loadFavs();
     _load();
   }
 
@@ -37,6 +39,46 @@ class _ForumsPageState extends State<ForumsPage> {
   void dispose() {
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadFavs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList('fav_forums') ?? [];
+      if (mounted) {
+        setState(() {
+          _favFids.clear();
+          _favFids.addAll(list.map((e) => int.tryParse(e) ?? 0).where((f) => f > 0));
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _toggleFav(Forum forum) async {
+    final isFav = _favFids.contains(forum.fid);
+    final prefs = await SharedPreferences.getInstance();
+    final list = (prefs.getStringList('fav_forums') ?? []).toSet();
+    if (isFav) {
+      _favFids.remove(forum.fid);
+      list.remove('${forum.fid}');
+    } else {
+      _favFids.add(forum.fid);
+      list.add('${forum.fid}');
+    }
+    await prefs.setStringList('fav_forums', list.toList());
+    if (mounted) {
+      setState(() {});
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(isFav ? '已取消收藏「${forum.name}」' : '已收藏版块「${forum.name}」'),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+    // 同步到 Discuz 服务端
+    KlpbbsApi.favoriteForum(forum.fid).catchError((_) => false);
   }
 
   void _load() {
@@ -127,11 +169,65 @@ class _ForumsPageState extends State<ForumsPage> {
           }
 
           final rawGroups = snapshot.data!;
-          final groups = rawGroups.isNotEmpty ? rawGroups : SeedData.forumGroups;
+          final baseGroups = rawGroups.isNotEmpty ? rawGroups : SeedData.forumGroups;
+
+          // 自动同步服务端「我关注的」版块至 _favFids 与本地缓存
+          bool hasNewFavs = false;
+          for (final g in baseGroups) {
+            if (g.gid == 0 || g.name.contains('关注') || g.name.contains('收藏')) {
+              for (final f in g.forums) {
+                if (_favFids.add(f.fid)) {
+                  hasNewFavs = true;
+                }
+              }
+            }
+          }
+          if (hasNewFavs) {
+            SharedPreferences.getInstance().then((prefs) {
+              prefs.setStringList('fav_forums', _favFids.map((e) => '$e').toList());
+            }).catchError((_) {});
+          }
+
+          final allForums = baseGroups.expand((g) => g.forums).toList();
+          final favForums = allForums.where((f) => _favFids.contains(f.fid)).toList();
+
+          final groups = <ForumGroup>[];
+          final hasFavGroup = baseGroups.any((g) => g.gid == 0 || g.name.contains('关注') || g.name.contains('收藏'));
+
+          if (hasFavGroup) {
+            for (final g in baseGroups) {
+              if (g.gid == 0 || g.name.contains('关注') || g.name.contains('收藏')) {
+                // 合并本地收藏版块与服务端已关注版块
+                final combined = <Forum>[];
+                final seenFids = <int>{};
+                for (final f in favForums) {
+                  if (seenFids.add(f.fid)) combined.add(f);
+                }
+                for (final f in g.forums) {
+                  if (seenFids.add(f.fid)) combined.add(f);
+                }
+                groups.add(ForumGroup(
+                  gid: 0,
+                  name: '我关注的${combined.isNotEmpty ? ' (${combined.length})' : ''}',
+                  forums: combined,
+                ));
+              } else {
+                groups.add(g);
+              }
+            }
+          } else {
+            groups.add(ForumGroup(
+              gid: 0,
+              name: '我关注的${favForums.isNotEmpty ? ' (${favForums.length})' : ''}',
+              forums: favForums,
+            ));
+            for (final g in baseGroups) {
+              if (g.gid != 0) groups.add(g);
+            }
+          }
 
           // 搜索模式：跨所有分区检索匹配的版块
           if (_searchQuery.isNotEmpty) {
-            final allForums = groups.expand((g) => g.forums).toList();
             final matches = allForums.where((f) {
               final q = _searchQuery.toLowerCase();
               return f.name.toLowerCase().contains(q) ||
@@ -245,9 +341,10 @@ class _ForumsPageState extends State<ForumsPage> {
                 // 3. 版块列表
                 Expanded(
                   child: selectedGroup.forums.isEmpty
-                      ? const EmptyView(
-                          icon: Icons.forum_outlined,
-                          title: '暂无版块',
+                      ? EmptyView(
+                          icon: selectedGroup.gid == 0 ? Icons.star_border : Icons.forum_outlined,
+                          title: selectedGroup.gid == 0 ? '暂无收藏版块' : '暂无版块',
+                          subtitle: selectedGroup.gid == 0 ? '点击任意版块卡片右侧的星标即可收藏' : null,
                         )
                       : ListView.separated(
                           padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
@@ -262,6 +359,13 @@ class _ForumsPageState extends State<ForumsPage> {
           );
         },
       ),
+    );
+  }
+
+  Widget _buildFallbackIcon(ColorScheme colorScheme) {
+    return Container(
+      color: colorScheme.surfaceContainerHighest,
+      child: Icon(Icons.forum_outlined, color: colorScheme.outline, size: 22),
     );
   }
 
@@ -298,42 +402,18 @@ class _ForumsPageState extends State<ForumsPage> {
             children: [
               // 版块图标
               ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: SizedBox(
-                  width: 44,
-                  height: 44,
-                  child: (forum.iconUrl != null && forum.iconUrl!.isNotEmpty)
-                      ? CachedNetworkImage(
-                          imageUrl: forum.iconUrl!,
-                          cacheManager: KlpbbsCacheManager.instance,
-                          httpHeaders: AppConfig.imageHeaders,
-                          fit: BoxFit.cover,
-                          placeholder: (_, __) => Container(
-                            color: colorScheme.surfaceContainerHighest,
-                            child: Icon(
-                              Icons.forum_outlined,
-                              color: colorScheme.outline,
-                              size: 22,
-                            ),
-                          ),
-                          errorWidget: (_, __, ___) => Container(
-                            color: colorScheme.surfaceContainerHighest,
-                            child: Icon(
-                              Icons.forum_outlined,
-                              color: colorScheme.outline,
-                              size: 22,
-                            ),
-                          ),
-                        )
-                      : Container(
-                          color: colorScheme.surfaceContainerHighest,
-                          child: Icon(
-                            Icons.forum_outlined,
-                            color: colorScheme.primary,
-                            size: 22,
-                          ),
-                        ),
-                ),
+                borderRadius: BorderRadius.circular(8),
+                child: forum.iconUrl != null && forum.iconUrl!.isNotEmpty
+                    ? CachedNetworkImage(
+                        imageUrl: forum.iconUrl!,
+                        cacheManager: KlpbbsCacheManager.instance,
+                        httpHeaders: AppConfig.imageHeaders,
+                        width: 44,
+                        height: 44,
+                        fit: BoxFit.cover,
+                        errorWidget: (_, __, ___) => _buildFallbackIcon(colorScheme),
+                      )
+                    : _buildFallbackIcon(colorScheme),
               ),
               const SizedBox(width: 12),
               // 版块名称与简介
@@ -393,20 +473,12 @@ class _ForumsPageState extends State<ForumsPage> {
               // 收藏/进入图标
               IconButton(
                 icon: Icon(
-                  isFav ? Icons.star : Icons.star_border,
+                  isFav ? Icons.star_rounded : Icons.star_border_rounded,
                   color: isFav ? const Color(0xFFFFB300) : colorScheme.outline,
-                  size: 20,
+                  size: 22,
                 ),
-                tooltip: isFav ? '已收藏' : '收藏版块',
-                onPressed: () {
-                  setState(() {
-                    if (isFav) {
-                      _favFids.remove(forum.fid);
-                    } else {
-                      _favFids.add(forum.fid);
-                    }
-                  });
-                },
+                tooltip: isFav ? '已收藏（点击取消）' : '收藏版块',
+                onPressed: () => _toggleFav(forum),
               ),
               Icon(
                 Icons.chevron_right,

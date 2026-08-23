@@ -264,13 +264,17 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
         ),
         if (RgbThemeService.instance.isUnlocked) ...[
           const SizedBox(height: 16),
-          _buildSectionHeader('🌈 RGB 动态炫彩流光主题 (Chroma)'),
+          _buildSectionHeader('🌈 RGB 动态炫彩主题 (Chroma & Rave)'),
           Card(
             child: Column(
               children: [
                 SwitchListTile(
-                  title: const Text('启用 RGB 动态流光'),
-                  subtitle: const Text('平滑色相旋转流动，赋予应用全动态电竞级色彩'),
+                  title: const Text('启用 RGB 动态炫彩'),
+                  subtitle: Text(
+                    RgbThemeService.instance.mode == RgbMode.strobe
+                        ? '⚡ 超频迪斯科：高频爆闪跳变，电竞狂暴光污染'
+                        : '🌈 流光幻彩：平滑色相流动，优雅电竞色彩',
+                  ),
                   value: RgbThemeService.instance.isEnabled,
                   onChanged: (v) {
                     RgbThemeService.instance.setEnabled(v);
@@ -280,19 +284,50 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
                 if (RgbThemeService.instance.isEnabled) ...[
                   const Divider(height: 1),
                   ListTile(
-                    title: const Text('流光变换速率'),
+                    title: const Text('炫彩模式'),
+                    subtitle: Text(RgbThemeService.instance.mode.description),
+                    trailing: SegmentedButton<RgbMode>(
+                      segments: const [
+                        ButtonSegment(
+                          value: RgbMode.flow,
+                          icon: Icon(Icons.waves_rounded, size: 16),
+                          label: Text('流光幻彩'),
+                        ),
+                        ButtonSegment(
+                          value: RgbMode.strobe,
+                          icon: Icon(Icons.flash_on_rounded, size: 16),
+                          label: Text('超频迪斯科'),
+                        ),
+                      ],
+                      selected: {RgbThemeService.instance.mode},
+                      onSelectionChanged: (s) {
+                        RgbThemeService.instance.setMode(s.first);
+                        setState(() {});
+                      },
+                      style: const ButtonStyle(
+                        visualDensity: VisualDensity.compact,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    title: const Text('变换速率 / 闪烁频率'),
                     subtitle: Text(
                       RgbThemeService.instance.speed <= 0.6
-                          ? '慢速呼吸 (0.5x)'
-                          : (RgbThemeService.instance.speed >= 1.8
-                              ? '疾速电竞 (2.0x)'
-                              : '绚丽流动 (1.0x)'),
+                          ? '舒缓模式 (0.5x)'
+                          : (RgbThemeService.instance.speed >= 2.5
+                              ? '狂暴超频 (3.0x)'
+                              : (RgbThemeService.instance.speed >= 1.8
+                                  ? '疾速电竞 (2.0x)'
+                                  : '绚丽标准 (1.0x)')),
                     ),
                     trailing: SegmentedButton<double>(
                       segments: const [
                         ButtonSegment(value: 0.5, label: Text('0.5x')),
                         ButtonSegment(value: 1.0, label: Text('1.0x')),
                         ButtonSegment(value: 2.0, label: Text('2.0x')),
+                        ButtonSegment(value: 3.0, label: Text('3.0x')),
                       ],
                       selected: {RgbThemeService.instance.speed},
                       onSelectionChanged: (s) {
@@ -305,22 +340,33 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
                       ),
                     ),
                   ),
-                  Container(
-                    height: 32,
-                    margin: const EdgeInsets.fromLTRB(16, 4, 16, 14),
-                    decoration: BoxDecoration(
-                      gradient: RgbThemeService.instance.rainbowGradient,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    alignment: Alignment.center,
-                    child: const Text(
-                      'RGB CHROMA DYNAMIC STREAMING',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.2,
-                        shadows: [Shadow(color: Colors.black54, blurRadius: 4)],
+                  RepaintBoundary(
+                    child: Container(
+                      height: 34,
+                      margin: const EdgeInsets.fromLTRB(16, 6, 16, 14),
+                      decoration: BoxDecoration(
+                        gradient: RgbThemeService.instance.rainbowGradient,
+                        borderRadius: BorderRadius.circular(8),
+                        boxShadow: [
+                          BoxShadow(
+                            color: RgbThemeService.instance.currentColor.withAlpha(80),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        RgbThemeService.instance.mode == RgbMode.strobe
+                            ? '⚡ OVERCLOCKED RAVE DISCO STROBE ⚡'
+                            : '🌈 RGB CHROMA DYNAMIC STREAMING 🌈',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.2,
+                          shadows: [Shadow(color: Colors.black87, blurRadius: 4)],
+                        ),
                       ),
                     ),
                   ),
@@ -1156,13 +1202,34 @@ class _AboutSettingsViewState extends State<_AboutSettingsView> {
     _lastTapTime = now;
 
     if (RgbThemeService.instance.isUnlocked) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('🌈 RGB 动态炫彩模式已解锁！可在「外观与个性化」中开启或调整流速'),
-          duration: const Duration(seconds: 1),
-          backgroundColor: RgbThemeService.instance.currentColor,
-        ),
-      );
+      if (_tapCount >= 5) {
+        _tapCount = 0;
+        final newMode = RgbThemeService.instance.mode == RgbMode.flow
+            ? RgbMode.strobe
+            : RgbMode.flow;
+        RgbThemeService.instance.setMode(newMode);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              newMode == RgbMode.strobe
+                  ? '⚡ 已快速切换至【超频迪斯科】狂暴爆闪模式！'
+                  : '🌈 已快速切换至【流光幻彩】平滑流动模式！',
+            ),
+            duration: const Duration(seconds: 2),
+            backgroundColor: RgbThemeService.instance.currentColor,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '🌈 当前 RGB 模式：${RgbThemeService.instance.mode.label}（连续点击 5 次可快速切换）',
+            ),
+            duration: const Duration(seconds: 1),
+            backgroundColor: RgbThemeService.instance.currentColor,
+          ),
+        );
+      }
       return;
     }
 
@@ -1180,14 +1247,14 @@ class _AboutSettingsViewState extends State<_AboutSettingsView> {
         context: context,
         builder: (ctx) => AlertDialog(
           icon: const Icon(Icons.auto_awesome, color: Colors.amber, size: 36),
-          title: const Text('🎉 恭喜解锁隐藏彩蛋！'),
+          title: const Text('🎉 恭喜解锁双重隐藏彩蛋！'),
           content: const Text(
-            '您已成功解锁【RGB 动态炫彩流光主题 (Chroma Mode)】！\n\n已自动为您开启动态色彩流动。您也可以随时在「外观与个性化」设置中开启/关闭或调节速率。',
+            '您已成功解锁【RGB 动态炫彩主题】！\n\n包含两种模式：\n• 🌈「流光幻彩」：平滑色相流动，优雅电竞光效\n• ⚡「超频迪斯科」：高频跳变爆闪，极致狂暴光污染\n\n已自动为您开启，可在「外观与个性化」中自由切换与调节速率！',
           ),
           actions: [
             FilledButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('太棒了！'),
+              child: const Text('太酷了！'),
             ),
           ],
         ),

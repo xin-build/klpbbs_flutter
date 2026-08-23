@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/dio_client.dart';
@@ -65,7 +66,17 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
         widget.uid,
         page: _page,
         tag: _selectedTag == '全部' ? null : _selectedTag,
-      );
+      ).then((threads) {
+        SharedPreferences.getInstance().then((prefs) {
+          final list = (prefs.getStringList('fav_tids') ?? []).toSet();
+          bool changed = false;
+          for (final t in threads) {
+            if (list.add('${t.tid}')) changed = true;
+          }
+          if (changed) prefs.setStringList('fav_tids', list.toList());
+        }).catchError((_) {});
+        return threads;
+      });
     } else {
       _future = KlpbbsApi.getUserThreads(widget.uid, type: _currentType, page: _page);
     }

@@ -3,9 +3,11 @@ import 'package:flutter/material.dart';
 import '../api/klpbbs_api.dart';
 import '../core/dio_client.dart';
 import '../core/main_tab_controller.dart';
+import '../pages/credit_page.dart';
 import '../pages/darkroom_page.dart';
 import '../pages/guide_page.dart';
 import '../pages/login_page.dart';
+import '../pages/magic_page.dart';
 import '../pages/notice_page.dart';
 import '../pages/profile_settings_page.dart';
 import '../pages/ranklist_page.dart';
@@ -21,6 +23,8 @@ void showGlobalNavSheet(BuildContext context) {
     (Icons.forum_outlined, Icons.forum_rounded, '版块', 1),
     (Icons.emoji_events_outlined, Icons.emoji_events_rounded, '签到', 2),
     (Icons.military_tech_outlined, Icons.military_tech, '勋章中心', 3),
+    (Icons.auto_fix_high_outlined, Icons.auto_fix_high, '道具中心', 15),
+    (Icons.account_balance_wallet_outlined, Icons.account_balance_wallet, '积分中心', 14),
     (Icons.account_circle_outlined, Icons.account_circle, '个人中心', 4),
     (
       Icons.local_fire_department_outlined,
@@ -93,6 +97,14 @@ void showGlobalNavSheet(BuildContext context) {
                   } else if (idx == 8) {
                     Navigator.of(context).push(
                       MaterialPageRoute(builder: (_) => const RanklistPage()),
+                    );
+                  } else if (idx == 14) {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const CreditPage(initialTabIndex: 0)),
+                    );
+                  } else if (idx == 15) {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const MagicPage()),
                     );
                   } else if (idx == 9) {
                     Navigator.of(context).push(

@@ -20,9 +20,12 @@ import '../widgets/skeleton_list.dart';
 import '../widgets/thread_card.dart';
 import '../widgets/tuhao_banner_widget.dart';
 import '../services/push_notification_service.dart';
+import 'credit_page.dart';
 import 'darkroom_page.dart';
 import 'guide_page.dart';
 import 'login_page.dart';
+import 'magic_page.dart';
+import 'medal_page.dart';
 import 'notice_page.dart';
 import 'pm_inbox_page.dart';
 import 'ranklist_page.dart';
@@ -137,6 +140,22 @@ class _HomePageState extends State<HomePage> {
       final groups = results[0] as List<ForumGroup>;
       final threads = results[1] as List<ThreadSummary>;
       final stats = results[2] as SiteStats;
+
+      // 自动合并服务端已关注的版块到 _favForums
+      bool hasNew = false;
+      for (final g in groups) {
+        if (g.gid == 0 || g.name.contains('关注') || g.name.contains('收藏')) {
+          for (final f in g.forums) {
+            if (_favForums.add(f.fid)) hasNew = true;
+          }
+        }
+      }
+      if (hasNew) {
+        SharedPreferences.getInstance().then((prefs) {
+          prefs.setStringList('fav_forums', _favForums.map((e) => '$e').toList());
+        }).catchError((_) {});
+      }
+
       if (groups.isEmpty && threads.isEmpty) {
         throw Exception('暂未获取到内容，请检查网络或点击重试');
       }
@@ -360,6 +379,21 @@ class _HomePageState extends State<HomePage> {
                             onTap: () => Navigator.of(ctx).pop('space'),
                           ),
                           ListTile(
+                            leading: const Icon(Icons.account_balance_wallet_outlined),
+                            title: const Text('积分中心'),
+                            onTap: () => Navigator.of(ctx).pop('credit'),
+                          ),
+                          ListTile(
+                            leading: const Icon(Icons.military_tech_outlined),
+                            title: const Text('勋章中心'),
+                            onTap: () => Navigator.of(ctx).pop('medal'),
+                          ),
+                          ListTile(
+                            leading: const Icon(Icons.auto_fix_high_outlined),
+                            title: const Text('道具中心'),
+                            onTap: () => Navigator.of(ctx).pop('magic'),
+                          ),
+                          ListTile(
                             leading: const Icon(Icons.notifications_outlined),
                             title: const Text('通知'),
                             onTap: () => Navigator.of(ctx).pop('notice'),
@@ -382,6 +416,18 @@ class _HomePageState extends State<HomePage> {
                       MaterialPageRoute(
                         builder: (_) => UserSpacePage(uid: uid),
                       ),
+                    );
+                  } else if (action == 'credit') {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const CreditPage(initialTabIndex: 0)),
+                    );
+                  } else if (action == 'medal') {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const MedalPage()),
+                    );
+                  } else if (action == 'magic') {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const MagicPage()),
                     );
                   } else if (action == 'notice') {
                     Navigator.of(context).push(

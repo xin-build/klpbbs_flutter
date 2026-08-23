@@ -8,11 +8,14 @@ import '../core/app_config.dart';
 import '../core/dio_client.dart';
 import '../core/preload_service.dart';
 import '../core/seed_data.dart';
+import '../models/credit_log.dart';
 import '../models/darkroom_entry.dart';
 import '../models/forum.dart';
 import '../models/forum_header_info.dart';
 import '../models/friend_item.dart';
 import '../models/horn_message.dart';
+import '../models/magic_item.dart';
+import '../models/medal_item.dart';
 import '../models/notice_item.dart';
 import '../models/pm_models.dart';
 import '../models/post_floor.dart';
@@ -655,6 +658,8 @@ class KlpbbsApi {
       String? stamp,
       String? stampUrl,
       String? coverUrl,
+      bool isFavorited,
+      bool isLiked,
     })
   >
   getThreadDetail(int tid, {int page = 1, bool forceRefresh = false}) async {
@@ -705,6 +710,8 @@ class KlpbbsApi {
             String? stamp,
             String? stampUrl,
             String? coverUrl,
+            bool isFavorited,
+            bool isLiked,
           })
         >(cacheKey);
     if (cached != null && cached.floors.isNotEmpty) {
@@ -751,6 +758,8 @@ class KlpbbsApi {
       String? stamp,
       String? stampUrl,
       String? coverUrl,
+      bool isFavorited,
+      bool isLiked,
     })
   >
   getThread(int tid, {int page = 1, bool forceRefresh = false}) =>
@@ -861,11 +870,15 @@ class KlpbbsApi {
     });
   }
 
-  /// 小黑屋（违规公示；mobile=no 强制 PC 模板保证表格结构）
-  static Future<List<DarkroomEntry>> getDarkroom({int page = 1}) async {
-    final html = await _get(
-      'forum.php?mod=misc&action=showdarkroom&page=$page&mobile=no',
-    );
+  /// 小黑屋（违规公示；使用移动端接口 mobile=2 及 cid 分页游标）
+  static Future<({List<DarkroomEntry> entries, int? nextCid})> getDarkroom({
+    int? cid,
+    int page = 1,
+  }) async {
+    final url = cid != null
+        ? 'forum.php?mod=misc&action=showdarkroom&cid=$cid&mobile=2'
+        : 'forum.php?mod=misc&action=showdarkroom&page=$page&mobile=2';
+    final html = await _get(url);
     return ComiisParser.parseDarkroom(html);
   }
 
@@ -904,9 +917,13 @@ class KlpbbsApi {
         lastvisit: userPc?.lastvisit.isNotEmpty == true
             ? userPc!.lastvisit
             : (userMobile?.lastvisit ?? ''),
-        signature: userMobile?.signature.isNotEmpty == true
-            ? userMobile!.signature
-            : (userPc?.signature ?? ''),
+        signature: (userPc?.signature.isNotEmpty == true &&
+                (userMobile?.signature.isEmpty == true ||
+                    userPc!.signature.length >= (userMobile?.signature.length ?? 0)))
+            ? userPc!.signature
+            : (userMobile?.signature.isNotEmpty == true
+                ? userMobile!.signature
+                : (userPc?.signature ?? '')),
         level: userMobile?.level.isNotEmpty == true
             ? userMobile!.level
             : (userPc?.level ?? ''),
@@ -2367,21 +2384,339 @@ class KlpbbsApi {
   }
 
   /// 勋章中心（home.php?mod=medal）
-  static Future<List<({int id, String name, String desc, String img})>>
-  getMedals() async {
-    final html = await _get('home.php?mod=medal&mobile=2');
-    final list = ComiisParser.parseMedals(html);
-    if (list.isNotEmpty) return list;
-    // 移动端未取到时回退 PC 端页面
+  static Future<List<MedalItem>> getMedals() async {
+    // 优先拉取 PC 端页面以获得最全的价格与条件要求（ul.mgcl li）
     final pcHtml = await _get('home.php?mod=medal&mobile=no');
-    return ComiisParser.parseMedals(pcHtml);
+    final pcList = ComiisParser.parseMedals(pcHtml);
+    if (pcList.isNotEmpty) return pcList;
+
+    // 移动端页面备选
+    final html = await _get('home.php?mod=medal&mobile=2');
+    return ComiisParser.parseMedals(html);
   }
 
-  /// 道具中心（home.php?mod=magic，需登录）
+  /// 获取当前登录用户的勋章列表（真实数据）
+  static Future<List<({int id, String name, String desc, String img})>>
+  getMyMedalsList() async {
+    try {
+      final myUid = await getMyUid();
+      if (myUid != null && myUid > 0) {
+        final space = await getUserSpace(myUid);
+        if (space != null && space.medals.isNotEmpty) {
+          return space.medals;
+        }
+      }
+      // 备选尝试从 medal order 页面解析
+      final orderHtml = await _get('home.php?mod=medal&action=order&mobile=no');
+      final list = ComiisParser.parseMedals(orderHtml);
+      return list.map((m) => (id: m.id, name: m.name, desc: m.desc, img: m.img)).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// 积分明细流水记录（home.php?mod=spacecp&ac=credit&op=log）
+  static Future<List<CreditLogEntry>> getCreditLogs({
+    int page = 1,
+    String subop = 'income',
+  }) async {
+    try {
+      final html = await _get(
+        'home.php?mod=spacecp&ac=credit&op=log&subop=$subop&page=$page&mobile=2',
+      );
+      final list = ComiisParser.parseCreditLogs(html);
+      if (list.isNotEmpty) return list;
+
+      // 移动端无数据时尝试 PC 端
+      final pcHtml = await _get(
+        'home.php?mod=spacecp&ac=credit&op=log&subop=$subop&page=$page&mobile=no',
+      );
+      return ComiisParser.parseCreditLogs(pcHtml);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// 积分基础概况（home.php?mod=spacecp&ac=credit&mobile=2，多级回退与个人空间数据互补）
+  static Future<CreditBaseInfo?> getCreditBase() async {
+    try {
+      final html = await _get('home.php?mod=spacecp&ac=credit&mobile=2');
+      var info = ComiisParser.parseCreditBase(html);
+      if (info.details.isNotEmpty) {
+        return info;
+      }
+    } catch (_) {}
+
+    try {
+      final baseHtml = await _get('home.php?mod=spacecp&ac=credit&op=base&mobile=2');
+      var info = ComiisParser.parseCreditBase(baseHtml);
+      if (info.details.isNotEmpty) {
+        return info;
+      }
+    } catch (_) {}
+
+    try {
+      final myUid = await getMyUid();
+      if (myUid != null && myUid > 0) {
+        final space = await getUserSpace(myUid);
+        if (space != null) {
+          return CreditBaseInfo(
+            totalCredits: space.credits.isNotEmpty ? space.credits : (space.creditsDetail['经验'] ?? '0'),
+            details: {
+              '铁粒': space.creditsDetail['铁粒'] ?? '0',
+              '经验': space.creditsDetail['经验'] ?? (space.credits.isNotEmpty ? space.credits : '0'),
+              '铁锭[已弃用]': space.creditsDetail['铁锭[已弃用]'] ?? space.creditsDetail['铁锭'] ?? '0',
+              '贡献': space.creditsDetail['贡献'] ?? '0',
+              '钻石': space.creditsDetail['钻石'] ?? '0',
+            },
+            ruleFormula: '总积分=经验',
+          );
+        }
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  /// 提取今日签到在积分记录中的实际奖励数额
+  static Future<({int amount, String timeText})?> getTodaySignReward() async {
+    try {
+      final logs = await getCreditLogs(page: 1);
+      final now = DateTime.now();
+      final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+      for (final log in logs) {
+        if (log.operation.contains('签到') || log.detail.contains('签到')) {
+          if (log.timeText.contains(todayStr) ||
+              log.timeText.contains('今天') ||
+              log.timeText.contains('分钟前') ||
+              log.timeText.contains('小时前') ||
+              log.timeText.contains('刚刚')) {
+            final val = log.numericValue;
+            if (val > 0) {
+              return (amount: val, timeText: log.timeText);
+            }
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// 积分转账（home.php?mod=spacecp&ac=credit&op=transfer）
+  static Future<({bool success, String message})> transferCredits({
+    required String toUser,
+    required int amount,
+    required String password,
+    String memo = '',
+  }) async {
+    try {
+      final page = await _get('home.php?mod=spacecp&ac=credit&op=transfer&mobile=no');
+      final formhash = _extractFormhash(page) ?? _cachedFormhash ?? '';
+      if (formhash.isEmpty) {
+        return (success: false, message: '请先登录后再进行转账操作');
+      }
+
+      final resHtml = await _post(
+        'home.php?mod=spacecp&ac=credit&op=transfer',
+        {
+          'formhash': formhash,
+          'to': toUser,
+          'transferamount': '$amount',
+          'transfercredits': 'extcredits2', // 铁粒
+          'password': password,
+          'transfermsgtxt': memo,
+          'transfersubmit': 'true',
+          'transfersubmit_btn': 'true',
+        },
+        headers: {
+          'Referer': '${AppConfig.baseUrl}home.php?mod=spacecp&ac=credit&op=transfer',
+        },
+      );
+
+      final msg = ComiisParser.parseMessage(resHtml);
+      if (msg != null && msg.isNotEmpty) {
+        final isSuccess = !msg.contains('失败') &&
+            !msg.contains('错误') &&
+            !msg.contains('不足') &&
+            !msg.contains('密码') &&
+            !msg.contains('不存在');
+        return (success: isSuccess, message: msg);
+      }
+
+      if (resHtml.contains('转账成功') || resHtml.contains('succeedhandle')) {
+        return (success: true, message: '转账成功！已转给 $toUser $amount 铁粒');
+      }
+
+      if (resHtml.contains('alert_error')) {
+        return (success: false, message: '转账失败，请检查对方用户名、金额或支付密码是否正确');
+      }
+
+      return (success: true, message: '转账请求已提交');
+    } catch (e) {
+      return (success: false, message: '转账异常：$e');
+    }
+  }
+
+  /// 道具商店列表与背包状态（home.php?mod=magic&action=shop）
+  static Future<({List<MagicItem> magics, MagicBagInfo bag})> getMagicShop() async {
+    try {
+      final html = await _get('home.php?mod=magic&action=shop&mobile=2');
+      final list = ComiisParser.parseMagicShop(html);
+      final bag = ComiisParser.parseMagicBagInfo(html);
+      return (magics: list, bag: bag);
+    } catch (_) {
+      final list = ComiisParser.parseMagicShop('');
+      return (magics: list, bag: const MagicBagInfo(usedCapacity: 0, totalCapacity: 500, ironCount: 0));
+    }
+  }
+
+  /// 我的道具包列表与背包状态（home.php?mod=magic&action=mybox）
+  static Future<({List<MagicItem> magics, MagicBagInfo bag})> getMyMagics() async {
+    try {
+      final html = await _get('home.php?mod=magic&action=mybox&mobile=2');
+      final list = ComiisParser.parseMyMagics(html);
+      final bag = ComiisParser.parseMagicBagInfo(html);
+      return (magics: list, bag: bag);
+    } catch (_) {
+      return (magics: <MagicItem>[], bag: const MagicBagInfo(usedCapacity: 0, totalCapacity: 500, ironCount: 0));
+    }
+  }
+
+  /// 道具流水记录（home.php?mod=magic&action=log）
+  static Future<List<MagicLogEntry>> getMagicLogs({String op = 'uselog', int page = 1}) async {
+    try {
+      final html = await _get('home.php?mod=magic&action=log&operation=$op&mobile=2${page > 1 ? '&page=$page' : ''}');
+      return ComiisParser.parseMagicLogs(html);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// 购买道具
+  static Future<({bool success, String message})> buyMagic(int magicId, {int count = 1}) async {
+    if (!DioClient.isLoggedIn) return (success: false, message: '请先登录');
+    try {
+      final formHtml = await _get('home.php?mod=magic&action=shop&operation=buy&mid=$magicId&inajax=1');
+      final formhash = _extractFormhash(formHtml);
+      if (formhash == null) return (success: false, message: '未能获取安全验证码 (formhash)');
+
+      final res = await _post('home.php?mod=magic&action=shop&operation=buy&mid=$magicId&inajax=1', {
+        'formhash': formhash,
+        'buysubmit': 'yes',
+        'magicid': '$magicId',
+        'magicnum': '$count',
+      });
+      if (res.contains('购买成功') || res.contains('成功购买') || res.contains('succeed')) {
+        return (success: true, message: '道具购买成功！');
+      }
+      final msgM = RegExp(r'<div id="messagetext"[^>]*><p>([^<]+)</p>|class="altw"[^>]*><p>([^<]+)</p>').firstMatch(res);
+      final msg = msgM?.group(1) ?? msgM?.group(2) ?? '购买请求已提交';
+      return (success: !msg.contains('抱歉') && !msg.contains('失败') && !msg.contains('不足'), message: msg);
+    } catch (e) {
+      return (success: false, message: '购买失败：$e');
+    }
+  }
+
+  /// 赠送道具
+  static Future<({bool success, String message})> giveMagic(
+    int magicId, {
+    required String username,
+    int count = 1,
+    String message = '',
+  }) async {
+    if (!DioClient.isLoggedIn) return (success: false, message: '请先登录');
+    try {
+      final formHtml = await _get('home.php?mod=magic&action=shop&operation=give&mid=$magicId&inajax=1');
+      final formhash = _extractFormhash(formHtml);
+      if (formhash == null) return (success: false, message: '未能获取安全验证码 (formhash)');
+
+      final res = await _post('home.php?mod=magic&action=shop&operation=give&mid=$magicId&inajax=1', {
+        'formhash': formhash,
+        'givesubmit': 'yes',
+        'magicid': '$magicId',
+        'magicnum': '$count',
+        'tousername': username,
+        'message': message,
+      });
+      if (res.contains('赠送成功') || res.contains('成功赠送') || res.contains('succeed')) {
+        return (success: true, message: '道具已成功赠送给 $username！');
+      }
+      final msgM = RegExp(r'<div id="messagetext"[^>]*><p>([^<]+)</p>|class="altw"[^>]*><p>([^<]+)</p>').firstMatch(res);
+      final msg = msgM?.group(1) ?? msgM?.group(2) ?? '赠送请求已提交';
+      return (success: !msg.contains('抱歉') && !msg.contains('失败') && !msg.contains('不存在'), message: msg);
+    } catch (e) {
+      return (success: false, message: '赠送失败：$e');
+    }
+  }
+
+  /// 使用道具
+  static Future<({bool success, String message})> useMagic(
+    int magicId, {
+    int? tid,
+    int? pid,
+    String? targetUsername,
+    String? newUsername,
+    int count = 1,
+  }) async {
+    if (!DioClient.isLoggedIn) return (success: false, message: '请先登录');
+    try {
+      final formHtml = await _get('home.php?mod=magic&action=mybox&operation=use&magicid=$magicId&inajax=1');
+      final formhash = _extractFormhash(formHtml);
+      if (formhash == null) return (success: false, message: '未能获取安全验证码 (formhash)');
+
+      final params = <String, String>{
+        'formhash': formhash,
+        'usesubmit': 'yes',
+        'magicid': '$magicId',
+        'magicnum': '$count',
+      };
+      if (tid != null) params['tid'] = '$tid';
+      if (pid != null) params['pid'] = '$pid';
+      if (targetUsername != null && targetUsername.isNotEmpty) params['tousername'] = targetUsername;
+      if (newUsername != null && newUsername.isNotEmpty) params['newusername'] = newUsername;
+
+      final res = await _post('home.php?mod=magic&action=mybox&operation=use&magicid=$magicId&inajax=1', params);
+      if (res.contains('使用成功') || res.contains('成功使用') || res.contains('succeed')) {
+        return (success: true, message: '道具使用成功！');
+      }
+      final msgM = RegExp(r'<div id="messagetext"[^>]*><p>([^<]+)</p>|class="altw"[^>]*><p>([^<]+)</p>').firstMatch(res);
+      final msg = msgM?.group(1) ?? msgM?.group(2) ?? '道具使用请求已提交';
+      return (success: !msg.contains('抱歉') && !msg.contains('失败') && !msg.contains('不能'), message: msg);
+    } catch (e) {
+      return (success: false, message: '使用失败：$e');
+    }
+  }
+
+  /// 回收/丢弃道具
+  static Future<({bool success, String message})> dropMagic(int magicId, {int count = 1}) async {
+    if (!DioClient.isLoggedIn) return (success: false, message: '请先登录');
+    try {
+      final formHtml = await _get('home.php?mod=magic&action=mybox&operation=drop&magicid=$magicId&inajax=1');
+      final formhash = _extractFormhash(formHtml);
+      if (formhash == null) return (success: false, message: '未能获取安全验证码 (formhash)');
+
+      final res = await _post('home.php?mod=magic&action=mybox&operation=drop&magicid=$magicId&inajax=1', {
+        'formhash': formhash,
+        'dropsubmit': 'yes',
+        'magicid': '$magicId',
+        'magicnum': '$count',
+      });
+      if (res.contains('回收成功') || res.contains('成功回收') || res.contains('succeed')) {
+        return (success: true, message: '道具已成功回收！');
+      }
+      final msgM = RegExp(r'<div id="messagetext"[^>]*><p>([^<]+)</p>|class="altw"[^>]*><p>([^<]+)</p>').firstMatch(res);
+      final msg = msgM?.group(1) ?? msgM?.group(2) ?? '回收请求已提交';
+      return (success: !msg.contains('抱歉') && !msg.contains('失败'), message: msg);
+    } catch (e) {
+      return (success: false, message: '回收失败：$e');
+    }
+  }
+
+  /// 兼容旧版道具接口
   static Future<List<({int id, String name, String img, String desc})>>
   getMagics() async {
-    final html = await _get('home.php?mod=magic&mobile=2');
-    return ComiisParser.parseMagics(html);
+    final shop = await getMagicShop();
+    return shop.magics.map((m) => (id: m.id, name: m.name, img: m.img, desc: m.desc)).toList();
   }
 
   /// 楼中楼回复（replyfloor 插件；仅本地测试环境，真实论坛只读拦截）
@@ -2410,7 +2745,7 @@ class KlpbbsApi {
   /// 使用道具（mgc_post_{pid} 菜单；仅本地测试环境，真实论坛只读拦截）
   ///
   /// 先取道具使用页 formhash，再 POST usesubmit 提交。
-  static Future<bool> useMagic({
+  static Future<bool> useMagicOnPost({
     required String mid,
     required String idtype,
     required String id,

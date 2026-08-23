@@ -10,9 +10,11 @@ import '../models/usergroup_comparison.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/inline_html_text.dart';
 import '../widgets/thread_card.dart';
+import 'credit_page.dart';
 import 'facemall_page.dart';
 import 'friend_page.dart';
 import 'login_page.dart';
+import 'magic_page.dart';
 import 'medal_page.dart';
 import 'pm_detail_page.dart';
 import 'profile_settings_page.dart';
@@ -1078,40 +1080,46 @@ class _UserSpacePageState extends State<UserSpacePage> {
         side: BorderSide(color: theme.colorScheme.outlineVariant.withAlpha(60)),
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                SizedBox(
-                  width: 80,
-                  child: Text(
-                    '个人签名',
-                    style: TextStyle(fontSize: 13.5, color: theme.colorScheme.outline),
-                  ),
-                ),
-                Expanded(
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.surfaceContainerHighest.withAlpha(50),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: InlineHtmlText(
-                      html: sigHtml,
-                      baseStyle: TextStyle(fontSize: 13.5, color: theme.colorScheme.onSurface),
-                    ),
+                Icon(Icons.edit_note_rounded, size: 16, color: theme.colorScheme.primary),
+                const SizedBox(width: 6),
+                Text(
+                  '个人签名',
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.outline,
                   ),
                 ),
               ],
             ),
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest.withAlpha(45),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: InlineHtmlText(
+                html: sigHtml,
+                baseStyle: TextStyle(
+                  fontSize: 13.5,
+                  height: 1.45,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+            ),
             if (user.gameProfile['自定义头衔'] != null && user.gameProfile['自定义头衔']!.isNotEmpty) ...[
-              Divider(height: 14, color: theme.colorScheme.outlineVariant.withAlpha(40)),
+              Divider(height: 16, color: theme.colorScheme.outlineVariant.withAlpha(40)),
               _buildInfoRow('自定义头衔', user.gameProfile['自定义头衔']!, theme),
             ],
-            Divider(height: 14, color: theme.colorScheme.outlineVariant.withAlpha(40)),
+            Divider(height: 16, color: theme.colorScheme.outlineVariant.withAlpha(40)),
             InkWell(
               onTap: () => _showQrCodeDialog(user),
               child: Row(
@@ -1194,25 +1202,63 @@ class _UserSpacePageState extends State<UserSpacePage> {
       ),
       child: Padding(
         padding: const EdgeInsets.all(12),
-        child: Table(
-          border: TableBorder.all(color: theme.colorScheme.outlineVariant.withAlpha(40), width: 0.8),
+        child: Column(
           children: [
-            TableRow(
+            Table(
+              border: TableBorder.all(color: theme.colorScheme.outlineVariant.withAlpha(40), width: 0.8),
               children: [
-                _buildAssetCell('积分', _cleanUnit(user.credits.isNotEmpty ? user.credits : user.creditsDetail['积分'], '0', ''), theme),
-                _buildAssetCell('经验', _cleanUnit(user.creditsDetail['经验'], '0', 'EP'), theme),
+                TableRow(
+                  children: [
+                    _buildAssetCell('积分', _cleanUnit(user.credits.isNotEmpty ? user.credits : user.creditsDetail['积分'], '0', ''), theme),
+                    _buildAssetCell('经验', _cleanUnit(user.creditsDetail['经验'], '0', 'EP'), theme),
+                  ],
+                ),
+                TableRow(
+                  children: [
+                    _buildAssetCell('铁粒', _cleanUnit(user.creditsDetail['铁粒'], '0', '粒'), theme),
+                    _buildAssetCell('铁锭[已弃用]', _cleanUnit(user.creditsDetail['铁锭'], '0', '块'), theme),
+                  ],
+                ),
+                TableRow(
+                  children: [
+                    _buildAssetCell('贡献', _cleanUnit(user.creditsDetail['贡献'], '0', '点'), theme),
+                    _buildAssetCell('钻石', _cleanUnit(user.creditsDetail['钻石'], '0', '个'), theme),
+                  ],
+                ),
               ],
             ),
-            TableRow(
+            const SizedBox(height: 10),
+            Row(
               children: [
-                _buildAssetCell('铁粒', _cleanUnit(user.creditsDetail['铁粒'], '0', '粒'), theme),
-                _buildAssetCell('铁锭[已弃用]', _cleanUnit(user.creditsDetail['铁锭'], '0', '块'), theme),
-              ],
-            ),
-            TableRow(
-              children: [
-                _buildAssetCell('贡献', _cleanUnit(user.creditsDetail['贡献'], '0', '点'), theme),
-                _buildAssetCell('钻石', _cleanUnit(user.creditsDetail['钻石'], '0', '个'), theme),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const CreditPage(initialTabIndex: 2)),
+                    ),
+                    icon: const Icon(Icons.receipt_long_outlined, size: 15),
+                    label: const Text('积分记录', style: TextStyle(fontSize: 12)),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const CreditPage(initialTabIndex: 1)),
+                    ),
+                    icon: const Icon(Icons.swap_horiz_rounded, size: 15),
+                    label: const Text('积分转账', style: TextStyle(fontSize: 12)),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const MagicPage()),
+                    ),
+                    icon: const Icon(Icons.auto_fix_high_outlined, size: 15),
+                    label: const Text('道具中心', style: TextStyle(fontSize: 12)),
+                  ),
+                ),
               ],
             ),
           ],

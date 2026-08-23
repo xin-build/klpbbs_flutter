@@ -2447,9 +2447,9 @@ class _PostPageState extends State<PostPage> {
                               ),
                             ),
                     ),
-                    // 底部草稿状态栏（图二 & 图三）
+                    // 底部草稿与统计状态栏
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       decoration: BoxDecoration(
                         color: theme.colorScheme.surfaceContainerHighest.withAlpha(30),
                         border: Border(
@@ -2463,51 +2463,95 @@ class _PostPageState extends State<PostPage> {
                         scrollDirection: Axis.horizontal,
                         child: Row(
                           children: [
+                            Icon(Icons.check_circle_outline, size: 14, color: theme.colorScheme.outline),
+                            const SizedBox(width: 4),
                             Text(
                               _lastSavedTimeText.isNotEmpty
-                                  ? '数据已于 $_lastSavedTimeText 自动保存'
-                                  : '数据自动保存中',
-                              style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
+                                  ? '草稿已于 $_lastSavedTimeText 自动保存'
+                                  : '草稿自动保存中...',
+                              style: TextStyle(fontSize: 11.5, color: theme.colorScheme.outline),
                             ),
-                            const Text(' | ', style: TextStyle(color: Colors.black26)),
+                            const SizedBox(width: 8),
+                            Text('•', style: TextStyle(color: theme.colorScheme.outlineVariant)),
+                            const SizedBox(width: 8),
+                            Text(
+                              '${_contentCtrl.text.length} 字符 / ${_contentCtrl.text.split('\n').length} 行',
+                              style: TextStyle(fontSize: 11.5, color: theme.colorScheme.outline, fontWeight: FontWeight.w500),
+                            ),
+                            const SizedBox(width: 8),
+                            Text('•', style: TextStyle(color: theme.colorScheme.outlineVariant)),
+                            const SizedBox(width: 8),
                             InkWell(
                               onTap: _saveDraftManual,
-                              child: Text('保存草稿',
-                                  style: TextStyle(fontSize: 11, color: theme.colorScheme.primary)),
+                              borderRadius: BorderRadius.circular(4),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                child: Text('手动保存',
+                                    style: TextStyle(fontSize: 11.5, color: theme.colorScheme.primary, fontWeight: FontWeight.bold)),
+                              ),
                             ),
-                            const Text(' | ', style: TextStyle(color: Colors.black26)),
+                            const SizedBox(width: 6),
                             InkWell(
                               onTap: () => _showDraftsModal(context),
-                              child: Text('草稿箱($_draftCount)',
-                                  style: TextStyle(fontSize: 11, color: theme.colorScheme.primary)),
+                              borderRadius: BorderRadius.circular(4),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                child: Text('草稿箱 ($_draftCount)',
+                                    style: TextStyle(fontSize: 11.5, color: theme.colorScheme.primary, fontWeight: FontWeight.bold)),
+                              ),
                             ),
-                            const Text(' | ', style: TextStyle(color: Colors.black26)),
+                            const SizedBox(width: 8),
+                            Text('•', style: TextStyle(color: theme.colorScheme.outlineVariant)),
+                            const SizedBox(width: 8),
                             InkWell(
                               onTap: () {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('当前字数统计：${_contentCtrl.text.length} 字符')),
+                                if (_contentCtrl.text.isEmpty) return;
+                                showDialog(
+                                  context: context,
+                                  builder: (ctx) => AlertDialog(
+                                    title: const Text('确认清空内容？'),
+                                    content: const Text('清空后可通过撤销 (Ctrl+Z) 恢复。'),
+                                    actions: [
+                                      TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+                                      FilledButton(
+                                        onPressed: () {
+                                          Navigator.pop(ctx);
+                                          setState(() => _contentCtrl.clear());
+                                        },
+                                        child: const Text('确认清空'),
+                                      ),
+                                    ],
+                                  ),
                                 );
                               },
-                              child: Text('字数检查',
-                                  style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
+                              borderRadius: BorderRadius.circular(4),
+                              child: const Padding(
+                                padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                child: Text('清空',
+                                    style: TextStyle(fontSize: 11.5, color: Colors.redAccent)),
+                              ),
                             ),
-                            const Text(' | ', style: TextStyle(color: Colors.black26)),
-                            InkWell(
-                              onTap: () => setState(() => _contentCtrl.clear()),
-                              child: const Text('清除内容',
-                                  style: TextStyle(fontSize: 11, color: Colors.redAccent)),
-                            ),
-                            const Text(' | ', style: TextStyle(color: Colors.black26)),
+                            const SizedBox(width: 8),
+                            Text('•', style: TextStyle(color: theme.colorScheme.outlineVariant)),
+                            const SizedBox(width: 8),
                             InkWell(
                               onTap: () => setState(() => _editorMinHeight = min(600, _editorMinHeight + 80)),
-                              child: Text('加大编辑框',
-                                  style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
+                              borderRadius: BorderRadius.circular(4),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                child: Text('加大编辑框',
+                                    style: TextStyle(fontSize: 11.5, color: theme.colorScheme.outline)),
+                              ),
                             ),
-                            const Text(' | ', style: TextStyle(color: Colors.black26)),
+                            const SizedBox(width: 4),
                             InkWell(
                               onTap: () => setState(() => _editorMinHeight = max(200, _editorMinHeight - 80)),
-                              child: Text('缩小编辑框',
-                                  style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
+                              borderRadius: BorderRadius.circular(4),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                child: Text('缩小编辑框',
+                                    style: TextStyle(fontSize: 11.5, color: theme.colorScheme.outline)),
+                              ),
                             ),
                           ],
                         ),
@@ -2567,53 +2611,56 @@ class _PostPageState extends State<PostPage> {
 
               const SizedBox(height: 16),
 
-              // 提交与发布按钮行（图二 & 图三）
+              // 提交与发布按钮行（现代 Material 3 高质感主副操作栏）
               Row(
                 children: [
                   SizedBox(
-                    height: 40,
-                    child: FilledButton(
+                    height: 44,
+                    child: FilledButton.icon(
                       style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFFE91E63), // Discuz 粉红风格提交大按钮
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                        backgroundColor: theme.colorScheme.primary,
+                        foregroundColor: theme.colorScheme.onPrimary,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                         padding: const EdgeInsets.symmetric(horizontal: 24),
+                        elevation: 1,
                       ),
                       onPressed: _loading ? null : _submit,
-                      child: _loading
+                      icon: _loading
                           ? const SizedBox(
                               width: 18,
                               height: 18,
                               child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                             )
-                          : Text(
-                              _isReply ? '参与/回复主题' : '发表帖子',
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                            ),
+                          : const Icon(Icons.send_rounded, size: 18),
+                      label: Text(
+                        _isReply ? '发表回复' : '立即发布帖子',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
                   // 独立位置的实时预览 / 返回编辑按钮
                   SizedBox(
-                    height: 40,
+                    height: 44,
                     child: OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                         side: BorderSide(
                           color: _preview ? theme.colorScheme.primary : theme.colorScheme.outlineVariant,
+                          width: _preview ? 1.5 : 1,
                         ),
-                        backgroundColor: _preview ? theme.colorScheme.primaryContainer.withAlpha(40) : null,
+                        backgroundColor: _preview ? theme.colorScheme.primaryContainer.withAlpha(50) : null,
                       ),
                       onPressed: () => setState(() => _preview = !_preview),
                       icon: Icon(
-                        _preview ? Icons.edit_outlined : Icons.visibility_outlined,
-                        size: 16,
+                        _preview ? Icons.edit_note_rounded : Icons.preview_rounded,
+                        size: 18,
                         color: _preview ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant,
                       ),
                       label: Text(
-                        _preview ? '返回编辑' : '实时预览',
+                        _preview ? '返回编辑' : '实时排版预览',
                         style: TextStyle(
-                          fontSize: 13,
+                          fontSize: 13.5,
                           fontWeight: FontWeight.w600,
                           color: _preview ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant,
                         ),

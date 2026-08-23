@@ -4,11 +4,14 @@ import 'package:html/dom.dart' as html_dom;
 import 'package:html/parser.dart' as html_parser;
 
 import '../core/app_config.dart';
+import '../models/credit_log.dart';
 import '../models/darkroom_entry.dart';
 import '../models/forum.dart';
 import '../models/forum_header_info.dart';
 import '../models/friend_item.dart';
 import '../models/horn_message.dart';
+import '../models/magic_item.dart';
+import '../models/medal_item.dart';
 import '../models/notice_item.dart';
 import '../models/pm_models.dart';
 import '../models/post_block.dart';
@@ -128,58 +131,91 @@ class ComiisParser {
     return out;
   }
 
-  /// 解析勋章中心（home.php?mod=medal 支持 PC 与移动端结构）
-  static List<({int id, String name, String desc, String img})> parseMedals(
-    String html,
-  ) {
+  /// 解析勋章中心（home.php?mod=medal 支持 PC 与移动端结构，优先解析具备完整价格与规则的 PC 结构）
+  static List<MedalItem> parseMedals(String html) {
     final doc = html_parser.parse(html);
-    final out = <({int id, String name, String desc, String img})>[];
+    final out = <MedalItem>[];
     final seenIds = <int>{};
 
-    // 1. 移动端与标准 ID 节点（p/li/div[id^="medal_"]）
-    for (final el in doc.querySelectorAll(
-      'p[id^="medal_"], li[id^="medal_"], div[id^="medal_"]',
-    )) {
-      final idAttr = el.attributes['id'] ?? '';
+    // 1. PC 端完整勋章网格与详细规则（ul.mgcl li）
+    for (final li in doc.querySelectorAll('ul.mgcl li')) {
+      final imgDiv = li.querySelector('.mg_img');
+      if (imgDiv == null) continue;
+      final idAttr = imgDiv.attributes['id'] ?? '';
       final id = int.tryParse(idAttr.replaceFirst('medal_', ''));
       if (id == null || !seenIds.add(id)) continue;
-      String name = '', desc = '', img = '';
-      final imgEl = el.querySelector('img');
-      if (imgEl != null) {
-        img =
-            _absolute(
-              imgEl.attributes['src'] ?? imgEl.attributes['data-src'],
-            ) ??
-            '';
-        name = imgEl.attributes['alt'] ?? '';
+      final imgEl = imgDiv.querySelector('img');
+      final img = _medalUrl(imgEl?.attributes['src']);
+      var name = imgEl?.attributes['alt'] ?? '';
+      if (name.isEmpty) {
+        name = li.querySelector('p.xw1')?.text.trim() ?? '';
       }
-      // 名称/描述在 onclick 弹窗 JS 字符串里（em.kmtit / em.kmtxt）
-      final a = el.querySelector('a');
-      final onclick = a?.attributes['onclick'] ?? '';
-      final titM = RegExp(r'kmtit[^>]*>([^<]+)').firstMatch(onclick);
-      if (titM != null && titM.group(1)!.trim().isNotEmpty) {
-        name = titM.group(1)!.trim();
+      final menuDiv = doc.querySelector('#medal_${id}_menu .tip_c');
+      String desc = '';
+      String req = '';
+      if (menuDiv != null) {
+        final ps = menuDiv.querySelectorAll('p');
+        if (ps.isNotEmpty) desc = ps[0].text.trim();
+        if (ps.length > 1) {
+          req = ps[1].text.replaceAll(RegExp(r'\s+'), ' ').trim();
+        }
       }
-      final txtM = RegExp(r'kmtxt[^>]*>([^<]*)').firstMatch(onclick);
-      if (txtM != null) {
-        desc = txtM.group(1)!.replaceAll('\n', ' ').trim();
-      }
-      if (name.isEmpty) name = el.text.trim();
-      out.add((id: id, name: name, desc: desc, img: img));
+      out.add(MedalItem(
+        id: id,
+        name: name.isNotEmpty ? name : '勋章 #$id',
+        desc: desc,
+        requirement: req.isNotEmpty ? req : '人工授予',
+        img: img,
+      ));
     }
 
-    // 2. PC 端表格与列表模式（ul.medal_list li, .medallist li, table.dt tr）
+    // 2. 移动端与标准 ID 节点（p/li/div[id^="medal_"]）
+    if (out.isEmpty) {
+      for (final el in doc.querySelectorAll(
+        'p[id^="medal_"], li[id^="medal_"], div[id^="medal_"]',
+      )) {
+        final idAttr = el.attributes['id'] ?? '';
+        final id = int.tryParse(idAttr.replaceFirst('medal_', ''));
+        if (id == null || !seenIds.add(id)) continue;
+        String name = '', desc = '', img = '';
+        final imgEl = el.querySelector('img');
+        if (imgEl != null) {
+          img = _medalUrl(
+            imgEl.attributes['src'] ?? imgEl.attributes['data-src'],
+          );
+          name = imgEl.attributes['alt'] ?? '';
+        }
+        final a = el.querySelector('a');
+        final onclick = a?.attributes['onclick'] ?? '';
+        final titM = RegExp(r'kmtit[^>]*>([^<]+)').firstMatch(onclick);
+        if (titM != null && titM.group(1)!.trim().isNotEmpty) {
+          name = titM.group(1)!.trim();
+        }
+        final txtM = RegExp(r'kmtxt[^>]*>([^<]*)').firstMatch(onclick);
+        if (txtM != null) {
+          desc = txtM.group(1)!.replaceAll('\n', ' ').trim();
+        }
+        if (name.isEmpty) name = el.text.trim();
+        out.add(MedalItem(
+          id: id,
+          name: name,
+          desc: desc,
+          requirement: '人工授予',
+          img: img,
+        ));
+      }
+    }
+
+    // 3. PC 端其他列表模式（ul.medal_list li, .medallist li, .bm_c li）
     if (out.isEmpty) {
       for (final el in doc.querySelectorAll(
         'ul.medal_list li, .medallist li, .bm_c li, div.medal_list li',
       )) {
         final imgEl = el.querySelector('img');
         if (imgEl == null) continue;
-        final img =
-            _absolute(
-              imgEl.attributes['src'] ?? imgEl.attributes['data-src'],
-            ) ??
-            '';
+        final img = _medalUrl(
+          imgEl.attributes['src'] ?? imgEl.attributes['data-src'],
+        );
         final name =
             imgEl.attributes['alt'] ??
             el.querySelector('h4, p.title, span.name')?.text.trim() ??
@@ -195,10 +231,11 @@ class ComiisParser {
           if (m != null) id = int.tryParse(m.group(1)!) ?? id;
         }
         if (img.isNotEmpty && seenIds.add(id)) {
-          out.add((
+          out.add(MedalItem(
             id: id,
             name: name.isNotEmpty ? name : '勋章 #$id',
             desc: desc,
+            requirement: '人工授予',
             img: img,
           ));
         }
@@ -208,29 +245,485 @@ class ComiisParser {
     return out;
   }
 
-  /// 解析道具中心（home.php?mod=magic 的 magic 条目，div[id^="magic_"]）
+  /// 解析积分变动流水记录（home.php?mod=spacecp&ac=credit&op=log 支持移动端与 PC 端）
+  static List<CreditLogEntry> parseCreditLogs(String html) {
+    final doc = html_parser.parse(html);
+    final out = <CreditLogEntry>[];
+
+    // 1. 移动端 Comiis / 自定义列表项
+    for (final el in doc.querySelectorAll(
+      '.comiis_credit_list li, .comiis_credit li, .comiis_p12 li, .comiis_box li, .b_b',
+    )) {
+      final leftEl = el.querySelector('.kmleft, .kmimg, .span_0, .span_1, div:first-child');
+      final conEl = el.querySelector('.kmcon, .km_con, .f14, .f16, .title');
+      final timeEl = el.querySelector('.kmtime, .time, .f12, .xg1, span.f12');
+
+      String creditType = '铁粒';
+      String amount = '';
+      String operation = '';
+      String detail = '';
+      String timeText = '';
+
+      if (leftEl != null) {
+        final text = leftEl.text.replaceAll('\n', ' ').trim();
+        final typeM = RegExp(r'(铁粒|金粒|绿宝石|贡献|人气|威望|金币)').firstMatch(text);
+        if (typeM != null) creditType = typeM.group(1)!;
+        final valM = RegExp(r'([+-]?\d+)').firstMatch(text);
+        if (valM != null) amount = valM.group(1)!;
+      }
+
+      if (conEl != null) {
+        final h = conEl.querySelector('h3, h4, strong, .f16, .b_ok');
+        final p = conEl.querySelector('p, .f12, .xg1, .desc');
+        operation = (h != null ? h.text : conEl.text).trim();
+        if (p != null) detail = p.text.trim();
+        if (operation.contains('\n')) {
+          final lines = operation.split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+          if (lines.isNotEmpty) operation = lines.first;
+          if (lines.length > 1 && detail.isEmpty) detail = lines.sublist(1).join(' ');
+        }
+      }
+
+      if (timeEl != null) {
+        timeText = timeEl.text.trim();
+      }
+
+      if (amount.isNotEmpty && operation.isNotEmpty) {
+        out.add(CreditLogEntry(
+          creditType: creditType,
+          amount: amount.startsWith('+') || amount.startsWith('-') ? amount : '+$amount',
+          operation: operation,
+          detail: detail,
+          timeText: timeText,
+        ));
+      }
+    }
+
+    // 2. PC / 移动端表格结构（table.dt tr, table.tfm tr, table tr）
+    if (out.isEmpty) {
+      for (final tr in doc.querySelectorAll('table.dt tr, table.tfm tr, table tr')) {
+        final tds = tr.querySelectorAll('td');
+        if (tds.length < 3) continue;
+        final rawText = tds.map((td) => td.text.trim()).toList();
+        String creditType = '铁粒';
+        String amount = '';
+        String operation = '';
+        String detail = '';
+        String timeText = '';
+
+        for (final text in rawText) {
+          final tm = RegExp(r'\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2})?').firstMatch(text);
+          if (tm != null && timeText.isEmpty) {
+            timeText = tm.group(0)!;
+            continue;
+          }
+          final cm = RegExp(r'(铁粒|金粒|绿宝石|贡献|人气)\s*([+-]?\d+)').firstMatch(text);
+          if (cm != null && amount.isEmpty) {
+            creditType = cm.group(1)!;
+            amount = cm.group(2)!;
+            continue;
+          }
+          final vm = RegExp(r'^([+-]\d+)$').firstMatch(text);
+          if (vm != null && amount.isEmpty) {
+            amount = vm.group(1)!;
+            continue;
+          }
+          if (operation.isEmpty && text.isNotEmpty) {
+            operation = text;
+          } else if (detail.isEmpty && text.isNotEmpty) {
+            detail = text;
+          }
+        }
+
+        if (amount.isNotEmpty) {
+          out.add(CreditLogEntry(
+            creditType: creditType,
+            amount: amount.startsWith('+') || amount.startsWith('-') ? amount : '+$amount',
+            operation: operation.isNotEmpty ? operation : '积分变动',
+            detail: detail,
+            timeText: timeText,
+          ));
+        }
+      }
+    }
+
+    return out;
+  }
+
+  /// 解析积分基础概况（home.php?mod=spacecp&ac=credit&op=base / &mobile=2）
+  static CreditBaseInfo parseCreditBase(String html) {
+    String totalCredits = '';
+    final details = <String, String>{};
+    String? formula;
+
+    // 1. 顶部总积分（对应图三：积分: 6994）
+    final totalM = RegExp(r'(?:总积分|积分)\s*[:：\s]*(\d+)').firstMatch(html);
+    if (totalM != null) {
+      totalCredits = totalM.group(1)!;
+    }
+
+    // 2. 细项提取（对应图三、图四：铁粒:12805 粒、经验:6994 EP、铁锭[已弃用]:0 块、贡献:0 点、钻石:0 个）
+    final matches = RegExp(
+      r'(铁粒|经验|铁锭\[已弃用\]|铁锭|贡献|钻石|人气|威望|金币|金粒)\s*[:：\s]*(\d+)\s*(?:粒|EP|块|点|个)?',
+    ).allMatches(html);
+    for (final m in matches) {
+      final name = m.group(1)!;
+      final val = m.group(2)!;
+      if (!details.containsKey(name)) {
+        details[name] = val;
+      }
+    }
+
+    // 如果未获取到总积分，但有经验，在苦力怕论坛中 总积分 = 经验
+    if (totalCredits.isEmpty && details['经验'] != null) {
+      totalCredits = details['经验']!;
+    }
+
+    // 3. 积分公式
+    if (html.contains('总积分=')) {
+      final fm = RegExp(r'总积分=[^\s<]+').firstMatch(html);
+      if (fm != null) formula = fm.group(0);
+    } else {
+      formula = '总积分=经验';
+    }
+
+    return CreditBaseInfo(
+      totalCredits: totalCredits,
+      details: details,
+      ruleFormula: formula,
+    );
+  }
+
+  /// 解析道具商店（home.php?mod=magic&action=shop 支持 PC 与移动端结构）
+  static List<MagicItem> parseMagicShop(String html) {
+    final doc = html_parser.parse(html);
+    final out = <MagicItem>[];
+    final seenNames = <String>{};
+
+    // 1. 移动端结构 (div.comiis_userlist / li / div[id^="magic_"])
+    for (final el in doc.querySelectorAll('li, div[id^="magic_"], div.comiis_p12 li')) {
+      final imgEl = el.querySelector('img[src*="magic"], img[src*="image"]');
+      if (imgEl == null) continue;
+      final src = _absolute(imgEl.attributes['src']) ?? '';
+      if (!src.contains('magic') && !src.contains('image')) continue;
+
+      final nameEl = el.querySelector('p.tit, .xw1, strong, h4') ?? el.querySelector('p');
+      final name = nameEl?.text.trim() ?? imgEl.attributes['alt'] ?? '';
+      if (name.isEmpty || !seenNames.add(name)) continue;
+
+      // 提取价格（如 铁粒 30 粒/张）
+      int price = 0;
+      final pm = RegExp(r'(\d+)\s*(?:粒/张|粒|个|铁粒)').firstMatch(el.text);
+      if (pm != null) price = int.tryParse(pm.group(1)!) ?? 0;
+
+      // 提取 ID / mid
+      int id = out.length + 1;
+      final a = el.querySelector('a[href*="mid="], a[href*="magicid="]');
+      if (a != null) {
+        final href = a.attributes['href'] ?? '';
+        final idM = RegExp(r'(?:mid|magicid)=(\d+)').firstMatch(href);
+        if (idM != null) id = int.tryParse(idM.group(1)!) ?? id;
+      }
+
+      // 描述
+      String desc = '';
+      final descEl = el.querySelector('p.txt, .xg1, .desc');
+      if (descEl != null) desc = descEl.text.trim();
+
+      out.add(MagicItem(
+        id: id,
+        name: name,
+        desc: desc,
+        price: price,
+        img: src,
+      ));
+    }
+
+    // 2. PC 端结构 (table / ul.cl li / .bm_c li)
+    if (out.isEmpty) {
+      for (final el in doc.querySelectorAll('table.dt tr, ul.tb_c li, div.bm_c li')) {
+        final imgEl = el.querySelector('img');
+        if (imgEl == null) continue;
+        final src = _absolute(imgEl.attributes['src']) ?? '';
+        final name = imgEl.attributes['alt'] ?? el.querySelector('strong, a')?.text.trim() ?? '';
+        if (name.isEmpty || !seenNames.add(name)) continue;
+
+        int price = 0;
+        final pm = RegExp(r'(\d+)\s*(?:粒|个|铁粒)').firstMatch(el.text);
+        if (pm != null) price = int.tryParse(pm.group(1)!) ?? 0;
+
+        int id = out.length + 1;
+        final a = el.querySelector('a[href*="mid="], a[href*="magicid="]');
+        if (a != null) {
+          final idM = RegExp(r'(?:mid|magicid)=(\d+)').firstMatch(a.attributes['href'] ?? '');
+          if (idM != null) id = int.tryParse(idM.group(1)!) ?? id;
+        }
+
+        out.add(MagicItem(
+          id: id,
+          name: name,
+          desc: el.text.replaceAll(RegExp(r'\s+'), ' ').trim(),
+          price: price,
+          img: src,
+        ));
+      }
+    }
+
+    // 3. 苦力怕论坛标准 6 款官方道具兜底（保证离线或弱网下 1:1 精确呈现）
+    if (out.isEmpty) {
+      return [
+        const MagicItem(
+          id: 1,
+          identifier: 'checkin',
+          name: '补签卡',
+          desc: '补签卡可以用来补签过去错过的签到日期，领取漏签奖励。',
+          price: 30,
+          unit: '粒/张',
+          img: 'https://klpbbs.com/static/image/magic/checkin.small.gif',
+        ),
+        const MagicItem(
+          id: 2,
+          identifier: 'namecard',
+          name: '改名卡',
+          desc: '改名卡可以修改您在苦力怕论坛的显示用户名。',
+          price: 100,
+          unit: '粒/张',
+          img: 'https://klpbbs.com/static/image/magic/namecard.small.gif',
+        ),
+        const MagicItem(
+          id: 3,
+          identifier: 'bump',
+          name: '提升卡',
+          desc: '提升卡可以将您指定的帖子主题提升到所在版块的最顶部。',
+          price: 10,
+          unit: '粒/张',
+          img: 'https://klpbbs.com/static/image/magic/bump.small.gif',
+        ),
+        const MagicItem(
+          id: 4,
+          identifier: 'wish',
+          name: '祈愿池',
+          desc: '向祈愿池投入铁粒进行幸运祈愿抽奖，有机会获得丰厚奖励。',
+          price: 50,
+          unit: '粒/张',
+          img: 'https://klpbbs.com/static/image/magic/wish.small.gif',
+        ),
+        const MagicItem(
+          id: 5,
+          identifier: 'anonymous',
+          name: '匿名卡',
+          desc: '在支持匿名的主题或版块中匿名发表帖子，隐藏个人身份。',
+          price: 40,
+          unit: '粒/张',
+          img: 'https://klpbbs.com/static/image/magic/anonymous.small.gif',
+        ),
+        const MagicItem(
+          id: 6,
+          identifier: 'observer',
+          name: '观察者',
+          desc: '侦测并查看指定受保护或隐藏内容，以及查看隐身在线用户。',
+          price: 99,
+          unit: '粒/张',
+          img: 'https://klpbbs.com/static/image/magic/observer.small.gif',
+        ),
+      ];
+    }
+
+    return out;
+  }
+
+  /// 解析道具包容量与当前铁粒状态
+  static MagicBagInfo parseMagicBagInfo(String html, {int? defaultIron}) {
+    int used = 0;
+    int total = 500;
+    int iron = defaultIron ?? 0;
+
+    final capM = RegExp(r'(?:我的道具包容量|道具包容量|容量)[:：\s]*(\d+)\s*/\s*(\d+)').firstMatch(html);
+    if (capM != null) {
+      used = int.tryParse(capM.group(1)!) ?? 0;
+      total = int.tryParse(capM.group(2)!) ?? 500;
+    } else {
+      final usedM = RegExp(r'(?:已用容量|当前容量)[:：\s]*(\d+)').firstMatch(html);
+      if (usedM != null) used = int.tryParse(usedM.group(1)!) ?? 0;
+    }
+
+    final ironM = RegExp(r'(?:目前有|现有|账户|拥有)?\s*铁粒\s*[:：\s]*(\d+)|铁粒\s*(\d+)\s*粒').firstMatch(html);
+    if (ironM != null) {
+      iron = int.tryParse(ironM.group(1) ?? ironM.group(2) ?? '') ?? iron;
+    }
+
+    return MagicBagInfo(
+      usedCapacity: used,
+      totalCapacity: total,
+      ironCount: iron,
+    );
+  }
+
+  /// 解析用户拥有的道具包列表（home.php?mod=magic&action=mybox）
+  static List<MagicItem> parseMyMagics(String html) {
+    final doc = html_parser.parse(html);
+    final out = <MagicItem>[];
+    final seenNames = <String>{};
+
+    // 遍历所有含有道具图片的节点容器
+    for (final imgEl in doc.querySelectorAll('img')) {
+      final src = _absolute(imgEl.attributes['src']) ?? '';
+      if (!src.contains('/magic/') && !src.contains('magic') && !src.contains('small.gif')) continue;
+
+      // 向上寻找该道具卡片的容器 (li, tr, div)
+      html_dom.Element? container = imgEl.parent;
+      for (int i = 0; i < 5; i++) {
+        if (container == null) break;
+        if (container.localName == 'li' || container.localName == 'tr' || container.id.startsWith('magic_') || container.className.contains('box')) {
+          break;
+        }
+        if (container.parent != null) {
+          container = container.parent;
+        } else {
+          break;
+        }
+      }
+      final box = container ?? imgEl.parent ?? imgEl;
+
+      // 提取道具名称
+      String name = imgEl.attributes['alt'] ?? '';
+      if (name.isEmpty) {
+        final titEl = box.querySelector('h2, h3, strong, p.tit, .xw1, a');
+        name = titEl?.text.trim() ?? '';
+      }
+      if (name.isEmpty) {
+        for (final k in ['附件增容卡', '提升卡', '改名卡', '补签卡', '祈愿池', '匿名卡', '观察者']) {
+          if (box.text.contains(k)) {
+            name = k;
+            break;
+          }
+        }
+      }
+      if (name.isEmpty || !seenNames.add(name)) continue;
+
+      // 提取数量
+      int count = 1;
+      final countM = RegExp(r'数量[:：\s]*(\d+)|拥有\s*(\d+)\s*张|(\d+)\s*张').firstMatch(box.text);
+      if (countM != null) {
+        count = int.tryParse(countM.group(1) ?? countM.group(2) ?? countM.group(3) ?? '') ?? 1;
+      }
+
+      int weight = 10;
+      final wm = RegExp(r'重量[:：\s]*(\d+)').firstMatch(box.text);
+      if (wm != null) weight = int.tryParse(wm.group(1)!) ?? 10;
+
+      int id = out.length + 1;
+      final a = box.querySelector('a[href*="magicid="], a[href*="mid="]');
+      if (a != null) {
+        final idM = RegExp(r'(?:mid|magicid)=(\d+)').firstMatch(a.attributes['href'] ?? '');
+        if (idM != null) id = int.tryParse(idM.group(1)!) ?? id;
+      }
+
+      String desc = box.querySelector('p.txt, .xg1')?.text.trim() ?? '';
+
+      // 操作权限
+      final boxText = box.text;
+      final hasUseLink = box.querySelector('a[href*="operation=use"]') != null;
+      final bool canUse = (hasUseLink || boxText.contains('使用')) && !name.contains('提升卡');
+      const bool canGive = true;
+      const bool canDrop = true;
+
+      out.add(MagicItem(
+        id: id,
+        name: name,
+        desc: desc,
+        count: count,
+        weight: weight,
+        img: src,
+        canUse: canUse,
+        canGive: canGive,
+        canDrop: canDrop,
+      ));
+    }
+
+    return out;
+  }
+
+  /// 解析道具操作记录（home.php?mod=magic&action=log）
+  static List<MagicLogEntry> parseMagicLogs(String html) {
+    final doc = html_parser.parse(html);
+    final out = <MagicLogEntry>[];
+    final seenKeys = <String>{};
+    const blacklist = {
+      '发个帖', '签到', '看资讯', '做任务', '首页', '版块', '我的', '消息', '设置', '道具名称', '无记录',
+      '使用记录', '购买记录', '赠送记录', '获赠记录', '上一页', '下一页', '返回', '道具中心', '条记录',
+    };
+
+    // 遍历所有可能的行/卡片元素
+    for (final el in doc.querySelectorAll('li, tr, .comiis_log_li, div.b_b')) {
+      final text = el.text.trim();
+      final tm = RegExp(r'\b(20\d{2}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2})?)\b').firstMatch(text);
+      if (tm == null) continue;
+      final timeStr = tm.group(1)!;
+
+      // 提取道具名称
+      String name = '';
+      final titEl = el.querySelector('h2, h3, strong, a.f_ok, a.xw1, td:first-child');
+      if (titEl != null) {
+        final t = titEl.text.trim();
+        if (t.isNotEmpty && !blacklist.contains(t) && t.length <= 15) {
+          name = t;
+        }
+      }
+      if (name.isEmpty) {
+        for (final a in el.querySelectorAll('a')) {
+          final t = a.text.trim();
+          if (t.isNotEmpty && !blacklist.contains(t) && t.length <= 15 && (t.endsWith('卡') || t.contains('池') || t.contains('者') || t.contains('签到') || t.contains('提升'))) {
+            name = t;
+            break;
+          }
+        }
+      }
+      if (name.isEmpty) {
+        for (final word in text.split(RegExp(r'\s+'))) {
+          if (word.isNotEmpty && !blacklist.contains(word) && word.length <= 15 && (word.endsWith('卡') || word.contains('池') || word.contains('者'))) {
+            name = word;
+            break;
+          }
+        }
+      }
+      if (name.isEmpty || blacklist.contains(name)) continue;
+
+      final key = '$timeStr-$name';
+      if (!seenKeys.add(key)) continue;
+
+      // 提取附加说明（如：对帖子使用该道具，点击查看帖子 / 对用户使用该道具，点击查看用户）
+      String desc = '';
+      final pEl = el.querySelector('p, .desc, .txt, .note, td:nth-child(2)');
+      if (pEl != null) {
+        desc = pEl.text.replaceAll(RegExp(r'\s+'), ' ').trim();
+      }
+      if (desc.isEmpty) {
+        final rem = text.replaceAll(name, '').replaceAll(timeStr, '').replaceAll(RegExp(r'\s+'), ' ').trim();
+        if (rem.isNotEmpty && rem.length < 80 && !blacklist.any((b) => rem.startsWith(b))) {
+          desc = rem;
+        }
+      }
+      if (desc == name || desc == timeStr) desc = '';
+
+      out.add(MagicLogEntry(
+        magicName: name,
+        action: desc.isNotEmpty ? desc : '使用该道具',
+        time: timeStr,
+        target: desc,
+        note: desc,
+      ));
+    }
+
+    return out;
+  }
+
+  /// 兼容旧版解析
   static List<({int id, String name, String img, String desc})> parseMagics(
     String html,
   ) {
-    final doc = html_parser.parse(html);
-    final out = <({int id, String name, String img, String desc})>[];
-    for (final el in doc.querySelectorAll('div[id^="magic_"]')) {
-      final idAttr = el.attributes['id'] ?? '';
-      final identifier = idAttr.replaceFirst('magic_', '');
-      if (identifier.isEmpty) continue;
-      final imgEl = el.querySelector('img');
-      final img = _absolute(imgEl?.attributes['src']) ?? '';
-      final name = imgEl?.attributes['alt'] ?? identifier;
-      // 描述从 onclick 弹窗 kmtxt 提取
-      String desc = '';
-      final a = el.querySelector('a');
-      final onclick = a?.attributes['onclick'] ?? '';
-      final km = RegExp(r'kmtxt[^>]*>([^<]*)').firstMatch(onclick);
-      if (km != null) desc = km.group(1)!.replaceAll('\n', ' ').trim();
-      out.add((id: identifier.hashCode, name: name, img: img, desc: desc));
-      if (out.length >= 30) break;
-    }
-    return out;
+    final shop = parseMagicShop(html);
+    return shop.map((m) => (id: m.id, name: m.name, img: m.img, desc: m.desc)).toList();
   }
 
   /// 解析任务中心（home.php?mod=task 的 task 条目）
@@ -423,6 +916,17 @@ class ComiisParser {
         .replaceAll(RegExp(r'\d{4}-\d{1,2}-\d{1,2}.*$'), '')
         .trim();
     return t;
+  }
+
+  /// 清理签名：仅剥离零宽字符，完整保留链接、HTML与BBCode格式
+  static String _cleanSignature(String signature) {
+    return signature
+        .replaceAll('\u200b', '')
+        .replaceAll('\u200e', '')
+        .replaceAll('\u200f', '')
+        .replaceAll('\ufeff', '')
+        .replaceAll('\u00a0', ' ')
+        .trim();
   }
 
   /// 清理作者昵称：过滤「阅读」、「查看」、「楼主」、「匿名」、「论坛帖子」等系统统计字段，保留如「30303」等纯数字或字母数字合法用户名
@@ -2333,6 +2837,14 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     // 5. 本版积分规则提取
     final creditRules = parseCreditRules(html);
 
+    // 6. 是否已收藏/关注本版（Discuz 网页版状态类识别）
+    final isFavorited = doc.querySelector(
+          '#a_favorite.on, #a_favorite.cur, #a_favorite.fav_on, #comiis_favorite_a.on, a[href*="ac=favorite"][class*="on"], a[href*="ac=favorite"][class*="cur"], a[href*="ac=favorite"][class*="fav_on"], a[href*="op=delete"][href*="favorite"], a[href*="delfav"], a.fav_on, a.k_fav.on',
+        ) !=
+        null ||
+        html.contains('您已收藏过本版') ||
+        html.contains('取消收藏本版');
+
     return ForumHeaderInfo(
       fid: fid,
       name: name,
@@ -2344,6 +2856,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       moderators: moderators,
       rulesHtml: rulesHtml,
       creditRules: creditRules,
+      isFavorited: isFavorited,
     );
   }
 
@@ -2459,6 +2972,8 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     String? stamp,
     String? stampUrl,
     String? coverUrl,
+    bool isFavorited,
+    bool isLiked,
   })
   parseThreadDetail(String html) {
     final doc = html_parser.parse(html);
@@ -3320,6 +3835,24 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         ? floors.first.images.first
         : null;
 
+    // 收藏与点赞状态（根据 Discuz 与 Comiis 真实 DOM/文本类识别）
+    final isFavorited = doc.querySelector(
+          '#k_favorite.on, #k_favorite.cur, #k_favorite.fav_on, #comiis_favorite_a.on, a[href*="ac=favorite"][class*="on"], a[href*="ac=favorite"][class*="cur"], a[href*="ac=favorite"][class*="fav_on"], a[href*="op=delete"][href*="favorite"], a[href*="delfav"], a.fav_on, a.k_fav.on',
+        ) !=
+        null ||
+        html.contains('您已收藏过本主题') ||
+        html.contains('取消收藏');
+
+    final isLiked = (floors.isNotEmpty && floors.first.isLiked) ||
+        doc.querySelector(
+          '#recommendv_add.on, #recommend_add.on, .reply_liked, .supported, .comiis_yizan, a.voted, a.on, a.cur, .km_recommend_on, a[class*="voted"], a[class*="liked"], a[id^="recommend"][class*="on"]',
+        ) !=
+        null ||
+        html.contains('您已给该楼层点过赞了') ||
+        html.contains('您已评价过本主题') ||
+        html.contains('您已赞过') ||
+        html.contains('您已支持过');
+
     // 发布日期（首楼时间）与最近回复日期（末楼时间）
     final publishDate = floors.isNotEmpty ? floors.first.timeText : '';
     final lastReplyDate = floors.isNotEmpty ? floors.last.timeText : '';
@@ -3343,6 +3876,8 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       stamp: stamp,
       stampUrl: stampUrl,
       coverUrl: coverUrl,
+      isFavorited: isFavorited,
+      isLiked: isLiked,
     );
   }
 
@@ -3534,33 +4069,53 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
   // ---------------------------------------------------------------------
   // 小黑屋（违规公示）
   // ---------------------------------------------------------------------
-  static List<DarkroomEntry> parseDarkroom(String html) {
+  static ({List<DarkroomEntry> entries, int? nextCid}) parseDarkroom(String html) {
     final doc = html_parser.parse(html);
     final result = <DarkroomEntry>[];
 
-    for (final tr in doc.querySelectorAll('tr[id^="darkroomuid_"]')) {
-      final idAttr = tr.attributes['id'] ?? '';
-      final uid = int.tryParse(idAttr.replaceFirst('darkroomuid_', '')) ?? 0;
+    // 1. 解析移动端与 PC 端表格
+    for (final tr in doc.querySelectorAll('table tr, tr[id^="darkroomuid_"]')) {
       final tds = tr.querySelectorAll('td');
-      if (tds.length < 5) continue;
+      if (tds.length < 3) continue;
+
+      final idAttr = tr.attributes['id'] ?? '';
+      int uid = int.tryParse(idAttr.replaceFirst('darkroomuid_', '')) ?? 0;
 
       String username = '';
       final a = tds[0].querySelector('a');
       if (a != null) {
         username = a.text.trim();
+        final href = a.attributes['href'] ?? '';
+        final m = RegExp(r'uid[-=](\d+)').firstMatch(href);
+        if (m != null && uid == 0) {
+          uid = int.tryParse(m.group(1)!) ?? 0;
+        }
       } else {
         username = tds[0].text.trim();
       }
+
+      if (username.isEmpty || username == '用户名') continue;
+
       final action = tds[1].text.trim();
-      final expiryRaw = tds[2].text.trim();
-      final expiry = expiryRaw.isNotEmpty ? expiryRaw : null;
-      // 违规时间：优先 span title（完整时间），否则取 td 文本
-      String dateline = tds[3].text.trim();
-      final span = tds[3].querySelector('span');
-      if (span != null && span.attributes['title'] != null) {
-        dateline = span.attributes['title']!;
+      String? expiry;
+      String dateline = '';
+      String reason = '';
+
+      if (tds.length >= 5) {
+        // PC 5 列布局
+        final expiryRaw = tds[2].text.trim();
+        expiry = expiryRaw.isNotEmpty ? expiryRaw : null;
+        dateline = tds[3].text.trim();
+        final span = tds[3].querySelector('span');
+        if (span != null && span.attributes['title'] != null) {
+          dateline = span.attributes['title']!;
+        }
+        reason = tds[4].text.trim();
+      } else {
+        // 移动端 3 列布局 (用户名, 操作行为, 操作理由)
+        reason = tds[2].text.trim();
       }
-      final reason = tds[4].text.trim();
+
       result.add(
         DarkroomEntry(
           uid: uid,
@@ -3572,7 +4127,22 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         ),
       );
     }
-    return result;
+
+    // 2. 提取下一页 CID 游标（移动端 pagination: href="...cid=42518..."）
+    int? nextCid;
+    for (final a in doc.querySelectorAll('a')) {
+      final text = a.text.trim();
+      final href = a.attributes['href'] ?? '';
+      if (text.contains('下一页') || href.contains('action=showdarkroom')) {
+        final m = RegExp(r'cid=(\d+)').firstMatch(href);
+        if (m != null) {
+          nextCid = int.tryParse(m.group(1)!);
+          break;
+        }
+      }
+    }
+
+    return (entries: result, nextCid: nextCid);
   }
 
   // ---------------------------------------------------------------------
@@ -3648,15 +4218,21 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       r'最后访问\s*[:：]?\s*(\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?)',
     ).firstMatch(text);
     if (lm != null) lastvisit = lm.group(1)!;
-    // 签名：<li><a><div class="profile_face">内容</div><span>个人签名</span></a></li>
-    for (final li in doc.querySelectorAll('li')) {
-      final span = li.querySelector('span');
-      if (span != null && span.text.trim() == '个人签名') {
-        final div = li.querySelector('.profile_face');
-        if (div != null) {
-          signature = (div.innerHtml.isNotEmpty ? div.innerHtml : div.text)
-              .replaceAll(RegExp(r'\s+'), ' ')
-              .trim();
+    // 签名提取：支持手机版与 PC 版结构
+    // 手机版：<li><a><div class="profile_face">内容</div><span>个人签名</span></a></li>
+    // PC版：.pf_l li: <li><em class="xg1">个人签名</em><table><tr><td><div align="center">内容</div></td></tr></table></li>
+    for (final li in doc.querySelectorAll('.pf_l li, ul.cl li, #psts li, .pbm li, li')) {
+      final span = li.querySelector('span, em, th, span.dt, span.kmtit');
+      if (span != null && span.text.trim().replaceAll(' ', '') == '个人签名') {
+        final contentEl = li.querySelector('table td div, table td, .profile_face, div[align="center"]') ??
+            li.querySelector('table') ??
+            li.querySelector('div');
+        if (contentEl != null) {
+          signature = (contentEl.innerHtml.isNotEmpty ? contentEl.innerHtml : contentEl.text).trim();
+        } else {
+          final clone = li.clone(true);
+          clone.querySelector('em, th, span.dt, span.kmtit, span')?.remove();
+          signature = (clone.innerHtml.isNotEmpty ? clone.innerHtml : clone.text).trim();
         }
         break;
       }
@@ -3857,7 +4433,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       credits: credits,
       regdate: regdate,
       lastvisit: lastvisit,
-      signature: _cleanTitle(signature),
+      signature: _cleanSignature(signature),
       level: _cleanTitle(level),
       levelName: _cleanTitle(levelName),
       medals: medals,

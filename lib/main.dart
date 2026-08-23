@@ -11,11 +11,13 @@ import 'core/app_config.dart';
 import 'core/dio_client.dart';
 import 'core/main_tab_controller.dart';
 import 'core/write_confirm.dart';
+import 'pages/credit_page.dart';
 import 'pages/darkroom_page.dart';
 import 'pages/forums_page.dart';
 import 'pages/guide_page.dart';
 import 'pages/home_page.dart';
 import 'pages/login_page.dart';
+import 'pages/magic_page.dart';
 import 'pages/medal_page.dart';
 import 'pages/post_page.dart';
 import 'pages/profile_settings_page.dart';
@@ -82,234 +84,86 @@ class KlpbbsApp extends StatelessWidget {
             final density = AppConfig.density.toVisualDensity;
             final isOled = AppConfig.isOledDark;
 
-            // 浅色主题（高对比度顶栏与清晰卡片轮廓，支持 Android 莫奈取色）
-            final lightColorScheme = useDynamic
-                ? lightDynamic
-                : ColorScheme.fromSeed(
-                    seedColor: seed,
-                    brightness: Brightness.light,
-                  );
+            final isRgb = RgbThemeService.instance.isEnabled;
+            final ColorScheme lightColorScheme;
+            final ColorScheme darkColorScheme;
+            final int themeCacheKey;
 
-            final lightTheme = ThemeData(
-              useMaterial3: true,
-              colorScheme: lightColorScheme,
-              fontFamilyFallback: const [
-                'PingFang SC',
-                'Microsoft YaHei',
-                'Noto Color Emoji',
-                'Apple Color Emoji',
-                'Segoe UI Emoji',
-              ],
-              visualDensity: density,
-              scaffoldBackgroundColor: const Color(0xFFF6F8F7),
-              appBarTheme: AppBarTheme(
-                elevation: 1,
-                centerTitle: false,
-                scrolledUnderElevation: 2,
-                backgroundColor: useDynamic ? lightColorScheme.primary : seed,
-                foregroundColor: Colors.white,
-                iconTheme: const IconThemeData(color: Colors.white),
-                actionsIconTheme: const IconThemeData(color: Colors.white),
-                titleTextStyle: const TextStyle(
-                  fontSize: 17.5,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
-              ),
-              navigationBarTheme: const NavigationBarThemeData(
-                surfaceTintColor: Colors.transparent,
-              ),
-              cardTheme: CardThemeData(
-                clipBehavior: Clip.antiAlias,
-                elevation: 0.5,
-                color: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  side: BorderSide(
-                    color: lightColorScheme.outlineVariant.withAlpha(50),
-                    width: 0.8,
-                  ),
-                ),
-              ),
-              dividerTheme: DividerThemeData(
-                color: lightColorScheme.outlineVariant.withAlpha(35),
-                thickness: 0.6,
-              ),
-              pageTransitionsTheme: PageTransitionsTheme(
-                builders: <TargetPlatform, PageTransitionsBuilder>{
-                  TargetPlatform.android: ZoomPageTransitionsBuilder(),
-                  TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
-                  TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
-                  TargetPlatform.windows: FadeUpwardsPageTransitionsBuilder(),
-                  TargetPlatform.linux: FadeUpwardsPageTransitionsBuilder(),
-                },
-              ),
-              snackBarTheme: SnackBarThemeData(
-                behavior: SnackBarBehavior.floating,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                backgroundColor: lightColorScheme.secondaryContainer,
-                contentTextStyle: TextStyle(
-                  color: lightColorScheme.onSecondaryContainer,
-                ),
-              ),
-            );
-
-            // 暗色主题（支持 Android 莫奈取色与 OLED 纯黑）
-            final baseDarkColorScheme = (useDynamic && darkDynamic != null)
-                ? darkDynamic
-                : ColorScheme.fromSeed(
+            if (isRgb) {
+              themeCacheKey = RgbThemeService.instance.currentHueIndex;
+              lightColorScheme = RgbThemeService.instance.getLightColorScheme();
+              darkColorScheme = RgbThemeService.instance.getDarkColorScheme(isOled: isOled);
+            } else if (useDynamic) {
+              themeCacheKey = 0x10000000 | (lightDynamic.primary.toARGB32() & 0x00FFFFFF);
+              lightColorScheme = lightDynamic;
+              final baseDark = darkDynamic ??
+                  ColorScheme.fromSeed(
                     seedColor: seed,
                     brightness: Brightness.dark,
                   );
+              darkColorScheme = isOled
+                  ? baseDark.copyWith(
+                      surface: Colors.black,
+                      surfaceContainerLowest: Colors.black,
+                      surfaceContainerLow: const Color(0xFF0C0E0D),
+                      surfaceContainer: const Color(0xFF141715),
+                      surfaceContainerHigh: const Color(0xFF1C201E),
+                      surfaceContainerHighest: const Color(0xFF242927),
+                      outlineVariant: const Color(0xFF323A35),
+                    )
+                  : baseDark.copyWith(
+                      surface: const Color(0xFF151917),
+                      surfaceContainerLowest: const Color(0xFF101312),
+                      surfaceContainerLow: const Color(0xFF171B19),
+                      surfaceContainer: const Color(0xFF1E2320),
+                      surfaceContainerHigh: const Color(0xFF252B28),
+                      surfaceContainerHighest: const Color(0xFF2D3430),
+                      outlineVariant: const Color(0xFF3A443E),
+                    );
+            } else {
+              themeCacheKey = seed.toARGB32();
+              lightColorScheme = ColorScheme.fromSeed(
+                seedColor: seed,
+                brightness: Brightness.light,
+              );
+              final baseDark = ColorScheme.fromSeed(
+                seedColor: seed,
+                brightness: Brightness.dark,
+              );
+              darkColorScheme = isOled
+                  ? baseDark.copyWith(
+                      surface: Colors.black,
+                      surfaceContainerLowest: Colors.black,
+                      surfaceContainerLow: const Color(0xFF0C0E0D),
+                      surfaceContainer: const Color(0xFF141715),
+                      surfaceContainerHigh: const Color(0xFF1C201E),
+                      surfaceContainerHighest: const Color(0xFF242927),
+                      outlineVariant: const Color(0xFF323A35),
+                    )
+                  : baseDark.copyWith(
+                      surface: const Color(0xFF151917),
+                      surfaceContainerLowest: const Color(0xFF101312),
+                      surfaceContainerLow: const Color(0xFF171B19),
+                      surfaceContainer: const Color(0xFF1E2320),
+                      surfaceContainerHigh: const Color(0xFF252B28),
+                      surfaceContainerHighest: const Color(0xFF2D3430),
+                      outlineVariant: const Color(0xFF3A443E),
+                    );
+            }
 
-            final darkColorScheme = isOled
-                ? baseDarkColorScheme.copyWith(
-                    surface: Colors.black,
-                    surfaceContainerLowest: Colors.black,
-                    surfaceContainerLow: const Color(0xFF0C0E0D),
-                    surfaceContainer: const Color(0xFF141715),
-                    surfaceContainerHigh: const Color(0xFF1C201E),
-                    surfaceContainerHighest: const Color(0xFF242927),
-                    outlineVariant: const Color(0xFF323A35),
-                  )
-                : baseDarkColorScheme.copyWith(
-                    surface: const Color(0xFF151917),
-                    surfaceContainerLowest: const Color(0xFF101312),
-                    surfaceContainerLow: const Color(0xFF171B19),
-                    surfaceContainer: const Color(0xFF1E2320),
-                    surfaceContainerHigh: const Color(0xFF252B28),
-                    surfaceContainerHighest: const Color(0xFF2D3430),
-                    outlineVariant: const Color(0xFF3A443E),
-                  );
+            final lightTheme = _AppThemeDataCache.getLight(
+              key: themeCacheKey,
+              colorScheme: lightColorScheme,
+              seed: seed,
+              useDynamic: useDynamic,
+              density: density,
+            );
 
-            final darkTheme = ThemeData(
-              useMaterial3: true,
-              brightness: Brightness.dark,
-              fontFamilyFallback: const [
-                'PingFang SC',
-                'Microsoft YaHei',
-                'Noto Color Emoji',
-                'Apple Color Emoji',
-                'Segoe UI Emoji',
-              ],
+            final darkTheme = _AppThemeDataCache.getDark(
+              key: themeCacheKey,
               colorScheme: darkColorScheme,
-              scaffoldBackgroundColor: isOled
-                  ? Colors.black
-                  : const Color(0xFF111413),
-              visualDensity: density,
-              appBarTheme: AppBarTheme(
-                elevation: 0,
-                centerTitle: false,
-                scrolledUnderElevation: 1.5,
-                backgroundColor: isOled ? Colors.black : const Color(0xFF171B19),
-                foregroundColor: Colors.white,
-                iconTheme: const IconThemeData(color: Colors.white),
-                actionsIconTheme: const IconThemeData(color: Colors.white),
-                titleTextStyle: const TextStyle(
-                  fontSize: 17.5,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                  letterSpacing: 0.15,
-                ),
-              ),
-              navigationBarTheme: NavigationBarThemeData(
-                backgroundColor: isOled
-                    ? Colors.black
-                    : const Color(0xFF171B19),
-                surfaceTintColor: Colors.transparent,
-                indicatorColor: darkColorScheme.primary.withAlpha(50),
-              ),
-              cardTheme: CardThemeData(
-                clipBehavior: Clip.antiAlias,
-                elevation: 0,
-                color: isOled
-                    ? const Color(0xFF111312)
-                    : const Color(0xFF1B201D),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  side: BorderSide(
-                    color: darkColorScheme.outlineVariant.withAlpha(70),
-                    width: 0.8,
-                  ),
-                ),
-              ),
-              dialogTheme: DialogThemeData(
-                backgroundColor: isOled ? const Color(0xFF141615) : const Color(0xFF1F2522),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                elevation: 6,
-              ),
-              bottomSheetTheme: BottomSheetThemeData(
-                backgroundColor: isOled ? const Color(0xFF141615) : const Color(0xFF1F2522),
-                modalBackgroundColor: isOled ? const Color(0xFF141615) : const Color(0xFF1F2522),
-                shape: const RoundedRectangleBorder(
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
-                ),
-              ),
-              popupMenuTheme: PopupMenuThemeData(
-                color: isOled ? const Color(0xFF181A19) : const Color(0xFF242A27),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  side: BorderSide(color: darkColorScheme.outlineVariant.withAlpha(60), width: 0.6),
-                ),
-                elevation: 4,
-              ),
-              inputDecorationTheme: InputDecorationTheme(
-                filled: true,
-                fillColor: isOled ? const Color(0xFF121413) : const Color(0xFF1A1F1D),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(color: darkColorScheme.outlineVariant.withAlpha(70)),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(color: darkColorScheme.outlineVariant.withAlpha(70)),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(color: darkColorScheme.primary, width: 1.6),
-                ),
-              ),
-              chipTheme: ChipThemeData(
-                backgroundColor: isOled ? const Color(0xFF161817) : const Color(0xFF222825),
-                side: BorderSide(color: darkColorScheme.outlineVariant.withAlpha(50), width: 0.6),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-              listTileTheme: const ListTileThemeData(
-                contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                dense: true,
-              ),
-              textSelectionTheme: TextSelectionThemeData(
-                cursorColor: darkColorScheme.primary,
-                selectionColor: darkColorScheme.primary.withAlpha(70),
-                selectionHandleColor: darkColorScheme.primary,
-              ),
-              snackBarTheme: SnackBarThemeData(
-                behavior: SnackBarBehavior.floating,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                backgroundColor: isOled ? const Color(0xFF222624) : const Color(0xFF262E2A),
-                contentTextStyle: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 13.5,
-                ),
-              ),
-              dividerTheme: DividerThemeData(
-                color: darkColorScheme.outlineVariant.withAlpha(40),
-                thickness: 0.6,
-              ),
-              pageTransitionsTheme: PageTransitionsTheme(
-                builders: <TargetPlatform, PageTransitionsBuilder>{
-                  TargetPlatform.android: ZoomPageTransitionsBuilder(),
-                  TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
-                  TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
-                  TargetPlatform.windows: FadeUpwardsPageTransitionsBuilder(),
-                  TargetPlatform.linux: FadeUpwardsPageTransitionsBuilder(),
-                },
-              ),
+              isOled: isOled,
+              density: density,
             );
 
             return MaterialApp(
@@ -320,6 +174,7 @@ class KlpbbsApp extends StatelessWidget {
               theme: lightTheme,
               darkTheme: darkTheme,
               themeMode: AppConfig.themeMode,
+              themeAnimationDuration: isRgb ? Duration.zero : kThemeAnimationDuration,
               builder: (context, child) {
                 final theme = Theme.of(context);
                 final globalShortcuts = <ShortcutActivator, VoidCallback>{
@@ -386,6 +241,254 @@ class KlpbbsApp extends StatelessWidget {
           },
         );
       },
+    );
+  }
+}
+
+/// 针对全局动态主题与 RGB 炫彩流光的内存级高性能 ThemeData 缓存池
+class _AppThemeDataCache {
+  static final Map<int, ThemeData> _lightCache = {};
+  static final Map<int, ThemeData> _darkCache = {};
+  static VisualDensity? _lastDensity;
+  static bool? _lastIsOled;
+
+  static ThemeData getLight({
+    required int key,
+    required ColorScheme colorScheme,
+    required Color seed,
+    required bool useDynamic,
+    required VisualDensity density,
+  }) {
+    if (_lastDensity != density) {
+      _lastDensity = density;
+      _lightCache.clear();
+      _darkCache.clear();
+    }
+    return _lightCache[key] ??= _buildLightTheme(
+      colorScheme: colorScheme,
+      seed: seed,
+      useDynamic: useDynamic,
+      density: density,
+    );
+  }
+
+  static ThemeData getDark({
+    required int key,
+    required ColorScheme colorScheme,
+    required bool isOled,
+    required VisualDensity density,
+  }) {
+    if (_lastIsOled != isOled || _lastDensity != density) {
+      _lastIsOled = isOled;
+      _lastDensity = density;
+      _lightCache.clear();
+      _darkCache.clear();
+    }
+    return _darkCache[key] ??= _buildDarkTheme(
+      colorScheme: colorScheme,
+      isOled: isOled,
+      density: density,
+    );
+  }
+
+  static ThemeData _buildLightTheme({
+    required ColorScheme colorScheme,
+    required Color seed,
+    required bool useDynamic,
+    required VisualDensity density,
+  }) {
+    return ThemeData(
+      useMaterial3: true,
+      colorScheme: colorScheme,
+      fontFamilyFallback: const [
+        'PingFang SC',
+        'Microsoft YaHei',
+        'Noto Color Emoji',
+        'Apple Color Emoji',
+        'Segoe UI Emoji',
+      ],
+      visualDensity: density,
+      scaffoldBackgroundColor: const Color(0xFFF6F8F7),
+      appBarTheme: AppBarTheme(
+        elevation: 1,
+        centerTitle: false,
+        scrolledUnderElevation: 2,
+        backgroundColor: useDynamic ? colorScheme.primary : seed,
+        foregroundColor: Colors.white,
+        iconTheme: const IconThemeData(color: Colors.white),
+        actionsIconTheme: const IconThemeData(color: Colors.white),
+        titleTextStyle: const TextStyle(
+          fontSize: 17.5,
+          fontWeight: FontWeight.bold,
+          color: Colors.white,
+        ),
+      ),
+      navigationBarTheme: const NavigationBarThemeData(
+        surfaceTintColor: Colors.transparent,
+      ),
+      cardTheme: CardThemeData(
+        clipBehavior: Clip.antiAlias,
+        elevation: 0.5,
+        color: Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: BorderSide(
+            color: colorScheme.outlineVariant.withAlpha(50),
+            width: 0.8,
+          ),
+        ),
+      ),
+      dividerTheme: DividerThemeData(
+        color: colorScheme.outlineVariant.withAlpha(35),
+        thickness: 0.6,
+      ),
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: <TargetPlatform, PageTransitionsBuilder>{
+          TargetPlatform.android: ZoomPageTransitionsBuilder(),
+          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.windows: FadeUpwardsPageTransitionsBuilder(),
+          TargetPlatform.linux: FadeUpwardsPageTransitionsBuilder(),
+        },
+      ),
+      snackBarTheme: SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+        ),
+        backgroundColor: colorScheme.secondaryContainer,
+        contentTextStyle: TextStyle(
+          color: colorScheme.onSecondaryContainer,
+        ),
+      ),
+    );
+  }
+
+  static ThemeData _buildDarkTheme({
+    required ColorScheme colorScheme,
+    required bool isOled,
+    required VisualDensity density,
+  }) {
+    return ThemeData(
+      useMaterial3: true,
+      brightness: Brightness.dark,
+      fontFamilyFallback: const [
+        'PingFang SC',
+        'Microsoft YaHei',
+        'Noto Color Emoji',
+        'Apple Color Emoji',
+        'Segoe UI Emoji',
+      ],
+      colorScheme: colorScheme,
+      scaffoldBackgroundColor: isOled ? Colors.black : const Color(0xFF111413),
+      visualDensity: density,
+      appBarTheme: AppBarTheme(
+        elevation: 0,
+        centerTitle: false,
+        scrolledUnderElevation: 1.5,
+        backgroundColor: isOled ? Colors.black : const Color(0xFF171B19),
+        foregroundColor: Colors.white,
+        iconTheme: const IconThemeData(color: Colors.white),
+        actionsIconTheme: const IconThemeData(color: Colors.white),
+        titleTextStyle: const TextStyle(
+          fontSize: 17.5,
+          fontWeight: FontWeight.bold,
+          color: Colors.white,
+          letterSpacing: 0.15,
+        ),
+      ),
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: isOled ? Colors.black : const Color(0xFF171B19),
+        surfaceTintColor: Colors.transparent,
+        indicatorColor: colorScheme.primary.withAlpha(50),
+      ),
+      cardTheme: CardThemeData(
+        clipBehavior: Clip.antiAlias,
+        elevation: 0,
+        color: isOled ? const Color(0xFF111312) : const Color(0xFF1B201D),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: BorderSide(
+            color: colorScheme.outlineVariant.withAlpha(70),
+            width: 0.8,
+          ),
+        ),
+      ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: isOled ? const Color(0xFF141615) : const Color(0xFF1F2522),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        elevation: 6,
+      ),
+      bottomSheetTheme: BottomSheetThemeData(
+        backgroundColor: isOled ? const Color(0xFF141615) : const Color(0xFF1F2522),
+        modalBackgroundColor: isOled ? const Color(0xFF141615) : const Color(0xFF1F2522),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+        ),
+      ),
+      popupMenuTheme: PopupMenuThemeData(
+        color: isOled ? const Color(0xFF181A19) : const Color(0xFF242A27),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: colorScheme.outlineVariant.withAlpha(60), width: 0.6),
+        ),
+        elevation: 4,
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: isOled ? const Color(0xFF121413) : const Color(0xFF1A1F1D),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: BorderSide(color: colorScheme.outlineVariant.withAlpha(70)),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: BorderSide(color: colorScheme.outlineVariant.withAlpha(70)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: BorderSide(color: colorScheme.primary, width: 1.6),
+        ),
+      ),
+      chipTheme: ChipThemeData(
+        backgroundColor: isOled ? const Color(0xFF161817) : const Color(0xFF222825),
+        side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50), width: 0.6),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+      listTileTheme: const ListTileThemeData(
+        contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+        dense: true,
+      ),
+      textSelectionTheme: TextSelectionThemeData(
+        cursorColor: colorScheme.primary,
+        selectionColor: colorScheme.primary.withAlpha(70),
+        selectionHandleColor: colorScheme.primary,
+      ),
+      snackBarTheme: SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        backgroundColor: isOled ? const Color(0xFF222624) : const Color(0xFF262E2A),
+        contentTextStyle: const TextStyle(
+          color: Colors.white,
+          fontSize: 13.5,
+        ),
+      ),
+      dividerTheme: DividerThemeData(
+        color: colorScheme.outlineVariant.withAlpha(40),
+        thickness: 0.6,
+      ),
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: <TargetPlatform, PageTransitionsBuilder>{
+          TargetPlatform.android: ZoomPageTransitionsBuilder(),
+          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.windows: FadeUpwardsPageTransitionsBuilder(),
+          TargetPlatform.linux: FadeUpwardsPageTransitionsBuilder(),
+        },
+      ),
     );
   }
 }
@@ -468,6 +571,26 @@ class _MainShellState extends State<_MainShell> {
         label: '个人中心',
       ),
       NavItem(
+        icon: Icons.auto_fix_high_outlined,
+        selectedIcon: Icons.auto_fix_high,
+        label: '道具',
+        onTap: () {
+          Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => const MagicPage()));
+        },
+      ),
+      NavItem(
+        icon: Icons.account_balance_wallet_outlined,
+        selectedIcon: Icons.account_balance_wallet,
+        label: '积分',
+        onTap: () {
+          Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => const CreditPage(initialTabIndex: 0)));
+        },
+      ),
+      NavItem(
         icon: Icons.local_fire_department_outlined,
         selectedIcon: Icons.local_fire_department_rounded,
         label: '导读',
@@ -519,22 +642,24 @@ class _MainShellState extends State<_MainShell> {
       ),
     ];
 
-    // 主页面堆栈
+    // 主页面堆栈（添加 RepaintBoundary 隔离，未激活的页面在 RGB 变换时不重复光栅化绘制）
     final pages = [
-      HomePage(
-        onSwitchTab: (i) => setState(() => _index = i),
-        showDrawerButton: true,
-        onOpenDrawer: _openDrawer,
-        onOpenSettings: () {
-          Navigator.of(
-            context,
-          ).push(MaterialPageRoute(builder: (_) => const SettingsPage()));
-        },
+      RepaintBoundary(
+        child: HomePage(
+          onSwitchTab: (i) => setState(() => _index = i),
+          showDrawerButton: true,
+          onOpenDrawer: _openDrawer,
+          onOpenSettings: () {
+            Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const SettingsPage()));
+          },
+        ),
       ),
-      const ForumsPage(),
-      const SignRankPage(),
-      const MedalPage(),
-      const MySpacePage(),
+      const RepaintBoundary(child: ForumsPage()),
+      const RepaintBoundary(child: SignRankPage()),
+      const RepaintBoundary(child: MedalPage()),
+      const RepaintBoundary(child: MySpacePage()),
     ];
 
     return AdaptiveScaffold(
@@ -672,12 +797,32 @@ class _MainShellState extends State<_MainShell> {
                   },
                 ),
                 ListTile(
+                  leading: const Icon(Icons.account_balance_wallet_outlined),
+                  title: const Text('积分中心'),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const CreditPage(initialTabIndex: 0)),
+                    );
+                  },
+                ),
+                ListTile(
                   leading: const Icon(Icons.military_tech_outlined),
                   title: const Text('勋章中心'),
                   onTap: () {
                     Navigator.of(context).pop();
                     Navigator.of(context).push(
                       MaterialPageRoute(builder: (_) => const MedalPage()),
+                    );
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.auto_fix_high_outlined),
+                  title: const Text('道具中心'),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const MagicPage()),
                     );
                   },
                 ),

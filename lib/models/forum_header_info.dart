@@ -29,6 +29,7 @@ class ForumHeaderInfo {
   final String moderators;
   final String rulesHtml;
   final List<ForumCreditRule> creditRules;
+  final bool isFavorited;
 
   const ForumHeaderInfo({
     required this.fid,
@@ -41,6 +42,7 @@ class ForumHeaderInfo {
     this.moderators = '',
     this.rulesHtml = '',
     this.creditRules = const [],
+    this.isFavorited = false,
   });
 
   bool get isEmpty =>

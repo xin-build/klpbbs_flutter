@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
 import '../widgets/empty_view.dart';
@@ -42,6 +43,16 @@ class _FavoriteForumsPageState extends State<FavoriteForumsPage> {
             return Center(child: Text('加载失败：${snap.error}'));
           }
           final list = snap.data!;
+          if (list.isNotEmpty) {
+            SharedPreferences.getInstance().then((prefs) {
+              final set = (prefs.getStringList('fav_forums') ?? []).toSet();
+              bool changed = false;
+              for (final f in list) {
+                if (set.add('${f.fid}')) changed = true;
+              }
+              if (changed) prefs.setStringList('fav_forums', set.toList());
+            }).catchError((_) {});
+          }
           if (list.isEmpty) {
             return const EmptyView(
               icon: Icons.star_border,

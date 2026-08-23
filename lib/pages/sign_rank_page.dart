@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
 
-import '../widgets/global_nav.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/write_confirm.dart';
 import '../models/sign_entry.dart';
+import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
+import 'credit_page.dart';
 
 /// 签到排行（k_misign 只读展示）
 class SignRankPage extends StatefulWidget {
@@ -30,10 +31,13 @@ class _SignRankPageState extends State<SignRankPage>
   late Future<List<SignEntry>> _future;
   String _op = 'today';
   int _page = 1;
+
+  // 签到日历状态
   Set<int> _signedDays = {};
   bool _datesLoaded = false;
   int _calYear = 0;
   int _calMonth = 0;
+  ({int amount, String timeText})? _todaySignReward;
 
   /// 带缓存的排行加载（失败时回退缓存）
   Future<List<SignEntry>> _loadWithCache(String op, {int page = 1}) async {
@@ -70,7 +74,7 @@ class _SignRankPageState extends State<SignRankPage>
     }
   }
 
-  /// 加载本地与服务端签到记录（本月已签日期）
+  /// 加载本地与服务端签到记录（本月已签日期与积分记录奖励）
   Future<void> _loadSignedDays() async {
     final prefs = await SharedPreferences.getInstance();
     final now = DateTime.now();
@@ -89,6 +93,13 @@ class _SignRankPageState extends State<SignRankPage>
         _datesLoaded = true;
       });
     }
+
+    try {
+      final reward = await KlpbbsApi.getTodaySignReward();
+      if (reward != null && mounted) {
+        setState(() => _todaySignReward = reward);
+      }
+    } catch (_) {}
   }
 
   /// 签到成功展示弹窗（展示铁粒、经验、连续天数）
@@ -245,6 +256,109 @@ class _SignRankPageState extends State<SignRankPage>
     setState(() => _future = _loadWithCache(_op, page: _page));
   }
 
+  bool get _isSignedToday => _signedDays.contains(DateTime.now().day);
+
+  Widget _buildTodaySignStatusBanner() {
+    final isSigned = _isSignedToday;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: isSigned
+            ? Colors.green.shade50.withAlpha(220)
+            : Colors.amber.shade50.withAlpha(220),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: isSigned ? Colors.green.shade200 : Colors.amber.shade300,
+          width: 0.8,
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            isSigned ? Icons.check_circle_rounded : Icons.info_outline_rounded,
+            size: 22,
+            color: isSigned ? Colors.green.shade700 : Colors.amber.shade800,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isSigned
+                      ? (_todaySignReward != null
+                          ? '今日已完成签到（+${_todaySignReward!.amount} 铁粒）'
+                          : '今日已完成签到')
+                      : '今日尚未签到',
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.bold,
+                    color: isSigned ? Colors.green.shade900 : Colors.amber.shade900,
+                  ),
+                ),
+                const SizedBox(height: 1),
+                Text(
+                  isSigned
+                      ? (_todaySignReward != null
+                          ? '本月已累计签到 ${_signedDays.length} 天 · 奖励入账于 ${_todaySignReward!.timeText}'
+                          : '本月已累计签到 ${_signedDays.length} 天，连续签到奖励更多！')
+                      : '每日签到可领取铁粒与经验值奖励！',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: isSigned ? Colors.green.shade800 : Colors.amber.shade800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (isSigned) ...[
+            const SizedBox(width: 6),
+            InkWell(
+              borderRadius: BorderRadius.circular(4),
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const CreditPage(initialTabIndex: 2),
+                  ),
+                );
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '明细',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: Colors.green.shade800,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Icon(Icons.chevron_right, size: 14, color: Colors.green.shade800),
+                  ],
+                ),
+              ),
+            ),
+          ] else ...[
+            const SizedBox(width: 8),
+            FilledButton(
+              onPressed: _signIn,
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('立即签到', style: TextStyle(fontSize: 12)),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Future<void> _signIn() async {
     final confirmed = await confirmWrite(context, '签到');
     if (!confirmed) return;
@@ -252,16 +366,21 @@ class _SignRankPageState extends State<SignRankPage>
     final messenger = ScaffoldMessenger.of(context);
     try {
       final res = await KlpbbsApi.signIn();
-      if (res.success) {
+      if (res.success || res.message.contains('已签到')) {
+        await _recordSignDay();
         _showSignSuccessDialog(
-          message: res.message,
+          message: res.message.contains('已签到') ? '今日已签到' : res.message,
           iron: res.rewardIron,
           exp: res.rewardExp,
           rank: res.rank,
           days: res.continuousDays,
         );
         _reload();
-        _recordSignDay();
+        // 提取最新签到奖励
+        final reward = await KlpbbsApi.getTodaySignReward();
+        if (reward != null && mounted) {
+          setState(() => _todaySignReward = reward);
+        }
       } else {
         messenger.showSnackBar(SnackBar(content: Text(res.message)));
       }
@@ -282,6 +401,8 @@ class _SignRankPageState extends State<SignRankPage>
   }
 
   Widget _buildBody() {
+    final isSigned = _isSignedToday;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -294,12 +415,41 @@ class _SignRankPageState extends State<SignRankPage>
         ),
         iconTheme: IconThemeData(color: Theme.of(context).colorScheme.onSurface),
         actions: [
-          const GlobalNavButton(),
-          FilledButton.icon(
-            onPressed: _signIn,
-            icon: const Icon(Icons.event_available, size: 18),
-            label: const Text('签到'),
+          IconButton(
+            icon: const Icon(Icons.receipt_long_outlined),
+            tooltip: '积分记录流水',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const CreditPage(initialTabIndex: 2),
+                ),
+              );
+            },
           ),
+          const GlobalNavButton(),
+          if (isSigned)
+            FilledButton.tonalIcon(
+              onPressed: () {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('🎉 今日已完成签到，无需重复签到'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              },
+              icon: const Icon(Icons.check_circle_rounded, size: 18, color: Colors.green),
+              label: const Text('已签到'),
+              style: FilledButton.styleFrom(
+                foregroundColor: Colors.green.shade700,
+                backgroundColor: Colors.green.shade50,
+              ),
+            )
+          else
+            FilledButton.icon(
+              onPressed: _signIn,
+              icon: const Icon(Icons.event_available, size: 18),
+              label: const Text('签到'),
+            ),
           const SizedBox(width: 8),
         ],
         bottom: TabBar(
@@ -316,58 +466,62 @@ class _SignRankPageState extends State<SignRankPage>
       ),
       body: _tabController.index == 3
           ? _buildCalendar()
-          : FutureBuilder(
-              future: _future,
-              builder: (context, snap) {
-                if (snap.connectionState != ConnectionState.done) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (snap.hasError) {
-                  return Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text('加载失败：${snap.error}', textAlign: TextAlign.center),
-                        const SizedBox(height: 12),
-                        FilledButton(
-                          onPressed: _reload,
-                          child: const Text('重试'),
-                        ),
-                      ],
-                    ),
-                  );
-                }
-                final entries = snap.data!;
-                if (entries.isEmpty) {
-                  return RefreshIndicator(
-                    onRefresh: () async => _reload(),
-                    child: ListView(
-                      children: [
-                        const SizedBox(height: 80),
-                        Center(
-                          child: Text(
-                            _page > 1 ? '第 $_page 页暂无更多排行数据' : '暂无数据',
-                            style: TextStyle(color: Theme.of(context).colorScheme.outline),
+          : Column(
+              children: [
+                if (_tabController.index == 0) _buildTodaySignStatusBanner(),
+                Expanded(
+                  child: FutureBuilder(
+                    future: _future,
+                    builder: (context, snap) {
+                      if (snap.connectionState != ConnectionState.done) {
+                        return const Center(child: CircularProgressIndicator());
+                      }
+                      if (snap.hasError) {
+                        return Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('加载失败：${snap.error}', textAlign: TextAlign.center),
+                              const SizedBox(height: 12),
+                              FilledButton(
+                                onPressed: _reload,
+                                child: const Text('重试'),
+                              ),
+                            ],
                           ),
-                        ),
-                        if (_page > 1) ...[
-                          const SizedBox(height: 16),
-                          Center(
-                            child: FilledButton.tonal(
-                              onPressed: () => _goPage(_page - 1),
-                              child: const Text('返回上一页'),
-                            ),
+                        );
+                      }
+                      final entries = snap.data!;
+                      if (entries.isEmpty) {
+                        return RefreshIndicator(
+                          onRefresh: () async => _reload(),
+                          child: ListView(
+                            children: [
+                              const SizedBox(height: 80),
+                              Center(
+                                child: Text(
+                                  _page > 1 ? '第 $_page 页暂无更多排行数据' : '暂无数据',
+                                  style: TextStyle(color: Theme.of(context).colorScheme.outline),
+                                ),
+                              ),
+                              if (_page > 1) ...[
+                                const SizedBox(height: 16),
+                                Center(
+                                  child: FilledButton.tonal(
+                                    onPressed: () => _goPage(_page - 1),
+                                    child: const Text('返回上一页'),
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
-                        ],
-                      ],
-                    ),
-                  );
-                }
-                return RefreshIndicator(
-                  onRefresh: () async => _reload(),
-                  child: ListView.separated(
-                    itemCount: entries.length + 1,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
+                        );
+                      }
+                      return RefreshIndicator(
+                        onRefresh: () async => _reload(),
+                        child: ListView.separated(
+                          itemCount: entries.length + 1,
+                          separatorBuilder: (_, __) => const Divider(height: 1),
                     itemBuilder: (context, i) {
                       if (i == entries.length) {
                         return PaginationControl(
@@ -426,6 +580,9 @@ class _SignRankPageState extends State<SignRankPage>
                 );
               },
             ),
+                  ),
+                ],
+              ),
     );
   }
 

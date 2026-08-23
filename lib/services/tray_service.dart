@@ -5,6 +5,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../core/app_config.dart';
 import 'push_notification_service.dart';
+import 'rgb_theme_service.dart';
 
 /// 苦力怕论坛 桌面托盘与后台挂起守护服务
 class TrayService with TrayListener, WindowListener {
@@ -166,5 +167,15 @@ class TrayService with TrayListener, WindowListener {
     } else {
       await exitApp();
     }
+  }
+
+  @override
+  void onWindowMinimize() {
+    RgbThemeService.instance.pause();
+  }
+
+  @override
+  void onWindowRestore() {
+    RgbThemeService.instance.resume();
   }
 }
