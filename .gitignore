@@ -61,4 +61,5 @@ app.*.map.json
 libCachedImageData/
 scratch_*.html
 *.html
-!test/samples/**/*.html
+test/
+/test/
