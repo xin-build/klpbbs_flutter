@@ -148,10 +148,10 @@ class _HomePageState extends State<HomePage> {
           cachedGroups ?? SeedData.forumGroups,
           cachedThreads ?? SeedData.homeThreads,
           cachedStats ?? const SiteStats(
-            todayPosts: 44,
+            todayPosts: 61,
             yesterdayPosts: 273,
-            totalPosts: 10310782,
-            totalMembers: 2317593,
+            totalPosts: 10310794,
+            totalMembers: 2317632,
           ),
         );
       }

@@ -51,6 +51,7 @@ class _TuhaoBannerWidgetState extends State<TuhaoBannerWidget> {
   void initState() {
     super.initState();
     _siteStats = widget.stats ?? PreloadService.instance.get<SiteStats>('site_stats');
+    _loadTuhaoBannerData();
     _loadHornData();
     _loadStatsData();
   }
@@ -63,6 +64,22 @@ class _TuhaoBannerWidgetState extends State<TuhaoBannerWidget> {
         _siteStats = widget.stats;
       });
     }
+  }
+
+  void _loadTuhaoBannerData() {
+    KlpbbsApi.getTuhaoBanner().then((tuhao) {
+      if (mounted && tuhao != null) {
+        setState(() {
+          _tuhaoMessage = HornMessage(
+            id: 999999,
+            author: tuhao.author,
+            avatarUrl: tuhao.avatarUrl,
+            content: tuhao.message,
+            linkUrl: tuhao.linkUrl,
+          );
+        });
+      }
+    }).catchError((_) {});
   }
 
   void _loadStatsData() {

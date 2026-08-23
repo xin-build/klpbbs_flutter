@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import '../api/comiis_parser.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
-import '../core/write_confirm.dart';
 import '../models/user_space.dart';
 import '../models/usergroup_comparison.dart';
 import '../widgets/global_nav.dart';
@@ -1166,7 +1165,10 @@ class _UserSpacePageState extends State<UserSpacePage> {
               const Color(0xFF2196F3),
               () => Navigator.of(context).push(
                 MaterialPageRoute(
-                  builder: (_) => FriendPage(uid: user.uid),
+                  builder: (_) => FriendPage(
+                    uid: user.uid,
+                    username: user.username,
+                  ),
                 ),
               ),
             ),
@@ -1420,13 +1422,43 @@ class _UserSpacePageState extends State<UserSpacePage> {
                           icon: const Icon(Icons.person_add_alt, size: 16),
                           label: const Text('加好友'),
                           onPressed: () async {
-                            final confirmed = await confirmWrite(context, '加为好友');
-                            if (!confirmed || !context.mounted) return;
+                            final noteCtrl = TextEditingController();
+                            final confirmed = await showDialog<bool>(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                title: Text('申请添加「${user.username}」为好友'),
+                                content: TextField(
+                                  controller: noteCtrl,
+                                  decoration: const InputDecoration(
+                                    labelText: '附言（可选）',
+                                    hintText: '例如：你好，我是...',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                  maxLength: 50,
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.of(ctx).pop(false),
+                                    child: const Text('取消'),
+                                  ),
+                                  FilledButton(
+                                    onPressed: () => Navigator.of(ctx).pop(true),
+                                    child: const Text('发送申请'),
+                                  ),
+                                ],
+                              ),
+                            );
+                            if (confirmed != true || !context.mounted) return;
                             final messenger = ScaffoldMessenger.of(context);
                             try {
-                              final ok = await KlpbbsApi.addFriend(widget.uid);
+                              final ok = await KlpbbsApi.addFriend(
+                                widget.uid,
+                                noteCtrl.text.trim(),
+                              );
                               messenger.showSnackBar(
-                                SnackBar(content: Text(ok ? '好友请求已发送' : '请求失败')),
+                                SnackBar(
+                                  content: Text(ok ? '好友请求已发送' : '请求失败，请稍后重试'),
+                                ),
                               );
                             } catch (e) {
                               messenger.showSnackBar(

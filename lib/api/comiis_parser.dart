@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:html/dom.dart' as html_dom;
 import 'package:html/parser.dart' as html_parser;
 
@@ -5,6 +7,7 @@ import '../core/app_config.dart';
 import '../models/darkroom_entry.dart';
 import '../models/forum.dart';
 import '../models/forum_header_info.dart';
+import '../models/friend_item.dart';
 import '../models/horn_message.dart';
 import '../models/notice_item.dart';
 import '../models/pm_models.dart';
@@ -275,25 +278,103 @@ class ComiisParser {
     return out;
   }
 
-  /// 解析好友列表（friendlist 条目）
-  static List<({int uid, String name})> parseFriends(String html) {
+  /// 解析好友列表（支持 Discuz/克米全端 li.bbda, div.avt, h4 a, p.maxh 等完整结构）
+  static List<FriendItem> parseFriends(String html) {
     final doc = html_parser.parse(html);
-    final out = <({int uid, String name})>[];
-    for (final a in doc.querySelectorAll(
-      'a[href*="mod=space&uid="], li[class*="friend"] a',
+    final out = <FriendItem>[];
+    final seen = <int>{};
+
+    // 1. 结构化好友列表项（li.bbda 或 li[class*="bbda"] 或 li[class*="friend"]）
+    for (final li in doc.querySelectorAll(
+      'li.bbda, li[class*="bbda"], ul#friend_ul li, div.buddy_list li, ul.buddy li, li[class*="friend"]',
     )) {
+      final a = li.querySelector(
+        'h4 a, div.avt a, a[href*="space-uid-"], a[href*="mod=space&uid="]',
+      );
+      if (a == null) continue;
       final href = a.attributes['href'] ?? '';
-      final m = RegExp(r'uid=(\d+)').firstMatch(href);
-      if (m == null) continue;
-      final uid = int.tryParse(m.group(1) ?? '');
-      if (uid == null) continue;
-      final name = a.text.trim();
-      if (name.isEmpty || name.length > 30) continue;
-      if (!out.any((f) => f.uid == uid)) {
-        out.add((uid: uid, name: name));
+      final uidM = RegExp(r'space-uid-(\d+)\.html|(?:uid=)(\d+)').firstMatch(href);
+      if (uidM == null) continue;
+      final uid = int.tryParse(uidM.group(1) ?? uidM.group(2) ?? '');
+      if (uid == null || uid <= 0 || !seen.add(uid)) continue;
+
+      final nameEl = li.querySelector('h4 a, h4, p.title, a.xi2');
+      var name = nameEl?.text.trim() ?? '';
+      if (name.isEmpty) {
+        final img = li.querySelector('img');
+        name = img?.attributes['alt'] ?? '';
       }
-      if (out.length >= 50) break;
+      if (name.isEmpty) name = 'UID: $uid';
+
+      final imgEl = li.querySelector('div.avt img, img');
+      final avatar = _avatarUrl(
+            imgEl?.attributes['src'] ?? imgEl?.attributes['data-src'],
+          ) ??
+          AppConfig.avatarUrl(uid, size: 'small');
+
+      final maxhEl = li.querySelector('p.maxh, p.xg1, div.xg1');
+      String group = '';
+      String credits = '';
+      if (maxhEl != null) {
+        final fullText = maxhEl.text.replaceAll('\u00a0', ' ').trim();
+        final fontEl = maxhEl.querySelector('font');
+        if (fontEl != null && fontEl.text.trim().isNotEmpty) {
+          group = fontEl.text.trim();
+        }
+        final credM = RegExp(r'积分[数:：]?\s*(\d+)').firstMatch(fullText);
+        if (credM != null) {
+          credits = credM.group(1)!;
+        }
+        if (group.isEmpty) {
+          final groupM = RegExp(
+            r'(Lv\.\d+[^积分]+|版主|超级版主|管理员|荣誉会员|贵宾会员)',
+          ).firstMatch(fullText);
+          if (groupM != null) {
+            group = groupM.group(1)!.trim();
+          }
+        }
+      }
+
+      out.add(
+        FriendItem(
+          uid: uid,
+          username: name,
+          avatarUrl: avatar,
+          usergroup: group,
+          credits: credits,
+        ),
+      );
     }
+
+    // 2. 备选通用链接模式
+    if (out.isEmpty) {
+      for (final a in doc.querySelectorAll(
+        'a[href*="space-uid-"], a[href*="mod=space&uid="]',
+      )) {
+        final href = a.attributes['href'] ?? '';
+        final uidM = RegExp(r'space-uid-(\d+)\.html|(?:uid=)(\d+)').firstMatch(href);
+        if (uidM == null) continue;
+        final uid = int.tryParse(uidM.group(1) ?? uidM.group(2) ?? '');
+        if (uid == null || uid <= 0 || !seen.add(uid)) continue;
+        final name = a.text.trim();
+        if (name.isEmpty ||
+            name.length > 30 ||
+            name.contains('http') ||
+            name == '好友' ||
+            name == '空间' ||
+            name == '个人资料') {
+          continue;
+        }
+        out.add(
+          FriendItem(
+            uid: uid,
+            username: name,
+            avatarUrl: AppConfig.avatarUrl(uid, size: 'small'),
+          ),
+        );
+      }
+    }
+
     return out;
   }
 
@@ -1811,7 +1892,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
   /// 解析全站统计数据（今日发帖 / 昨日发帖 / 论坛总帖 / 注册会员）
   /// 完美支持 Discuz/克米移动端 `.tj_today, .tj_yesterday, .tj_posts, .tj_members`
-  /// 以及 PC 端 `#chart .chart.z` 与通用全局结构
+  /// 以及 PC 端 `#chart .chart_tj` 与通用全局结构（严格避免匹配局部版块如「闲聊讨论 今日: 10」）
   static SiteStats parseSiteStats(String html) {
     if (html.isEmpty) return const SiteStats();
     final doc = html_parser.parse(html);
@@ -1820,70 +1901,66 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     int posts = 0;
     int members = 0;
 
-    // 1. 移动端克米专属类名（.tj_today, .tj_yesterday, .tj_posts, .tj_members）
-    final todayEl = doc.querySelector('.tj_today, p.tj_today');
-    if (todayEl != null) {
-      final m = RegExp(r'(\d+)').firstMatch(todayEl.text);
-      if (m != null) today = int.tryParse(m.group(1)!) ?? 0;
-    }
-
-    final yesterdayEl = doc.querySelector('.tj_yesterday, p.tj_yesterday');
-    if (yesterdayEl != null) {
-      final m = RegExp(r'(\d+)').firstMatch(yesterdayEl.text);
-      if (m != null) yesterday = int.tryParse(m.group(1)!) ?? 0;
-    }
-
-    final postsEl = doc.querySelector('.tj_posts, p.tj_posts');
-    if (postsEl != null) {
-      final m = RegExp(r'(\d+)').firstMatch(postsEl.text);
-      if (m != null) posts = int.tryParse(m.group(1)!) ?? 0;
-    }
-
-    final membersEl = doc.querySelector('.tj_members, p.tj_members');
-    if (membersEl != null) {
-      final m = RegExp(r'(\d+)').firstMatch(membersEl.text);
-      if (m != null) members = int.tryParse(m.group(1)!) ?? 0;
-    }
-
-    // 2. PC 端与通用 Discuz chart 容器（#chart .chart.z 或 #chart p）
-    if (today == 0 || yesterday == 0 || posts == 0 || members == 0) {
-      final chartEl = doc.querySelector('#chart, .chart, p.chart');
-      final text = chartEl?.text ?? html;
-
-      if (today == 0) {
-        final m = RegExp(r'今日[:：]?\s*(\d+)').firstMatch(text);
+    // 1. PC 端与移动端标准 chart 容器（#chart, .chart_tj, div.chart_tj, .chart）
+    final chartEl = doc.querySelector('#chart, .chart_tj, div.chart_tj, .chart');
+    if (chartEl != null) {
+      final todayEl = chartEl.querySelector('.tj_today, p.tj_today');
+      if (todayEl != null) {
+        final m = RegExp(r'(\d+)').firstMatch(todayEl.text);
+        if (m != null) today = int.tryParse(m.group(1)!) ?? 0;
+      } else {
+        final m = RegExp(r'今日[:：]?\s*(\d+)').firstMatch(chartEl.text);
         if (m != null) today = int.tryParse(m.group(1)!) ?? 0;
       }
-      if (yesterday == 0) {
-        final m = RegExp(r'昨日[:：]?\s*(\d+)').firstMatch(text);
+
+      final yesterdayEl = chartEl.querySelector('.tj_yesterday, p.tj_yesterday');
+      if (yesterdayEl != null) {
+        final m = RegExp(r'(\d+)').firstMatch(yesterdayEl.text);
+        if (m != null) yesterday = int.tryParse(m.group(1)!) ?? 0;
+      } else {
+        final m = RegExp(r'昨日[:：]?\s*(\d+)').firstMatch(chartEl.text);
         if (m != null) yesterday = int.tryParse(m.group(1)!) ?? 0;
       }
-      if (posts == 0) {
-        final m = RegExp(r'(?:总帖|帖子)[:：]?\s*(\d+)').firstMatch(text);
+
+      final postsEl = chartEl.querySelector('.tj_posts, p.tj_posts');
+      if (postsEl != null) {
+        final m = RegExp(r'(\d+)').firstMatch(postsEl.text);
+        if (m != null) posts = int.tryParse(m.group(1)!) ?? 0;
+      } else {
+        final m = RegExp(r'(?:总帖|帖子)[:：]?\s*(\d+)').firstMatch(chartEl.text);
         if (m != null) posts = int.tryParse(m.group(1)!) ?? 0;
       }
-      if (members == 0) {
-        final m = RegExp(r'会员[:：]?\s*(\d+)').firstMatch(text);
+
+      final membersEl = chartEl.querySelector('.tj_members, p.tj_members');
+      if (membersEl != null) {
+        final m = RegExp(r'(\d+)').firstMatch(membersEl.text);
+        if (m != null) members = int.tryParse(m.group(1)!) ?? 0;
+      } else {
+        final m = RegExp(r'会员[:：]?\s*(\d+)').firstMatch(chartEl.text);
         if (m != null) members = int.tryParse(m.group(1)!) ?? 0;
       }
     }
 
-    // 3. 通用 HTML 正则兜底
-    if (today == 0) {
-      final m = RegExp(r'今日[:：]?\s*(?:<[^>]+>)?\s*(\d+)').firstMatch(html);
-      if (m != null) today = int.tryParse(m.group(1)!) ?? 0;
-    }
-    if (yesterday == 0) {
-      final m = RegExp(r'昨日[:：]?\s*(?:<[^>]+>)?\s*(\d+)').firstMatch(html);
-      if (m != null) yesterday = int.tryParse(m.group(1)!) ?? 0;
-    }
-    if (posts == 0) {
-      final m = RegExp(r'(?:总帖|帖子)[:：]?\s*(?:<[^>]+>)?\s*(\d+)').firstMatch(html);
-      if (m != null) posts = int.tryParse(m.group(1)!) ?? 0;
-    }
-    if (members == 0) {
-      final m = RegExp(r'会员[:：]?\s*(?:<[^>]+>)?\s*(\d+)').firstMatch(html);
-      if (m != null) members = int.tryParse(m.group(1)!) ?? 0;
+    // 2. 仅在匹配到全站级总帖数（>10000）或全站会员数（>10000）时才从全局提取今日/昨日发帖
+    if (posts == 0 || members == 0) {
+      final postsM = RegExp(r'(?:总帖|全站帖子|帖子总数)[:：]?\s*(\d{5,})').firstMatch(html) ??
+          RegExp(r'class=[\x27\"][^\x27\"]*tj_posts[^\x27\"]*[\x27\"][^>]*>.*?(?:总帖|帖子)[:：]?\s*(\d+)').firstMatch(html);
+      if (postsM != null) posts = int.tryParse(postsM.group(1)!) ?? 0;
+
+      final membM = RegExp(r'(?:会员|注册会员|会员总数)[:：]?\s*(\d{5,})').firstMatch(html) ??
+          RegExp(r'class=[\x27\"][^\x27\"]*tj_members[^\x27\"]*[\x27\"][^>]*>.*?会员[:：]?\s*(\d+)').firstMatch(html);
+      if (membM != null) members = int.tryParse(membM.group(1)!) ?? 0;
+
+      if (posts > 0 || members > 0) {
+        if (today == 0) {
+          final todayM = RegExp(r'(?:今日|今日发帖)[:：]?\s*(?:<[^>]+>)?\s*(\d+)').firstMatch(html);
+          if (todayM != null) today = int.tryParse(todayM.group(1)!) ?? 0;
+        }
+        if (yesterday == 0) {
+          final yestM = RegExp(r'(?:昨日|昨日发帖)[:：]?\s*(?:<[^>]+>)?\s*(\d+)').firstMatch(html);
+          if (yestM != null) yesterday = int.tryParse(yestM.group(1)!) ?? 0;
+        }
+      }
     }
 
     return SiteStats(
@@ -1898,87 +1975,147 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
   ///
   /// 结构：`div.comiis_bbs_show[href="#sub_forum_{gid}"]`（分区头）
   /// + `div#sub_forum_{gid} ul li a[href="forum-{fid}-1.html"]`（版块，含图标/帖数）。
+  /// 解析土豪霸屏广播（从首页 script 标签内 var data = [...] 或 DOM 中动态提取）
+  static ({String author, String avatarUrl, String message, String linkUrl, int tid})?
+  parseTuhaoBanner(String html) {
+    if (html.isEmpty) return null;
+    try {
+      // 1. 优先从首页 script 中的 ahorn_boss / ahome_horn JSON 数据提取
+      final m = RegExp(r'var\s+data\s*=\s*(\[\s*\{.*?\}\s*\]);', dotAll: true).firstMatch(html);
+      if (m != null) {
+        final jsonStr = m.group(1)!;
+        final decoded = jsonDecode(jsonStr);
+        if (decoded is List && decoded.isNotEmpty) {
+          final first = decoded.first;
+          if (first is Map) {
+            final name = (first['n'] ?? '').toString().trim();
+            final rawImg = (first['a'] ?? '').toString();
+            final msg = (first['m'] ?? '').toString().trim();
+
+            String avatarUrl = '';
+            final imgM = RegExp(r'src=[\x27\\"]([^\x27\\"]+)[\x27\\"]').firstMatch(rawImg);
+            if (imgM != null) {
+              avatarUrl = imgM.group(1)!.replaceAll(r'\/', '/');
+            }
+
+            String linkUrl = '';
+            int tid = 0;
+            final urlM = RegExp(r'https?://[^\s"<>\x27]+').firstMatch(msg);
+            if (urlM != null) {
+              linkUrl = urlM.group(0)!;
+              final tidM = RegExp(r'thread-(\d+)|tid=(\d+)').firstMatch(linkUrl);
+              if (tidM != null) {
+                tid = int.tryParse(tidM.group(1) ?? tidM.group(2) ?? '') ?? 0;
+              }
+            }
+
+            if (name.isNotEmpty && msg.isNotEmpty) {
+              return (
+                author: name,
+                avatarUrl: avatarUrl,
+                message: msg,
+                linkUrl: linkUrl,
+                tid: tid,
+              );
+            }
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
   static List<ForumGroup> parseForumGroups(String html) {
+    if (html.isEmpty) return const [];
     final doc = html_parser.parse(html);
     final groups = <ForumGroup>[];
+    final seenGids = <int>{};
 
-    for (final header in doc.querySelectorAll('div.comiis_bbs_show')) {
-      final href = header.attributes['href'] ?? '';
-      final gm = RegExp(r'sub_forum_(\d+)').firstMatch(href);
-      if (gm == null) continue;
-      final gid = int.tryParse(gm.group(1)!);
-      if (gid == null) continue;
+    // 1. 移动端克米模板：div.comiis_forumlist 与 div.comiis_km{gid}
+    for (final fl in doc.querySelectorAll('div.comiis_forumlist, div.comiis_fl')) {
+      int gid = 0;
+      for (final c in fl.classes) {
+        final m = RegExp(r'comiis_km(\d+)').firstMatch(c);
+        if (m != null) {
+          gid = int.tryParse(m.group(1)!) ?? 0;
+          break;
+        }
+      }
 
-      final name = (header.querySelector('h2 a')?.text ?? '').trim();
+      final show = fl.querySelector('div.comiis_bbs_show, .comiis_fl_title, h2');
+      var name = (show?.querySelector('h2 a, h2, a')?.text ?? show?.text ?? '').trim();
+      name = name.replaceAll(RegExp(r'[\r\n\t]+'), ' ').trim();
+      if (gid == 0 && show != null) {
+        final href = show.attributes['href'] ?? '';
+        final m = RegExp(r'sub_forum_(\d+)').firstMatch(href);
+        if (m != null) gid = int.tryParse(m.group(1)!) ?? 0;
+      }
       if (name.isEmpty) continue;
+      if (gid == 0) gid = groups.length + 1;
+      if (!seenGids.add(gid)) continue;
 
       final forums = <Forum>[];
-      final box = doc.querySelector('#sub_forum_$gid');
+      final box = (gid > 0 ? doc.querySelector('#sub_forum_$gid') : null) ??
+          fl.querySelector('div.comiis_forum_nbox, ul, div.cl');
       if (box != null) {
-        for (final a in box.querySelectorAll('a[href*="forum-"]')) {
+        for (final a in box.querySelectorAll('a[href*="forum-"], a[href*="fid="]')) {
           final fhref = a.attributes['href'] ?? '';
-          final fm = RegExp(r'forum-(\d+)-\d+\.html').firstMatch(fhref);
-          if (fm == null) continue;
-          final fid = int.tryParse(fm.group(1)!);
-          if (fid == null) continue;
+          final fm = RegExp(r'forum-(\d+)-\d+\.html|fid=(\d+)').firstMatch(fhref);
+          int? fid;
+          if (fm != null) {
+            fid = int.tryParse(fm.group(1) ?? fm.group(2) ?? '');
+          } else if (fhref.contains('skin')) {
+            fid = 50; // 皮肤分享特殊别名
+          }
+          if (fid == null || fid <= 0 || forums.any((f) => f.fid == fid)) continue;
+
           String? iconUrl;
           final img = a.querySelector('img');
-          // 版块名：优先 img.alt（three/two 布局通用），兜底 p/span（comiis_forum_three 的 span 是数字徽章，不能取）
           var fname = (img?.attributes['alt'] ?? '').trim();
           if (fname.isEmpty) {
-            fname =
-                (a.querySelector('p')?.text ??
-                        a.querySelector('span')?.text ??
-                        a.text)
-                    .trim();
+            final raw = (a.querySelector('p')?.text ?? a.querySelector('span')?.text ?? a.text).trim();
+            fname = raw.replaceAll(RegExp(r'今日[:：]?\s*\d+|帖数[:：]?\s*\d+|\d+'), '').trim();
           }
           if (fname.isEmpty) continue;
 
           if (img != null) {
             var rawIcon = img.attributes['comiis_loadimages'] ?? '';
-            if (rawIcon.isEmpty ||
-                rawIcon.contains('none.png') ||
-                rawIcon.contains('spacer.gif')) {
+            if (rawIcon.isEmpty || rawIcon.contains('none.png') || rawIcon.contains('spacer.gif')) {
               rawIcon = img.attributes['data-src'] ?? '';
             }
-            if (rawIcon.isEmpty ||
-                rawIcon.contains('none.png') ||
-                rawIcon.contains('spacer.gif')) {
+            if (rawIcon.isEmpty || rawIcon.contains('none.png') || rawIcon.contains('spacer.gif')) {
               rawIcon = img.attributes['file'] ?? '';
             }
-            if (rawIcon.isEmpty ||
-                rawIcon.contains('none.png') ||
-                rawIcon.contains('spacer.gif')) {
+            if (rawIcon.isEmpty || rawIcon.contains('none.png') || rawIcon.contains('spacer.gif')) {
               rawIcon = img.attributes['src'] ?? '';
             }
-            if (rawIcon.isNotEmpty &&
-                !rawIcon.contains('none.png') &&
-                !rawIcon.contains('spacer.gif')) {
+            if (rawIcon.isNotEmpty && !rawIcon.contains('none.png') && !rawIcon.contains('spacer.gif')) {
               iconUrl = _absolute(rawIcon);
             }
           }
 
           var threadCount = -1;
           var todayCount = -1;
-          final p = a.querySelector('p');
-          if (p != null) {
-            final pText = p.text;
-            final cm = RegExp(r'(\d+)').firstMatch(pText);
-            if (cm != null) {
-              final n = int.tryParse(cm.group(1)!) ?? -1;
-              // 「今日」是今日帖数，「帖数」是总帖数，勿混淆
-              if (pText.contains('今日')) {
-                todayCount = n;
-              } else {
-                threadCount = n;
-              }
+          String desc = '';
+          final aText = a.text.trim();
+          final tm = RegExp(r'今日[:：]?\s*(\d+)').firstMatch(aText);
+          if (tm != null) {
+            todayCount = int.tryParse(tm.group(1)!) ?? -1;
+          } else {
+            final leadM = RegExp(r'^(\d+)').firstMatch(aText);
+            if (leadM != null) {
+              todayCount = int.tryParse(leadM.group(1)!) ?? -1;
             }
           }
-          // 三列布局的数字徽章是今日帖数
-          final badge = a.querySelector('em span');
-          if (todayCount < 0 && badge != null) {
-            final bm = RegExp(r'(\d+)').firstMatch(badge.text);
-            if (bm != null) todayCount = int.tryParse(bm.group(1)!) ?? -1;
+
+          final thm = RegExp(r'帖数[:：]?\s*(\d+)').firstMatch(aText);
+          if (thm != null) {
+            threadCount = int.tryParse(thm.group(1)!) ?? -1;
+          }
+
+          final descM = RegExp(r'别名[:：]?(.*)').firstMatch(aText);
+          if (descM != null) {
+            desc = '别名: ${descM.group(1)!.trim()}';
           }
 
           forums.add(
@@ -1989,102 +2126,57 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
               iconUrl: iconUrl,
               threadCount: threadCount,
               todayCount: todayCount,
+              description: desc,
             ),
           );
         }
       }
+
       if (forums.isNotEmpty) {
         groups.add(ForumGroup(gid: gid, name: name, forums: forums));
       }
     }
 
-    // 2. PC 端 Discuz 表格模式（div.bmw, div.fl, table.fl_tb）
+    // 2. PC 端与通用 Discuz 结构：table.fl_tb 或 div.fl.bm 或 .bm.bmw.cl
     if (groups.isEmpty) {
-      for (final block in doc.querySelectorAll('div.bmw, div.fl, div.fl_tb')) {
-        final titleA = block.querySelector('h2 a, .fl_g dt a, .collapse h2 a');
-        final gname = titleA?.text.trim() ?? '';
-        final ghref = titleA?.attributes['href'] ?? '';
-        final gid =
-            int.tryParse(
-              RegExp(r'gid=(\d+)').firstMatch(ghref)?.group(1) ?? '',
-            ) ??
-            0;
-        if (gname.isEmpty) continue;
+      for (final block in doc.querySelectorAll('.bm.bmw.cl, table.fl_tb, div.fl')) {
+        final h2 = block.querySelector('.bm_h h2 a, .bm_h h2, h2 a, h2');
+        final name = h2?.text.trim() ?? '';
+        if (name.isEmpty || name == '论坛' || name.contains('小喇叭')) continue;
+        final gidM = RegExp(r'gid=(\d+)').firstMatch(h2?.attributes['href'] ?? '');
+        final gid = gidM != null ? int.tryParse(gidM.group(1)!) ?? (groups.length + 1) : (groups.length + 1);
+        if (!seenGids.add(gid)) continue;
 
         final forums = <Forum>[];
-        for (final td in block.querySelectorAll(
-          'td.fl_g, td.fl_by, tr.fl_row, div.fl_g',
-        )) {
-          final a = td.querySelector('dt a, h2 a');
+        for (final item in block.querySelectorAll('td.fl_g, td.fl_icn, dt a, h2 a')) {
+          final a = item.localName == 'a' ? item : item.querySelector('dt a, h2 a, a[href*="forum-"], a[href*="fid="]');
           if (a == null) continue;
           final href = a.attributes['href'] ?? '';
-          final fm = RegExp(r'forum-(\d+)').firstMatch(href);
+          final fm = RegExp(r'forum-(\d+)-\d+\.html|fid=(\d+)').firstMatch(href);
           if (fm == null) continue;
-          final fid = int.tryParse(fm.group(1)!) ?? 0;
+          final fid = int.tryParse(fm.group(1) ?? fm.group(2) ?? '');
+          if (fid == null || fid <= 0 || forums.any((f) => f.fid == fid)) continue;
+
           final fname = a.text.trim();
-          if (fname.isEmpty || fid <= 0) continue;
+          if (fname.isEmpty) continue;
 
-          String? iconUrl;
-          final img = td.querySelector('img');
-          if (img != null) {
-            final src =
-                img.attributes['src'] ??
-                img.attributes['file'] ??
-                img.attributes['data-src'] ??
-                '';
-            if (src.isNotEmpty &&
-                !src.contains('none.png') &&
-                !src.contains('spacer.gif')) {
-              iconUrl = _absolute(src);
-            }
+          var today = -1;
+          final em = item.querySelector('em, span.xi1');
+          if (em != null) {
+            final emM = RegExp(r'(\d+)').firstMatch(em.text);
+            if (emM != null) today = int.tryParse(emM.group(1)!) ?? -1;
           }
 
-          int todayCount = -1;
-          final todayEl = td.querySelector('.ctodayposts, em.xi1');
-          if (todayEl != null) {
-            todayCount = int.tryParse(todayEl.text.trim()) ?? -1;
-          }
-
-          int threadCount = -1;
-          final ddText = td.querySelector('dd')?.text ?? td.text;
-          final spanPost = td.querySelector('span[title]');
-          if (spanPost != null &&
-              spanPost.parent?.text.contains('帖数') == true) {
-            final fullNum = spanPost.attributes['title'] ?? '';
-            threadCount = int.tryParse(fullNum) ?? -1;
-          } else {
-            final postM = RegExp(r'帖数[:：]?\s*([0-9万]+)').firstMatch(ddText);
-            if (postM != null) {
-              final raw = postM.group(1)!;
-              if (raw.endsWith('万')) {
-                final n = double.tryParse(raw.replaceAll('万', '')) ?? 0;
-                threadCount = (n * 10000).toInt();
-              } else {
-                threadCount = int.tryParse(raw) ?? -1;
-              }
-            }
-          }
-          if (threadCount < 0) {
-            final thM = RegExp(r'主题[:：]?\s*(\d+)').firstMatch(ddText);
-            if (thM != null) {
-              threadCount = int.tryParse(thM.group(1)!) ?? -1;
-            }
-          }
-
-          forums.add(
-            Forum(
-              fid: fid,
-              name: fname,
-              gid: gid,
-              iconUrl: iconUrl,
-              threadCount: threadCount,
-              todayCount: todayCount,
-            ),
-          );
+          forums.add(Forum(
+            fid: fid,
+            name: fname,
+            gid: gid,
+            todayCount: today,
+          ));
         }
 
         if (forums.isNotEmpty) {
-          groups.add(ForumGroup(gid: gid, name: gname, forums: forums));
+          groups.add(ForumGroup(gid: gid, name: name, forums: forums));
         }
       }
     }

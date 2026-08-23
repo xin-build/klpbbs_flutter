@@ -12,6 +12,12 @@ class SiteStats {
     this.totalMembers = 0,
   });
 
+  /// 是否为包含全部指标的完整统计数据（避免将版块局部今日帖数误判为全站统计）
+  bool get isComplete =>
+      totalPosts > 0 &&
+      totalMembers > 0 &&
+      (todayPosts > 0 || yesterdayPosts > 0);
+
   bool get isEmpty =>
       todayPosts == 0 &&
       yesterdayPosts == 0 &&

@@ -11,6 +11,7 @@ import '../core/seed_data.dart';
 import '../models/darkroom_entry.dart';
 import '../models/forum.dart';
 import '../models/forum_header_info.dart';
+import '../models/friend_item.dart';
 import '../models/horn_message.dart';
 import '../models/notice_item.dart';
 import '../models/pm_models.dart';
@@ -299,24 +300,28 @@ class KlpbbsApi {
     );
     try {
       final results = await Future.wait([
-        _get('forum.php?forumlist=1&mobile=2'),
+        _get('forum.php?forumlist=1&mobile=2').catchError((_) => ''),
         _get(
           'forum.php?mobile=no',
           headers: {'User-Agent': AppConfig.pcUserAgent},
-        ),
+        ).catchError((_) => ''),
       ]);
       final mobileGroups = ComiisParser.parseForumGroups(results[0]);
       final pcGroups = ComiisParser.parseForumGroups(results[1]);
 
-      // 实时解析并缓存全站统计数据（今日发帖/昨日发帖/总帖数/会员数）
-      final statsMobile = ComiisParser.parseSiteStats(results[0]);
+      // 实时解析并缓存全站统计数据（优先 PC 端权威 #chart 数据）
       final statsPc = ComiisParser.parseSiteStats(results[1]);
-      final finalStats = !statsMobile.isEmpty ? statsMobile : statsPc;
+      final statsMobile = ComiisParser.parseSiteStats(results[0]);
+      final finalStats = statsPc.isComplete
+          ? statsPc
+          : (statsMobile.isComplete
+              ? statsMobile
+              : (!statsPc.isEmpty ? statsPc : statsMobile));
       if (!finalStats.isEmpty) {
         PreloadService.instance.set('site_stats', finalStats);
       }
 
-      if (mobileGroups.isNotEmpty && pcGroups.isNotEmpty) {
+      if (mobileGroups.isNotEmpty) {
         final pcMap = <int, Forum>{};
         for (final g in pcGroups) {
           for (final f in g.forums) {
@@ -336,17 +341,19 @@ class KlpbbsApi {
                 fid: mf.fid,
                 name: mf.name,
                 description:
-                    mf.description ?? pf?.description ?? seed.description,
+                    (mf.description != null && mf.description!.isNotEmpty)
+                        ? mf.description!
+                        : (pf?.description ?? seed.description),
                 gid: mg.gid,
                 iconUrl: (mf.iconUrl != null && mf.iconUrl!.isNotEmpty)
                     ? mf.iconUrl
                     : (pf?.iconUrl ?? seed.iconUrl),
-                threadCount: (pf != null && pf.threadCount >= 0)
-                    ? pf.threadCount
-                    : (mf.threadCount >= 0 ? mf.threadCount : seed.threadCount),
-                todayCount: (pf != null && pf.todayCount >= 0)
-                    ? pf.todayCount
-                    : mf.todayCount,
+                threadCount: (mf.threadCount >= 0)
+                    ? mf.threadCount
+                    : (pf?.threadCount ?? seed.threadCount),
+                todayCount: (mf.todayCount >= 0)
+                    ? mf.todayCount
+                    : (pf?.todayCount ?? -1),
               ),
             );
           }
@@ -361,47 +368,69 @@ class KlpbbsApi {
         PreloadService.instance.set('forum_groups', pcGroups);
         return pcGroups;
       }
-      if (mobileGroups.isNotEmpty) {
-        PreloadService.instance.set('forum_groups', mobileGroups);
-        return mobileGroups;
-      }
     } catch (_) {}
     return cached ?? SeedData.forumGroups;
   }
 
   /// 获取全站统计数据（今日发帖 / 昨日发帖 / 论坛总帖 / 注册会员）
-  /// 实时从 forum.php?forumlist=1&mobile=2 与 PC 首页提取并动态刷新
+  /// 实时从 PC 首页 #chart 与 forum.php?forumlist=1&mobile=2 提取并动态刷新
   static Future<SiteStats> getSiteStats({bool forceRefresh = false}) async {
     final cached = PreloadService.instance.get<SiteStats>('site_stats');
-    if (!forceRefresh && cached != null && !cached.isEmpty) {
+    if (!forceRefresh && cached != null && cached.isComplete) {
       return cached;
     }
     try {
       final results = await Future.wait([
-        _get('forum.php?forumlist=1&mobile=2').catchError((_) => ''),
         _get(
           'forum.php?mobile=no',
           headers: {'User-Agent': AppConfig.pcUserAgent},
         ).catchError((_) => ''),
+        _get('forum.php?forumlist=1&mobile=2').catchError((_) => ''),
       ]);
-      final mobileStats = ComiisParser.parseSiteStats(results[0]);
-      if (!mobileStats.isEmpty) {
+      final pcStats = ComiisParser.parseSiteStats(results[0]);
+      if (pcStats.isComplete) {
+        PreloadService.instance.set('site_stats', pcStats);
+        return pcStats;
+      }
+      final mobileStats = ComiisParser.parseSiteStats(results[1]);
+      if (mobileStats.isComplete) {
         PreloadService.instance.set('site_stats', mobileStats);
         return mobileStats;
       }
-      final pcStats = ComiisParser.parseSiteStats(results[1]);
       if (!pcStats.isEmpty) {
         PreloadService.instance.set('site_stats', pcStats);
         return pcStats;
       }
+      if (!mobileStats.isEmpty) {
+        PreloadService.instance.set('site_stats', mobileStats);
+        return mobileStats;
+      }
     } catch (_) {}
-    if (cached != null) return cached;
+    if (cached != null && !cached.isEmpty) return cached;
     return const SiteStats(
-      todayPosts: 44,
+      todayPosts: 61,
       yesterdayPosts: 273,
-      totalPosts: 10310782,
-      totalMembers: 2317593,
+      totalPosts: 10310794,
+      totalMembers: 2317632,
     );
+  }
+
+  /// 获取首页土豪霸屏信息
+  static Future<({String author, String avatarUrl, String message, String linkUrl, int tid})?>
+  getTuhaoBanner() async {
+    try {
+      final html = await _get(
+        'forum.php?mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+      );
+      final tuhao = ComiisParser.parseTuhaoBanner(html);
+      if (tuhao != null) return tuhao;
+    } catch (_) {}
+    try {
+      final html2 = await _get('forum.php?forumlist=1&mobile=2');
+      return ComiisParser.parseTuhaoBanner(html2);
+    } catch (_) {}
+    return null;
   }
 
   /// 表情目录（帖子/回复编辑器表情面板用；分类 + 表情图片 URL）
@@ -2416,10 +2445,23 @@ class KlpbbsApi {
     return ComiisParser.parsePromotion(html);
   }
 
-  /// 好友列表（home.php?mod=space&do=friend，需登录）
-  static Future<List<({int uid, String name})>> getFriends(int uid) async {
-    final html = await _get('home.php?mod=space&uid=$uid&do=friend&mobile=2');
-    return ComiisParser.parseFriends(html);
+  /// 好友列表（home.php?mod=space&uid=$uid&do=friend）
+  static Future<List<FriendItem>> getFriends(int uid, {int page = 1}) async {
+    try {
+      final results = await Future.wait([
+        _get('home.php?mod=space&uid=$uid&do=friend&page=$page&mobile=2')
+            .catchError((_) => ''),
+        _get(
+          'home.php?mod=space&uid=$uid&do=friend&page=$page&mobile=no',
+          headers: {'User-Agent': AppConfig.pcUserAgent},
+        ).catchError((_) => ''),
+      ]);
+      final mobileList = ComiisParser.parseFriends(results[0]);
+      if (mobileList.isNotEmpty) return mobileList;
+      final pcList = ComiisParser.parseFriends(results[1]);
+      if (pcList.isNotEmpty) return pcList;
+    } catch (_) {}
+    return const [];
   }
 
   /// 发送好友申请
@@ -2428,15 +2470,37 @@ class KlpbbsApi {
       final page = await _get(
         'home.php?mod=spacecp&ac=friend&op=add&uid=$uid&mobile=2',
       );
-      final formhash = _extractFormhash(page);
+      final formhash = _extractFormhash(page) ?? _cachedFormhash;
       if (formhash == null) return false;
       final res = await _post(
-        'home.php?mod=spacecp&ac=friend&op=add&uid=$uid&inajax=1&mobile=2',
+        'home.php?mod=spacecp&ac=friend&op=add&uid=$uid&inajax=1',
         {
           'formhash': formhash,
           'note': message,
           'addsubmit': 'true',
           'handlekey': 'addfriendhk_$uid',
+        },
+      );
+      return !res.contains('alert_error');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 删除好友
+  static Future<bool> deleteFriend(int uid) async {
+    try {
+      final page = await _get(
+        'home.php?mod=spacecp&ac=friend&op=ignore&uid=$uid&mobile=2',
+      );
+      final formhash = _extractFormhash(page) ?? _cachedFormhash;
+      if (formhash == null) return false;
+      final res = await _post(
+        'home.php?mod=spacecp&ac=friend&op=ignore&uid=$uid&inajax=1',
+        {
+          'formhash': formhash,
+          'friendsubmit': 'true',
+          'handlekey': 'delfriendhk_$uid',
         },
       );
       return !res.contains('alert_error');
