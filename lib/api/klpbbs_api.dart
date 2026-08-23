@@ -197,16 +197,15 @@ class KlpbbsApi {
           if (t.timeText != null && t.timeText!.isNotEmpty) {
             timeMap[t.tid] = t.timeText!;
           }
-          if (t.views >= 0) {
+          if (t.views > 0) {
             viewsMap[t.tid] = t.views;
           }
-          if (t.replies >= 0) {
+          if (t.replies > 0) {
             repliesMap[t.tid] = t.replies;
           }
         }
       }
 
-      recordMeta(SeedData.homeThreads);
       recordMeta(shaderThreads);
       recordMeta(addonThreads);
       recordMeta(guidePic);
@@ -228,8 +227,8 @@ class KlpbbsApi {
           final timeText = (t.timeText != null && t.timeText!.isNotEmpty)
               ? t.timeText
               : (timeMap[t.tid] ?? '近期');
-          final views = t.views >= 0 ? t.views : (viewsMap[t.tid] ?? 100);
-          final replies = t.replies >= 0 ? t.replies : (repliesMap[t.tid] ?? 0);
+          final views = t.views > 0 ? t.views : (viewsMap[t.tid] ?? -1);
+          final replies = t.replies > 0 ? t.replies : (repliesMap[t.tid] ?? -1);
 
           enriched.add(
             t.copyWith(

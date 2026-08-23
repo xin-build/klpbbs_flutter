@@ -633,7 +633,7 @@ class _ThreadCardState extends State<ThreadCard> {
     final colorScheme = theme.colorScheme;
     final thread = widget.thread;
     final hasAuthor = thread.author.isNotEmpty;
-    final hasStats = thread.views >= 0 || thread.replies >= 0 || (thread.timeText != null && thread.timeText!.isNotEmpty);
+    final hasStats = thread.views > 0 || thread.replies > 0 || (thread.timeText != null && thread.timeText!.isNotEmpty);
 
     if (!hasAuthor && !hasStats) {
       return const SizedBox.shrink();
@@ -668,7 +668,7 @@ class _ThreadCardState extends State<ThreadCard> {
         ] else ...[
           const Spacer(),
         ],
-        if (thread.views >= 0) ...[
+        if (thread.views > 0) ...[
           Icon(
             Icons.visibility_outlined,
             size: 13,
@@ -686,7 +686,7 @@ class _ThreadCardState extends State<ThreadCard> {
           ),
           const SizedBox(width: 8),
         ],
-        if (thread.replies >= 0) ...[
+        if (thread.replies > 0) ...[
           Icon(
             Icons.chat_bubble_outline_rounded,
             size: 12,
