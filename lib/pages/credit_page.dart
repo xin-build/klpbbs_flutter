@@ -26,7 +26,7 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
 
   // Tab 3: 积分记录
   int _logPage = 1;
-  String _subop = ''; // 全部, income, reward, payment
+  String _subop = 'income'; // 1:1 对齐网页: income (积分收益), reward (系统奖励)
   Future<List<CreditLogEntry>>? _logsFuture;
 
   // Tab 1: 我的积分
@@ -211,34 +211,14 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
 
     return Column(
       children: [
-        // 子分类栏：全部 / 积分收益 / 系统奖励 / 积分支出
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          alignment: Alignment.centerLeft,
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
+        // 子分类（1:1 像素级对齐网页: 积分收益 / 系统奖励）
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Align(
+            alignment: Alignment.centerLeft,
             child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                InkWell(
-                  onTap: () {
-                    setState(() {
-                      _subop = '';
-                      _logPage = 1;
-                    });
-                    _reloadLogs();
-                  },
-                  child: Text(
-                    '全部',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: _subop.isEmpty ? FontWeight.bold : FontWeight.normal,
-                      color: _subop.isEmpty ? colorScheme.primary : colorScheme.outline,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text('/', style: TextStyle(color: colorScheme.outlineVariant)),
-                const SizedBox(width: 8),
                 InkWell(
                   onTap: () {
                     setState(() {
@@ -250,15 +230,13 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
                   child: Text(
                     '积分收益',
                     style: TextStyle(
-                      fontSize: 13,
+                      fontSize: 13.5,
                       fontWeight: _subop == 'income' ? FontWeight.bold : FontWeight.normal,
                       color: _subop == 'income' ? colorScheme.primary : colorScheme.outline,
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
-                Text('/', style: TextStyle(color: colorScheme.outlineVariant)),
-                const SizedBox(width: 8),
+                const SizedBox(width: 12),
                 InkWell(
                   onTap: () {
                     setState(() {
@@ -270,29 +248,9 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
                   child: Text(
                     '系统奖励',
                     style: TextStyle(
-                      fontSize: 13,
+                      fontSize: 13.5,
                       fontWeight: _subop == 'reward' ? FontWeight.bold : FontWeight.normal,
                       color: _subop == 'reward' ? colorScheme.primary : colorScheme.outline,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text('/', style: TextStyle(color: colorScheme.outlineVariant)),
-                const SizedBox(width: 8),
-                InkWell(
-                  onTap: () {
-                    setState(() {
-                      _subop = 'payment';
-                      _logPage = 1;
-                    });
-                    _reloadLogs();
-                  },
-                  child: Text(
-                    '积分支出',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: _subop == 'payment' ? FontWeight.bold : FontWeight.normal,
-                      color: _subop == 'payment' ? colorScheme.primary : colorScheme.outline,
                     ),
                   ),
                 ),

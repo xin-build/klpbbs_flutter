@@ -251,57 +251,97 @@ class ComiisParser {
   static List<CreditLogEntry> parseCreditLogs(String html) {
     final doc = html_parser.parse(html);
     final out = <CreditLogEntry>[];
+    final seenKeys = <String>{};
 
-    // 1. 移动端 Comiis / 自定义列表项
-    for (final el in doc.querySelectorAll(
-      '.comiis_credit_list li, .comiis_credit li, .comiis_p12 li, .comiis_box li, .b_b',
-    )) {
-      final leftEl = el.querySelector('.kmleft, .kmimg, .span_0, .span_1, div:first-child');
-      final conEl = el.querySelector('.kmcon, .km_con, .f14, .f16, .title');
-      final timeEl = el.querySelector('.kmtime, .time, .f12, .xg1, span.f12');
-
-      String creditType = '铁粒';
-      String amount = '';
-      String operation = '';
-      String detail = '';
-      String timeText = '';
-
-      if (leftEl != null) {
-        final text = leftEl.text.replaceAll('\n', ' ').trim();
-        final typeM = RegExp(r'(铁粒|金粒|绿宝石|贡献|人气|威望|金币)').firstMatch(text);
-        if (typeM != null) creditType = typeM.group(1)!;
-        final valM = RegExp(r'([+-]?\d+)').firstMatch(text);
-        if (valM != null) amount = valM.group(1)!;
-      }
-
-      if (conEl != null) {
-        final h = conEl.querySelector('h3, h4, strong, .f16, .b_ok');
-        final p = conEl.querySelector('p, .f12, .xg1, .desc');
-        operation = (h != null ? h.text : conEl.text).trim();
-        if (p != null) detail = p.text.trim();
-        if (operation.contains('\n')) {
-          final lines = operation.split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
-          if (lines.isNotEmpty) operation = lines.first;
-          if (lines.length > 1 && detail.isEmpty) detail = lines.sublist(1).join(' ');
-        }
-      }
-
-      if (timeEl != null) {
-        timeText = timeEl.text.trim();
-      }
-
-      if (amount.isNotEmpty && operation.isNotEmpty) {
+    void addLog({
+      required String creditType,
+      required String amount,
+      required String operation,
+      required String detail,
+      required String timeText,
+    }) {
+      final op = operation.trim();
+      final dt = detail.trim();
+      final tm = timeText.trim();
+      if (op.isEmpty && amount.isEmpty) return;
+      final key = '${tm}_${op}_${amount}_$dt';
+      if (seenKeys.add(key)) {
+        final formattedAmount = amount.startsWith('+') || amount.startsWith('-') ? amount : '+$amount';
         out.add(CreditLogEntry(
-          creditType: creditType,
-          amount: amount.startsWith('+') || amount.startsWith('-') ? amount : '+$amount',
-          operation: operation,
-          detail: detail,
-          timeText: timeText,
+          creditType: creditType.isNotEmpty ? creditType : '铁粒',
+          amount: formattedAmount,
+          operation: op.isNotEmpty ? op : '积分变动',
+          detail: dt,
+          timeText: tm,
         ));
       }
     }
 
-    // 2. PC / 移动端表格结构（table.dt tr, table.tfm tr, table tr）
+    // 1. 移动端 Comiis 结构（.comiis_jflist li, .comiis_credit_list li, li.b_b, li）
+    final listCandidates = doc.querySelectorAll(
+      '.comiis_jflist li, .comiis_credit_list li, .comiis_credit li, .comiis_p12 li, .comiis_box li, ul.comiis_userlist li, li.b_b, li',
+    );
+    for (final el in listCandidates) {
+      final text = el.text.trim();
+      if (text.isEmpty || text.length < 5) continue;
+
+      // 必须包含有效变动时间
+      final tm = RegExp(r'(\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?)').firstMatch(text);
+      if (tm == null) continue;
+      final timeText = tm.group(1)!;
+
+      String creditType = '铁粒';
+      String amount = '';
+      final leftEl = el.querySelector('.span_0, .span_1, .kmimg, .kmleft, div:first-child, span:first-child');
+      if (leftEl != null) {
+        final lt = leftEl.text.replaceAll('\n', ' ').trim();
+        final typeM = RegExp(r'(铁粒|金粒|绿宝石|贡献|人气|威望|金币|经验|积分)').firstMatch(lt);
+        if (typeM != null) creditType = typeM.group(1)!;
+        final valM = RegExp(r'([+-]?\d+)').firstMatch(lt);
+        if (valM != null) amount = valM.group(1)!;
+      }
+      if (amount.isEmpty) {
+        final am = RegExp(r'([+-]\d+)').firstMatch(text) ?? RegExp(r'([+-]?\d+)').firstMatch(text);
+        if (am != null) amount = am.group(1)!;
+      }
+
+      String operation = '';
+      String detail = '';
+      final conEl = el.querySelector('.kmcon, .km_con, .flex, div:nth-child(2)');
+      if (conEl != null) {
+        final pTags = conEl.querySelectorAll('p, h3, h4, strong, div, .f14, .f16');
+        if (pTags.isNotEmpty) {
+          operation = pTags.first.text.trim();
+          if (pTags.length > 1) detail = pTags[1].text.trim();
+        } else {
+          operation = conEl.text.trim();
+        }
+      }
+
+      if (operation.isEmpty || operation == text) {
+        final lines = text
+            .split('\n')
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty && s != timeText && s != creditType && s != amount && s != '$creditType$amount')
+            .toList();
+        if (lines.isNotEmpty) {
+          operation = lines.first;
+          if (lines.length > 1) detail = lines.sublist(1).join(' ');
+        }
+      }
+
+      if (operation.isNotEmpty || amount.isNotEmpty) {
+        addLog(
+          creditType: creditType,
+          amount: amount.isNotEmpty ? amount : '+0',
+          operation: operation,
+          detail: detail,
+          timeText: timeText,
+        );
+      }
+    }
+
+    // 2. PC / 移动端表格结构（table.dt tr, table.tfm tr, table.tl tr, table tr）
     if (out.isEmpty) {
       for (final tr in doc.querySelectorAll('table.dt tr, table.tfm tr, table.tl tr, table tr')) {
         final tds = tr.querySelectorAll('td');
@@ -316,7 +356,7 @@ class ComiisParser {
         if (tds.length >= 3) {
           operation = tds[0].text.trim();
           final creditCol = tds[1].text.trim();
-          final cm = RegExp(r'(铁粒|金粒|绿宝石|贡献|人气|经验)\s*([+-]?\d+)').firstMatch(creditCol);
+          final cm = RegExp(r'(铁粒|金粒|绿宝石|贡献|人气|经验|积分)\s*([+-]?\d+)').firstMatch(creditCol);
           if (cm != null) {
             creditType = cm.group(1)!;
             amount = cm.group(2)!;
@@ -339,7 +379,7 @@ class ComiisParser {
               timeText = tm.group(0)!;
               continue;
             }
-            final cm = RegExp(r'(铁粒|金粒|绿宝石|贡献|人气|经验)\s*([+-]?\d+)').firstMatch(text);
+            final cm = RegExp(r'(铁粒|金粒|绿宝石|贡献|人气|经验|积分)\s*([+-]?\d+)').firstMatch(text);
             if (cm != null && amount.isEmpty) {
               creditType = cm.group(1)!;
               amount = cm.group(2)!;
@@ -359,13 +399,13 @@ class ComiisParser {
         }
 
         if (operation.isNotEmpty || amount.isNotEmpty) {
-          out.add(CreditLogEntry(
+          addLog(
             creditType: creditType,
-            amount: amount.isEmpty ? '+0' : (amount.startsWith('+') || amount.startsWith('-') ? amount : '+$amount'),
-            operation: operation.isNotEmpty ? operation : '积分变动',
+            amount: amount.isNotEmpty ? amount : '+0',
+            operation: operation,
             detail: detail,
             timeText: timeText,
-          ));
+          );
         }
       }
     }
