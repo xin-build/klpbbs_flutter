@@ -82,7 +82,7 @@ void main() {
     expect(stats.isComplete, false);
   });
 
-  test('parseForumGroups filters out 我关注的 block and keeps real partitions', () {
+  test('parseForumGroups parses 我关注的 as gid 0 and preserves 综合分区 as gid 1', () {
     const html = '''
 <div class="comiis_forumlist comiis_km0 bg_f b_t b_b cl">
   <div class="comiis_bbs_show b_b cl" href="#sub_forum_0"><h2><a href="javascript:;">我关注的\uf107管理</a></h2></div>
@@ -98,9 +98,13 @@ void main() {
 </div>
 ''';
     final groups = ComiisParser.parseForumGroups(html);
-    expect(groups.length, 1);
-    expect(groups[0].gid, 1);
-    expect(groups[0].name, '综合分区');
-    expect(groups[0].forums[0].name, '游戏资讯');
+    expect(groups.length, 2);
+    expect(groups[0].gid, 0);
+    expect(groups[0].name, '我关注的');
+    expect(groups[0].forums[0].name, '闲聊讨论');
+
+    expect(groups[1].gid, 1);
+    expect(groups[1].name, '综合分区');
+    expect(groups[1].forums[0].name, '游戏资讯');
   });
 }

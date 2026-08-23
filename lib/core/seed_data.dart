@@ -10,6 +10,33 @@ class SeedData {
   /// 真实分区与版块树（带官方高清网络图标与完整描述）
   static const List<ForumGroup> forumGroups = [
     ForumGroup(
+      gid: 0,
+      name: '我关注的',
+      forums: [
+        Forum(
+          fid: 41,
+          name: '闲聊讨论',
+          description: '日常闲聊、交友互动与灌水天地',
+          iconUrl: 'https://klpbbs.com/data/attachment/common/34/common_41_icon.png',
+          gid: 0,
+        ),
+        Forum(
+          fid: 43,
+          name: '软件资源',
+          description: '启动器、编辑工具与实用辅助程序',
+          iconUrl: 'https://klpbbs.com/data/attachment/common/17/common_43_icon.png',
+          gid: 0,
+        ),
+        Forum(
+          fid: 52,
+          name: 'BE附加包',
+          description: '行为包、模组与 Add-on 扩展组件',
+          iconUrl: 'https://klpbbs.com/data/attachment/common/9a/common_52_icon.png',
+          gid: 0,
+        ),
+      ],
+    ),
+    ForumGroup(
       gid: 1,
       name: '综合分区',
       forums: [

@@ -790,7 +790,41 @@ class _ForumNavState extends State<ForumNav> {
     final colorScheme = theme.colorScheme;
 
     if (widget.groups.isEmpty) return const SizedBox.shrink();
-    final currentGroup = widget.groups[_selectedGroupIdx.clamp(0, widget.groups.length - 1)];
+
+    final effectiveGroups = <ForumGroup>[];
+    final hasFavGroup = widget.groups.any((g) => g.gid == 0 || g.name == '我关注的');
+    if (!hasFavGroup) {
+      final favList = <Forum>[];
+      if (widget.favFids.isNotEmpty) {
+        for (final fid in widget.favFids) {
+          final f = widget.allForums.firstWhere(
+            (item) => item.fid == fid,
+            orElse: () => Forum(fid: fid, name: '版块 $fid'),
+          );
+          favList.add(f);
+        }
+      }
+      if (favList.isEmpty) {
+        const defaultFids = [41, 43, 52];
+        for (final fid in defaultFids) {
+          final f = widget.allForums.firstWhere(
+            (item) => item.fid == fid,
+            orElse: () => Forum(fid: fid, name: '版块 $fid'),
+          );
+          favList.add(f);
+        }
+      }
+      effectiveGroups.add(
+        ForumGroup(
+          gid: 0,
+          name: '我关注的',
+          forums: favList,
+        ),
+      );
+    }
+    effectiveGroups.addAll(widget.groups);
+
+    final currentGroup = effectiveGroups[_selectedGroupIdx.clamp(0, effectiveGroups.length - 1)];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -890,10 +924,10 @@ class _ForumNavState extends State<ForumNav> {
             child: ListView.separated(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               scrollDirection: Axis.horizontal,
-              itemCount: widget.groups.length,
+              itemCount: effectiveGroups.length,
               separatorBuilder: (_, __) => const SizedBox(width: 8),
               itemBuilder: (ctx, i) {
-                final g = widget.groups[i];
+                final g = effectiveGroups[i];
                 final isSelected = i == _selectedGroupIdx;
                 return ChoiceChip(
                   label: Text(g.name),
@@ -935,7 +969,7 @@ class _ForumNavState extends State<ForumNav> {
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Column(
               children: [
-                for (final g in widget.groups)
+                for (final g in effectiveGroups)
                   Card(
                     margin: const EdgeInsets.only(bottom: 8),
                     child: _CollapsibleGroup(

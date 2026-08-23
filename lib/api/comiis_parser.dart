@@ -2028,6 +2028,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     final seenGids = <int>{};
 
     const standardGroupNames = {
+      0: '我关注的',
       1: '综合分区',
       110: '灵感交流',
       37: 'BE资源分区',
@@ -2039,20 +2040,20 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
     // 1. 移动端克米模板：div.comiis_forumlist 与 div.comiis_fl
     for (final fl in doc.querySelectorAll('div.comiis_forumlist, div.comiis_fl')) {
-      int gid = 0;
+      int gid = -1;
       for (final c in fl.classes) {
         final m = RegExp(r'comiis_km(\d+)').firstMatch(c);
         if (m != null) {
-          gid = int.tryParse(m.group(1)!) ?? 0;
+          gid = int.tryParse(m.group(1)!) ?? -1;
           break;
         }
       }
 
       final show = fl.querySelector('div.comiis_bbs_show, .comiis_fl_title, h2');
-      if (gid == 0 && show != null) {
+      if (gid < 0 && show != null) {
         final href = show.attributes['href'] ?? '';
         final m = RegExp(r'sub_forum_(\d+)').firstMatch(href);
-        if (m != null) gid = int.tryParse(m.group(1)!) ?? 0;
+        if (m != null) gid = int.tryParse(m.group(1)!) ?? -1;
       }
 
       var name = (show?.querySelector('h2 a, h2, a')?.text ?? show?.text ?? '').trim();
@@ -2062,9 +2063,15 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           .replaceAll(RegExp(r'[\r\n\t]+'), ' ')
           .trim();
 
-      // 严格跳过「我关注的」以及非正常分区（gid == 0 或名称包含关注）
-      if (gid <= 0 || name.isEmpty || name.contains('关注')) {
-        continue;
+      // 精准识别「我关注的」专属快捷分区 (gid 0)
+      if (gid == 0 || name.contains('关注') || (fl.attributes['id'] ?? '').contains('fav')) {
+        gid = 0;
+        name = '我关注的';
+      }
+
+      if (gid < 0) {
+        if (name.isEmpty) continue;
+        gid = groups.length + 1;
       }
 
       if (standardGroupNames.containsKey(gid)) {
@@ -2074,7 +2081,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       if (!seenGids.add(gid)) continue;
 
       final forums = <Forum>[];
-      final box = (gid > 0 ? doc.querySelector('#sub_forum_$gid') : null) ??
+      final box = (gid >= 0 ? doc.querySelector('#sub_forum_$gid') : null) ??
           fl.querySelector('div.comiis_forum_nbox, ul, div.cl');
       if (box != null) {
         for (final a in box.querySelectorAll('a[href*="forum-"], a[href*="fid="]')) {
