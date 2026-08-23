@@ -746,6 +746,22 @@ class _ThreadCardState extends State<ThreadCard> {
           ),
           const SizedBox(width: 8),
         ],
+        if (thread.recommendCount > 0) ...[
+          Icon(
+            Icons.thumb_up_outlined,
+            size: 12,
+            color: colorScheme.outline,
+          ),
+          const SizedBox(width: 3),
+          Text(
+            '${thread.recommendCount}',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: colorScheme.outline,
+              fontSize: 11,
+            ),
+          ),
+          const SizedBox(width: 8),
+        ],
         if (thread.timeText != null && thread.timeText!.isNotEmpty)
           Text(
             thread.timeText!,

@@ -658,6 +658,19 @@ class ComiisParser {
         replies =
             int.tryParse(tbody.querySelector('.rey')?.text.trim() ?? '') ?? -1;
       }
+      if (views == -1 || replies == -1) {
+        final acgifNums = tbody.querySelector('.acgifnums');
+        if (acgifNums != null) {
+          final rA = acgifNums.querySelector('a');
+          if (rA != null && replies == -1) {
+            replies = int.tryParse(rA.text.trim()) ?? -1;
+          }
+          final vSpan = acgifNums.querySelector('span');
+          if (vSpan != null && views == -1) {
+            views = int.tryParse(vSpan.text.trim()) ?? -1;
+          }
+        }
+      }
 
       // 所属版块名
       final forumA = tbody.querySelector(
@@ -1060,16 +1073,28 @@ class ComiisParser {
     // 封面图：整项检索，优先 comiis_loadimages / file / zoomfile / data-src / src
     final cover = _coverFromScope(li);
 
+    // 赞/推荐数（从 .zhan_list 提取，如 "8赞"）
+    final zhanEl = li.querySelector('.zhan_list a.imgbox, .zhan_list a[href*="recommend"], a[class*="num-all_"]');
+    if (zhanEl != null) {
+      final zm = RegExp(r'(\d+)\s*赞?').firstMatch(zhanEl.text);
+      if (zm != null) {
+        final parsedLikes = int.tryParse(zm.group(1)!) ?? -1;
+        if (parsedLikes >= 0) {
+          recommendCount = parsedLikes;
+        }
+      }
+    }
+
     // 浏览/回复数
     var views = -1, replies = -1;
-    final zhanEl = li.querySelector('.zhan_list a.imgbox');
-    if (zhanEl != null) {
-      final m = RegExp(r'(\d+)\s*(?:阅读|查看|次)?').firstMatch(zhanEl.text);
-      if (m != null) views = int.tryParse(m.group(1)!) ?? -1;
+    final replyItems = li.querySelectorAll('ul.reply_list li, .reply_list li');
+    if (replyItems.isNotEmpty) {
+      replies = replyItems.length;
     }
+
     final wzRead = li.querySelector('.wzlist_bottom em.y, .wzlist_bottom .y');
     if (wzRead != null) {
-      final m = RegExp(r'(\d+)\s*(?:阅读|查看)?').firstMatch(wzRead.text);
+      final m = RegExp(r'(\d+)\s*(?:阅读|查看|浏览)').firstMatch(wzRead.text);
       if (m != null) views = int.tryParse(m.group(1)!) ?? -1;
     }
 
@@ -1083,11 +1108,11 @@ class ComiisParser {
     }
 
     if (views == -1) {
-      final vm = RegExp(r'(\d+)\s*(?:阅读|查看|次阅读|次查看)').firstMatch(li.text);
+      final vm = RegExp(r'(\d+)\s*(?:阅读|查看|浏览|次阅读|次查看|次浏览)').firstMatch(li.text);
       if (vm != null) views = int.tryParse(vm.group(1)!) ?? -1;
     }
     if (replies == -1) {
-      final rm = RegExp(r'(\d+)\s*(?:回复|条回复|次回复)').firstMatch(li.text);
+      final rm = RegExp(r'(\d+)\s*(?:回复|条回复|次回复|条评论)').firstMatch(li.text);
       if (rm != null) replies = int.tryParse(rm.group(1)!) ?? -1;
     }
 

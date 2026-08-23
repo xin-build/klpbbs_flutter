@@ -107,4 +107,53 @@ void main() {
     expect(groups[1].name, '综合分区');
     expect(groups[1].forums[0].name, '游戏资讯');
   });
+
+  test('parseThreadList parses mobile likes (8赞) to recommendCount without misidentifying as views', () {
+    const html = '''
+<li class="comiis_mmlist comiis_wxlist bg_f b_b">
+  <div class="wxlist_li_top cl"><a class="top_user" href="space-uid-145870.html">恬泉月惜</a></div>
+  <div class="wxlist_li_box cl">
+    <a href="thread-173077-1-1.html">
+      <h2>【回贴奖励】记某服成立四周年</h2>
+    </a>
+  </div>
+  <div class="zhan_list">
+    <a class="num-all_173077 imgbox f_c" href="misc.php?op=recommend&tid=173077">8赞</a>
+  </div>
+  <ul class="reply_list cl">
+    <li>r1</li><li>r2</li><li>r3</li><li>r4</li><li>r5</li>
+  </ul>
+</li>
+''';
+    final list = ComiisParser.parseThreadList(html);
+    expect(list.length, 1);
+    expect(list[0].tid, 173077);
+    expect(list[0].author, '恬泉月惜');
+    expect(list[0].recommendCount, 8);
+    expect(list[0].replies, 5);
+    expect(list[0].views, -1);
+  });
+
+  test('parseThreadList parses PC acgifnums views and replies correctly', () {
+    const html = '''
+<table>
+  <tbody id="normalthread_173077">
+    <tr>
+      <td class="by"><cite><a href="space-uid-145870.html">恬泉月惜</a></cite></td>
+      <th>
+        <a class="s xst" href="thread-173077-1-1.html">【回贴奖励】记某服成立四周年</a>
+        <div class="acgifnums">
+          <a href="thread-173077-1-1.html">5</a> / <span>144</span>
+        </div>
+      </th>
+    </tr>
+  </tbody>
+</table>
+''';
+    final list = ComiisParser.parseThreadList(html);
+    expect(list.length, 1);
+    expect(list[0].tid, 173077);
+    expect(list[0].replies, 5);
+    expect(list[0].views, 144);
+  });
 }
