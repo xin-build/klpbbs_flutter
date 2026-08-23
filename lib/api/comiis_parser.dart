@@ -11,6 +11,7 @@ import '../models/pm_models.dart';
 import '../models/post_block.dart';
 import '../models/post_floor.dart';
 import '../models/sign_entry.dart';
+import '../models/site_stats.dart';
 import '../models/smiley.dart';
 import '../models/thread_summary.dart';
 import '../models/user_space.dart';
@@ -1806,6 +1807,91 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
     return result;
+  }
+
+  /// 解析全站统计数据（今日发帖 / 昨日发帖 / 论坛总帖 / 注册会员）
+  /// 完美支持 Discuz/克米移动端 `.tj_today, .tj_yesterday, .tj_posts, .tj_members`
+  /// 以及 PC 端 `#chart .chart.z` 与通用全局结构
+  static SiteStats parseSiteStats(String html) {
+    if (html.isEmpty) return const SiteStats();
+    final doc = html_parser.parse(html);
+    int today = 0;
+    int yesterday = 0;
+    int posts = 0;
+    int members = 0;
+
+    // 1. 移动端克米专属类名（.tj_today, .tj_yesterday, .tj_posts, .tj_members）
+    final todayEl = doc.querySelector('.tj_today, p.tj_today');
+    if (todayEl != null) {
+      final m = RegExp(r'(\d+)').firstMatch(todayEl.text);
+      if (m != null) today = int.tryParse(m.group(1)!) ?? 0;
+    }
+
+    final yesterdayEl = doc.querySelector('.tj_yesterday, p.tj_yesterday');
+    if (yesterdayEl != null) {
+      final m = RegExp(r'(\d+)').firstMatch(yesterdayEl.text);
+      if (m != null) yesterday = int.tryParse(m.group(1)!) ?? 0;
+    }
+
+    final postsEl = doc.querySelector('.tj_posts, p.tj_posts');
+    if (postsEl != null) {
+      final m = RegExp(r'(\d+)').firstMatch(postsEl.text);
+      if (m != null) posts = int.tryParse(m.group(1)!) ?? 0;
+    }
+
+    final membersEl = doc.querySelector('.tj_members, p.tj_members');
+    if (membersEl != null) {
+      final m = RegExp(r'(\d+)').firstMatch(membersEl.text);
+      if (m != null) members = int.tryParse(m.group(1)!) ?? 0;
+    }
+
+    // 2. PC 端与通用 Discuz chart 容器（#chart .chart.z 或 #chart p）
+    if (today == 0 || yesterday == 0 || posts == 0 || members == 0) {
+      final chartEl = doc.querySelector('#chart, .chart, p.chart');
+      final text = chartEl?.text ?? html;
+
+      if (today == 0) {
+        final m = RegExp(r'今日[:：]?\s*(\d+)').firstMatch(text);
+        if (m != null) today = int.tryParse(m.group(1)!) ?? 0;
+      }
+      if (yesterday == 0) {
+        final m = RegExp(r'昨日[:：]?\s*(\d+)').firstMatch(text);
+        if (m != null) yesterday = int.tryParse(m.group(1)!) ?? 0;
+      }
+      if (posts == 0) {
+        final m = RegExp(r'(?:总帖|帖子)[:：]?\s*(\d+)').firstMatch(text);
+        if (m != null) posts = int.tryParse(m.group(1)!) ?? 0;
+      }
+      if (members == 0) {
+        final m = RegExp(r'会员[:：]?\s*(\d+)').firstMatch(text);
+        if (m != null) members = int.tryParse(m.group(1)!) ?? 0;
+      }
+    }
+
+    // 3. 通用 HTML 正则兜底
+    if (today == 0) {
+      final m = RegExp(r'今日[:：]?\s*(?:<[^>]+>)?\s*(\d+)').firstMatch(html);
+      if (m != null) today = int.tryParse(m.group(1)!) ?? 0;
+    }
+    if (yesterday == 0) {
+      final m = RegExp(r'昨日[:：]?\s*(?:<[^>]+>)?\s*(\d+)').firstMatch(html);
+      if (m != null) yesterday = int.tryParse(m.group(1)!) ?? 0;
+    }
+    if (posts == 0) {
+      final m = RegExp(r'(?:总帖|帖子)[:：]?\s*(?:<[^>]+>)?\s*(\d+)').firstMatch(html);
+      if (m != null) posts = int.tryParse(m.group(1)!) ?? 0;
+    }
+    if (members == 0) {
+      final m = RegExp(r'会员[:：]?\s*(?:<[^>]+>)?\s*(\d+)').firstMatch(html);
+      if (m != null) members = int.tryParse(m.group(1)!) ?? 0;
+    }
+
+    return SiteStats(
+      todayPosts: today,
+      yesterdayPosts: yesterday,
+      totalPosts: posts,
+      totalMembers: members,
+    );
   }
 
   /// 解析社区版块树（分区 → 版块）

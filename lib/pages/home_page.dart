@@ -11,6 +11,7 @@ import '../core/dio_client.dart';
 import '../core/preload_service.dart';
 import '../core/seed_data.dart';
 import '../models/forum.dart';
+import '../models/site_stats.dart';
 import '../models/thread_summary.dart';
 import '../widgets/desktop_shortcuts.dart';
 import '../widgets/horn_banner_widget.dart';
@@ -53,7 +54,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  late Future<(List<ForumGroup>, List<ThreadSummary>)> _future;
+  late Future<(List<ForumGroup>, List<ThreadSummary>, SiteStats)> _future;
   final _homeScrollCtrl = ScrollController();
   int _unreadPm = 0;
   int _unreadNotice = 0;
@@ -123,24 +124,36 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<(List<ForumGroup>, List<ThreadSummary>)> _load({bool forceRefresh = false}) async {
+  Future<(List<ForumGroup>, List<ThreadSummary>, SiteStats)> _load({bool forceRefresh = false}) async {
     try {
       final results = await Future.wait([
         KlpbbsApi.getForumGroups(),
         KlpbbsApi.getHome(),
+        KlpbbsApi.getSiteStats(forceRefresh: forceRefresh),
       ]);
       _loadUnread();
       final groups = results[0] as List<ForumGroup>;
       final threads = results[1] as List<ThreadSummary>;
+      final stats = results[2] as SiteStats;
       if (groups.isEmpty && threads.isEmpty) {
         throw Exception('暂未获取到内容，请检查网络或点击重试');
       }
-      return (groups, threads);
+      return (groups, threads, stats);
     } catch (e) {
       final cachedGroups = PreloadService.instance.get<List<ForumGroup>>('forum_groups');
       final cachedThreads = PreloadService.instance.get<List<ThreadSummary>>('home_threads');
+      final cachedStats = PreloadService.instance.get<SiteStats>('site_stats');
       if (cachedGroups != null || cachedThreads != null) {
-        return (cachedGroups ?? SeedData.forumGroups, cachedThreads ?? SeedData.homeThreads);
+        return (
+          cachedGroups ?? SeedData.forumGroups,
+          cachedThreads ?? SeedData.homeThreads,
+          cachedStats ?? const SiteStats(
+            todayPosts: 44,
+            yesterdayPosts: 273,
+            totalPosts: 10310782,
+            totalMembers: 2317593,
+          ),
+        );
       }
       rethrow;
     }
@@ -401,7 +414,7 @@ class _HomePageState extends State<HomePage> {
               // 列表骨架屏
               return const SkeletonList(itemCount: 8);
             }
-            final (groups, threads) = snap.data!;
+            final (groups, threads, stats) = snap.data!;
             final messenger = ScaffoldMessenger.of(context);
             return RefreshIndicator(
               onRefresh: () async {
@@ -424,8 +437,8 @@ class _HomePageState extends State<HomePage> {
                   child: ListView(
                     controller: _homeScrollCtrl,
                     children: [
-                      // 社区顶部土豪霸屏与全站数据统计栏
-                      const TuhaoBannerWidget(),
+                      // 社区顶部土豪霸屏与全站数据统计栏（实时动态刷新）
+                      TuhaoBannerWidget(stats: stats),
                       // 小喇叭广播跑马灯
                       const HornBannerWidget(),
                       if (groups.isNotEmpty)

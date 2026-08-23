@@ -5,6 +5,7 @@ import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/preload_service.dart';
 import '../models/horn_message.dart';
+import '../models/site_stats.dart';
 import '../pages/thread_detail_page.dart';
 import '../pages/user_space_page.dart';
 
@@ -16,10 +17,11 @@ class TuhaoBannerWidget extends StatefulWidget {
   final String? headline;
   final String? linkUrl;
   final int? tid;
-  final int todayPosts;
-  final int yesterdayPosts;
-  final int totalPosts;
-  final int totalMembers;
+  final SiteStats? stats;
+  final int? todayPosts;
+  final int? yesterdayPosts;
+  final int? totalPosts;
+  final int? totalMembers;
 
   const TuhaoBannerWidget({
     super.key,
@@ -29,10 +31,11 @@ class TuhaoBannerWidget extends StatefulWidget {
     this.headline,
     this.linkUrl,
     this.tid,
-    this.todayPosts = 119,
-    this.yesterdayPosts = 194,
-    this.totalPosts = 10310628,
-    this.totalMembers = 2317216,
+    this.stats,
+    this.todayPosts,
+    this.yesterdayPosts,
+    this.totalPosts,
+    this.totalMembers,
   });
 
   @override
@@ -42,11 +45,34 @@ class TuhaoBannerWidget extends StatefulWidget {
 class _TuhaoBannerWidgetState extends State<TuhaoBannerWidget> {
   bool _dismissed = false;
   HornMessage? _tuhaoMessage;
+  SiteStats? _siteStats;
 
   @override
   void initState() {
     super.initState();
+    _siteStats = widget.stats ?? PreloadService.instance.get<SiteStats>('site_stats');
     _loadHornData();
+    _loadStatsData();
+  }
+
+  @override
+  void didUpdateWidget(covariant TuhaoBannerWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.stats != null && widget.stats != _siteStats) {
+      setState(() {
+        _siteStats = widget.stats;
+      });
+    }
+  }
+
+  void _loadStatsData() {
+    KlpbbsApi.getSiteStats().then((stats) {
+      if (mounted && !stats.isEmpty) {
+        setState(() {
+          _siteStats = stats;
+        });
+      }
+    }).catchError((_) {});
   }
 
   void _loadHornData() {
@@ -296,30 +322,46 @@ class _TuhaoBannerWidgetState extends State<TuhaoBannerWidget> {
             ),
           ),
 
-        // 全站四大核心统计数据栏（今日/昨日/帖子/会员）
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surface,
-            border: Border(
-              bottom: BorderSide(
-                color: theme.colorScheme.outlineVariant.withAlpha(40),
-                width: 1,
+        // 全站四大核心统计数据栏（今日/昨日/帖子/会员，每日动态刷新）
+        Builder(
+          builder: (context) {
+            final stats = _siteStats ?? widget.stats ?? const SiteStats(
+              todayPosts: 44,
+              yesterdayPosts: 273,
+              totalPosts: 10310782,
+              totalMembers: 2317593,
+            );
+
+            final todayVal = widget.todayPosts ?? stats.todayPosts;
+            final yesterdayVal = widget.yesterdayPosts ?? stats.yesterdayPosts;
+            final totalPostsVal = widget.totalPosts ?? stats.totalPosts;
+            final totalMembersVal = widget.totalMembers ?? stats.totalMembers;
+
+            return Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface,
+                border: Border(
+                  bottom: BorderSide(
+                    color: theme.colorScheme.outlineVariant.withAlpha(40),
+                    width: 1,
+                  ),
+                ),
               ),
-            ),
-          ),
-          child: Row(
-            children: [
-              _buildStatItem('今日', '${widget.todayPosts}', theme),
-              _buildDivider(theme),
-              _buildStatItem('昨日', '${widget.yesterdayPosts}', theme),
-              _buildDivider(theme),
-              _buildStatItem('帖子', '${widget.totalPosts}', theme),
-              _buildDivider(theme),
-              _buildStatItem('会员', '${widget.totalMembers}', theme),
-            ],
-          ),
+              child: Row(
+                children: [
+                  _buildStatItem('今日', '$todayVal', theme),
+                  _buildDivider(theme),
+                  _buildStatItem('昨日', '$yesterdayVal', theme),
+                  _buildDivider(theme),
+                  _buildStatItem('帖子', '$totalPostsVal', theme),
+                  _buildDivider(theme),
+                  _buildStatItem('会员', '$totalMembersVal', theme),
+                ],
+              ),
+            );
+          },
         ),
       ],
     );
