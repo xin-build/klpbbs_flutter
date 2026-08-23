@@ -300,6 +300,9 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold> {
 
     // 移动端排版：底栏或抽屉
     final useBottomNav = AppConfig.navLayout == NavLayout.bottom;
+    final bottomNavItems = widget.navItems.where((item) => item.onTap == null).toList();
+    final effectiveBottomNav = bottomNavItems.isNotEmpty ? bottomNavItems : widget.navItems;
+
     return Scaffold(
       key: widget.scaffoldKey,
       appBar: widget.appBar,
@@ -310,17 +313,17 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold> {
           ? NavigationBar(
               selectedIndex: widget.currentIndex.clamp(
                 0,
-                widget.navItems.length - 1,
+                effectiveBottomNav.length - 1,
               ),
               onDestinationSelected: (idx) {
-                final item = widget.navItems[idx];
+                final item = effectiveBottomNav[idx];
                 if (item.onTap != null) {
                   item.onTap!();
                 } else {
                   widget.onNavigationChanged(idx);
                 }
               },
-              destinations: widget.navItems.map((item) {
+              destinations: effectiveBottomNav.map((item) {
                 return NavigationDestination(
                   icon: Badge(
                     isLabelVisible: (item.badgeCount ?? 0) > 0,

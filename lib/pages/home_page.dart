@@ -20,6 +20,8 @@ import '../widgets/skeleton_list.dart';
 import '../widgets/thread_card.dart';
 import '../widgets/tuhao_banner_widget.dart';
 import '../services/push_notification_service.dart';
+import 'darkroom_page.dart';
+import 'guide_page.dart';
 import 'login_page.dart';
 import 'notice_page.dart';
 import 'pm_inbox_page.dart';
@@ -618,15 +620,33 @@ class _HomePageState extends State<HomePage> {
     ).push(MaterialPageRoute(builder: (_) => ThreadDetailPage(tid: tid)));
   }
 
-  /// 切换到底部导航对应 tab（由主壳回调）；index 5 为排行榜页
+  /// 切换到底部导航对应 tab（由主壳提供）或跳转对应路由
   void _onNavigateTab(int index) {
-    if (index == 5) {
+    if (index == 10) {
+      Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const GuidePage()));
+      return;
+    }
+    if (index == 11) {
+      Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const SearchPage()));
+      return;
+    }
+    if (index == 12) {
+      Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const DarkroomPage()));
+      return;
+    }
+    if (index == 13) {
       Navigator.of(
         context,
       ).push(MaterialPageRoute(builder: (_) => const RanklistPage()));
       return;
     }
-    if (index == 6) {
+    if (index == 14) {
       Navigator.of(
         context,
       ).push(MaterialPageRoute(builder: (_) => const PmInboxPage()));
@@ -1400,15 +1420,15 @@ class _QuickActions extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    // 快捷入口：首页/导读/签到/小黑屋/搜索（对应底部导航 tab）
+    // 快捷入口：版块/签到/勋章/导读/搜索/封神榜/排行
     final items = [
-      (Icons.home_outlined, '首页', theme.colorScheme.primary, 0),
-      (Icons.local_fire_department, '导读', const Color(0xFF008AC5), 1),
+      (Icons.forum_outlined, '版块', const Color(0xFF008AC5), 1),
       (Icons.emoji_events, '签到', const Color(0xFFFFB300), 2),
-      (Icons.gavel, '封神榜', Colors.redAccent, 3),
-      (Icons.search, '搜索', const Color(0xFF2E7D32), 4),
-      (Icons.leaderboard, '排行', const Color(0xFF7E57C2), 5),
-      (Icons.mail_outline, '私信', const Color(0xFFE53935), 6),
+      (Icons.military_tech, '勋章', const Color(0xFF9C27B0), 3),
+      (Icons.local_fire_department, '导读', const Color(0xFFFF7043), 10),
+      (Icons.search, '搜索', const Color(0xFF2E7D32), 11),
+      (Icons.gavel, '封神榜', Colors.redAccent, 12),
+      (Icons.leaderboard, '排行', const Color(0xFF7E57C2), 13),
     ];
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 14, 14, 4),

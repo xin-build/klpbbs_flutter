@@ -12,6 +12,7 @@ import 'core/dio_client.dart';
 import 'core/main_tab_controller.dart';
 import 'core/write_confirm.dart';
 import 'pages/darkroom_page.dart';
+import 'pages/forums_page.dart';
 import 'pages/guide_page.dart';
 import 'pages/home_page.dart';
 import 'pages/login_page.dart';
@@ -447,9 +448,9 @@ class _MainShellState extends State<_MainShell> {
         label: '首页',
       ),
       const NavItem(
-        icon: Icons.local_fire_department_outlined,
-        selectedIcon: Icons.local_fire_department_rounded,
-        label: '导读',
+        icon: Icons.forum_outlined,
+        selectedIcon: Icons.forum_rounded,
+        label: '版块',
       ),
       const NavItem(
         icon: Icons.emoji_events_outlined,
@@ -457,14 +458,34 @@ class _MainShellState extends State<_MainShell> {
         label: '签到',
       ),
       const NavItem(
-        icon: Icons.search_outlined,
-        selectedIcon: Icons.search_rounded,
-        label: '搜索',
+        icon: Icons.military_tech_outlined,
+        selectedIcon: Icons.military_tech,
+        label: '勋章',
       ),
       const NavItem(
         icon: Icons.person_outline,
         selectedIcon: Icons.person,
-        label: '我的',
+        label: '个人中心',
+      ),
+      NavItem(
+        icon: Icons.local_fire_department_outlined,
+        selectedIcon: Icons.local_fire_department_rounded,
+        label: '导读',
+        onTap: () {
+          Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => const GuidePage()));
+        },
+      ),
+      NavItem(
+        icon: Icons.search_outlined,
+        selectedIcon: Icons.search_rounded,
+        label: '搜索',
+        onTap: () {
+          Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => const SearchPage()));
+        },
       ),
       NavItem(
         icon: Icons.gavel_outlined,
@@ -474,16 +495,6 @@ class _MainShellState extends State<_MainShell> {
           Navigator.of(
             context,
           ).push(MaterialPageRoute(builder: (_) => const DarkroomPage()));
-        },
-      ),
-      NavItem(
-        icon: Icons.military_tech_outlined,
-        selectedIcon: Icons.military_tech,
-        label: '勋章',
-        onTap: () {
-          Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const MedalPage()),
-          );
         },
       ),
       NavItem(
@@ -520,9 +531,9 @@ class _MainShellState extends State<_MainShell> {
           ).push(MaterialPageRoute(builder: (_) => const SettingsPage()));
         },
       ),
-      const GuidePage(),
+      const ForumsPage(),
       const SignRankPage(),
-      const SearchPage(),
+      const MedalPage(),
       const MySpacePage(),
     ];
 
