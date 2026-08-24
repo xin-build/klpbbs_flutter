@@ -224,6 +224,7 @@ class PollOption {
   final int votes;
   final double percent;
   final bool isChecked;
+  final String? colorHex;
 
   const PollOption({
     required this.id,
@@ -231,6 +232,7 @@ class PollOption {
     this.votes = 0,
     this.percent = 0.0,
     this.isChecked = false,
+    this.colorHex,
   });
 }
 
@@ -244,7 +246,9 @@ class PollBlock extends PostBlock {
   final List<PollOption> options;
   final bool isVoted;
   final bool canVote;
+  final bool isClosed;
   final bool loginRequired;
+  final String? tipText;
 
   const PollBlock({
     this.title = '单选投票',
@@ -255,11 +259,13 @@ class PollBlock extends PostBlock {
     required this.options,
     this.isVoted = false,
     this.canVote = true,
+    this.isClosed = false,
     this.loginRequired = false,
+    this.tipText,
   });
 
   @override
-  String toString() => 'PollBlock(title: $title, options: ${options.length}, voters: $votersCount)';
+  String toString() => 'PollBlock(title: $title, options: ${options.length}, voters: $votersCount, isClosed: $isClosed)';
 }
 
 /// 回帖奖励卡片区块（Discuz 回帖奖励/抢楼红包）

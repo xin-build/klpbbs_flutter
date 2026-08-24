@@ -2595,6 +2595,28 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
   bool _submitting = false;
   bool _isVoted = false;
 
+  static const List<Color> _defaultBarColors = [
+    Color(0xFFE92725), // 红色
+    Color(0xFFF27B21), // 橙色
+    Color(0xFFF2A61F), // 琥珀黄
+    Color(0xFF5AAF4A), // 绿色
+    Color(0xFF2196F3), // 蓝色
+    Color(0xFF9C27B0), // 紫色
+    Color(0xFF00BCD4), // 青色
+    Color(0xFFFF4081), // 粉红
+  ];
+
+  static Color _parseBarColor(String? hex, int index) {
+    if (hex != null && hex.isNotEmpty) {
+      try {
+        var str = hex.replaceAll('#', '').trim();
+        if (str.length == 6) str = 'FF$str';
+        if (str.length == 8) return Color(int.parse(str, radix: 16));
+      } catch (_) {}
+    }
+    return _defaultBarColors[index % _defaultBarColors.length];
+  }
+
   @override
   void initState() {
     super.initState();
@@ -2607,13 +2629,15 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
   }
 
   void _toggleOption(int optId) {
-    if (_isVoted) return;
+    if (_isVoted || widget.poll.isClosed || !widget.poll.canVote) return;
     setState(() {
       if (widget.poll.isMultiple) {
         if (_selectedIds.contains(optId)) {
           _selectedIds.remove(optId);
         } else {
-          _selectedIds.add(optId);
+          if (widget.poll.maxChoices <= 1 || _selectedIds.length < widget.poll.maxChoices) {
+            _selectedIds.add(optId);
+          }
         }
       } else {
         _selectedIds.clear();
@@ -2653,153 +2677,183 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
     final poll = widget.poll;
+    final showResults = _isVoted || poll.isClosed || !poll.canVote || poll.options.any((o) => o.votes > 0 || o.percent > 0);
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 10),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
+        color: colorScheme.surface,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: const Color(0xFFFF9800).withAlpha(120),
-          width: 1.2,
+          color: colorScheme.outlineVariant.withAlpha(80),
+          width: 1.0,
         ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withAlpha(8),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // 投票头部
-          Container(
+          Padding(
             padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceContainerHighest.withAlpha(60),
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(11)),
-            ),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
+                // 橙色圆形投票图标 (1:1 对齐网页)
                 Container(
                   width: 38,
                   height: 38,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFF9800),
-                    borderRadius: BorderRadius.circular(8),
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFFF9800),
+                    shape: BoxShape.circle,
                   ),
                   alignment: Alignment.center,
-                  child: const Icon(Icons.poll_rounded, color: Colors.white, size: 22),
+                  child: const Icon(Icons.bar_chart_rounded, color: Colors.white, size: 22),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              poll.title,
-                              style: const TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                          if (poll.expireText != null && poll.expireText!.isNotEmpty)
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: theme.colorScheme.surfaceContainerHighest,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                '距结束: ${poll.expireText}',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: theme.colorScheme.primary,
-                                ),
-                              ),
-                            ),
-                        ],
+                      Text(
+                        poll.title,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        '共有 ${poll.votersCount} 人参与投票${poll.isMultiple ? ' (多选)' : ' (单选)'}',
+                        '共有 ${poll.votersCount} 人参与投票${poll.isMultiple ? ' (多选, 最多可选 ${poll.maxChoices} 项)' : ''}',
                         style: TextStyle(
                           fontSize: 12,
-                          color: theme.colorScheme.outline,
+                          color: colorScheme.outline,
                         ),
                       ),
                     ],
                   ),
                 ),
+                if (poll.expireText != null && poll.expireText!.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHighest.withAlpha(120),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      poll.expireText!,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: colorScheme.outline,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
 
-          // 投票选项列表
+          const Divider(height: 1, indent: 14, endIndent: 14),
+
+          // 投票选项列表 (1:1 像素级对齐网页)
           ListView.separated(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
+            padding: const EdgeInsets.symmetric(vertical: 8),
             itemCount: poll.options.length,
-            separatorBuilder: (_, __) => Divider(
-              height: 1,
-              color: theme.colorScheme.outlineVariant.withAlpha(60),
-            ),
+            separatorBuilder: (_, __) => const SizedBox(height: 4),
             itemBuilder: (ctx, i) {
               final opt = poll.options[i];
               final optId = i + 1;
               final isSelected = _selectedIds.contains(optId);
-              return InkWell(
-                onTap: _isVoted ? null : () => _toggleOption(optId),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              final barColor = _parseBarColor(opt.colorHex, i);
+
+              if (showResults) {
+                // 结果展示模式：标题 + 彩色进度条 + 百分比 (票数)
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // 选项名称
+                      Text(
+                        opt.label,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      // 彩色进度条与票数
                       Row(
                         children: [
-                          Icon(
-                            poll.isMultiple
-                                ? (isSelected ? Icons.check_box : Icons.check_box_outline_blank)
-                                : (isSelected ? Icons.radio_button_checked : Icons.radio_button_off),
-                            size: 18,
-                            color: isSelected ? theme.colorScheme.primary : theme.colorScheme.outline,
-                          ),
-                          const SizedBox(width: 8),
                           Expanded(
-                            child: Text(
-                              opt.label
-                                  .replaceAll(RegExp(r'[\uE000-\uF8FF\uFFF0-\uFFFF\u{F0000}-\u{10FFFF}\u0000-\u001F\u007F-\u009F\u200B-\u200D\uFEFF]', unicode: true), '')
-                                  .replaceAll(RegExp(r'^\s*[\d\.\、\：\:\-\(\)\[\]]+\s*'), '')
-                                  .trim(),
-                              style: TextStyle(
-                                fontSize: 13.5,
-                                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(4),
+                              child: Container(
+                                height: 9,
+                                color: colorScheme.surfaceContainerHighest.withAlpha(120),
+                                alignment: Alignment.centerLeft,
+                                child: FractionallySizedBox(
+                                  widthFactor: (opt.percent / 100).clamp(0.0, 1.0),
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: barColor,
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
-                          if (_isVoted || opt.votes > 0) ...[
-                            Text(
-                              '${opt.votes}票 (${opt.percent.toStringAsFixed(1)}%)',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: theme.colorScheme.outline,
-                              ),
+                          const SizedBox(width: 10),
+                          Text(
+                            '${opt.percent.toStringAsFixed(2)}% (${opt.votes})',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: barColor,
+                              fontWeight: FontWeight.w600,
                             ),
-                          ],
+                          ),
                         ],
                       ),
-                      if (_isVoted || opt.votes > 0) ...[
-                        const SizedBox(height: 6),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(3),
-                          child: LinearProgressIndicator(
-                            value: (opt.percent / 100).clamp(0.0, 1.0),
-                            minHeight: 5,
-                            backgroundColor: theme.colorScheme.surfaceContainerHighest,
-                            valueColor: AlwaysStoppedAnimation(theme.colorScheme.primary),
+                    ],
+                  ),
+                );
+              }
+
+              // 投票选择模式：Radio / Checkbox + 选项名称
+              return InkWell(
+                onTap: () => _toggleOption(optId),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  child: Row(
+                    children: [
+                      Icon(
+                        poll.isMultiple
+                            ? (isSelected ? Icons.check_box : Icons.check_box_outline_blank)
+                            : (isSelected ? Icons.radio_button_checked : Icons.radio_button_off),
+                        size: 20,
+                        color: isSelected ? const Color(0xFFFF9800) : colorScheme.outline,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          opt.label,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                           ),
                         ),
-                      ],
+                      ),
                     ],
                   ),
                 ),
@@ -2807,10 +2861,35 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
             },
           ),
 
-          // 底部提交按钮或状态提示
-          if (!_isVoted)
+          // 底部提示框或投票提交按钮 (1:1 对齐网页)
+          if (poll.tipText != null && poll.tipText!.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.fromLTRB(14, 6, 14, 14),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFFBE6),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: const Color(0xFFFFE58F)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.lightbulb_outline, size: 16, color: Color(0xFFFA8C16)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      poll.tipText!,
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        color: Color(0xFFD46B08),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else if (!showResults && poll.canVote)
             Padding(
-              padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 14),
               child: SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
@@ -2826,27 +2905,10 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
                   style: FilledButton.styleFrom(
                     backgroundColor: const Color(0xFFFF9800),
                     foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   ),
                 ),
-              ),
-            )
-          else
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest.withAlpha(40),
-                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(11)),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.check_circle_outline, size: 14, color: theme.colorScheme.primary),
-                  const SizedBox(width: 6),
-                  Text(
-                    '您已参与投票',
-                    style: TextStyle(fontSize: 12, color: theme.colorScheme.primary),
-                  ),
-                ],
               ),
             ),
         ],

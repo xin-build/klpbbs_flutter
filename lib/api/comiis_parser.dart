@@ -5953,30 +5953,69 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           continue;
         }
 
-        // 0. 投票帖专属卡片 (.comiis_poll, form#poll, div.poll, .comiis_poll_list)
+        // 0. 投票帖专属卡片 (.comiis_poll, form#poll, div.poll, .comiis_poll_list, .pcht)
         if (node.classes.contains('comiis_poll') ||
             node.classes.contains('comiis_poll_list') ||
             node.classes.contains('poll') ||
-            tag == 'form' && node.id == 'poll' ||
-            node.querySelector('form#poll, .comiis_poll_list') != null) {
-          final title =
-              node.querySelector('.comiis_poll_top h2, h2')?.text.trim() ??
+            node.classes.contains('pcht') ||
+            tag == 'form' && (node.id == 'poll' || node.attributes['action']?.contains('votepoll') == true) ||
+            node.querySelector('form#poll, .comiis_poll_list, .pcht') != null) {
+          var title =
+              node.querySelector('.comiis_poll_top h2, .pinf strong, h2')?.text.trim() ??
               '投票';
+          title = title.replaceAll(RegExp(r'[\uE000-\uF8FF\uFFF0-\uFFFF\u{F0000}-\u{10FFFF}]', unicode: true), '').trim();
+          if (title.isEmpty) title = '投票';
+
           final votersM = RegExp(r'共有\s*(\d+)\s*人').firstMatch(node.text);
           final votersCount = votersM != null
               ? int.tryParse(votersM.group(1)!) ?? 0
               : 0;
-          final expEl = node.querySelector('.kmbtn span, .poll_time');
-          final expireText = expEl?.text.replaceAll('距结束还有:', '').trim();
-          final isMultiple = title.contains('多选');
+
+          final maxM = RegExp(r'最多可选\s*(\d+)\s*项').firstMatch(node.text);
+          final maxChoices = maxM != null ? int.tryParse(maxM.group(1)!) ?? 1 : 1;
+
+          final isClosed = node.text.contains('投票已经结束') ||
+              node.text.contains('投票已结束') ||
+              node.text.contains('关闭或者过期');
+
+          String? expireText = isClosed ? '投票已经结束' : null;
+          if (expireText == null) {
+            final expM = RegExp(r'距结束[^\d]*(\d+[^<\n\s]+)').firstMatch(node.text);
+            if (expM != null) {
+              expireText = expM.group(1)?.trim();
+            } else {
+              final expEl = node.querySelector('.kmbtn span, .poll_time, .ptmr');
+              if (expEl != null) {
+                final txt = expEl.text.replaceAll('距结束还有:', '').trim();
+                if (txt.isNotEmpty) expireText = txt;
+              }
+            }
+          }
+
+          final isMultiple = title.contains('多选') || node.text.contains('多选') || maxChoices > 1;
+
+          String? tipText;
+          if (node.text.contains('关闭或者过期') || isClosed) {
+            tipText = '该投票已经关闭或者过期，不能投票';
+          } else if (node.text.contains('点击登录') || node.text.contains('您需要登录')) {
+            tipText = '您需要登录后才可以参与投票';
+          } else if (node.text.contains('没有投票权限')) {
+            tipText = '您所在的用户组没有投票权限';
+          }
 
           final options = <PollOption>[];
-          for (final li in node.querySelectorAll(
-            '.comiis_poll_list li, ul.poll_list li, table.poll tr',
-          )) {
-            final rawLbl =
-                li.querySelector('label')?.text.trim() ?? li.text.trim();
-            final lbl = rawLbl
+          final seenOptionIds = <String>{};
+
+          final labelElements = node.querySelectorAll(
+            'label[for^="option_"], .kmnop label, td.pvt label, input[name*="pollanswers"]',
+          );
+
+          for (final lblEl in labelElements) {
+            final forId = lblEl.attributes['for'] ?? lblEl.attributes['value'] ?? 'opt_${options.length + 1}';
+            if (!seenOptionIds.add(forId)) continue;
+
+            final rawText = lblEl.text.trim();
+            final cleanLbl = rawText
                 .replaceAll(
                   RegExp(
                     r'[\uE000-\uF8FF\uFFF0-\uFFFF\u{F0000}-\u{10FFFF}]',
@@ -5986,37 +6025,72 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
                 )
                 .replaceAll(RegExp(r'^\s*[\d\.\、\：\:\-\(\)\[\]]+\s*'), '')
                 .trim();
-            final forId =
-                li.querySelector('label')?.attributes['for'] ??
-                li.querySelector('input')?.attributes['value'] ??
-                '';
-            final votesM = RegExp(r'(\d+)\s*票').firstMatch(li.text);
-            final votes = votesM != null
-                ? int.tryParse(votesM.group(1)!) ?? 0
-                : 0;
-            final pctM = RegExp(r'(\d+(?:\.\d+)?)\s*%').firstMatch(li.text);
-            final pct = pctM != null
-                ? double.tryParse(pctM.group(1)!) ?? 0.0
-                : 0.0;
-            final isChecked =
-                li.querySelector('input')?.attributes.containsKey('checked') ==
-                true;
-            if (lbl.isNotEmpty) {
-              options.add(
-                PollOption(
-                  id: forId.isNotEmpty ? forId : 'opt_${options.length}',
-                  label: lbl,
-                  votes: votes,
-                  percent: pct,
-                  isChecked: isChecked,
-                ),
-              );
+
+            if (cleanLbl.isEmpty) continue;
+
+            // 查找关联结果数据（移动端为 nextElementSibling .poll_ok，PC 端为 nextElementSibling tr）
+            html_dom.Element? parentBlock = lblEl;
+            while (parentBlock != null && parentBlock.localName != 'li' && parentBlock.localName != 'tr') {
+              parentBlock = parentBlock.parent;
             }
+
+            html_dom.Element? resultBlock = parentBlock?.nextElementSibling;
+            if (resultBlock != null &&
+                !resultBlock.classes.contains('poll_ok') &&
+                resultBlock.querySelector('.pbg, .pbr, .bg_b, [style*="width"]') == null &&
+                !RegExp(r'\d+(?:\.\d+)?\s*%').hasMatch(resultBlock.text)) {
+              resultBlock = null;
+            }
+
+            var pct = 0.0;
+            var votes = 0;
+            String? colorHex;
+            final isChecked = lblEl.querySelector('input')?.attributes.containsKey('checked') == true ||
+                parentBlock?.querySelector('input')?.attributes.containsKey('checked') == true;
+
+            final targets = [resultBlock, parentBlock];
+            for (final target in targets) {
+              if (target == null) continue;
+              final tHtml = target.outerHtml;
+              final tText = target.text.trim();
+
+              if (pct == 0.0) {
+                final wm = RegExp(r'width:\s*(\d+(?:\.\d+)?)\s*%').firstMatch(tHtml);
+                if (wm != null) {
+                  pct = double.tryParse(wm.group(1)!) ?? 0.0;
+                } else {
+                  final pm = RegExp(r'(\d+(?:\.\d+)?)\s*%').firstMatch(tText);
+                  if (pm != null) pct = double.tryParse(pm.group(1)!) ?? 0.0;
+                }
+              }
+
+              if (votes == 0) {
+                final vm = RegExp(r'\((\d+)\)').firstMatch(tText) ?? RegExp(r'(\d+)\s*票').firstMatch(tText);
+                if (vm != null) votes = int.tryParse(vm.group(1)!) ?? 0;
+              }
+
+              if (colorHex == null) {
+                final cm = RegExp(r'background-color:\s*(#[0-9a-fA-F]{3,8})').firstMatch(tHtml) ??
+                    RegExp(r'color:\s*(#[0-9a-fA-F]{3,8})').firstMatch(tHtml);
+                if (cm != null) colorHex = cm.group(1);
+              }
+            }
+
+            options.add(
+              PollOption(
+                id: forId,
+                label: cleanLbl,
+                votes: votes,
+                percent: pct,
+                isChecked: isChecked,
+                colorHex: colorHex,
+              ),
+            );
           }
 
-          final isVoted =
+          final isVoted = isClosed ||
               node.text.contains('您已经投过票') ||
-              node.querySelectorAll('.percent, .poll_percent').isNotEmpty;
+              node.querySelectorAll('.poll_ok, .pbr, .percent, .poll_percent').isNotEmpty;
           final loginReq =
               node.text.contains('点击登录') || node.text.contains('您需要登录');
 
@@ -6024,11 +6098,15 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
             PollBlock(
               title: title,
               isMultiple: isMultiple,
+              maxChoices: maxChoices,
               votersCount: votersCount,
               expireText: expireText,
               options: options,
               isVoted: isVoted,
+              isClosed: isClosed,
+              canVote: !isClosed && !loginReq,
               loginRequired: loginReq,
+              tipText: tipText,
             ),
           );
           continue;
