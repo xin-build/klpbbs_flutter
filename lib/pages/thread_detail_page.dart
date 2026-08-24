@@ -12,6 +12,8 @@ import '../models/post_floor.dart';
 import '../models/smiley.dart';
 import '../widgets/desktop_shortcuts.dart';
 import '../widgets/bili_video_player.dart';
+import '../widgets/general_audio_player.dart';
+import '../widgets/general_video_player.dart';
 import '../widgets/discuz_post_renderer.dart';
 import '../widgets/netease_music_player.dart';
 import '../widgets/global_nav.dart';
@@ -66,6 +68,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       String? coverUrl,
       bool isFavorited,
       bool isLiked,
+      int? favid,
     })
   >
   _future;
@@ -77,6 +80,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   String? _stampUrl;
   bool _liked = false;
   bool _favored = false;
+  int? _favid;
   int? _myUid;
   int? _firstAuthorUid;
   int _likes = 0;
@@ -142,10 +146,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
 
     final favList = prefs.getStringList('fav_tids') ?? const [];
     final isLocalFav = favList.contains('${widget.tid}');
-    final isServerFav = r.isFavorited == true;
-    _favored = isLocalFav || isServerFav;
-    if (isServerFav && !isLocalFav) {
-      _saveState('fav_tids', '${widget.tid}', true);
+    if (DioClient.isLoggedIn) {
+      // 严格按照论坛服务端/网页实时状态同步
+      _favored = r.isFavorited;
+      _favid = r.favid;
+      _saveState('fav_tids', '${widget.tid}', r.isFavorited);
+    } else {
+      _favored = isLocalFav;
     }
 
     _favorites = r.favorites;
@@ -164,9 +171,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   @override
   void dispose() {
     AppConfig.instance.removeListener(_onConfigChanged);
-    // 退出帖子页时停止 B站/网易云等内嵌播放器
+    // 退出帖子页时停止 B站/网易云/通用音频与视频内嵌播放器
     BiliVideoPlayer.stopAll();
     NetEaseMusicPlayer.stopAll();
+    GeneralAudioPlayer.stopAll();
+    GeneralVideoPlayer.stopAll();
     _scrollCtrl.dispose();
     super.dispose();
   }
@@ -480,7 +489,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     }
   }
 
-  Future<void> _onFavorite({bool openDialog = true}) async {
+  Future<void> _onFavorite({bool openDialog = false}) async {
     if (!DioClient.isLoggedIn) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -504,6 +513,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
         title: _title,
         author: author,
         isFavorited: _favored,
+        favid: _favid,
         onFavoritedChanged: (fav) {
           setState(() {
             _favored = fav;
@@ -542,7 +552,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
           );
         }
       } else {
-        final res = await KlpbbsApi.unfavoriteThread(widget.tid);
+        final res = await KlpbbsApi.unfavoriteThread(widget.tid, favid: _favid);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -826,8 +836,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                 _favored ? Icons.star : Icons.star_outline,
                 color: _favored ? Colors.amber.shade700 : null,
               ),
-              tooltip: _favored ? '已收藏 (点击管理)' : '收藏帖子',
-              onPressed: () => _onFavorite(openDialog: true),
+              tooltip: _favored ? '已收藏 (点击取消/长按管理)' : '收藏帖子',
+              onPressed: () => _onFavorite(openDialog: false),
             ),
             IconButton(
               icon: const Icon(Icons.reply),
@@ -896,6 +906,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                 String? coverUrl,
                 bool isFavorited,
                 bool isLiked,
+                int? favid,
               })
             >(
               future: _future,
@@ -1422,12 +1433,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                       ),
                       Expanded(
                         child: GestureDetector(
-                          onLongPress: () => _onFavorite(openDialog: false),
+                          onLongPress: () => _onFavorite(openDialog: true),
                           child: _BottomAction(
                             icon: _favored ? Icons.star : Icons.star_outline,
                             label: _favorites > 0 ? '$_favorites 收藏' : '收藏',
                             highlighted: _favored,
-                            onTap: () => _onFavorite(openDialog: true),
+                            activeColor: Colors.amber.shade700,
+                            onTap: () => _onFavorite(openDialog: false),
                           ),
                         ),
                       ),
@@ -1966,6 +1978,8 @@ class _FloorViewState extends State<_FloorView> {
                     author: floor.author,
                     size: 34,
                     faceUrl: floor.faceUrl.isNotEmpty ? floor.faceUrl : null,
+                    isOnline: floor.isOnline,
+                    showOnlineBadge: true,
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -2094,6 +2108,51 @@ class _FloorViewState extends State<_FloorView> {
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        if (floor.isWarned) ...[
+                          Tooltip(
+                            message: '该楼层受到版主/管理员警告处理',
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
+                              margin: const EdgeInsets.only(right: 6),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFFF9800).withAlpha(20),
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                  color: const Color(0xFFFF9800).withAlpha(180),
+                                  width: 0.8,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.warning_amber_rounded,
+                                    size: 11,
+                                    color: theme.brightness == Brightness.dark
+                                        ? const Color(0xFFFFB74D)
+                                        : const Color(0xFFE65100),
+                                  ),
+                                  const SizedBox(width: 2),
+                                  Text(
+                                    floor.warningText.isNotEmpty
+                                        ? floor.warningText
+                                        : '受到警告',
+                                    style: TextStyle(
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.bold,
+                                      color: theme.brightness == Brightness.dark
+                                          ? const Color(0xFFFFB74D)
+                                          : const Color(0xFFE65100),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
                         Container(
                           padding: const EdgeInsets.symmetric(
                             horizontal: 6,
@@ -2122,33 +2181,33 @@ class _FloorViewState extends State<_FloorView> {
                             ),
                           ),
                         ),
+                        if (floor.isBestAnswer) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.green.shade700,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.verified, size: 12, color: Colors.white),
+                                SizedBox(width: 2),
+                                Text(
+                                  '最佳答案',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 10.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ],
                     ),
-                    if (floor.isBestAnswer) ...[
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Colors.green.shade700,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.verified, size: 12, color: Colors.white),
-                            SizedBox(width: 2),
-                            Text(
-                              '最佳答案',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 10.5,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
                   ],
                 ),
               ],
@@ -3302,6 +3361,8 @@ class _ReplyFloorItem extends StatelessWidget {
                 author: comment.author,
                 size: 22,
                 faceUrl: comment.faceUrl.isNotEmpty ? comment.faceUrl : null,
+                isOnline: comment.isOnline,
+                showOnlineBadge: true,
               ),
             ),
             const SizedBox(width: 8),
@@ -3337,6 +3398,30 @@ class _ReplyFloorItem extends StatelessWidget {
                           style: theme.textTheme.labelSmall?.copyWith(
                             color: theme.colorScheme.outline.withAlpha(160),
                             fontSize: 10,
+                          ),
+                        ),
+                      ],
+                      if (comment.isWarned) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFF9800).withAlpha(20),
+                            borderRadius: BorderRadius.circular(3),
+                            border: Border.all(
+                              color: const Color(0xFFFF9800).withAlpha(180),
+                              width: 0.6,
+                            ),
+                          ),
+                          child: Text(
+                            comment.warningText.isNotEmpty ? comment.warningText : '受到警告',
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                              color: theme.brightness == Brightness.dark
+                                  ? const Color(0xFFFFB74D)
+                                  : const Color(0xFFE65100),
+                            ),
                           ),
                         ),
                       ],
@@ -3736,17 +3821,20 @@ class _BottomAction extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
   final bool highlighted;
+  final Color? activeColor;
 
   const _BottomAction({
     required this.icon,
     required this.label,
     required this.onTap,
     this.highlighted = false,
+    this.activeColor,
   });
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final color = highlighted ? (activeColor ?? scheme.primary) : scheme.outline;
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: onTap,
@@ -3758,14 +3846,14 @@ class _BottomAction extends StatelessWidget {
             Icon(
               icon,
               size: 20,
-              color: highlighted ? scheme.primary : scheme.outline,
+              color: color,
             ),
             const SizedBox(height: 2),
             Text(
               label,
               style: TextStyle(
                 fontSize: 10,
-                color: highlighted ? scheme.primary : scheme.outline,
+                color: color,
               ),
             ),
           ],

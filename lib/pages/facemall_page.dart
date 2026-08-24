@@ -73,6 +73,7 @@ class _FacemallPageState extends State<FacemallPage>
   final Map<int, List<FacemallItem>> _categoryItemsMap = {};
   List<Map<String, dynamic>> _myPendants = [];
   List<Map<String, dynamic>> _payList = [];
+  int _userIronPoints = 0;
 
   @override
   void initState() {
@@ -106,6 +107,15 @@ class _FacemallPageState extends State<FacemallPage>
       setState(() {
         _currentUid = myUid;
         _currentUsername = widget.username ?? '坛友';
+      });
+
+      // 拉取当前用户真实铁粒资产
+      KlpbbsApi.getUserSpace(myUid).then((space) {
+        if (space != null && mounted) {
+          final ironStr = space.creditsDetail['铁粒'] ?? space.credits;
+          final pts = int.tryParse(ironStr.replaceAll(RegExp(r'\D'), '')) ?? 0;
+          setState(() => _userIronPoints = pts);
+        }
       });
     }
 
@@ -148,53 +158,56 @@ class _FacemallPageState extends State<FacemallPage>
           priceText: m['price'] == '0' || m['price'] == '' ? '免费' : '${m['price']} 铁粒',
           priceCredit: int.tryParse(m['price'] ?? '0') ?? 0,
           isFree: m['price'] == '0' || m['price'] == '',
+          creditType: '铁粒',
+          validity: '30天',
           category: _categories.first.$2,
         )).toList();
+
         setState(() {
           _categoryItemsMap[_categories.first.$1] = firstList;
+          _initialLoading = false;
         });
+      } else {
+        _loadCategoryItems(_selectedCategory.$1);
       }
-    } catch (_) {}
-
-    // 2. 初始数据已就绪，立即呈现（与网页端单次 GET 请求速度对齐）
-    if (mounted) {
-      setState(() => _initialLoading = false);
-    }
-
-    // 3. 若首屏分类尚未缓存，则异步补齐
-    if (!_categoryItemsMap.containsKey(_selectedCategory.$1)) {
-      await _loadCategoryItems(_selectedCategory.$1);
+    } catch (_) {
+      if (mounted) _loadCategoryItems(_selectedCategory.$1);
     }
   }
 
   /// 动态从官方 AJAX 接口拉取指定分类下的真实商品列表
-  Future<void> _loadCategoryItems(int cateId) async {
+  Future<void> _loadCategoryItems(int catId) async {
     setState(() => _loadingCategory = true);
     try {
-      final liveList = await KlpbbsApi.getFacemallCategoryItems(cateId, formhash: _formhash);
+      final items = await KlpbbsApi.getFacemallCategoryItems(catId, formhash: _formhash);
       if (!mounted) return;
-      if (liveList.isNotEmpty) {
-        final mapped = liveList.map((m) => FacemallItem(
-          id: m['id'] ?? '',
-          name: m['title'] ?? '',
-          desc: '${m['title']} 论坛专属头像挂件',
-          frameUrl: m['img'] ?? '',
-          priceText: m['price'] == '0' || m['price'] == '' ? '免费' : '${m['price']} 铁粒',
-          priceCredit: int.tryParse(m['price'] ?? '0') ?? 0,
-          isFree: m['price'] == '0' || m['price'] == '',
-          category: _selectedCategory.$2,
-        )).toList();
 
+      final catName = _categories.firstWhere((c) => c.$1 == catId, orElse: () => (catId, '默认')).$2;
+      final parsedList = items.map((m) => FacemallItem(
+        id: m['id'] ?? '',
+        name: m['title'] ?? '',
+        desc: '${m['title']} 论坛专属头像挂件',
+        frameUrl: m['img'] ?? '',
+        priceText: m['price'] == '0' || m['price'] == '' ? '免费' : '${m['price']} 铁粒',
+        priceCredit: int.tryParse(m['price'] ?? '0') ?? 0,
+        isFree: m['price'] == '0' || m['price'] == '',
+        creditType: '铁粒',
+        validity: '30天',
+        category: catName,
+      )).toList();
+
+      setState(() {
+        _categoryItemsMap[catId] = parsedList;
+        _loadingCategory = false;
+        _initialLoading = false;
+      });
+    } catch (_) {
+      if (mounted) {
         setState(() {
-          _categoryItemsMap[cateId] = mapped;
           _loadingCategory = false;
+          _initialLoading = false;
         });
-        return;
       }
-    } catch (_) {}
-
-    if (mounted) {
-      setState(() => _loadingCategory = false);
     }
   }
 
@@ -203,11 +216,12 @@ class _FacemallPageState extends State<FacemallPage>
     setState(() => _loadingMyPendants = true);
     try {
       final list = await KlpbbsApi.getMyFacemallList(formhash: _formhash);
-      if (!mounted) return;
-      setState(() {
-        _myPendants = list;
-        _loadingMyPendants = false;
-      });
+      if (mounted) {
+        setState(() {
+          _myPendants = list;
+          _loadingMyPendants = false;
+        });
+      }
     } catch (_) {
       if (mounted) setState(() => _loadingMyPendants = false);
     }
@@ -218,58 +232,91 @@ class _FacemallPageState extends State<FacemallPage>
     setState(() => _loadingPayList = true);
     try {
       final list = await KlpbbsApi.getFacemallPayList(formhash: _formhash);
-      if (!mounted) return;
-      setState(() {
-        _payList = list;
-        _loadingPayList = false;
-      });
+      if (mounted) {
+        setState(() {
+          _payList = list;
+          _loadingPayList = false;
+        });
+      }
     } catch (_) {
       if (mounted) setState(() => _loadingPayList = false);
     }
   }
 
   Future<void> _unequipPendant() async {
-    await KlpbbsApi.dropFacemall();
-    await AppConfig.setMyFaceUrl(null, frameId: null);
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await KlpbbsApi.dropFacemall();
     if (!mounted) return;
-    setState(() {
-      _equippedFrameId = null;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('已向服务器提交卸下头像挂件请求'),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    if (ok) {
+      await AppConfig.setMyFaceUrl(null);
+      setState(() {
+        _equippedFrameId = null;
+      });
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('已卸下当前头像挂件！'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('卸下挂件失败，请重试'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   Future<void> _equipPendant(FacemallItem item) async {
-    await KlpbbsApi.setFacemall(item.id, frameUrl: item.frameUrl);
-    await AppConfig.setMyFaceUrl(item.frameUrl, frameId: item.id);
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await KlpbbsApi.setFacemall(item.id, frameUrl: item.frameUrl);
     if (!mounted) return;
-    setState(() {
-      _equippedFrameId = item.id;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('已成功向服务器佩戴「${item.name}」头像挂件！'),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    if (ok) {
+      await AppConfig.setMyFaceUrl(item.frameUrl);
+      setState(() {
+        _equippedFrameId = item.id;
+      });
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('已佩戴「${item.name}」头像挂件！'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('佩戴挂件失败，请重试'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
-  /// 1:1 复刻截图四官方购买/佩戴对话框
+  /// 1:1 复刻截图一官方购买/佩戴对话框
   void _showPendantDialog(FacemallItem item) {
     int selectedDays = 30;
+    int customDays = 30;
     bool equipNow = true;
+    final customCtrl = TextEditingController(text: '30');
 
     showDialog<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setModalState) {
-          final unitPrice = item.priceCredit > 0 ? item.priceCredit : 50;
-          final multiplier = selectedDays == 30 ? 1 : (selectedDays == 90 ? 2.5 : (selectedDays == 360 ? 8 : 1));
-          final totalPrice = (unitPrice * multiplier).round();
+          final unitPrice = item.priceCredit > 0 ? item.priceCredit : 80;
+          final effectiveDays = selectedDays > 0 ? selectedDays : customDays.clamp(1, 9999);
+          final totalPrice = item.isFree
+              ? 0
+              : (selectedDays == 30
+                  ? unitPrice
+                  : (selectedDays == 90
+                      ? (unitPrice * 2.5).round()
+                      : (selectedDays == 360
+                          ? (unitPrice * 8).round()
+                          : ((unitPrice * effectiveDays) / 30).round())));
+
+          final shortage = (totalPrice - _userIronPoints).clamp(0, 999999);
 
           return Dialog(
             backgroundColor: Colors.white,
@@ -278,7 +325,6 @@ class _FacemallPageState extends State<FacemallPage>
               constraints: const BoxConstraints(maxWidth: 420),
               child: Stack(
                 children: [
-                  // 右上角关闭按钮 (X)
                   Positioned(
                     top: 10,
                     right: 10,
@@ -294,7 +340,6 @@ class _FacemallPageState extends State<FacemallPage>
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        // 顶部大头像与挂件预览 (官方 1.75x 比例)
                         UserAvatarWidget(
                           uid: _currentUid > 0 ? _currentUid : null,
                           author: _currentUsername,
@@ -302,8 +347,6 @@ class _FacemallPageState extends State<FacemallPage>
                           faceUrl: item.frameUrl,
                         ),
                         const SizedBox(height: 14),
-
-                        // 挂件名称
                         Text(
                           item.name,
                           style: const TextStyle(
@@ -313,8 +356,6 @@ class _FacemallPageState extends State<FacemallPage>
                           ),
                         ),
                         const SizedBox(height: 20),
-
-                        // 购买天数
                         Align(
                           alignment: Alignment.centerLeft,
                           child: Text(
@@ -326,8 +367,6 @@ class _FacemallPageState extends State<FacemallPage>
                           ),
                         ),
                         const SizedBox(height: 10),
-
-                        // 天数选择标签组
                         Row(
                           children: [
                             for (final d in [30, 90, 360, 0]) ...[
@@ -363,9 +402,35 @@ class _FacemallPageState extends State<FacemallPage>
                             ],
                           ],
                         ),
+
+                        if (selectedDays == 0) ...[
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              const Text('自定义天数：', style: TextStyle(fontSize: 13, color: Color(0xFF555555))),
+                              Expanded(
+                                child: SizedBox(
+                                  height: 36,
+                                  child: TextField(
+                                    controller: customCtrl,
+                                    keyboardType: TextInputType.number,
+                                    decoration: const InputDecoration(
+                                      hintText: '输入天数 (1-999)',
+                                      border: OutlineInputBorder(),
+                                      contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                    ),
+                                    onChanged: (v) {
+                                      final val = int.tryParse(v) ?? 30;
+                                      setModalState(() => customDays = val);
+                                    },
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                         const SizedBox(height: 12),
 
-                        // 铁粒兑换胶囊
                         Align(
                           alignment: Alignment.centerLeft,
                           child: Container(
@@ -383,7 +448,6 @@ class _FacemallPageState extends State<FacemallPage>
                         ),
                         const SizedBox(height: 16),
 
-                        // 价格展示 (粉红大字)
                         Align(
                           alignment: Alignment.centerLeft,
                           child: RichText(
@@ -410,23 +474,31 @@ class _FacemallPageState extends State<FacemallPage>
                         ),
                         const SizedBox(height: 6),
 
-                        // 当前拥有与差额提示
                         Row(
                           children: [
-                            const Text(
-                              '当前拥有: 12805',
-                              style: TextStyle(fontSize: 12, color: Color(0xFF8C8C8C)),
+                            Text(
+                              '当前拥有: $_userIronPoints',
+                              style: const TextStyle(fontSize: 12, color: Color(0xFF8C8C8C)),
                             ),
                             const Spacer(),
-                            const Text(
-                              '还差0，如何获取？',
-                              style: TextStyle(fontSize: 12, color: Color(0xFF1890FF)),
+                            InkWell(
+                              onTap: () {
+                                Navigator.of(ctx).pop();
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => const ProfileSettingsPage(),
+                                  ),
+                                );
+                              },
+                              child: Text(
+                                '还差$shortage，如何获取？',
+                                style: const TextStyle(fontSize: 12, color: Color(0xFF1890FF)),
+                              ),
                             ),
                           ],
                         ),
                         const SizedBox(height: 18),
 
-                        // 确认购买按钮
                         SizedBox(
                           width: double.infinity,
                           height: 42,
@@ -440,7 +512,7 @@ class _FacemallPageState extends State<FacemallPage>
                               Navigator.of(ctx).pop();
                               final res = await KlpbbsApi.buyFacemall(
                                 item.id,
-                                sDay: selectedDays > 0 ? selectedDays : 30,
+                                sDay: effectiveDays,
                                 sNow: equipNow,
                               );
                               if (!mounted) return;
@@ -462,7 +534,6 @@ class _FacemallPageState extends State<FacemallPage>
                         ),
                         const SizedBox(height: 8),
 
-                        // 立即装备复选框
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
@@ -498,7 +569,7 @@ class _FacemallPageState extends State<FacemallPage>
     return Scaffold(
       appBar: AppBar(
         title: const Text('头像挂件'),
-        centerTitle: false,
+        centerTitle: true,
         actions: const [GlobalNavButton()],
       ),
       body: Center(

@@ -55,6 +55,9 @@ class ThreadSummary {
   /// 作者头像挂件 URL（若有）
   final String? faceUrl;
 
+  /// 收藏项 ID（我的收藏列表中使用）
+  final int? favid;
+
   const ThreadSummary({
     required this.tid,
     this.fid,
@@ -78,6 +81,7 @@ class ThreadSummary {
     this.stamp,
     this.stampUrl,
     this.faceUrl,
+    this.favid,
   });
 
   ThreadSummary copyWith({
@@ -103,6 +107,7 @@ class ThreadSummary {
     String? stamp,
     String? stampUrl,
     String? faceUrl,
+    int? favid,
   }) {
     return ThreadSummary(
       tid: tid ?? this.tid,
@@ -127,6 +132,7 @@ class ThreadSummary {
       stamp: stamp ?? this.stamp,
       stampUrl: stampUrl ?? this.stampUrl,
       faceUrl: faceUrl ?? this.faceUrl,
+      favid: favid ?? this.favid,
     );
   }
 }

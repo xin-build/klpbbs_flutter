@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:html/parser.dart' as html_parser;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/app_config.dart';
 import '../core/dio_client.dart';
@@ -63,7 +64,6 @@ class KlpbbsApi {
     String path, {
     Map<String, String>? headers,
     int retries = 2,
-    bool forceRefresh = false,
   }) async {
     DioException? lastError;
     for (var attempt = 0; attempt <= retries; attempt++) {
@@ -153,20 +153,42 @@ class KlpbbsApi {
     return null;
   }
 
-  /// 首页推荐流：聚合移动端门户大图推荐、图文导读、官方热帖与最新发布内容，确保高质量封面与完整作者/元数据
+  /// 全局作者名与 UID 映射缓存（用于各版块、搜索、门户自动补全头像）
+  static final Map<String, int> _authorUidCache = {};
+  static void cacheAuthorUid(String author, int uid) {
+    if (author.isNotEmpty && uid > 0) {
+      _authorUidCache[author] = uid;
+    }
+  }
+  static int? getCachedAuthorUid(String author) => _authorUidCache[author];
+
+  /// 首页推荐流：聚合移动端门户大图推荐、图文导读、官方热帖与最新发布内容，以及人才市场、悬赏问答等全站版块数据
   static Future<List<ThreadSummary>> getHome() async {
     final cached = PreloadService.instance.get<List<ThreadSummary>>(
       'home_threads',
     );
     try {
-      // 1. 并发获取 Discuz 移动端门户大图流、图文导读、实时热帖、最新发表与精品附加包
+      // 1. 并发获取 Discuz 移动端门户大图流、图文导读、实时热帖、最新发表，以及全版块真实帖子数据
       final results = await Future.wait([
         _get('forum.php?mobile=2').catchError((_) => ''),
         getGuide('pic', page: 1).catchError((_) => <ThreadSummary>[]),
         getGuide('hot', page: 1).catchError((_) => <ThreadSummary>[]),
         getGuide('newthread', page: 1).catchError((_) => <ThreadSummary>[]),
-        getThreadList(52, page: 1).catchError((_) => <ThreadSummary>[]),
-        getThreadList(45, page: 1).catchError((_) => <ThreadSummary>[]),
+        getThreadList(75, page: 1).catchError((_) => <ThreadSummary>[]), // 人才市场
+        getThreadList(68, page: 1).catchError((_) => <ThreadSummary>[]), // 悬赏问答
+        getThreadList(113, page: 1).catchError((_) => <ThreadSummary>[]), // 教程中心
+        getThreadList(41, page: 1).catchError((_) => <ThreadSummary>[]), // 闲聊讨论
+        getThreadList(2, page: 1).catchError((_) => <ThreadSummary>[]),  // 游戏资讯
+        getThreadList(52, page: 1).catchError((_) => <ThreadSummary>[]), // BE附加包
+        getThreadList(53, page: 1).catchError((_) => <ThreadSummary>[]), // BE材质光影
+        getThreadList(140, page: 1).catchError((_) => <ThreadSummary>[]), // JE模组
+        getThreadList(48, page: 1).catchError((_) => <ThreadSummary>[]), // JE整合包
+        getThreadList(51, page: 1).catchError((_) => <ThreadSummary>[]), // BE地图
+        getThreadList(43, page: 1).catchError((_) => <ThreadSummary>[]), // 软件资源
+        getThreadList(56, page: 1).catchError((_) => <ThreadSummary>[]), // 服务器大厅
+        getThreadList(111, page: 1).catchError((_) => <ThreadSummary>[]), // 周边创作
+        getThreadList(62, page: 1).catchError((_) => <ThreadSummary>[]), // 站内活动
+        getThreadList(127, page: 1).catchError((_) => <ThreadSummary>[]), // 联机交友
       ]);
 
       final homePortalHtml = results[0] as String;
@@ -176,8 +198,21 @@ class KlpbbsApi {
       final guidePic = results[1] as List<ThreadSummary>;
       final guideHot = results[2] as List<ThreadSummary>;
       final guideNew = results[3] as List<ThreadSummary>;
-      final addonThreads = results[4] as List<ThreadSummary>;
-      final shaderThreads = results[5] as List<ThreadSummary>;
+      final talentThreads = results[4] as List<ThreadSummary>;
+      final rewardThreads = results[5] as List<ThreadSummary>;
+      final tutorialThreads = results[6] as List<ThreadSummary>;
+      final chatThreads = results[7] as List<ThreadSummary>;
+      final newsThreads = results[8] as List<ThreadSummary>;
+      final addonThreads = results[9] as List<ThreadSummary>;
+      final shaderThreads = results[10] as List<ThreadSummary>;
+      final jeModThreads = results[11] as List<ThreadSummary>;
+      final modpackThreads = results[12] as List<ThreadSummary>;
+      final beMapThreads = results[13] as List<ThreadSummary>;
+      final softwareThreads = results[14] as List<ThreadSummary>;
+      final serverThreads = results[15] as List<ThreadSummary>;
+      final fanThreads = results[16] as List<ThreadSummary>;
+      final activityThreads = results[17] as List<ThreadSummary>;
+      final friendThreads = results[18] as List<ThreadSummary>;
 
       // 建立封面、作者 UID、发布日期与阅读数映射索引表
       final coverMap = <int, String>{};
@@ -185,16 +220,19 @@ class KlpbbsApi {
       final timeMap = <int, String>{};
       final viewsMap = <int, int>{};
       final repliesMap = <int, int>{};
+      final forumMap = <int, String>{};
 
       void recordMeta(List<ThreadSummary> list) {
         for (final t in list) {
+          ComiisParser.registerThread(t.tid, fid: t.fid, forumName: t.forumName);
           if (t.coverUrl != null && t.coverUrl!.isNotEmpty) {
             coverMap[t.tid] = t.coverUrl!;
           }
           if (t.uid != null && t.uid! > 0 && t.author.isNotEmpty) {
             authorUidMap[t.author] = t.uid!;
+            _authorUidCache[t.author] = t.uid!;
           }
-          if (t.timeText != null && t.timeText!.isNotEmpty) {
+          if (t.timeText != null && t.timeText!.isNotEmpty && t.timeText != '近期') {
             timeMap[t.tid] = t.timeText!;
           }
           if (t.views > 0) {
@@ -203,9 +241,25 @@ class KlpbbsApi {
           if (t.replies > 0) {
             repliesMap[t.tid] = t.replies;
           }
+          if (t.forumName != null && t.forumName!.isNotEmpty) {
+            forumMap[t.tid] = t.forumName!;
+          }
         }
       }
 
+      recordMeta(talentThreads);
+      recordMeta(rewardThreads);
+      recordMeta(tutorialThreads);
+      recordMeta(chatThreads);
+      recordMeta(newsThreads);
+      recordMeta(fanThreads);
+      recordMeta(jeModThreads);
+      recordMeta(modpackThreads);
+      recordMeta(beMapThreads);
+      recordMeta(softwareThreads);
+      recordMeta(serverThreads);
+      recordMeta(activityThreads);
+      recordMeta(friendThreads);
       recordMeta(shaderThreads);
       recordMeta(addonThreads);
       recordMeta(guidePic);
@@ -223,18 +277,29 @@ class KlpbbsApi {
               : coverMap[t.tid];
           final uid = (t.uid != null && t.uid! > 0)
               ? t.uid
-              : authorUidMap[t.author];
-          final timeText = (t.timeText != null && t.timeText!.isNotEmpty)
+              : (authorUidMap[t.author] ?? _authorUidCache[t.author]);
+          final timeText = (t.timeText != null && t.timeText!.isNotEmpty && t.timeText != '近期')
               ? t.timeText
-              : (timeMap[t.tid] ?? '近期');
+              : (timeMap[t.tid] ?? t.timeText);
           final views = t.views > 0 ? t.views : (viewsMap[t.tid] ?? -1);
           final replies = t.replies > 0 ? t.replies : (repliesMap[t.tid] ?? -1);
+          final rawForum = (t.forumName != null && t.forumName!.isNotEmpty)
+              ? t.forumName
+              : forumMap[t.tid];
+          final forumName = ComiisParser.resolveForumName(
+            tid: t.tid,
+            fid: t.fid,
+            rawForumName: rawForum,
+            title: t.title,
+            typeName: t.typeName,
+          );
 
           enriched.add(
             t.copyWith(
               coverUrl: cover,
               uid: uid,
               timeText: timeText,
+              forumName: forumName,
               views: views,
               replies: replies,
             ),
@@ -259,20 +324,40 @@ class KlpbbsApi {
         addThread(t);
       }
 
-      // 4. 加入精选资源版块（BE附加包、材质光影）
+      // 4. 加入人才市场与悬赏问答精选主题（100% 具备真实头像与发布时间）
+      for (final t in talentThreads) {
+        addThread(t);
+      }
+      for (final t in rewardThreads) {
+        addThread(t);
+      }
+
+      // 5. 加入精选资源版块（BE附加包、材质光影、JE模组、闲聊讨论、游戏资讯）
       for (final t in addonThreads) {
         addThread(t);
       }
       for (final t in shaderThreads) {
         addThread(t);
       }
+      for (final t in jeModThreads) {
+        addThread(t);
+      }
+      for (final t in newsThreads) {
+        addThread(t);
+      }
+      for (final t in chatThreads) {
+        addThread(t);
+      }
+      for (final t in fanThreads) {
+        addThread(t);
+      }
 
-      // 5. 加入全站最新动态
+      // 6. 加入全站最新动态
       for (final t in guideNew) {
         addThread(t);
       }
 
-      // 6. 补充门户中其他优质主题（自动补全作者头像与时间）
+      // 7. 补充门户中其他优质主题（自动补全作者头像与时间）
       for (final t in portalThreads) {
         addThread(t);
       }
@@ -595,11 +680,25 @@ class KlpbbsApi {
       if (orderby != null) buf.write('&orderby=$orderby');
       if (page > 1) buf.write('&page=$page');
       final html = await _get(buf.toString());
-      final res = ComiisParser.parseThreadList(html);
+      final res = ComiisParser.parseThreadList(html, pageFid: fid);
       if (res.isNotEmpty) {
-        PreloadService.instance.set(cacheKey, res);
+        final enrichedRes = res
+            .map(
+              (t) => t.copyWith(
+                fid: t.fid ?? fid,
+                forumName: ComiisParser.resolveForumName(
+                  tid: t.tid,
+                  fid: t.fid ?? fid,
+                  rawForumName: t.forumName,
+                  title: t.title,
+                  typeName: t.typeName,
+                ),
+              ),
+            )
+            .toList();
+        PreloadService.instance.set(cacheKey, enrichedRes);
         _preloadThreadList(fid, typeid: typeid, orderby: orderby, page: page);
-        return res;
+        return enrichedRes;
       }
     } catch (_) {}
     if (page == 1) {
@@ -628,8 +727,22 @@ class KlpbbsApi {
           if (orderby != null) buf.write('&orderby=$orderby');
           buf.write('&page=$nextPage');
           final html = await _get(buf.toString());
-          final res = ComiisParser.parseThreadList(html);
-          PreloadService.instance.set(nextKey, res);
+          final res = ComiisParser.parseThreadList(html, pageFid: fid);
+          final enrichedRes = res
+              .map(
+                (t) => t.copyWith(
+                  fid: t.fid ?? fid,
+                  forumName: ComiisParser.resolveForumName(
+                    tid: t.tid,
+                    fid: t.fid ?? fid,
+                    rawForumName: t.forumName,
+                    title: t.title,
+                    typeName: t.typeName,
+                  ),
+                ),
+              )
+              .toList();
+          PreloadService.instance.set(nextKey, enrichedRes);
         }
       } catch (_) {}
     });
@@ -659,64 +772,78 @@ class KlpbbsApi {
       String? coverUrl,
       bool isFavorited,
       bool isLiked,
+      int? favid,
     })
   >
   getThreadDetail(int tid, {int page = 1, bool forceRefresh = false}) async {
     final cacheKey = 'thread_detail_${tid}_$page';
-    try {
-      final html = await _get(
-        'forum.php?mod=viewthread&tid=$tid&mobile=2${page > 1 ? '&page=$page' : ''}',
-        forceRefresh: forceRefresh,
-      );
-      var res = ComiisParser.parseThreadDetail(html);
-      if (res.floors.isEmpty) {
-        try {
-          final pcHtml = await _get(
-            'forum.php?mod=viewthread&tid=$tid&mobile=no${page > 1 ? '&page=$page' : ''}',
-            headers: {'User-Agent': AppConfig.pcUserAgent},
-            forceRefresh: forceRefresh,
-          );
-          final pcRes = ComiisParser.parseThreadDetail(pcHtml);
-          if (pcRes.floors.isNotEmpty) res = pcRes;
-        } catch (_) {}
-      }
-      if (res.floors.isNotEmpty) {
-        PreloadService.instance.set(cacheKey, res);
+    if (!forceRefresh) {
+      final cached = PreloadService.instance.get<
+        ({
+          String title,
+          List<PostFloor> floors,
+          int totalPages,
+          int firstAuthorCredits,
+          String publishDate,
+          String lastReplyDate,
+          String forumName,
+          int? fid,
+          List<String> breadcrumbs,
+          String? typeName,
+          int? typeid,
+          int likes,
+          int favorites,
+          int views,
+          int replies,
+          List<String> tags,
+          String? stamp,
+          String? stampUrl,
+          String? coverUrl,
+          bool isFavorited,
+          bool isLiked,
+          int? favid,
+        })
+      >(cacheKey);
+      if (cached != null) {
         _preloadThreadDetail(tid, page);
-        return res;
+        return cached;
       }
-    } catch (_) {}
-
-    final cached = PreloadService.instance
-        .get<
-          ({
-            String title,
-            List<PostFloor> floors,
-            int totalPages,
-            int firstAuthorCredits,
-            String publishDate,
-            String lastReplyDate,
-            String forumName,
-            int? fid,
-            List<String> breadcrumbs,
-            String? typeName,
-            int? typeid,
-            int likes,
-            int favorites,
-            int views,
-            int replies,
-            List<String> tags,
-            String? stamp,
-            String? stampUrl,
-            String? coverUrl,
-            bool isFavorited,
-            bool isLiked,
-          })
-        >(cacheKey);
-    if (cached != null && cached.floors.isNotEmpty) {
-      return cached;
     }
-    throw Exception('未能加载帖子详情，请检查网络连接');
+    try {
+      final res = await _fetchThreadDetail(tid, page);
+      PreloadService.instance.set(cacheKey, res);
+      _preloadThreadDetail(tid, page);
+      return res;
+    } catch (_) {
+      final cached = PreloadService.instance.get<
+        ({
+          String title,
+          List<PostFloor> floors,
+          int totalPages,
+          int firstAuthorCredits,
+          String publishDate,
+          String lastReplyDate,
+          String forumName,
+          int? fid,
+          List<String> breadcrumbs,
+          String? typeName,
+          int? typeid,
+          int likes,
+          int favorites,
+          int views,
+          int replies,
+          List<String> tags,
+          String? stamp,
+          String? stampUrl,
+          String? coverUrl,
+          bool isFavorited,
+          bool isLiked,
+          int? favid,
+        })
+      >(cacheKey);
+      if (cached != null) return cached;
+      rethrow;
+    }
   }
 
   static void _preloadThreadDetail(int tid, int page) {
@@ -725,17 +852,13 @@ class KlpbbsApi {
         final nextPage = page + 1;
         final nextKey = 'thread_detail_${tid}_$nextPage';
         if (!PreloadService.instance.has(nextKey)) {
-          final html = await _get(
-            'forum.php?mod=viewthread&tid=$tid&mobile=2&page=$nextPage',
-          );
-          final res = ComiisParser.parseThreadDetail(html);
+          final res = await _fetchThreadDetail(tid, nextPage);
           PreloadService.instance.set(nextKey, res);
         }
       } catch (_) {}
     });
   }
 
-  /// 别名兼容（支持 forceRefresh）
   static Future<
     ({
       String title,
@@ -759,6 +882,76 @@ class KlpbbsApi {
       String? coverUrl,
       bool isFavorited,
       bool isLiked,
+      int? favid,
+    })
+  >
+  _fetchThreadDetail(int tid, int page) async {
+    final html = await _get(
+      'forum.php?mod=viewthread&tid=$tid&mobile=2&page=$page',
+    );
+    final detail = ComiisParser.parseThreadDetail(html);
+    return detail;
+  }
+
+  static final Map<int, Future<String?>> _inFlightForumRequests = {};
+
+  /// 异步获取帖子的绝对真实版块信息（直接从帖子真实页面提取，带并发去重）
+  static Future<String?> resolveThreadForumAsync(int tid) async {
+    if (tid <= 0) return null;
+    final cached = ComiisParser.getForumNameByTid(tid);
+    if (cached != null && cached.isNotEmpty) return cached;
+
+    if (_inFlightForumRequests.containsKey(tid)) {
+      return _inFlightForumRequests[tid];
+    }
+
+    final future = () async {
+      try {
+        final html = await _get('forum.php?mod=viewthread&tid=$tid&mobile=2');
+        final detail = ComiisParser.parseThreadDetail(html);
+        if (detail.forumName.isNotEmpty) {
+          ComiisParser.registerThread(
+            tid,
+            fid: detail.fid,
+            forumName: detail.forumName,
+          );
+          return detail.forumName;
+        }
+      } catch (_) {}
+      return null;
+    }();
+
+    _inFlightForumRequests[tid] = future;
+    final result = await future;
+    _inFlightForumRequests.remove(tid);
+    return result;
+  }
+
+  /// 快速获取主题详情（兼容别名）
+  static Future<
+    ({
+      String title,
+      List<PostFloor> floors,
+      int totalPages,
+      int firstAuthorCredits,
+      String publishDate,
+      String lastReplyDate,
+      String forumName,
+      int? fid,
+      List<String> breadcrumbs,
+      String? typeName,
+      int? typeid,
+      int likes,
+      int favorites,
+      int views,
+      int replies,
+      List<String> tags,
+      String? stamp,
+      String? stampUrl,
+      String? coverUrl,
+      bool isFavorited,
+      bool isLiked,
+      int? favid,
     })
   >
   getThread(int tid, {int page = 1, bool forceRefresh = false}) =>
@@ -789,12 +982,22 @@ class KlpbbsApi {
         final merged = <ThreadSummary>[];
         for (final pt in pcThreads) {
           final mt = mobileMap[pt.tid];
+          final rawForum = (mt?.forumName != null && mt!.forumName!.isNotEmpty)
+              ? mt.forumName
+              : pt.forumName;
+          final fid = mt?.fid ?? pt.fid;
+          final resolvedForum = ComiisParser.resolveForumName(
+            tid: pt.tid,
+            fid: fid,
+            rawForumName: rawForum,
+            title: pt.title,
+            typeName: pt.typeName ?? mt?.typeName,
+          );
           merged.add(
             pt.copyWith(
+              fid: fid,
               coverUrl: pt.coverUrl ?? mt?.coverUrl,
-              forumName: (pt.forumName != null && pt.forumName!.isNotEmpty)
-                  ? pt.forumName
-                  : mt?.forumName,
+              forumName: resolvedForum,
               uid: pt.uid ?? mt?.uid,
               author: pt.author.isNotEmpty ? pt.author : (mt?.author ?? ''),
             ),
@@ -802,12 +1005,49 @@ class KlpbbsApi {
         }
         final seen = merged.map((t) => t.tid).toSet();
         for (final mt in mobileThreads) {
-          if (seen.add(mt.tid)) merged.add(mt);
+          if (seen.add(mt.tid)) {
+            final resolvedForum = ComiisParser.resolveForumName(
+              tid: mt.tid,
+              fid: mt.fid,
+              rawForumName: mt.forumName,
+              title: mt.title,
+              typeName: mt.typeName,
+            );
+            merged.add(mt.copyWith(forumName: resolvedForum));
+          }
         }
         if (merged.isNotEmpty) return merged;
       }
-      if (mobileThreads.isNotEmpty) return mobileThreads;
-      if (pcThreads.isNotEmpty) return pcThreads;
+      if (mobileThreads.isNotEmpty) {
+        return mobileThreads
+            .map(
+              (t) => t.copyWith(
+                forumName: ComiisParser.resolveForumName(
+                  tid: t.tid,
+                  fid: t.fid,
+                  rawForumName: t.forumName,
+                  title: t.title,
+                  typeName: t.typeName,
+                ),
+              ),
+            )
+            .toList();
+      }
+      if (pcThreads.isNotEmpty) {
+        return pcThreads
+            .map(
+              (t) => t.copyWith(
+                forumName: ComiisParser.resolveForumName(
+                  tid: t.tid,
+                  fid: t.fid,
+                  rawForumName: t.forumName,
+                  title: t.title,
+                  typeName: t.typeName,
+                ),
+              ),
+            )
+            .toList();
+      }
     } catch (_) {}
 
     try {
@@ -815,7 +1055,20 @@ class KlpbbsApi {
         'forum.php?mod=guide&view=$view&mobile=2${page > 1 ? '&page=$page' : ''}',
       );
       final threads = ComiisParser.parseThreadList(html);
-      if (threads.isNotEmpty) return threads;
+      if (threads.isNotEmpty) {
+        return threads
+            .map(
+              (t) => t.copyWith(
+                forumName: ComiisParser.resolveForumName(
+                  fid: t.fid,
+                  rawForumName: t.forumName,
+                  title: t.title,
+                  typeName: t.typeName,
+                ),
+              ),
+            )
+            .toList();
+      }
     } catch (_) {}
 
     return getThreadList(52, page: page);
@@ -1521,7 +1774,15 @@ class KlpbbsApi {
         res,
         defaultMsg: '收藏成功！',
       );
-      final isSuccess = !res.contains('alert_error') || res.contains('成功') || res.contains('succeed');
+      final isSuccess = !res.contains('alert_error') || res.contains('成功') || res.contains('succeed') || res.contains('信息');
+      if (isSuccess) {
+        final prefs = await SharedPreferences.getInstance();
+        final favList = (prefs.getStringList('fav_tids') ?? []).toList();
+        if (!favList.contains('$tid')) {
+          favList.add('$tid');
+          await prefs.setStringList('fav_tids', favList);
+        }
+      }
       return (success: isSuccess, message: msg);
     } catch (e) {
       return (success: false, message: '网络请求异常：$e');
@@ -1549,33 +1810,57 @@ class KlpbbsApi {
       int? targetFavid = favid;
       if (targetFavid == null || targetFavid <= 0) {
         try {
-          final favPage = await _get('home.php?mod=space&do=favorite&view=thread&mobile=no');
-          final reg = RegExp('id="fav_(\\d+)".*?thread-$tid-1-1\\.html|favid=(\\d+).*?tid=$tid', dotAll: true).firstMatch(favPage) ??
-              RegExp('favid=(\\d+)').firstMatch(favPage);
-          if (reg != null) {
-            targetFavid = int.tryParse(reg.group(1) ?? reg.group(2) ?? '');
+          final favPage = await _get('home.php?mod=space&do=favorite&view=thread&mobile=2');
+          targetFavid = ComiisParser.extractFavidFromHtml(favPage, tid);
+          if (targetFavid == null || targetFavid <= 0) {
+            final pcFavPage = await _get('home.php?mod=space&do=favorite&view=thread&mobile=no');
+            targetFavid = ComiisParser.extractFavidFromHtml(pcFavPage, tid);
           }
         } catch (_) {}
       }
 
+      final formData = {
+        'formhash': formhash,
+        'delsubmit': 'true',
+        'delsubmitbtn': 'true',
+        'deletesubmit': 'true',
+        'deletesubmitbtn': 'true',
+        'handlekey': 'favorite',
+      };
+      if (targetFavid != null && targetFavid > 0) {
+        formData['favorite[]'] = '$targetFavid';
+      }
+
       String res = '';
       if (targetFavid != null && targetFavid > 0) {
-        res = await _get(
-          'home.php?mod=spacecp&ac=favorite&op=delete&favid=$targetFavid&formhash=$formhash&inajax=1',
+        res = await _post(
+          'home.php?mod=spacecp&ac=favorite&op=delete&favid=$targetFavid&inajax=1',
+          formData,
           headers: {
             'X-Requested-With': 'XMLHttpRequest',
             'Referer': '${AppConfig.baseUrl}home.php?mod=space&do=favorite&view=thread',
           },
         );
-      } else {
-        res = await _get(
-          'home.php?mod=spacecp&ac=favorite&op=delete&type=thread&id=$tid&formhash=$formhash&inajax=1',
+      }
+
+      // 若未指定 favid 或 favid 删除未返回成功，再执行基于 tid 的标准删除
+      if (res.isEmpty || !res.contains('succeed')) {
+        final resTid = await _post(
+          'home.php?mod=spacecp&ac=favorite&op=delete&type=thread&id=$tid&inajax=1',
+          formData,
           headers: {
             'X-Requested-With': 'XMLHttpRequest',
             'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
           },
         );
+        if (res.isEmpty) res = resTid;
       }
+
+      // 同步本地缓存
+      final prefs = await SharedPreferences.getInstance();
+      final favList = (prefs.getStringList('fav_tids') ?? []).toList();
+      favList.remove('$tid');
+      await prefs.setStringList('fav_tids', favList);
 
       final msg = _extractDiscuzResponseMessage(
         res,
@@ -1605,36 +1890,196 @@ class KlpbbsApi {
     }
   }
 
-  /// 收藏/取消收藏版块
-  static Future<bool> favoriteForum(int fid) async {
+  /// 收藏版块（严格按照 Discuz 网页与移动端交互协议）
+  static Future<({bool success, String message})> favoriteForum(
+    int fid, {
+    String? description,
+  }) async {
+    if (!DioClient.isLoggedIn) {
+      return (success: false, message: '请先登录论坛账号');
+    }
     try {
       var formhash = _cachedFormhash;
       if (formhash == null || formhash.isEmpty) {
-        final page = await _get(
-          'forum.php?mod=forumdisplay&fid=$fid&mobile=no',
-        );
+        final page = await _get('forum.php?mod=forumdisplay&fid=$fid&mobile=2');
         formhash = _extractFormhash(page);
+        if (formhash == null || formhash.isEmpty) {
+          final pcPage = await _get('forum.php?mod=forumdisplay&fid=$fid&mobile=no');
+          formhash = _extractFormhash(pcPage);
+        }
       }
-      if (formhash == null || formhash.isEmpty) return false;
-      final html = await _get(
-        'home.php?mod=spacecp&ac=favorite&type=forum&id=$fid&formhash=$formhash&inajax=1',
+      if (formhash == null || formhash.isEmpty) {
+        return (success: false, message: '未能获取 FormHash，请重试');
+      }
+
+      final formData = {
+        'formhash': formhash,
+        'favoritesubmit': 'true',
+        'favoritesubmit_btn': 'true',
+        'handlekey': 'k_favorite',
+        'description': description ?? '',
+      };
+
+      final res = await _post(
+        'home.php?mod=spacecp&ac=favorite&type=forum&id=$fid&inajax=1',
+        formData,
         headers: {
           'X-Requested-With': 'XMLHttpRequest',
           'Referer': '${AppConfig.baseUrl}forum.php?mod=forumdisplay&fid=$fid',
         },
       );
-      return !html.contains('alert_error') && !html.contains('来路不正确');
-    } catch (_) {
-      return false;
+
+      // 同步本地已收藏版块缓存
+      final prefs = await SharedPreferences.getInstance();
+      final set = (prefs.getStringList('fav_forums') ?? []).toSet();
+      set.add('$fid');
+      await prefs.setStringList('fav_forums', set.toList());
+      PreloadService.instance.remove('forum_groups');
+
+      final isSuccess = res.contains('succeed') ||
+          res.contains('信息') ||
+          res.contains('成功') ||
+          !res.contains('alert_error');
+      final msg = _extractDiscuzResponseMessage(
+        res,
+        defaultMsg: isSuccess ? '已成功收藏该版块' : '收藏失败，请稍后重试',
+      );
+      return (success: isSuccess, message: msg);
+    } catch (e) {
+      return (success: false, message: '网络请求异常：$e');
     }
   }
 
-  /// 我的收藏版块
+  /// 取消收藏版块（严格按照 Discuz 网页与移动端 spacecp op=delete 协议同步）
+  static Future<({bool success, String message})> unfavoriteForum(
+    int fid, {
+    int? favid,
+  }) async {
+    if (!DioClient.isLoggedIn) {
+      return (success: false, message: '请先登录论坛账号');
+    }
+    try {
+      var formhash = _cachedFormhash;
+      if (formhash == null || formhash.isEmpty) {
+        final page = await _get('forum.php?mod=forumdisplay&fid=$fid&mobile=2');
+        formhash = _extractFormhash(page);
+        if (formhash == null || formhash.isEmpty) {
+          final pcPage = await _get('forum.php?mod=forumdisplay&fid=$fid&mobile=no');
+          formhash = _extractFormhash(pcPage);
+        }
+      }
+      if (formhash == null || formhash.isEmpty) {
+        return (success: false, message: '未能获取 FormHash，请重试');
+      }
+
+      int? targetFavid = favid;
+      if (targetFavid == null || targetFavid <= 0) {
+        try {
+          final favPage = await _get('home.php?mod=space&do=favorite&type=forum&mobile=no');
+          targetFavid = ComiisParser.extractFavidFromHtml(favPage, fid, type: 'forum');
+          if (targetFavid == null || targetFavid <= 0) {
+            final mFavPage = await _get('home.php?mod=space&do=favorite&view=forum&mobile=2');
+            targetFavid = ComiisParser.extractFavidFromHtml(mFavPage, fid, type: 'forum');
+          }
+        } catch (_) {}
+      }
+
+      final formData = {
+        'formhash': formhash,
+        'delsubmit': 'true',
+        'delsubmitbtn': 'true',
+        'deletesubmit': 'true',
+        'deletesubmitbtn': 'true',
+        'handlekey': 'favorite',
+      };
+      if (targetFavid != null && targetFavid > 0) {
+        formData['favorite[]'] = '$targetFavid';
+      }
+
+      String res = '';
+      if (targetFavid != null && targetFavid > 0) {
+        res = await _post(
+          'home.php?mod=spacecp&ac=favorite&op=delete&favid=$targetFavid&inajax=1',
+          formData,
+          headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': '${AppConfig.baseUrl}home.php?mod=space&do=favorite&type=forum',
+          },
+        );
+      }
+
+      if (res.isEmpty || !res.contains('succeed')) {
+        final resFid = await _post(
+          'home.php?mod=spacecp&ac=favorite&op=delete&type=forum&id=$fid&inajax=1',
+          formData,
+          headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': '${AppConfig.baseUrl}forum.php?mod=forumdisplay&fid=$fid',
+          },
+        );
+        if (res.isEmpty) res = resFid;
+      }
+
+      _forumFavidCache.remove(fid);
+
+      // 同步本地已收藏版块缓存
+      final prefs = await SharedPreferences.getInstance();
+      final favList = (prefs.getStringList('fav_forums') ?? []).toList();
+      favList.remove('$fid');
+      await prefs.setStringList('fav_forums', favList);
+      PreloadService.instance.remove('forum_groups');
+
+      final msg = _extractDiscuzResponseMessage(
+        res,
+        defaultMsg: '已取消收藏该版块',
+      );
+      return (success: true, message: msg);
+    } catch (e) {
+      return (success: false, message: '网络请求异常：$e');
+    }
+  }
+
+  /// 内存中缓存的版块 FID -> FAV_ID 映射
+  static final Map<int, int> _forumFavidCache = {};
+
+  /// 我的收藏版块（从 Discuz 原生收藏中心拉取：home.php?mod=space&do=favorite&type=forum）
   static Future<List<Forum>> getFavoriteForums(int uid) async {
-    final html = await _get(
-      'home.php?mod=space&uid=$uid&do=favorite&view=forum&mobile=no',
-    );
-    return ComiisParser.parseForums(html);
+    try {
+      final html = await _get(
+        'home.php?mod=space&do=favorite&type=forum&mobile=no',
+      );
+      final list = ComiisParser.parseFavoriteForums(html);
+      if (list.isNotEmpty) {
+        final prefs = await SharedPreferences.getInstance();
+        final set = (prefs.getStringList('fav_forums') ?? []).toSet();
+        for (final f in list) {
+          set.add('${f.fid}');
+          if (f.favid != null && f.favid! > 0) {
+            _forumFavidCache[f.fid] = f.favid!;
+          }
+        }
+        await prefs.setStringList('fav_forums', set.toList());
+        return list;
+      }
+    } catch (_) {}
+
+    // 如果网络异常或尚未解析到，从本地持久化版块列表安全构建，绝不覆写清空
+    final prefs = await SharedPreferences.getInstance();
+    final favList = (prefs.getStringList('fav_forums') ?? [])
+        .map(int.tryParse)
+        .whereType<int>()
+        .where((f) => f > 0)
+        .toList();
+    final allForums = SeedData.forumGroups.expand((g) => g.forums).toList();
+    return favList.map((fid) {
+      return allForums.firstWhere(
+        (f) => f.fid == fid,
+        orElse: () => Forum(
+          fid: fid,
+          name: ComiisParser.getForumNameByFid(fid) ?? '版块 $fid',
+        ),
+      );
+    }).toList();
   }
 
   // ---------------------------------------------------------------------
@@ -2797,48 +3242,227 @@ class KlpbbsApi {
     return ComiisParser.parsePromotion(html);
   }
 
-  /// 好友列表（1:1 对齐网页截图一：home.php?mod=space&uid=$uid&do=friend&view=me&from=space）
-  static Future<List<FriendItem>> getFriends(int uid, {int page = 1}) async {
-    // 1. 优先使用 PC 端完整好友列表接口（截图一真实路径）
+  /// 好友列表（支持 7 个 Tab: 我的好友、我的关注、我的粉丝、最近来访、我看过谁、好友请求、黑名单）
+  static Future<List<FriendItem>> getFriends(
+    int uid, {
+    String view = 'me',
+    int page = 1,
+  }) async {
+    final myUid = await getMyUid();
+    final isMe = (myUid != null && myUid > 0 && myUid == uid);
+
+    // 根据 view 构造请求路径 (优先移动端手机版结构，对齐截图一)
+    String url;
+    switch (view) {
+      case 'follow':
+        url = 'home.php?mod=follow&page=$page&mobile=2';
+        break;
+      case 'fans':
+        url = 'home.php?mod=follow&do=follower&page=$page&mobile=2';
+        break;
+      case 'visitor':
+        url = isMe
+            ? 'home.php?mod=space&do=friend&view=visitor&page=$page&mobile=2'
+            : 'home.php?mod=space&uid=$uid&do=friend&view=visitor&page=$page&mobile=2';
+        break;
+      case 'trace':
+        url = isMe
+            ? 'home.php?mod=space&do=friend&view=trace&page=$page&mobile=2'
+            : 'home.php?mod=space&uid=$uid&do=friend&view=trace&page=$page&mobile=2';
+        break;
+      case 'request':
+        url = 'home.php?mod=spacecp&ac=friend&op=request&page=$page&mobile=2';
+        break;
+      case 'blacklist':
+        url = 'home.php?mod=space&do=friend&group=-1&page=$page&mobile=2';
+        break;
+      case 'me':
+      default:
+        url = isMe
+            ? 'home.php?mod=space&do=friend&page=$page&mobile=2'
+            : 'home.php?mod=space&uid=$uid&do=friend&page=$page&mobile=2';
+        break;
+    }
+
     try {
-      final pcMeHtml = await _get(
-        'home.php?mod=space&uid=$uid&do=friend&view=me&from=space&page=$page&mobile=no',
-        headers: {'User-Agent': AppConfig.pcUserAgent},
-      );
-      final list = ComiisParser.parseFriends(pcMeHtml, excludeUid: uid);
+      final html = await _get(url);
+      final list = ComiisParser.parseFriends(html, excludeUid: isMe ? uid : null);
       if (list.isNotEmpty) return list;
     } catch (_) {}
 
-    try {
-      final pcHtml = await _get(
-        'home.php?mod=space&do=friend&view=me&page=$page&mobile=no',
-        headers: {'User-Agent': AppConfig.pcUserAgent},
-      );
-      final list = ComiisParser.parseFriends(pcHtml, excludeUid: uid);
-      if (list.isNotEmpty) return list;
-    } catch (_) {}
+    // 移动端兜底接口
+    if (view == 'me') {
+      try {
+        final myFriendsHtml = await _get('home.php?mod=space&do=friend&page=$page&mobile=2');
+        final list = ComiisParser.parseFriends(myFriendsHtml, excludeUid: isMe ? uid : null);
+        if (list.isNotEmpty) return list;
+      } catch (_) {}
 
-    // 2. 移动端接口尝试
-    try {
-      final mHtml = await _get('home.php?mod=space&uid=$uid&do=friend&view=me&page=$page&mobile=2');
-      final list = ComiisParser.parseFriends(mHtml, excludeUid: uid);
-      if (list.isNotEmpty) return list;
-    } catch (_) {}
-
-    try {
-      final myFriendsHtml = await _get('home.php?mod=space&do=friend&page=$page&mobile=2');
-      final list = ComiisParser.parseFriends(myFriendsHtml, excludeUid: uid);
-      if (list.isNotEmpty) return list;
-    } catch (_) {}
-
-    // 3. 好友管理中心（spacecp&ac=friend）
-    try {
-      final cpHtml = await _get('home.php?mod=spacecp&ac=friend&page=$page&mobile=2');
-      final cpList = ComiisParser.parseFriends(cpHtml, excludeUid: uid);
-      if (cpList.isNotEmpty) return cpList;
-    } catch (_) {}
+      try {
+        final pcMeHtml = await _get(
+          'home.php?mod=space&uid=$uid&do=friend&view=me&from=space&page=$page&mobile=no',
+          headers: {'User-Agent': AppConfig.pcUserAgent},
+        );
+        final list = ComiisParser.parseFriends(pcMeHtml, excludeUid: isMe ? uid : null);
+        if (list.isNotEmpty) return list;
+      } catch (_) {}
+    } else if (view == 'follow') {
+      try {
+        final fHtml = await _get('home.php?mod=space&do=friend&view=follow&page=$page&mobile=2');
+        final list = ComiisParser.parseFriends(fHtml, excludeUid: isMe ? uid : null);
+        if (list.isNotEmpty) return list;
+      } catch (_) {}
+    } else if (view == 'fans') {
+      try {
+        final fHtml = await _get('home.php?mod=space&do=friend&view=fans&page=$page&mobile=2');
+        final list = ComiisParser.parseFriends(fHtml, excludeUid: isMe ? uid : null);
+        if (list.isNotEmpty) return list;
+      } catch (_) {}
+    }
 
     return const [];
+  }
+
+  /// 打招呼 (Poke)
+  static Future<bool> pokeUser(int uid, [String message = '打个招呼']) async {
+    try {
+      final page = await _get(
+        'home.php?mod=spacecp&ac=poke&op=send&uid=$uid&mobile=2',
+      );
+      final formhash = _extractFormhash(page) ?? _cachedFormhash;
+      if (formhash == null) return false;
+      final res = await _post(
+        'home.php?mod=spacecp&ac=poke&op=send&uid=$uid&inajax=1',
+        {
+          'formhash': formhash,
+          'pokesubmit': 'true',
+          'handlekey': 'poke_$uid',
+          'iconid': '0',
+          'pokemsg': message,
+        },
+      );
+      return !res.contains('alert_error');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 关注用户
+  static Future<bool> followUser(int uid) async {
+    try {
+      final page = await _get('home.php?mod=space&uid=$uid&mobile=2');
+      final formhash = _extractFormhash(page) ?? _cachedFormhash;
+      if (formhash == null) return false;
+      final res = await _post(
+        'home.php?mod=spacecp&ac=follow&op=add&fuid=$uid&inajax=1',
+        {
+          'formhash': formhash,
+          'handlekey': 'follow_$uid',
+        },
+      );
+      return !res.contains('alert_error');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 取消关注用户
+  static Future<bool> unfollowUser(int uid) async {
+    try {
+      final page = await _get('home.php?mod=space&uid=$uid&mobile=2');
+      final formhash = _extractFormhash(page) ?? _cachedFormhash;
+      if (formhash == null) return false;
+      final res = await _post(
+        'home.php?mod=spacecp&ac=follow&op=del&fuid=$uid&inajax=1',
+        {
+          'formhash': formhash,
+          'handlekey': 'follow_$uid',
+        },
+      );
+      return !res.contains('alert_error');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 同意好友申请
+  static Future<bool> acceptFriendRequest(int uid) async {
+    try {
+      final page = await _get('home.php?mod=spacecp&ac=friend&op=request&mobile=2');
+      final formhash = _extractFormhash(page) ?? _cachedFormhash;
+      if (formhash == null) return false;
+      final res = await _post(
+        'home.php?mod=spacecp&ac=friend&op=add&uid=$uid&inajax=1',
+        {
+          'formhash': formhash,
+          'addsubmit': 'true',
+          'handlekey': 'afrhk_$uid',
+        },
+      );
+      return !res.contains('alert_error');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 忽略好友申请
+  static Future<bool> ignoreFriendRequest(int uid) async {
+    try {
+      final page = await _get('home.php?mod=spacecp&ac=friend&op=request&mobile=2');
+      final formhash = _extractFormhash(page) ?? _cachedFormhash;
+      if (formhash == null) return false;
+      final res = await _post(
+        'home.php?mod=spacecp&ac=friend&op=ignore&uid=$uid&inajax=1',
+        {
+          'formhash': formhash,
+          'friendsubmit': 'true',
+          'handlekey': 'ifr_hk_$uid',
+        },
+      );
+      return !res.contains('alert_error');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 加入黑名单
+  static Future<bool> addToBlacklist(int uid) async {
+    try {
+      final page = await _get('home.php?mod=spacecp&ac=friend&op=blacklist&mobile=2');
+      final formhash = _extractFormhash(page) ?? _cachedFormhash;
+      if (formhash == null) return false;
+      final res = await _post(
+        'home.php?mod=spacecp&ac=friend&op=blacklist&uid=$uid&inajax=1',
+        {
+          'formhash': formhash,
+          'blacklistsubmit': 'true',
+          'handlekey': 'addblackhk_$uid',
+        },
+      );
+      return !res.contains('alert_error');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 移出黑名单
+  static Future<bool> removeFromBlacklist(int uid) async {
+    try {
+      final page = await _get('home.php?mod=space&do=friend&group=-1&mobile=2');
+      final formhash = _extractFormhash(page) ?? _cachedFormhash;
+      if (formhash == null) return false;
+      final res = await _post(
+        'home.php?mod=spacecp&ac=friend&op=blacklist&subop=delete&uid=$uid&inajax=1',
+        {
+          'formhash': formhash,
+          'blacklistsubmit': 'true',
+          'handlekey': 'delblackhk_$uid',
+        },
+      );
+      return !res.contains('alert_error');
+    } catch (_) {
+      return false;
+    }
   }
 
   /// 发送好友申请
@@ -3249,52 +3873,137 @@ class KlpbbsApi {
     }
   }
 
-  /// 更新个人资料（签名/性别/生日；comiis 表单字段可用性依赖论坛版本）
-  /// 更新个人资料（签名/自定义头衔/基岩版用户名/代表作/性别/生日等）
+  /// 获取个人资料设置页原生表单数据 (home.php?mod=spacecp&ac=profile&op=$op&mobile=2)
+  static Future<Map<String, dynamic>> getProfileEditData({String op = 'info'}) async {
+    try {
+      final html = await _get('home.php?mod=spacecp&ac=profile&op=$op&mobile=2');
+      return ComiisParser.parseProfileEditInfo(html, op: op);
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  /// 提交更新个人资料（根据 Discuz 标准拆分至对应 op 提交，确保签名/头衔/字段绝对生效）
   static Future<bool> updateProfile({
+    String op = 'info', // 'info', 'base', 'contact'
     String? signature,
     String? customStatus,
-    String? bedrockUsername,
     String? representativeWork,
+    String? repWorkPrivacy,
+    String? bedrockUsername,
+    String? bedrockPrivacy,
+    String? neteaseUsername,
+    String? neteasePrivacy,
+    String? javaUsername,
+    String? javaPrivacy,
+    String? xboxId,
+    String? realname,
+    String? realnamePrivacy,
     int? gender,
+    String? genderPrivacy,
     int? birthYear,
     int? birthMonth,
     int? birthDay,
+    String? birthdayPrivacy,
+    Map<String, String>? extraFields,
   }) async {
     var formhash = _cachedFormhash;
     try {
-      final page = await _get(
-        'home.php?mod=spacecp&ac=profile&op=base&mobile=no',
-        headers: {
-          'Referer': '${AppConfig.baseUrl}home.php?mod=spacecp&ac=profile',
-        },
-      );
+      final page = await _get('home.php?mod=spacecp&ac=profile&op=$op&mobile=2');
       formhash = _extractFormhash(page) ?? formhash;
     } catch (_) {}
 
     if (formhash == null || formhash.isEmpty) return false;
+
     final data = <String, String>{
       'formhash': formhash,
-      'profilesubmit': 'yes',
+      'profilesubmit': 'true',
       'profilesubmitbtn': 'true',
       if (signature != null) 'sightml': signature,
       if (signature != null) 'signature': signature,
       if (customStatus != null) 'customstatus': customStatus,
-      if (bedrockUsername != null) 'field1': bedrockUsername,
-      if (representativeWork != null) 'field2': representativeWork,
+      if (op == 'info' && representativeWork != null) ...{
+        'field2': representativeWork,
+        'field8': representativeWork,
+        if (repWorkPrivacy != null) 'privacy[field2]': repWorkPrivacy,
+        if (repWorkPrivacy != null) 'privacy[field8]': repWorkPrivacy,
+      },
+      if (op == 'contact') ...{
+        if (bedrockUsername != null) 'field1': bedrockUsername,
+        if (bedrockPrivacy != null) 'privacy[field1]': bedrockPrivacy,
+        if (neteaseUsername != null) 'field2': neteaseUsername,
+        if (neteasePrivacy != null) 'privacy[field2]': neteasePrivacy,
+        if (javaUsername != null) 'field3': javaUsername,
+        if (javaPrivacy != null) 'privacy[field3]': javaPrivacy,
+        if (xboxId != null) 'field4': xboxId,
+      },
+      if (realname != null) 'realname': realname,
+      if (realnamePrivacy != null) 'privacy[realname]': realnamePrivacy,
       if (gender != null) 'gender': '$gender',
+      if (genderPrivacy != null) 'privacy[gender]': genderPrivacy,
       if (birthYear != null) 'birthyear': '$birthYear',
       if (birthMonth != null) 'birthmonth': '$birthMonth',
       if (birthDay != null) 'birthday': '$birthDay',
+      if (birthdayPrivacy != null) 'privacy[birthday]': birthdayPrivacy,
+      if (extraFields != null) ...extraFields,
     };
+
     final html = await _post(
-      'home.php?mod=spacecp&ac=profile&op=base&profilesubmit=yes',
+      'home.php?mod=spacecp&ac=profile&op=$op&mobile=2',
       data,
       headers: {
-        'Referer':
-            '${AppConfig.baseUrl}home.php?mod=spacecp&ac=profile&op=base',
+        'Referer': '${AppConfig.baseUrl}home.php?mod=spacecp&ac=profile&op=$op&mobile=2',
       },
     );
+
+    final ok = !html.contains('alert_error') &&
+        !html.contains('form_error') &&
+        !html.contains('抱歉，您尚未登录');
+
+    // 如果是编辑签名/头衔，同时异步向 op=base 同步提交兜底
+    if (op == 'info' && (signature != null || customStatus != null)) {
+      try {
+        await _post(
+          'home.php?mod=spacecp&ac=profile&op=base&mobile=2',
+          data,
+          headers: {
+            'Referer': '${AppConfig.baseUrl}home.php?mod=spacecp&ac=profile&op=base&mobile=2',
+          },
+        );
+      } catch (_) {}
+    }
+
+    return ok;
+  }
+
+  /// 提交任意 op 的动态个人资料表单
+  static Future<bool> submitProfileForm({
+    required String op,
+    required Map<String, String> formData,
+  }) async {
+    var formhash = _cachedFormhash;
+    try {
+      final page = await _get('home.php?mod=spacecp&ac=profile&op=$op&mobile=2');
+      formhash = _extractFormhash(page) ?? formhash;
+    } catch (_) {}
+
+    if (formhash == null || formhash.isEmpty) return false;
+
+    final data = <String, String>{
+      'formhash': formhash,
+      'profilesubmit': 'true',
+      'profilesubmitbtn': 'true',
+      ...formData,
+    };
+
+    final html = await _post(
+      'home.php?mod=spacecp&ac=profile&op=$op&mobile=2',
+      data,
+      headers: {
+        'Referer': '${AppConfig.baseUrl}home.php?mod=spacecp&ac=profile&op=$op&mobile=2',
+      },
+    );
+
     return !html.contains('alert_error') &&
         !html.contains('form_error') &&
         !html.contains('抱歉，您尚未登录');
@@ -3314,6 +4023,54 @@ class KlpbbsApi {
       return !res.contains('alert_error');
     } catch (_) {
       return true;
+    }
+  }
+
+  /// 修改论坛登录密码 / 安全提问 / 安全邮箱
+  static Future<({bool success, String message})> updatePassword({
+    required String oldPassword,
+    required String newPassword,
+    String? newPasswordConfirm,
+    int? questionId,
+    String? answer,
+    String? email,
+  }) async {
+    try {
+      final page = await _get('home.php?mod=spacecp&ac=profile&op=password&mobile=2');
+      final formhash = _extractFormhash(page) ?? _cachedFormhash;
+      if (formhash == null || formhash.isEmpty) {
+        return (success: false, message: '获取安全凭证失败，请重试');
+      }
+
+      final data = <String, String>{
+        'formhash': formhash,
+        'pwdsubmit': 'true',
+        'pwdsubmitbtn': 'true',
+        'oldpassword': oldPassword,
+        'newpassword': newPassword,
+        'newpassword2': newPasswordConfirm ?? newPassword,
+        if (questionId != null) 'questionidnew': '$questionId',
+        if (answer != null) 'answernew': answer,
+        if (email != null && email.isNotEmpty) 'emailnew': email,
+      };
+
+      final html = await _post(
+        'home.php?mod=spacecp&ac=profile&op=password&mobile=2',
+        data,
+        headers: {
+          'Referer': '${AppConfig.baseUrl}home.php?mod=spacecp&ac=profile&op=password&mobile=2',
+        },
+      );
+
+      if (html.contains('alert_error') || html.contains('抱歉')) {
+        final errM = RegExp(r'<div class="jump_c">[\s\S]*?<p>([^<]+)</p>').firstMatch(html) ??
+            RegExp(r'class="alert_error">([^<]+)<').firstMatch(html);
+        return (success: false, message: errM?.group(1)?.trim() ?? '密码修改失败，请检查原密码是否正确');
+      }
+
+      return (success: true, message: '密码修改成功！');
+    } catch (e) {
+      return (success: false, message: '请求异常：$e');
     }
   }
 

@@ -197,31 +197,12 @@ class _PmDetailPageState extends State<PmDetailPage> {
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
             child: Row(
               children: [
-                Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    UserAvatarWidget(
-                      uid: widget.touid,
-                      author: _toUsername,
-                      size: 36,
-                    ),
-                    Positioned(
-                      right: -1,
-                      bottom: -1,
-                      child: Container(
-                        width: 11,
-                        height: 11,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: _isOnline ? const Color(0xFF4CAF50) : const Color(0xFF9E9E9E),
-                          border: Border.all(
-                            color: theme.colorScheme.surface,
-                            width: 2,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
+                UserAvatarWidget(
+                  uid: widget.touid,
+                  author: _toUsername,
+                  size: 36,
+                  isOnline: _isOnline,
+                  showOnlineBadge: true,
                 ),
                 const SizedBox(width: 10),
                 Expanded(

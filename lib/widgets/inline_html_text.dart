@@ -169,13 +169,30 @@ class InlineHtmlText extends StatelessWidget {
           // 行内 style 属性
           final styleAttr = el.attributes['style'];
           if (styleAttr != null && styleAttr.isNotEmpty) {
-            final colorM = RegExp(r'color\s*:\s*([^;]+)').firstMatch(styleAttr);
+            final bgM = RegExp(r'background(?:-color)?\s*:\s*([^;]+)', caseSensitive: false).firstMatch(styleAttr);
+            if (bgM != null) {
+              final bgStr = bgM.group(1)!.trim();
+              if (bgStr.isNotEmpty && bgStr != 'none' && bgStr != 'transparent') {
+                style = style.copyWith(
+                  backgroundColor: _parseColor(bgStr, brightness: theme.brightness, isBackground: true),
+                );
+              }
+            }
+            final colorM = RegExp(r'(?:^|;|\s)color\s*:\s*([^;]+)', caseSensitive: false).firstMatch(styleAttr);
             if (colorM != null) {
               style = style.copyWith(color: _parseColor(colorM.group(1)!.trim(), brightness: theme.brightness));
             }
-            final weightM = RegExp(r'font-weight\s*:\s*bold').firstMatch(styleAttr);
+            final weightM = RegExp(r'font-weight\s*:\s*bold', caseSensitive: false).firstMatch(styleAttr);
             if (weightM != null) {
               style = style.copyWith(fontWeight: FontWeight.bold);
+            }
+            final sizeM = RegExp(r'font-size\s*:\s*([^;]+)', caseSensitive: false).firstMatch(styleAttr);
+            if (sizeM != null) {
+              final sizeStr = sizeM.group(1)!.trim();
+              final numVal = double.tryParse(sizeStr.replaceAll(RegExp(r'[^0-9.]'), ''));
+              if (numVal != null) {
+                style = style.copyWith(fontSize: numVal);
+              }
             }
           }
 
@@ -278,7 +295,7 @@ class InlineHtmlText extends StatelessWidget {
     return text.replaceAll(RegExp(r'[-​‎‏﻿]'), '');
   }
 
-  Color _parseColor(String raw, {Brightness? brightness}) {
+  Color _parseColor(String raw, {Brightness? brightness, bool isBackground = false}) {
     var clean = raw.toLowerCase().trim();
     Color baseColor;
     if (clean.startsWith('#')) {
@@ -342,13 +359,18 @@ class InlineHtmlText extends StatelessWidget {
       baseColor = colorMap[clean] ?? Colors.grey;
     }
 
-    if (brightness == Brightness.dark) {
-      if (baseColor.computeLuminance() < 0.15) {
-        return const Color(0xFFCFD8DC);
-      }
-    } else if (brightness == Brightness.light) {
-      if (baseColor.computeLuminance() > 0.88 && baseColor != Colors.amber && baseColor != const Color(0xFFFFD700)) {
-        return const Color(0xFF37474F);
+    if (!isBackground) {
+      if (brightness == Brightness.dark) {
+        if (baseColor.computeLuminance() < 0.15 && baseColor != Colors.black) {
+          return const Color(0xFFCFD8DC);
+        }
+      } else if (brightness == Brightness.light) {
+        if (baseColor.computeLuminance() > 0.88 &&
+            baseColor != Colors.amber &&
+            baseColor != const Color(0xFFFFD700) &&
+            baseColor != Colors.white) {
+          return const Color(0xFF37474F);
+        }
       }
     }
     return baseColor;

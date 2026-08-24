@@ -13,10 +13,11 @@ import '../core/dio_client.dart';
 import '../core/url_helper.dart';
 import '../models/post_block.dart';
 import '../models/post_floor.dart';
-import '../pages/video_player_page.dart';
 import '../services/download_service.dart';
 import '../widgets/skeleton_list.dart';
 import 'bili_video_player.dart';
+import 'general_audio_player.dart';
+import 'general_video_player.dart';
 import 'inline_html_text.dart';
 import 'klpbbs_download_dialog.dart';
 import 'netease_music_player.dart';
@@ -112,8 +113,15 @@ class DiscuzPostRenderer extends StatelessWidget {
   Widget _buildBlock(BuildContext context, ThemeData theme, PostBlock block) {
     return switch (block) {
       ResourceInfoBlock() => _buildResourceInfoBlock(context, theme, block),
-      TextBlock(:final html) => _buildTextBlock(context, theme, html),
-      ImageBlock(:final src, :final alt, :final caption, :final isEmoji) =>
+      TextBlock(:final html, :final align) =>
+        _buildTextBlock(context, theme, html, align: align),
+      ImageBlock(
+        :final src,
+        :final alt,
+        :final caption,
+        :final isEmoji,
+        :final align,
+      ) =>
         _buildImageBlock(
           context,
           theme,
@@ -121,38 +129,60 @@ class DiscuzPostRenderer extends StatelessWidget {
           alt: alt,
           caption: caption,
           isEmoji: isEmoji,
+          align: align,
         ),
-      QuoteBlock(:final author, :final contentHtml) => _buildQuoteBlock(
-        context,
-        theme,
-        author,
-        contentHtml,
-      ),
-      CodeBlock(:final code, :final language) => _buildCodeBlock(
-        context,
-        theme,
-        code,
-        language: language,
-      ),
+      QuoteBlock(:final author, :final contentHtml, :final align) =>
+        _buildQuoteBlock(
+          context,
+          theme,
+          author,
+          contentHtml,
+          align: align,
+        ),
+      CodeBlock(:final code, :final language, :final align) =>
+        _buildCodeBlock(
+          context,
+          theme,
+          code,
+          language: language,
+          align: align,
+        ),
       SpoilerBlock(:final title, :final contentHtml) => _buildSpoilerBlock(
         context,
         theme,
         title,
         contentHtml,
       ),
-      TableBlock(:final headers, :final rows) => _buildTableBlock(
-        context,
-        theme,
-        headers,
-        rows,
-      ),
-      VideoBlock(:final src, :final isBilibili, :final bvid, :final aid) =>
-        _buildVideoBlock(context, theme, src, isBilibili, bvid, aid),
-      AudioBlock(:final src, :final title) => _buildAudioBlock(
+      TableBlock(:final headers, :final rows, :final align) =>
+        _buildTableBlock(
+          context,
+          theme,
+          headers,
+          rows,
+          align: align,
+        ),
+      VideoBlock(
+        :final src,
+        :final isBilibili,
+        :final bvid,
+        :final aid,
+        :final align,
+      ) =>
+        _buildVideoBlock(
+          context,
+          theme,
+          src,
+          isBilibili,
+          bvid,
+          aid,
+          align: align,
+        ),
+      AudioBlock(:final src, :final title, :final align) => _buildAudioBlock(
         context,
         theme,
         src,
         title,
+        align: align,
       ),
       AttachmentBlock(
         :final name,
@@ -162,6 +192,7 @@ class DiscuzPostRenderer extends StatelessWidget {
         :final iconUrl,
         :final uploadTime,
         :final downloadCount,
+        :final align,
       ) =>
         _buildAttachmentBlock(
           context,
@@ -173,16 +204,90 @@ class DiscuzPostRenderer extends StatelessWidget {
           iconUrl,
           uploadTime,
           downloadCount,
+          align: align,
         ),
       BountyBlock() => _buildBountyBlock(context, theme, block),
       PollBlock() => _buildPollBlock(context, theme, block),
       ReplyRewardBlock() => _buildReplyRewardBlock(context, theme, block),
       DebateBlock() => _buildDebateBlock(context, theme, block),
       AuditStatusBlock() => _buildAuditStatusBlock(context, theme, block),
-      NetdiskBlock(:final panName, :final url, :final extractCode) =>
-        _buildNetdiskBlock(context, theme, panName, url, extractCode),
+      NetdiskBlock(:final panName, :final url, :final extractCode, :final align) =>
+        _buildNetdiskBlock(
+          context,
+          theme,
+          panName,
+          url,
+          extractCode,
+          align: align,
+        ),
       HideBlock(:final reason) => _buildHideBlock(context, theme, reason),
+      ShieldBlock(:final title, :final reason, :final iconType) =>
+        _buildShieldBlock(context, theme, title, reason, iconType),
     };
+  }
+
+  // 0.1 处罚/屏蔽/封禁/审核状态提示卡片（Discuz 提示: 作者被禁止或删除 内容自动屏蔽 等）
+  Widget _buildShieldBlock(
+    BuildContext context,
+    ThemeData theme,
+    String title,
+    String reason,
+    String? iconType,
+  ) {
+    final isDark = theme.brightness == Brightness.dark;
+    final isBanned = iconType == 'banned' || reason.contains('禁止') || reason.contains('删除');
+    final isReview = iconType == 'review' || reason.contains('审核');
+    final isLocked = iconType == 'locked' || reason.contains('锁定');
+
+    final Color primaryColor = isBanned
+        ? (isDark ? const Color(0xFFEF5350) : const Color(0xFFD32F2F))
+        : isReview
+            ? (isDark ? const Color(0xFFFFB74D) : const Color(0xFFF57C00))
+            : isLocked
+                ? (isDark ? const Color(0xFF90CAF9) : const Color(0xFF1976D2))
+                : (isDark ? const Color(0xFFFFB74D) : const Color(0xFFE65100));
+
+    final Color bgColor = isDark
+        ? primaryColor.withAlpha(25)
+        : primaryColor.withAlpha(15);
+
+    final Color borderColor = primaryColor.withAlpha(80);
+
+    final IconData iconData = isBanned
+        ? Icons.block_rounded
+        : isReview
+            ? Icons.hourglass_empty_rounded
+            : isLocked
+                ? Icons.lock_outline_rounded
+                : Icons.visibility_off_outlined;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: borderColor, width: 1),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Icon(iconData, size: 20, color: primaryColor),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              reason.isNotEmpty ? reason : '提示: 内容自动屏蔽',
+              style: TextStyle(
+                fontSize: 13.5,
+                fontWeight: FontWeight.w600,
+                color: primaryColor,
+                height: 1.4,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   // 0. 悬赏问答专属卡片（完全还原网页版：黄底金边、悬赏金额、我来回答按钮与金币袋，完美适配深浅主题）
@@ -432,14 +537,39 @@ class DiscuzPostRenderer extends StatelessWidget {
   }
 
   // 1. 纯文本与富文本段落
-  Widget _buildTextBlock(BuildContext context, ThemeData theme, String html) {
-    return Text.rich(
-      TextSpan(
-        children: _htmlToSpans(html, theme, context: context),
-        style: theme.textTheme.bodyMedium?.copyWith(
-          height: 1.55,
-          fontSize: 14.5,
+  Widget _buildTextBlock(
+    BuildContext context,
+    ThemeData theme,
+    String html, {
+    String? align,
+  }) {
+    TextAlign? textAlign;
+    if (align == 'center') {
+      textAlign = TextAlign.center;
+    } else if (align == 'right') {
+      textAlign = TextAlign.right;
+    } else if (align == 'justify') {
+      textAlign = TextAlign.justify;
+    } else if (align == 'left') {
+      textAlign = TextAlign.left;
+    }
+
+    return SizedBox(
+      width: double.infinity,
+      child: Text.rich(
+        TextSpan(
+          children: _htmlToSpans(
+            html,
+            theme,
+            context: context,
+            defaultAlign: textAlign,
+          ),
+          style: theme.textTheme.bodyMedium?.copyWith(
+            height: 1.55,
+            fontSize: 14.5,
+          ),
         ),
+        textAlign: textAlign ?? TextAlign.start,
       ),
     );
   }
@@ -452,6 +582,7 @@ class DiscuzPostRenderer extends StatelessWidget {
     String? alt,
     String? caption,
     bool isEmoji = false,
+    String? align,
   }) {
     if (AppConfig.imageQuality == ImageQuality.noImage) {
       return Container(
@@ -483,7 +614,7 @@ class DiscuzPostRenderer extends StatelessWidget {
     // 表情小图：按原始比例（约 20px）渲染，不放大、不进灯箱
     if (isEmoji) {
       const size = 22.0;
-      return Padding(
+      final emojiWidget = Padding(
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: CachedNetworkImage(
           imageUrl: _absolute(src),
@@ -491,13 +622,22 @@ class DiscuzPostRenderer extends StatelessWidget {
           width: size,
           height: size,
           fit: BoxFit.contain,
-          errorWidget: (_, __, ___) => SizedBox(width: size, height: size),
+          errorWidget: (_, __, ___) => const SizedBox(width: size, height: size),
         ),
       );
+      if (align == 'center') {
+        return Center(child: emojiWidget);
+      } else if (align == 'right') {
+        return Align(alignment: Alignment.centerRight, child: emojiWidget);
+      }
+      return emojiWidget;
     }
 
     final imageUrl = _absolute(src);
-    return Padding(
+    final isCentered = align == 'center';
+    final isRight = align == 'right';
+
+    final imageWidget = Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
@@ -507,7 +647,12 @@ class DiscuzPostRenderer extends StatelessWidget {
               _showImageContextMenu(context, details.globalPosition, imageUrl),
           child: RepaintBoundary(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: isCentered
+                  ? CrossAxisAlignment.center
+                  : (isRight
+                      ? CrossAxisAlignment.end
+                      : CrossAxisAlignment.start),
               children: [
                 ConstrainedBox(
                   constraints: const BoxConstraints(
@@ -555,33 +700,41 @@ class DiscuzPostRenderer extends StatelessWidget {
                     ),
                   ),
                 ),
-              if (caption != null && caption.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text(
-                  caption,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: theme.colorScheme.outline,
-                    fontStyle: FontStyle.italic,
+                if (caption != null && caption.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    caption,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: theme.colorScheme.outline,
+                      fontStyle: FontStyle.italic,
+                    ),
                   ),
-                ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
-    ),
-  );
-}
+    );
+
+    if (isCentered) {
+      return Center(child: imageWidget);
+    } else if (isRight) {
+      return Align(alignment: Alignment.centerRight, child: imageWidget);
+    }
+    return imageWidget;
+  }
 
   // 3. 引用块
   Widget _buildQuoteBlock(
     BuildContext context,
     ThemeData theme,
     String author,
-    String contentHtml,
-  ) {
-    return Container(
+    String contentHtml, {
+    String? align,
+  }) {
+    final quoteWidget = Container(
       width: double.infinity,
       margin: const EdgeInsets.symmetric(vertical: 4),
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
@@ -627,6 +780,13 @@ class DiscuzPostRenderer extends StatelessWidget {
         ],
       ),
     );
+
+    if (align == 'center') {
+      return Center(child: quoteWidget);
+    } else if (align == 'right') {
+      return Align(alignment: Alignment.centerRight, child: quoteWidget);
+    }
+    return quoteWidget;
   }
 
   // 4. 代码块（带行号与一键复制按钮）
@@ -635,6 +795,7 @@ class DiscuzPostRenderer extends StatelessWidget {
     ThemeData theme,
     String code, {
     String? language,
+    String? align,
   }) {
     final lines = code.split('\n');
     return Container(
@@ -1075,8 +1236,9 @@ class DiscuzPostRenderer extends StatelessWidget {
     BuildContext context,
     ThemeData theme,
     List<String> headers,
-    List<List<String>> rows,
-  ) {
+    List<List<String>> rows, {
+    String? align,
+  }) {
     if (headers.isEmpty && rows.isEmpty) return const SizedBox.shrink();
 
     // 确定最大列数
@@ -1143,7 +1305,7 @@ class DiscuzPostRenderer extends StatelessWidget {
       tableRows.add(TableRow(children: rowCells));
     }
 
-    return Container(
+    final tableWidget = Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(8),
@@ -1164,6 +1326,13 @@ class DiscuzPostRenderer extends StatelessWidget {
         ),
       ),
     );
+
+    if (align == 'center') {
+      return Center(child: tableWidget);
+    } else if (align == 'right') {
+      return Align(alignment: Alignment.centerRight, child: tableWidget);
+    }
+    return tableWidget;
   }
 
   // 7. 视频 / Bilibili 内嵌播放卡片
@@ -1173,8 +1342,9 @@ class DiscuzPostRenderer extends StatelessWidget {
     String src,
     bool isBilibili,
     String? bvid,
-    String? aid,
-  ) {
+    String? aid, {
+    String? align,
+  }) {
     final isNetEase = src.contains('music.163.com') || src.contains('163.com');
     final title = isBilibili
         ? (bvid != null ? '哔哩哔哩视频 ($bvid)' : '哔哩哔哩视频')
@@ -1182,8 +1352,9 @@ class DiscuzPostRenderer extends StatelessWidget {
         ? '网易云音乐'
         : '内嵌视频播放';
 
+    Widget videoWidget;
     if (isBilibili && bvid != null) {
-      return Container(
+      videoWidget = Container(
         margin: const EdgeInsets.symmetric(vertical: 6),
         decoration: BoxDecoration(
           color: theme.colorScheme.surfaceContainerLow,
@@ -1241,121 +1412,32 @@ class DiscuzPostRenderer extends StatelessWidget {
           ],
         ),
       );
-    }
-
-    if (isNetEase) {
+    } else if (isNetEase) {
       final nid = RegExp(r'id=(\d+)').firstMatch(src)?.group(1);
       if (nid != null) {
-        return Container(
+        videoWidget = Container(
           margin: const EdgeInsets.symmetric(vertical: 6),
           child: NetEaseMusicPlayer(songId: nid),
         );
+      } else {
+        videoWidget = Container(
+          margin: const EdgeInsets.symmetric(vertical: 6),
+          child: GeneralVideoPlayer(src: src, title: title),
+        );
       }
+    } else {
+      videoWidget = Container(
+        margin: const EdgeInsets.symmetric(vertical: 6),
+        child: GeneralVideoPlayer(src: src, title: title),
+      );
     }
 
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      decoration: BoxDecoration(
-        color: isBilibili
-            ? const Color(0xFF00AEEC).withAlpha(20)
-            : theme.colorScheme.surfaceContainerHighest.withAlpha(60),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: isBilibili
-              ? const Color(0xFF00AEEC).withAlpha(80)
-              : theme.colorScheme.outlineVariant.withAlpha(60),
-        ),
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(10),
-          onTap: () async {
-            if (isBilibili && bvid != null) {
-              final biliUrl = Uri.parse('https://www.bilibili.com/video/$bvid');
-              if (await url_launcher.canLaunchUrl(biliUrl)) {
-                await url_launcher.launchUrl(
-                  biliUrl,
-                  mode: url_launcher.LaunchMode.externalApplication,
-                );
-                return;
-              }
-            }
-            if (!context.mounted) return;
-            if (src.contains('.mp4') || src.contains('.m3u8')) {
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => VideoPlayerPage(url: src)),
-              );
-              return;
-            }
-            final uri = Uri.tryParse(src);
-            if (uri != null) {
-              await url_launcher.launchUrl(
-                uri,
-                mode: url_launcher.LaunchMode.externalApplication,
-              );
-            }
-          },
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            child: Row(
-              children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: isBilibili
-                        ? const Color(0xFF00AEEC)
-                        : isNetEase
-                        ? const Color(0xFFE53935)
-                        : theme.colorScheme.primary,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(
-                    isNetEase
-                        ? Icons.music_note_rounded
-                        : Icons.play_arrow_rounded,
-                    color: Colors.white,
-                    size: 28,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
-                          color: isBilibili
-                              ? const Color(0xFF00AEEC)
-                              : theme.colorScheme.onSurface,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        isBilibili ? '点击打开 Bilibili 原生客户端/网页' : '点击播放视频流',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: theme.colorScheme.outline,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(
-                  Icons.open_in_new_rounded,
-                  size: 18,
-                  color: theme.colorScheme.outline,
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
+    if (align == 'center') {
+      return Center(child: videoWidget);
+    } else if (align == 'right') {
+      return Align(alignment: Alignment.centerRight, child: videoWidget);
+    }
+    return videoWidget;
   }
 
   // 8. 音频播放条
@@ -1363,62 +1445,38 @@ class DiscuzPostRenderer extends StatelessWidget {
     BuildContext context,
     ThemeData theme,
     String src,
-    String title,
-  ) {
+    String title, {
+    String? align,
+  }) {
     final isNetEase = src.contains('music.163.com') || src.contains('163.com');
+    Widget audioWidget;
     if (isNetEase) {
       final nid = RegExp(r'id=(\d+)').firstMatch(src)?.group(1) ??
           RegExp(r'song/(\d+)').firstMatch(src)?.group(1);
       if (nid != null) {
-        return Container(
+        audioWidget = Container(
           margin: const EdgeInsets.symmetric(vertical: 6),
           child: NetEaseMusicPlayer(songId: nid),
         );
+      } else {
+        audioWidget = Container(
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          child: GeneralAudioPlayer(src: src, title: title),
+        );
       }
+    } else {
+      audioWidget = Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        child: GeneralAudioPlayer(src: src, title: title),
+      );
     }
 
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withAlpha(50),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: theme.colorScheme.outlineVariant.withAlpha(50),
-        ),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            Icons.audiotrack_rounded,
-            color: theme.colorScheme.primary,
-            size: 22,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.play_circle_fill_rounded),
-            color: theme.colorScheme.primary,
-            onPressed: () async {
-              final uri = Uri.tryParse(src);
-              if (uri != null) {
-                await url_launcher.launchUrl(
-                  uri,
-                  mode: url_launcher.LaunchMode.externalApplication,
-                );
-              }
-            },
-          ),
-        ],
-      ),
-    );
+    if (align == 'center') {
+      return Center(child: audioWidget);
+    } else if (align == 'right') {
+      return Align(alignment: Alignment.centerRight, child: audioWidget);
+    }
+    return audioWidget;
   }
 
   // 9. 附件下载卡片
@@ -1431,9 +1489,10 @@ class DiscuzPostRenderer extends StatelessWidget {
     String? priceText,
     String? iconUrl,
     String? uploadTime,
-    int? downloadCount,
-  ) {
-    return _AttachmentCardWidget(
+    int? downloadCount, {
+    String? align,
+  }) {
+    final attachWidget = _AttachmentCardWidget(
       name: name,
       url: url,
       sizeText: sizeText,
@@ -1442,6 +1501,13 @@ class DiscuzPostRenderer extends StatelessWidget {
       uploadTime: uploadTime,
       downloadCount: downloadCount,
     );
+
+    if (align == 'center') {
+      return Center(child: attachWidget);
+    } else if (align == 'right') {
+      return Align(alignment: Alignment.centerRight, child: attachWidget);
+    }
+    return attachWidget;
   }
 
   // 10. 网盘与提取码卡片
@@ -1450,9 +1516,10 @@ class DiscuzPostRenderer extends StatelessWidget {
     ThemeData theme,
     String panName,
     String url,
-    String extractCode,
-  ) {
-    return Container(
+    String extractCode, {
+    String? align,
+  }) {
+    final netdiskWidget = Container(
       margin: const EdgeInsets.symmetric(vertical: 4),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
@@ -1508,6 +1575,13 @@ class DiscuzPostRenderer extends StatelessWidget {
         ],
       ),
     );
+
+    if (align == 'center') {
+      return Center(child: netdiskWidget);
+    } else if (align == 'right') {
+      return Align(alignment: Alignment.centerRight, child: netdiskWidget);
+    }
+    return netdiskWidget;
   }
 
   // 11. 隐藏内容提示
@@ -1695,6 +1769,7 @@ class DiscuzPostRenderer extends StatelessWidget {
     String html,
     ThemeData theme, {
     BuildContext? context,
+    TextAlign? defaultAlign,
   }) {
     if (html.isEmpty) return const [];
 
@@ -1790,6 +1865,7 @@ class DiscuzPostRenderer extends StatelessWidget {
               );
             case 's':
             case 'strike':
+            case 'del':
               style = (style ?? baseStyle)?.copyWith(
                 decoration: TextDecoration.lineThrough,
               );
@@ -1813,41 +1889,65 @@ class DiscuzPostRenderer extends StatelessWidget {
                   );
                 }
               }
-            case 'span':
-              final styleAttr = n.attributes['style'] ?? '';
-              if (styleAttr.isNotEmpty) {
-                final colorM = RegExp(
-                  r'color\s*:\s*([^;]+)',
-                ).firstMatch(styleAttr);
-                if (colorM != null) {
-                  style = (style ?? baseStyle)?.copyWith(
-                    color: _parseColor(
-                      colorM.group(1)!.trim(),
-                      brightness: theme.brightness,
-                    ),
-                  );
-                }
-                final sizeM = RegExp(
-                  r'font-size\s*:\s*([^;]+)',
-                ).firstMatch(styleAttr);
-                if (sizeM != null) {
-                  final sizeStr = sizeM.group(1)!.trim();
-                  final numVal = double.tryParse(
-                    sizeStr.replaceAll(RegExp(r'[^0-9.]'), ''),
-                  );
-                  if (numVal != null) {
-                    style = (style ?? baseStyle)?.copyWith(fontSize: numVal);
-                  }
-                }
-                final weightM = RegExp(
-                  r'font-weight\s*:\s*bold',
-                ).firstMatch(styleAttr);
-                if (weightM != null) {
-                  style = (style ?? baseStyle)?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  );
-                }
+          }
+
+          // 通用 CSS 行内 style 属性解析（background-color, color, font-size, font-weight 等）
+          final styleAttr = n.attributes['style'] ?? '';
+          if (styleAttr.isNotEmpty) {
+            final bgM = RegExp(
+              r'background(?:-color)?\s*:\s*([^;]+)',
+              caseSensitive: false,
+            ).firstMatch(styleAttr);
+            if (bgM != null) {
+              final bgStr = bgM.group(1)!.trim();
+              if (bgStr.isNotEmpty && bgStr != 'none' && bgStr != 'transparent') {
+                final bgColor = _parseColor(
+                  bgStr,
+                  brightness: theme.brightness,
+                  isBackground: true,
+                );
+                style = (style ?? baseStyle)?.copyWith(
+                  backgroundColor: bgColor,
+                );
               }
+            }
+            final colorM = RegExp(
+              r'(?:^|;|\s)color\s*:\s*([^;]+)',
+              caseSensitive: false,
+            ).firstMatch(styleAttr);
+            if (colorM != null) {
+              final colorStr = colorM.group(1)!.trim();
+              if (colorStr.isNotEmpty) {
+                style = (style ?? baseStyle)?.copyWith(
+                  color: _parseColor(
+                    colorStr,
+                    brightness: theme.brightness,
+                  ),
+                );
+              }
+            }
+            final sizeM = RegExp(
+              r'font-size\s*:\s*([^;]+)',
+              caseSensitive: false,
+            ).firstMatch(styleAttr);
+            if (sizeM != null) {
+              final sizeStr = sizeM.group(1)!.trim();
+              final numVal = double.tryParse(
+                sizeStr.replaceAll(RegExp(r'[^0-9.]'), ''),
+              );
+              if (numVal != null) {
+                style = (style ?? baseStyle)?.copyWith(fontSize: numVal);
+              }
+            }
+            final weightM = RegExp(
+              r'font-weight\s*:\s*bold',
+              caseSensitive: false,
+            ).firstMatch(styleAttr);
+            if (weightM != null) {
+              style = (style ?? baseStyle)?.copyWith(
+                fontWeight: FontWeight.bold,
+              );
+            }
           }
 
           if (tag == 'table') {
@@ -1886,8 +1986,8 @@ class DiscuzPostRenderer extends StatelessWidget {
             continue;
           }
 
-          final align = _parseTextAlign(n);
-          if (align != null && (tag == 'div' || tag == 'p')) {
+          final align = _parseTextAlign(n) ?? defaultAlign;
+          if (align != null && (tag == 'div' || tag == 'p' || tag == 'center')) {
             spans.add(
               WidgetSpan(
                 alignment: PlaceholderAlignment.middle,
@@ -2152,34 +2252,50 @@ class DiscuzPostRenderer extends StatelessWidget {
   }
 
   TextAlign? _parseTextAlign(html_dom.Element n) {
-    final a = (n.attributes['align'] ?? '').toLowerCase();
+    final tag = (n.localName ?? '').toLowerCase();
+    if (tag == 'center') return TextAlign.center;
+    final a = (n.attributes['align'] ?? '').toLowerCase().trim();
     if (a == 'left' || a == 'start') return TextAlign.left;
     if (a == 'center') return TextAlign.center;
     if (a == 'right' || a == 'end') return TextAlign.right;
+    if (a == 'justify') return TextAlign.justify;
     final style = n.attributes['style'] ?? '';
     final m = RegExp(
-      r'text-align\s*:\s*(left|center|right)',
+      r'text-align\s*:\s*(left|center|right|justify)',
       caseSensitive: false,
     ).firstMatch(style);
     if (m != null) {
       return switch (m.group(1)!.toLowerCase()) {
         'center' => TextAlign.center,
         'right' => TextAlign.right,
+        'justify' => TextAlign.justify,
         _ => TextAlign.left,
       };
+    }
+    if (n.classes.contains('tac') ||
+        n.classes.contains('text-center') ||
+        n.classes.contains('comiis_align_center')) {
+      return TextAlign.center;
     }
     return null;
   }
 
-  Color _parseColor(String colorStr, {Brightness? brightness}) {
+  Color _parseColor(
+    String colorStr, {
+    Brightness? brightness,
+    bool isBackground = false,
+  }) {
     Color baseColor;
-    if (colorStr.startsWith('#')) {
-      final hex = colorStr.replaceFirst('#', '');
+    final trimmed = colorStr.trim().toLowerCase();
+    if (trimmed.startsWith('#')) {
+      final hex = trimmed.replaceFirst('#', '');
       if (hex.length == 6) {
         baseColor = Color(int.parse('FF$hex', radix: 16));
       } else if (hex.length == 3) {
         final full = hex.split('').map((c) => '$c$c').join();
         baseColor = Color(int.parse('FF$full', radix: 16));
+      } else if (hex.length == 8) {
+        baseColor = Color(int.parse(hex, radix: 16));
       } else {
         baseColor = Colors.grey;
       }
@@ -2192,12 +2308,22 @@ class DiscuzPostRenderer extends StatelessWidget {
         'orange': Colors.orange,
         'purple': Colors.purple,
         'gray': Colors.grey,
+        'grey': Colors.grey,
         'black': Colors.black,
         'white': Colors.white,
+        'cyan': Colors.cyan,
+        'pink': Colors.pink,
+        'lime': Colors.lime,
+        'indigo': Colors.indigo,
+        'teal': Colors.teal,
+        'brown': Colors.brown,
       };
-      baseColor = colorMap[colorStr.toLowerCase()] ?? Colors.grey;
+      baseColor = colorMap[trimmed] ?? Colors.grey;
     }
-    if (brightness == Brightness.dark && baseColor.computeLuminance() < 0.25) {
+    if (!isBackground &&
+        brightness == Brightness.dark &&
+        baseColor.computeLuminance() < 0.15 &&
+        baseColor != Colors.black) {
       return const Color(0xFFB0BEC5);
     }
     return baseColor;

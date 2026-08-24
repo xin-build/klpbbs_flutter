@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:flutter/material.dart';
 
+import '../api/comiis_parser.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/dio_client.dart';
@@ -110,23 +111,22 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// 切换版块收藏（本地持久化）
+  /// 切换版块收藏（本地持久化并同步原站）
   Future<void> _toggleFavForum(Forum f) async {
     final prefs = await SharedPreferences.getInstance();
-    final list = prefs.getStringList('fav_forums') ?? [];
-    if (_favForums.contains(f.fid)) {
+    final list = (prefs.getStringList('fav_forums') ?? []).toSet();
+    final isFav = _favForums.contains(f.fid);
+    if (isFav) {
       list.remove('${f.fid}');
+      _favForums.remove(f.fid);
+      KlpbbsApi.unfavoriteForum(f.fid).catchError((_) => (success: false, message: ''));
     } else {
       list.add('${f.fid}');
+      _favForums.add(f.fid);
+      KlpbbsApi.favoriteForum(f.fid).catchError((_) => (success: false, message: ''));
     }
-    await prefs.setStringList('fav_forums', list);
-    if (mounted) {
-      setState(() {
-        _favForums.contains(f.fid)
-            ? _favForums.remove(f.fid)
-            : _favForums.add(f.fid);
-      });
-    }
+    await prefs.setStringList('fav_forums', list.toList());
+    if (mounted) setState(() {});
   }
 
   Future<(List<ForumGroup>, List<ThreadSummary>, SiteStats)> _load({bool forceRefresh = false}) async {
@@ -141,7 +141,7 @@ class _HomePageState extends State<HomePage> {
       final threads = results[1] as List<ThreadSummary>;
       final stats = results[2] as SiteStats;
 
-      // 自动合并服务端已关注的版块到 _favForums
+      // 自动合并服务端已关注的版块到 _favForums（只合并不误删）
       bool hasNew = false;
       for (final g in groups) {
         if (g.gid == 0 || g.name.contains('关注') || g.name.contains('收藏')) {
@@ -651,12 +651,21 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// 按 tid 去重（跨首页推荐与加载更多来源）
+  /// 按 tid 去重（跨首页推荐与加载更多来源，并保证每个帖子均具备准确版块标识）
   List<ThreadSummary> _dedupeThreads(List<ThreadSummary> list) {
     final seen = <int>{};
     return [
       for (final t in list)
-        if (seen.add(t.tid)) t,
+        if (seen.add(t.tid))
+          t.copyWith(
+            forumName: ComiisParser.resolveForumName(
+              tid: t.tid,
+              fid: t.fid,
+              rawForumName: t.forumName,
+              title: t.title,
+              typeName: t.typeName,
+            ),
+          ),
     ];
   }
 

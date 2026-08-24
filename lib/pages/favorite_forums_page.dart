@@ -43,21 +43,11 @@ class _FavoriteForumsPageState extends State<FavoriteForumsPage> {
             return Center(child: Text('加载失败：${snap.error}'));
           }
           final list = snap.data!;
-          if (list.isNotEmpty) {
-            SharedPreferences.getInstance().then((prefs) {
-              final set = (prefs.getStringList('fav_forums') ?? []).toSet();
-              bool changed = false;
-              for (final f in list) {
-                if (set.add('${f.fid}')) changed = true;
-              }
-              if (changed) prefs.setStringList('fav_forums', set.toList());
-            }).catchError((_) {});
-          }
           if (list.isEmpty) {
             return const EmptyView(
               icon: Icons.star_border,
               title: '暂无收藏版块',
-              subtitle: '长按首页版块可收藏',
+              subtitle: '长按首页版块或在版块内可收藏',
             );
           }
           return RefreshIndicator(
@@ -72,7 +62,35 @@ class _FavoriteForumsPageState extends State<FavoriteForumsPage> {
                 return ListTile(
                   leading: const Icon(Icons.forum_outlined),
                   title: Text(f.name),
-                  trailing: const Icon(Icons.chevron_right),
+                  subtitle: f.description != null && f.description!.isNotEmpty
+                      ? Text(f.description!, maxLines: 1, overflow: TextOverflow.ellipsis)
+                      : null,
+                  trailing: IconButton(
+                    icon: const Icon(Icons.star, color: Colors.amber),
+                    tooltip: '取消收藏',
+                    onPressed: () async {
+                      // 立即本地移除
+                      final prefs = await SharedPreferences.getInstance();
+                      final set = (prefs.getStringList('fav_forums') ?? []).toSet();
+                      set.remove('${f.fid}');
+                      await prefs.setStringList('fav_forums', set.toList());
+
+                      final res = await KlpbbsApi.unfavoriteForum(f.fid, favid: f.favid);
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(res.message.isNotEmpty ? res.message : '已取消收藏「${f.name}」'),
+                            duration: const Duration(seconds: 2),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                        setState(() {
+                          _future = KlpbbsApi.getFavoriteForums(widget.uid);
+                        });
+                      }
+                    },
+                  ),
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (_) => ThreadListPage(fid: f.fid, title: f.name),

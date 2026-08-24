@@ -276,6 +276,7 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
                                 tid: filledThread.tid,
                                 title: filledThread.title,
                                 isFavorited: true,
+                                favid: filledThread.favid,
                               );
                               if (res == false && mounted) {
                                 setState(() => _fetch());

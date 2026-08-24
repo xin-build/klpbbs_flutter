@@ -1350,7 +1350,7 @@ class _AboutSettingsViewState extends State<_AboutSettingsView> {
               child: Column(
                 children: [
                   Text(
-                    '苦力怕论坛客户端 v1.0 (Build 20260822)',
+                    '苦力怕论坛客户端 v1.0.2',
                     style: TextStyle(
                       color: colorScheme.outline,
                       fontSize: 12.5,

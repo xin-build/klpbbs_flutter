@@ -82,11 +82,19 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> {
     super.dispose();
   }
 
+  bool _isHoveringControls = false;
+  bool _isDragging = false;
+
   void _showControlsTemporarily() {
-    setState(() => _controlsVisible = true);
+    if (!_controlsVisible) {
+      setState(() => _controlsVisible = true);
+    }
     _hideTimer?.cancel();
+    if (_isHoveringControls || _isDragging) return;
     _hideTimer = Timer(const Duration(seconds: 4), () {
-      if (mounted) setState(() => _controlsVisible = false);
+      if (mounted && !_isHoveringControls && !_isDragging) {
+        setState(() => _controlsVisible = false);
+      }
     });
   }
 
@@ -236,9 +244,19 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> {
                   child: Slider(
                     value: pos.inMilliseconds.clamp(0, maxMs).toDouble(),
                     max: maxMs.toDouble(),
+                    onChangeStart: (v) {
+                      _isDragging = true;
+                      _hideTimer?.cancel();
+                      if (!_controlsVisible) {
+                        setState(() => _controlsVisible = true);
+                      }
+                    },
                     onChanged: (v) {
-                      _showControlsTemporarily();
                       player.seek(Duration(milliseconds: v.toInt()));
+                    },
+                    onChangeEnd: (v) {
+                      _isDragging = false;
+                      _showControlsTemporarily();
                     },
                   ),
                 ),
@@ -317,132 +335,152 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> {
         borderRadius: BorderRadius.circular(12),
         child: AspectRatio(
           aspectRatio: 16 / 9,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              // 1. 视频画面与手势
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: _showControlsTemporarily,
-                onDoubleTapDown: (details) {
-                  final width = MediaQuery.of(context).size.width;
-                  if (details.localPosition.dx < width / 3) {
-                    _seekRelative(-10);
-                  } else {
-                    _seekRelative(10);
-                  }
-                },
-                child: Video(
-                  controller: controller,
-                  controls: NoVideoControls,
-                  fit: BoxFit.contain,
+          child: MouseRegion(
+            onHover: (_) => _showControlsTemporarily(),
+            onEnter: (_) => _showControlsTemporarily(),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // 1. 视频画面与手势
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _showControlsTemporarily,
+                  onDoubleTapDown: (details) {
+                    final width = MediaQuery.of(context).size.width;
+                    if (details.localPosition.dx < width / 3) {
+                      _seekRelative(-10);
+                    } else {
+                      _seekRelative(10);
+                    }
+                  },
+                  child: Video(
+                    controller: controller,
+                    controls: NoVideoControls,
+                    fit: BoxFit.contain,
+                  ),
                 ),
-              ),
 
-              // 2. 居中暂停指示图标
-              if (!_playing && _controlsVisible)
-                Center(
-                  child: GestureDetector(
-                    onTap: _togglePlay,
-                    child: Container(
-                      width: 56,
-                      height: 56,
-                      decoration: BoxDecoration(
-                        color: Colors.black.withAlpha(140),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white24, width: 1.5),
+                // 2. 居中暂停指示图标
+                if (!_playing && _controlsVisible)
+                  Center(
+                    child: GestureDetector(
+                      onTap: _togglePlay,
+                      child: Container(
+                        width: 56,
+                        height: 56,
+                        decoration: BoxDecoration(
+                          color: Colors.black.withAlpha(140),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white24, width: 1.5),
+                        ),
+                        child: const Icon(
+                          Icons.play_arrow_rounded,
+                          color: Colors.white,
+                          size: 36,
+                        ),
                       ),
-                      child: const Icon(
-                        Icons.play_arrow_rounded,
-                        color: Colors.white,
-                        size: 36,
+                    ),
+                  ),
+
+                // 3. 顶部阴影与信息栏
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: AnimatedOpacity(
+                    opacity: _controlsVisible ? 1 : 0,
+                    duration: const Duration(milliseconds: 200),
+                    child: IgnorePointer(
+                      ignoring: !_controlsVisible,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: const BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [Colors.black87, Colors.transparent],
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF00AEEC).withAlpha(180),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: const Text(
+                                'Bilibili',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _info?.title ?? widget.bvid,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w600,
+                                  shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: '外部打开',
+                              icon: const Icon(Icons.open_in_new_rounded, color: Colors.white, size: 17),
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () {
+                                _openExternal(Uri.parse('https://www.bilibili.com/video/${widget.bvid}'));
+                              },
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
                 ),
 
-              // 3. 顶部阴影与信息栏
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: AnimatedOpacity(
-                  opacity: _controlsVisible ? 1 : 0,
-                  duration: const Duration(milliseconds: 200),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    decoration: const BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [Colors.black87, Colors.transparent],
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF00AEEC).withAlpha(180),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: const Text(
-                            'Bilibili',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.bold,
+                // 4. 底部全功能现代控制栏
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: AnimatedOpacity(
+                    opacity: _controlsVisible ? 1 : 0,
+                    duration: const Duration(milliseconds: 200),
+                    child: IgnorePointer(
+                      ignoring: !_controlsVisible,
+                      child: MouseRegion(
+                        onEnter: (_) {
+                          _isHoveringControls = true;
+                          _hideTimer?.cancel();
+                          if (!_controlsVisible) {
+                            setState(() => _controlsVisible = true);
+                          }
+                        },
+                        onExit: (_) {
+                          _isHoveringControls = false;
+                          _showControlsTemporarily();
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.only(bottom: 4),
+                          decoration: const BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.bottomCenter,
+                              end: Alignment.topCenter,
+                              colors: [Color(0xE6000000), Colors.transparent],
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _info?.title ?? widget.bvid,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w600,
-                              shadows: [Shadow(color: Colors.black, blurRadius: 4)],
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: '外部打开',
-                          icon: const Icon(Icons.open_in_new_rounded, color: Colors.white, size: 17),
-                          visualDensity: VisualDensity.compact,
-                          onPressed: () {
-                            _openExternal(Uri.parse('https://www.bilibili.com/video/${widget.bvid}'));
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-
-              // 4. 底部全功能现代控制栏
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
-                child: AnimatedOpacity(
-                  opacity: _controlsVisible ? 1 : 0,
-                  duration: const Duration(milliseconds: 200),
-                  child: Container(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    decoration: const BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.bottomCenter,
-                        end: Alignment.topCenter,
-                        colors: [Color(0xE6000000), Colors.transparent],
-                      ),
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
                         _buildProgressBar(),
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 6),
@@ -629,11 +667,14 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> {
                   ),
                 ),
               ),
-            ],
+            ),
           ),
-        ),
-      );
-    }
+        ],
+      ),
+    ),
+  ),
+);
+}
 
     // 未播放：显示封面 + 播放按钮 + 标题
     return ClipRRect(
@@ -850,6 +891,8 @@ class _FullscreenBiliPlayerState extends State<_FullscreenBiliPlayer> {
   Timer? _hideTimer;
   late double _speed;
   bool _playing = true;
+  bool _isHoveringControls = false;
+  bool _isDragging = false;
 
   @override
   void initState() {
@@ -866,10 +909,15 @@ class _FullscreenBiliPlayerState extends State<_FullscreenBiliPlayer> {
   }
 
   void _showControlsTemporarily() {
-    setState(() => _controlsVisible = true);
+    if (!_controlsVisible) {
+      setState(() => _controlsVisible = true);
+    }
     _hideTimer?.cancel();
+    if (_isHoveringControls || _isDragging) return;
     _hideTimer = Timer(const Duration(seconds: 4), () {
-      if (mounted) setState(() => _controlsVisible = false);
+      if (mounted && !_isHoveringControls && !_isDragging) {
+        setState(() => _controlsVisible = false);
+      }
     });
   }
 
@@ -897,127 +945,157 @@ class _FullscreenBiliPlayerState extends State<_FullscreenBiliPlayer> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _showControlsTemporarily,
-            onDoubleTapDown: (details) {
-              final w = MediaQuery.of(context).size.width;
-              if (details.localPosition.dx < w / 3) {
-                _seekRelative(-10);
-              } else {
-                _seekRelative(10);
-              }
-            },
-            child: Center(
-              child: Video(
-                controller: widget.controller,
-                controls: NoVideoControls,
-                fit: BoxFit.contain,
+      body: MouseRegion(
+        onHover: (_) => _showControlsTemporarily(),
+        onEnter: (_) => _showControlsTemporarily(),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _showControlsTemporarily,
+              onDoubleTapDown: (details) {
+                final w = MediaQuery.of(context).size.width;
+                if (details.localPosition.dx < w / 3) {
+                  _seekRelative(-10);
+                } else {
+                  _seekRelative(10);
+                }
+              },
+              child: Center(
+                child: Video(
+                  controller: widget.controller,
+                  controls: NoVideoControls,
+                  fit: BoxFit.contain,
+                ),
               ),
             ),
-          ),
 
-          // 顶部栏
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: AnimatedOpacity(
-              opacity: _controlsVisible ? 1 : 0,
-              duration: const Duration(milliseconds: 200),
-              child: SafeArea(
-                bottom: false,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [Colors.black87, Colors.transparent],
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
-                        onPressed: () => Navigator.of(context).pop(),
-                      ),
-                      const SizedBox(width: 4),
-                      Expanded(
-                        child: Text(
-                          widget.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 14.5,
-                            fontWeight: FontWeight.bold,
-                          ),
+            // 顶部栏
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: AnimatedOpacity(
+                opacity: _controlsVisible ? 1 : 0,
+                duration: const Duration(milliseconds: 200),
+                child: IgnorePointer(
+                  ignoring: !_controlsVisible,
+                  child: SafeArea(
+                    bottom: false,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [Colors.black87, Colors.transparent],
                         ),
                       ),
-                    ],
+                      child: Row(
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
+                            onPressed: () => Navigator.of(context).pop(),
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              widget.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14.5,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
 
-          // 底部栏
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: AnimatedOpacity(
-              opacity: _controlsVisible ? 1 : 0,
-              duration: const Duration(milliseconds: 200),
-              child: SafeArea(
-                top: false,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.bottomCenter,
-                      end: Alignment.topCenter,
-                      colors: [Colors.black87, Colors.transparent],
-                    ),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (widget.player != null)
-                        StreamBuilder<Duration>(
-                          stream: widget.player!.stream.position,
-                          builder: (ctx, snap) {
-                            final pos = snap.data ?? Duration.zero;
-                            final dur = widget.player!.state.duration;
-                            final maxMs = dur.inMilliseconds > 0 ? dur.inMilliseconds : 1;
-                            return Row(
-                              children: [
-                                Text(
-                                  widget.formatDuration(pos),
-                                  style: const TextStyle(color: Colors.white, fontSize: 11),
-                                ),
-                                Expanded(
-                                  child: Slider(
-                                    value: pos.inMilliseconds.clamp(0, maxMs).toDouble(),
-                                    max: maxMs.toDouble(),
-                                    onChanged: (v) {
-                                      _showControlsTemporarily();
-                                      widget.player!.seek(Duration(milliseconds: v.toInt()));
-                                    },
-                                  ),
-                                ),
-                                Text(
-                                  widget.formatDuration(dur),
-                                  style: const TextStyle(color: Colors.white70, fontSize: 11),
-                                ),
-                              ],
-                            );
-                          },
+            // 底部栏
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: AnimatedOpacity(
+                opacity: _controlsVisible ? 1 : 0,
+                duration: const Duration(milliseconds: 200),
+                child: IgnorePointer(
+                  ignoring: !_controlsVisible,
+                  child: MouseRegion(
+                    onEnter: (_) {
+                      _isHoveringControls = true;
+                      _hideTimer?.cancel();
+                      if (!_controlsVisible) {
+                        setState(() => _controlsVisible = true);
+                      }
+                    },
+                    onExit: (_) {
+                      _isHoveringControls = false;
+                      _showControlsTemporarily();
+                    },
+                    child: SafeArea(
+                      top: false,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: const BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.bottomCenter,
+                            end: Alignment.topCenter,
+                            colors: [Colors.black87, Colors.transparent],
+                          ),
                         ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (widget.player != null)
+                              StreamBuilder<Duration>(
+                                stream: widget.player!.stream.position,
+                                builder: (ctx, snap) {
+                                  final pos = snap.data ?? Duration.zero;
+                                  final dur = widget.player!.state.duration;
+                                  final maxMs = dur.inMilliseconds > 0 ? dur.inMilliseconds : 1;
+                                  return Row(
+                                    children: [
+                                      Text(
+                                        widget.formatDuration(pos),
+                                        style: const TextStyle(color: Colors.white, fontSize: 11),
+                                      ),
+                                      Expanded(
+                                        child: Slider(
+                                          value: pos.inMilliseconds.clamp(0, maxMs).toDouble(),
+                                          max: maxMs.toDouble(),
+                                          onChangeStart: (v) {
+                                            _isDragging = true;
+                                            _hideTimer?.cancel();
+                                            if (!_controlsVisible) {
+                                              setState(() => _controlsVisible = true);
+                                            }
+                                          },
+                                          onChanged: (v) {
+                                            widget.player!.seek(Duration(milliseconds: v.toInt()));
+                                          },
+                                          onChangeEnd: (v) {
+                                            _isDragging = false;
+                                            _showControlsTemporarily();
+                                          },
+                                        ),
+                                      ),
+                                      Text(
+                                        widget.formatDuration(dur),
+                                        style: const TextStyle(color: Colors.white70, fontSize: 11),
+                                      ),
+                                    ],
+                                  );
+                                },
+                              ),
                       Row(
                         children: [
                           IconButton(
@@ -1080,8 +1158,11 @@ class _FullscreenBiliPlayerState extends State<_FullscreenBiliPlayer> {
               ),
             ),
           ),
-        ],
+        ),
       ),
-    );
+    ],
+  ),
+),
+);
   }
 }

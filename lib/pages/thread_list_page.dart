@@ -60,18 +60,21 @@ class _ThreadListPageState extends State<ThreadListPage> {
   }
 
   Future<void> _toggleFav() async {
+    final nextFav = !_isFav;
+    // 立即响应 UI，无需等待网络返回，保证即时刷新
+    setState(() => _isFav = nextFav);
+
     try {
       final prefs = await SharedPreferences.getInstance();
-      final list = (prefs.getStringList('fav_forums') ?? []).toSet();
-      final nextFav = !_isFav;
+      final set = (prefs.getStringList('fav_forums') ?? []).toSet();
       if (nextFav) {
-        list.add('${widget.fid}');
+        set.add('${widget.fid}');
       } else {
-        list.remove('${widget.fid}');
+        set.remove('${widget.fid}');
       }
-      await prefs.setStringList('fav_forums', list.toList());
+      await prefs.setStringList('fav_forums', set.toList());
+
       if (mounted) {
-        setState(() => _isFav = nextFav);
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -81,7 +84,11 @@ class _ThreadListPageState extends State<ThreadListPage> {
           ),
         );
       }
-      KlpbbsApi.favoriteForum(widget.fid).catchError((_) => false);
+      if (nextFav) {
+        await KlpbbsApi.favoriteForum(widget.fid);
+      } else {
+        await KlpbbsApi.unfavoriteForum(widget.fid);
+      }
     } catch (_) {}
   }
 
@@ -103,7 +110,8 @@ class _ThreadListPageState extends State<ThreadListPage> {
       KlpbbsApi.getForumHeader(widget.fid),
     ]);
     final header = results[1] as ForumHeaderInfo;
-    if (header.isFavorited && !_isFav && mounted) {
+    // 仅当服务端明确识别为已收藏且本地尚未标记时主动标记，绝不单向清空用户本地状态
+    if (mounted && header.isFavorited && !_isFav) {
       setState(() => _isFav = true);
       SharedPreferences.getInstance().then((prefs) {
         final list = (prefs.getStringList('fav_forums') ?? []).toSet();

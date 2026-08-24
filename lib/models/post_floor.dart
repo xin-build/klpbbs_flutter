@@ -30,6 +30,21 @@ class ReplyFloorComment {
   /// 头像挂件 URL（空表示无）
   final String faceUrl;
 
+  /// 是否受到警告
+  final bool isWarned;
+
+  /// 警告文本（如"受到警告"）
+  final String warningText;
+
+  /// 是否被屏蔽或隐藏
+  final bool isShielded;
+
+  /// 屏蔽原因说明
+  final String shieldText;
+
+  /// 是否当前在线
+  final bool isOnline;
+
   const ReplyFloorComment({
     required this.msgid,
     this.uid,
@@ -39,6 +54,11 @@ class ReplyFloorComment {
     this.contentHtml = '',
     this.timeText = '',
     this.location = '',
+    this.isWarned = false,
+    this.warningText = '',
+    this.isShielded = false,
+    this.shieldText = '',
+    this.isOnline = false,
   });
 }
 
@@ -158,6 +178,33 @@ class PostFloor {
   /// 点赞用户列表（首楼/主贴点赞用户头像列表：uid, avatarUrl, username）
   final List<({int? uid, String avatarUrl, String username})> likedUsers;
 
+  /// 是否受到警告
+  final bool isWarned;
+
+  /// 警告文本（如"受到警告"）
+  final String warningText;
+
+  /// 警告详情链接
+  final String? warningUrl;
+
+  /// 是否被屏蔽或隐藏
+  final bool isShielded;
+
+  /// 屏蔽原因说明（如"提示: 作者被禁止或删除 内容自动屏蔽"）
+  final String shieldText;
+
+  /// 作者是否被禁止发言/封禁
+  final bool isBanned;
+
+  /// 是否正在审核中
+  final bool isUnderReview;
+
+  /// 是否被锁定
+  final bool isLocked;
+
+  /// 发帖者是否当前在线
+  final bool isOnline;
+
   const PostFloor({
     this.pid,
     this.uid,
@@ -191,6 +238,15 @@ class PostFloor {
     this.isLiked = false,
     this.lastEdited,
     this.likedUsers = const [],
+    this.isWarned = false,
+    this.warningText = '',
+    this.warningUrl,
+    this.isShielded = false,
+    this.shieldText = '',
+    this.isBanned = false,
+    this.isUnderReview = false,
+    this.isLocked = false,
+    this.isOnline = false,
   });
 
   PostFloor copyWith({
@@ -226,6 +282,15 @@ class PostFloor {
     bool? isLiked,
     String? lastEdited,
     List<({int? uid, String avatarUrl, String username})>? likedUsers,
+    bool? isWarned,
+    String? warningText,
+    String? warningUrl,
+    bool? isShielded,
+    String? shieldText,
+    bool? isBanned,
+    bool? isUnderReview,
+    bool? isLocked,
+    bool? isOnline,
   }) {
     return PostFloor(
       pid: pid ?? this.pid,
@@ -260,6 +325,15 @@ class PostFloor {
       isLiked: isLiked ?? this.isLiked,
       lastEdited: lastEdited ?? this.lastEdited,
       likedUsers: likedUsers ?? this.likedUsers,
+      isWarned: isWarned ?? this.isWarned,
+      warningText: warningText ?? this.warningText,
+      warningUrl: warningUrl ?? this.warningUrl,
+      isShielded: isShielded ?? this.isShielded,
+      shieldText: shieldText ?? this.shieldText,
+      isBanned: isBanned ?? this.isBanned,
+      isUnderReview: isUnderReview ?? this.isUnderReview,
+      isLocked: isLocked ?? this.isLocked,
+      isOnline: isOnline ?? this.isOnline,
     );
   }
 }

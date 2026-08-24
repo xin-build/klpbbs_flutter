@@ -837,6 +837,8 @@ class _UserSpacePageState extends State<UserSpacePage> {
                       author: user.username,
                       size: 64,
                       faceUrl: user.faceUrl.isNotEmpty ? user.faceUrl : null,
+                      isOnline: user.isOnline,
+                      showOnlineBadge: true,
                     ),
                   ),
                   const SizedBox(width: 14),
@@ -861,40 +863,45 @@ class _UserSpacePageState extends State<UserSpacePage> {
                               ),
                             ),
                             const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: user.isOnline
-                                    ? const Color(0xFF4CAF50).withAlpha(220)
-                                    : Colors.black.withAlpha(120),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                  color: user.isOnline ? const Color(0xFF81C784) : Colors.white24,
-                                  width: 0.8,
-                                ),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Container(
-                                    width: 6,
-                                    height: 6,
-                                    margin: const EdgeInsets.only(right: 4),
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: user.isOnline ? Colors.white : Colors.white54,
+                            Builder(
+                              builder: (context) {
+                                final isOnline = _isMe || user.isOnline;
+                                return Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: isOnline
+                                        ? const Color(0xFF4CAF50).withAlpha(220)
+                                        : Colors.black.withAlpha(120),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(
+                                      color: isOnline ? const Color(0xFF81C784) : Colors.white24,
+                                      width: 0.8,
                                     ),
                                   ),
-                                  Text(
-                                    user.isOnline ? '在线' : '离线',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 10.5,
-                                      fontWeight: FontWeight.bold,
-                                    ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Container(
+                                        width: 6,
+                                        height: 6,
+                                        margin: const EdgeInsets.only(right: 4),
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: isOnline ? Colors.white : Colors.white54,
+                                        ),
+                                      ),
+                                      Text(
+                                        isOnline ? '在线' : '离线',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ],
-                              ),
+                                );
+                              },
                             ),
                           ],
                         ),
@@ -1314,6 +1321,14 @@ class _UserSpacePageState extends State<UserSpacePage> {
             if (user.lastvisit.isNotEmpty || user.gameProfile.containsKey('最后访问')) ...[
               Divider(height: 12, color: theme.colorScheme.outlineVariant.withAlpha(40)),
               _buildFieldRow('最后访问', user.lastvisit.isNotEmpty ? user.lastvisit : user.gameProfile['最后访问']!, theme),
+            ],
+            if (user.gameProfile.containsKey('上次活动时间')) ...[
+              Divider(height: 12, color: theme.colorScheme.outlineVariant.withAlpha(40)),
+              _buildFieldRow('上次活动时间', user.gameProfile['上次活动时间']!, theme),
+            ],
+            if (user.gameProfile.containsKey('上次发表时间')) ...[
+              Divider(height: 12, color: theme.colorScheme.outlineVariant.withAlpha(40)),
+              _buildFieldRow('上次发表时间', user.gameProfile['上次发表时间']!, theme),
             ],
           ],
         ),

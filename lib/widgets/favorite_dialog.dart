@@ -10,6 +10,7 @@ class FavoriteDialog extends StatefulWidget {
   final String title;
   final String author;
   final bool isFavorited;
+  final int? favid;
   final ValueChanged<bool>? onFavoritedChanged;
 
   const FavoriteDialog({
@@ -18,6 +19,7 @@ class FavoriteDialog extends StatefulWidget {
     required this.title,
     this.author = '',
     this.isFavorited = false,
+    this.favid,
     this.onFavoritedChanged,
   });
 
@@ -27,6 +29,7 @@ class FavoriteDialog extends StatefulWidget {
     required String title,
     String author = '',
     bool isFavorited = false,
+    int? favid,
     ValueChanged<bool>? onFavoritedChanged,
   }) {
     return showDialog<bool>(
@@ -36,6 +39,7 @@ class FavoriteDialog extends StatefulWidget {
         title: title,
         author: author,
         isFavorited: isFavorited,
+        favid: favid,
         onFavoritedChanged: onFavoritedChanged,
       ),
     );
@@ -158,7 +162,7 @@ class _FavoriteDialogState extends State<FavoriteDialog> {
 
     setState(() => _submitting = true);
     try {
-      final res = await KlpbbsApi.unfavoriteThread(widget.tid);
+      final res = await KlpbbsApi.unfavoriteThread(widget.tid, favid: widget.favid);
       if (mounted) {
         setState(() => _submitting = false);
         Navigator.of(context).pop(false);

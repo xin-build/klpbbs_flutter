@@ -2,13 +2,14 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../api/klpbbs_api.dart';
 import '../models/user_space.dart';
+import '../widgets/global_nav.dart';
 import '../widgets/thread_card.dart';
 import 'facemall_page.dart';
 import 'func_list_page.dart';
 import 'profile_edit_page.dart';
 import 'user_space_page.dart';
 
-/// 资料设置页面（深度复刻图三，全功能实装，统一 Material 3 主题）
+/// 资料设置主页面（1:1 绝对对齐 Discuz 移动端网页 home.php?mod=space&do=profile&set=comiis&mycenter=1&mobile=2）
 class ProfileSettingsPage extends StatefulWidget {
   final int? uid;
   const ProfileSettingsPage({super.key, this.uid});
@@ -32,11 +33,41 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
   Future<void> _loadUser() async {
     final uid = widget.uid ?? await KlpbbsApi.getMyUid();
     if (uid != null) {
-      final u = await KlpbbsApi.getUserSpace(uid);
+      final results = await Future.wait([
+        KlpbbsApi.getUserSpace(uid),
+        KlpbbsApi.getProfileEditData(op: 'info'),
+      ]);
+      final u = results[0] as UserSpace?;
+      final editData = results[1] as Map<String, dynamic>;
+      final compRate = editData['completionRate'] as int? ?? 0;
+
       if (mounted) {
         setState(() {
           _uid = uid;
-          _user = u;
+          if (u != null && compRate > 0) {
+            _user = UserSpace(
+              uid: u.uid,
+              username: u.username,
+              credits: u.credits,
+              group: u.group,
+              regdate: u.regdate,
+              lastvisit: u.lastvisit,
+              signature: u.signature,
+              level: u.level,
+              levelName: u.levelName,
+              medals: u.medals,
+              faceUrl: u.faceUrl,
+              bgUrl: u.bgUrl,
+              stats: u.stats,
+              creditsDetail: u.creditsDetail,
+              gameProfile: u.gameProfile,
+              isOnline: u.isOnline,
+              onlineStatusText: u.onlineStatusText,
+              profileProgress: compRate,
+            );
+          } else {
+            _user = u;
+          }
           _loading = false;
         });
       }
@@ -46,17 +77,19 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
   }
 
   int get _completionRate {
-    if (_user == null) return 88;
-    int total = 7;
+    if (_user == null) return 0;
+    if (_user!.profileProgress > 0) return _user!.profileProgress;
+    int total = 8;
     int filled = 0;
-    if (_user!.signature.isNotEmpty || _user!.gameProfile.containsKey('个人签名')) filled++;
-    if (_user!.gameProfile.containsKey('自定义头衔')) filled++;
-    if (_user!.gameProfile.containsKey('基岩版用户名')) filled++;
-    if (_user!.gameProfile.containsKey('生日')) filled++;
+    if (_user!.signature.isNotEmpty) filled++;
+    if (_user!.gameProfile.containsKey('自定义头衔') || _user!.gameProfile.containsKey('头衔')) filled++;
+    if (_user!.gameProfile.containsKey('基岩版用户名') || _user!.gameProfile.containsKey('Minecraft 基岩版 ID')) filled++;
+    if (_user!.gameProfile.containsKey('Java版用户名') || _user!.gameProfile.containsKey('Minecraft Java 正版玩家 ID')) filled++;
+    if (_user!.gameProfile.containsKey('生日') || _user!.gameProfile.containsKey('出生日期')) filled++;
     if (_user!.gameProfile.containsKey('性别')) filled++;
     if (_user!.gameProfile.containsKey('代表作')) filled++;
     if (_user!.faceUrl.isNotEmpty || _user!.medals.isNotEmpty) filled++;
-    return ((filled / total) * 100).round().clamp(60, 100);
+    return ((filled / total) * 100).round().clamp(0, 100);
   }
 
   Future<void> _pickAndUploadAvatar() async {
@@ -145,201 +178,138 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
     final oldController = TextEditingController();
     final newController = TextEditingController();
     final confirmController = TextEditingController();
+    bool isSubmitting = false;
 
     showDialog<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.shield_outlined),
-            SizedBox(width: 8),
-            Text('密码安全设置'),
-          ],
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) => AlertDialog(
+          title: const Row(
             children: [
-              TextField(
-                controller: oldController,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: '原密码',
-                  prefixIcon: Icon(Icons.lock_outline),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: newController,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: '新密码',
-                  prefixIcon: Icon(Icons.key_outlined),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: confirmController,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: '确认新密码',
-                  prefixIcon: Icon(Icons.check_circle_outline),
-                ),
-              ),
+              Icon(Icons.shield_outlined),
+              SizedBox(width: 8),
+              Text('密码安全设置'),
             ],
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => const FuncListPage(
-                    title: '密码安全中心',
-                    path: 'home.php?mod=spacecp&ac=profile&op=password&mobile=2',
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: oldController,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: '原密码',
+                    prefixIcon: Icon(Icons.lock_outline),
                   ),
                 ),
-              );
-            },
-            child: const Text('网页端修改'),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: newController,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: '新密码',
+                    prefixIcon: Icon(Icons.key_outlined),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: confirmController,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: '确认新密码',
+                    prefixIcon: Icon(Icons.check_circle_outline),
+                  ),
+                ),
+              ],
+            ),
           ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () {
-              if (newController.text != confirmController.text) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('两次输入的新密码不一致')),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const FuncListPage(
+                      title: '密码安全中心',
+                      path: 'home.php?mod=spacecp&ac=profile&op=password&mobile=2',
+                    ),
+                  ),
                 );
-                return;
-              }
-              Navigator.of(ctx).pop();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('密码修改请求已提交')),
-              );
-            },
-            child: const Text('保存修改'),
-          ),
-        ],
+              },
+              child: const Text('网页端修改'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: isSubmitting
+                  ? null
+                  : () async {
+                      final oldPwd = oldController.text.trim();
+                      final newPwd = newController.text.trim();
+                      final confirmPwd = confirmController.text.trim();
+
+                      if (oldPwd.isEmpty || newPwd.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('请输入原密码和新密码')),
+                        );
+                        return;
+                      }
+                      if (newPwd != confirmPwd) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('两次输入的新密码不一致')),
+                        );
+                        return;
+                      }
+
+                      setModalState(() => isSubmitting = true);
+                      final messenger = ScaffoldMessenger.of(context);
+                      final nav = Navigator.of(ctx);
+                      final res = await KlpbbsApi.updatePassword(
+                        oldPassword: oldPwd,
+                        newPassword: newPwd,
+                        newPasswordConfirm: confirmPwd,
+                      );
+                      if (!mounted) return;
+                      nav.pop();
+                      messenger.showSnackBar(
+                        SnackBar(content: Text(res.message), behavior: SnackBarBehavior.floating),
+                      );
+                    },
+              child: isSubmitting
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Text('保存修改'),
+            ),
+          ],
+        ),
       ),
     );
   }
 
   void _showVerifyInfoDialog() {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.verified_outlined, color: Colors.teal),
-            SizedBox(width: 8),
-            Text('实名与认证信息'),
-          ],
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const FuncListPage(
+          title: '认证信息',
+          path: 'home.php?mod=spacecp&ac=profile&op=verify&mobile=2',
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.check_circle, color: Colors.green),
-              title: const Text('苦力怕论坛注册用户'),
-              subtitle: Text('UID: ${_uid ?? "—"}'),
-            ),
-            const Divider(),
-            const Text(
-              '已开启论坛安全保护。如需认证开发者、模组创作者或团队官方认证，请通过网页端提交审核材料。',
-              style: TextStyle(fontSize: 13, height: 1.4),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => const FuncListPage(
-                    title: '认证信息',
-                    path: 'home.php?mod=spacecp&ac=profile&op=verify&mobile=2',
-                  ),
-                ),
-              );
-            },
-            child: const Text('前往认证中心'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('确定'),
-          ),
-        ],
       ),
     );
   }
 
   void _showPhoneBindDialog() {
-    final phoneController = TextEditingController();
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.phone_android_outlined),
-            SizedBox(width: 8),
-            Text('手机号绑定'),
-          ],
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const FuncListPage(
+          title: '手机号绑定',
+          path: 'home.php?mod=spacecp&ac=profile&op=contact&mobile=2',
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              '绑定手机号可用于账号安全验证、快捷找回密码及接收重要论坛通知。',
-              style: TextStyle(fontSize: 13, height: 1.4),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: phoneController,
-              keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(
-                labelText: '手机号码',
-                prefixIcon: Icon(Icons.phone),
-                hintText: '请输入大陆11位手机号',
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => const FuncListPage(
-                    title: '手机号绑定',
-                    path: 'home.php?mod=spacecp&ac=profile&op=contact&mobile=2',
-                  ),
-                ),
-              );
-            },
-            child: const Text('网页端绑定'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('绑定请求已提交')),
-              );
-            },
-            child: const Text('发送验证码'),
-          ),
-        ],
       ),
     );
   }
@@ -357,7 +327,7 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
           ),
           FilledButton(
             style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(context).colorScheme.error,
+              backgroundColor: const Color(0xFFF5222D),
             ),
             onPressed: () async {
               Navigator.of(ctx).pop();
@@ -380,11 +350,11 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Row(
+        title: const Row(
           children: [
-            Icon(Icons.warning_amber_rounded, color: Theme.of(context).colorScheme.error),
-            const SizedBox(width: 8),
-            const Text('注销账号须知'),
+            Icon(Icons.warning_amber_rounded, color: Color(0xFFF5222D)),
+            SizedBox(width: 8),
+            Text('注销账号须知'),
           ],
         ),
         content: const Text(
@@ -397,21 +367,19 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
             child: const Text('取消'),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(context).colorScheme.error,
-            ),
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFF5222D)),
             onPressed: () {
               Navigator.of(ctx).pop();
               Navigator.of(context).push(
                 MaterialPageRoute(
                   builder: (_) => const FuncListPage(
-                    title: '账号注销安全审核',
-                    path: 'home.php?mod=spacecp&ac=profile&op=password&mobile=2',
+                    title: '注销账号',
+                    path: 'home.php?mod=spacecp&ac=profile&op=cancel&mobile=2',
                   ),
                 ),
               );
             },
-            child: const Text('继续前往审核'),
+            child: const Text('继续注销'),
           ),
         ],
       ),
@@ -421,6 +389,7 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
 
     return Scaffold(
       appBar: AppBar(
@@ -438,60 +407,152 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
               }
             },
           ),
+          const GlobalNavButton(),
         ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : Center(
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 880),
+                constraints: const BoxConstraints(maxWidth: 760),
                 child: ListView(
-                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                   children: [
+                    // 1. 用户资料概览卡片 (带完整度指示器)
                     Card(
                       elevation: 0,
+                      color: colorScheme.surfaceContainerLow,
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(16),
                         side: BorderSide(
-                          color: theme.colorScheme.outlineVariant.withAlpha(80),
+                          color: colorScheme.outlineVariant.withAlpha(60),
+                        ),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Row(
+                          children: [
+                            UserAvatarWidget(
+                              uid: _uid ?? 0,
+                              author: _user?.username ?? '我',
+                              size: 54,
+                              faceUrl: _user?.faceUrl,
+                              onTap: _showAvatarOptions,
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Text(
+                                        _user?.username ?? '我的账号',
+                                        style: const TextStyle(
+                                          fontSize: 17,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: colorScheme.primaryContainer,
+                                          borderRadius: BorderRadius.circular(12),
+                                        ),
+                                        child: Text(
+                                          'UID: ${_uid ?? "—"}',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                            color: colorScheme.onPrimaryContainer,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: ClipRRect(
+                                          borderRadius: BorderRadius.circular(4),
+                                          child: LinearProgressIndicator(
+                                            value: _completionRate / 100,
+                                            minHeight: 6,
+                                            backgroundColor: colorScheme.surfaceContainerHighest,
+                                            valueColor: AlwaysStoppedAnimation<Color>(colorScheme.primary),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Text(
+                                        '资料完整度 $_completionRate%',
+                                        style: TextStyle(
+                                          fontSize: 11.5,
+                                          fontWeight: FontWeight.w500,
+                                          color: colorScheme.primary,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // 2. 账号装扮与个人资料设置组
+                    _buildSectionHeader('装扮与资料'),
+                    Card(
+                      elevation: 0,
+                      color: colorScheme.surfaceContainerLow,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        side: BorderSide(
+                          color: colorScheme.outlineVariant.withAlpha(60),
                         ),
                       ),
                       clipBehavior: Clip.antiAlias,
                       child: Column(
                         children: [
-                          // 1. 修改头像 (图三)
-                          _buildSettingsTile(
+                          _buildAppTile(
+                            icon: Icons.account_box_outlined,
+                            iconColor: Colors.blueAccent,
                             title: '修改头像',
-                            icon: Icons.account_circle_outlined,
+                            subtitle: '支持本地图片上传或网页在线裁剪',
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 if (_uploadingAvatar)
                                   const SizedBox(
-                                    width: 20,
-                                    height: 20,
+                                    width: 18,
+                                    height: 18,
                                     child: CircularProgressIndicator(strokeWidth: 2),
                                   )
                                 else
                                   UserAvatarWidget(
                                     uid: _uid ?? 0,
                                     author: _user?.username ?? '我',
-                                    size: 34,
+                                    size: 28,
                                     faceUrl: _user?.faceUrl,
                                   ),
-                                const SizedBox(width: 6),
-                                Icon(Icons.chevron_right, color: theme.colorScheme.outline, size: 20),
+                                const SizedBox(width: 4),
+                                Icon(Icons.chevron_right_rounded, color: colorScheme.outline, size: 20),
                               ],
                             ),
                             onTap: _showAvatarOptions,
                           ),
-                          Divider(height: 1, indent: 56, color: theme.colorScheme.outlineVariant.withAlpha(50)),
-
-                          // 2. 修改挂件 (图三)
-                          _buildSettingsTile(
-                            title: '修改挂件 / 装扮空间',
-                            icon: Icons.auto_awesome_outlined,
-                            trailing: Icon(Icons.chevron_right, color: theme.colorScheme.outline, size: 20),
+                          Divider(height: 1, indent: 54, color: colorScheme.outlineVariant.withAlpha(40)),
+                          _buildAppTile(
+                            icon: Icons.auto_awesome_rounded,
+                            iconColor: Colors.amber.shade700,
+                            title: '修改挂件',
+                            subtitle: '选购、续费与佩戴论坛专属头像框挂件',
+                            trailing: Icon(Icons.chevron_right_rounded, color: colorScheme.outline, size: 20),
                             onTap: () {
                               Navigator.of(context).push(
                                 MaterialPageRoute(
@@ -504,32 +565,32 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
                               ).then((_) => _loadUser());
                             },
                           ),
-                          Divider(height: 1, indent: 56, color: theme.colorScheme.outlineVariant.withAlpha(50)),
-
-                          // 3. 资料修改 (图三: 已完成88% >)
-                          _buildSettingsTile(
+                          Divider(height: 1, indent: 54, color: colorScheme.outlineVariant.withAlpha(40)),
+                          _buildAppTile(
+                            icon: Icons.badge_outlined,
+                            iconColor: colorScheme.primary,
                             title: '资料修改',
-                            icon: Icons.edit_note_outlined,
+                            subtitle: '基本资料、游戏信息、个性签名与自定义头衔',
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                                   decoration: BoxDecoration(
-                                    color: theme.colorScheme.primaryContainer.withAlpha(100),
-                                    borderRadius: BorderRadius.circular(10),
+                                    color: colorScheme.primaryContainer.withAlpha(120),
+                                    borderRadius: BorderRadius.circular(8),
                                   ),
                                   child: Text(
                                     '已完成$_completionRate%',
                                     style: TextStyle(
-                                      fontSize: 11.5,
-                                      fontWeight: FontWeight.w600,
-                                      color: theme.colorScheme.primary,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: colorScheme.primary,
                                     ),
                                   ),
                                 ),
                                 const SizedBox(width: 4),
-                                Icon(Icons.chevron_right, color: theme.colorScheme.outline, size: 20),
+                                Icon(Icons.chevron_right_rounded, color: colorScheme.outline, size: 20),
                               ],
                             ),
                             onTap: () async {
@@ -539,58 +600,75 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
                               if (ok == true) _loadUser();
                             },
                           ),
-                          Divider(height: 1, indent: 56, color: theme.colorScheme.outlineVariant.withAlpha(50)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
 
-                          // 4. 密码安全 (图三)
-                          _buildSettingsTile(
+                    // 3. 安全与认证设置组
+                    _buildSectionHeader('安全与认证'),
+                    Card(
+                      elevation: 0,
+                      color: colorScheme.surfaceContainerLow,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        side: BorderSide(
+                          color: colorScheme.outlineVariant.withAlpha(60),
+                        ),
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: Column(
+                        children: [
+                          _buildAppTile(
+                            icon: Icons.lock_outline_rounded,
+                            iconColor: Colors.indigoAccent,
                             title: '密码安全',
-                            icon: Icons.lock_outline,
-                            trailing: Icon(Icons.chevron_right, color: theme.colorScheme.outline, size: 20),
+                            subtitle: '修改论坛登录密码与安全提问',
+                            trailing: Icon(Icons.chevron_right_rounded, color: colorScheme.outline, size: 20),
                             onTap: _showPasswordSecurityDialog,
                           ),
-                          Divider(height: 1, indent: 56, color: theme.colorScheme.outlineVariant.withAlpha(50)),
-
-                          // 5. 认证信息 (图三)
-                          _buildSettingsTile(
-                            title: '认证信息',
+                          Divider(height: 1, indent: 54, color: colorScheme.outlineVariant.withAlpha(40)),
+                          _buildAppTile(
                             icon: Icons.verified_user_outlined,
-                            trailing: Icon(Icons.chevron_right, color: theme.colorScheme.outline, size: 20),
+                            iconColor: Colors.teal,
+                            title: '认证信息',
+                            subtitle: '创作者认证、官方认证与实名信息',
+                            trailing: Icon(Icons.chevron_right_rounded, color: colorScheme.outline, size: 20),
                             onTap: _showVerifyInfoDialog,
                           ),
-                          Divider(height: 1, indent: 56, color: theme.colorScheme.outlineVariant.withAlpha(50)),
-
-                          // 6. 手机号绑定 (图三)
-                          _buildSettingsTile(
+                          Divider(height: 1, indent: 54, color: colorScheme.outlineVariant.withAlpha(40)),
+                          _buildAppTile(
+                            icon: Icons.phone_android_rounded,
+                            iconColor: Colors.blue,
                             title: '手机号绑定',
-                            icon: Icons.phone_android_outlined,
-                            trailing: Icon(Icons.chevron_right, color: theme.colorScheme.outline, size: 20),
+                            subtitle: '绑定或更换安全验证手机号',
+                            trailing: Icon(Icons.chevron_right_rounded, color: colorScheme.outline, size: 20),
                             onTap: _showPhoneBindDialog,
                           ),
-                          Divider(height: 1, indent: 56, color: theme.colorScheme.outlineVariant.withAlpha(50)),
-
-                          // 7. 注销账号 (图三)
-                          _buildSettingsTile(
-                            title: '注销账号',
+                          Divider(height: 1, indent: 54, color: colorScheme.outlineVariant.withAlpha(40)),
+                          _buildAppTile(
                             icon: Icons.person_remove_outlined,
-                            trailing: Icon(Icons.chevron_right, color: theme.colorScheme.outline, size: 20),
+                            iconColor: Colors.deepOrangeAccent,
+                            title: '注销账号',
+                            subtitle: '永久注销论坛账号与清空个人数据',
+                            trailing: Icon(Icons.chevron_right_rounded, color: colorScheme.outline, size: 20),
                             onTap: _showDeleteAccountDialog,
                           ),
                         ],
                       ),
                     ),
-
                     const SizedBox(height: 24),
 
-                    // 退出登录按钮 (图三: 红色居中)
+                    // 4. 退出登录按钮 (App 风格卡片)
                     Card(
                       elevation: 0,
+                      color: colorScheme.errorContainer.withAlpha(40),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(14),
                         side: BorderSide(
-                          color: theme.colorScheme.error.withAlpha(60),
+                          color: colorScheme.error.withAlpha(60),
                         ),
                       ),
-                      color: theme.colorScheme.errorContainer.withAlpha(50),
                       clipBehavior: Clip.antiAlias,
                       child: InkWell(
                         onTap: _showLogoutDialog,
@@ -600,12 +678,12 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Icon(Icons.logout, color: theme.colorScheme.error, size: 18),
+                                Icon(Icons.logout_rounded, color: colorScheme.error, size: 19),
                                 const SizedBox(width: 8),
                                 Text(
                                   '退出登录',
                                   style: TextStyle(
-                                    color: theme.colorScheme.error,
+                                    color: colorScheme.error,
                                     fontSize: 15,
                                     fontWeight: FontWeight.bold,
                                   ),
@@ -616,6 +694,7 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
                         ),
                       ),
                     ),
+                    const SizedBox(height: 20),
                   ],
                 ),
               ),
@@ -623,22 +702,55 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
     );
   }
 
-  Widget _buildSettingsTile({
-    required String title,
+  Widget _buildSectionHeader(String title) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, bottom: 8),
+      child: Text(
+        title,
+        style: TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.bold,
+          color: theme.colorScheme.primary,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAppTile({
     required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String subtitle,
     required Widget trailing,
     required VoidCallback onTap,
   }) {
     final theme = Theme.of(context);
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-      leading: Icon(icon, color: theme.colorScheme.onSurfaceVariant, size: 22),
+      leading: Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: iconColor.withAlpha(25),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        alignment: Alignment.center,
+        child: Icon(icon, color: iconColor, size: 20),
+      ),
       title: Text(
         title,
         style: TextStyle(
           fontSize: 14.5,
-          fontWeight: FontWeight.w500,
+          fontWeight: FontWeight.w600,
           color: theme.colorScheme.onSurface,
+        ),
+      ),
+      subtitle: Text(
+        subtitle,
+        style: TextStyle(
+          fontSize: 12,
+          color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
         ),
       ),
       trailing: trailing,

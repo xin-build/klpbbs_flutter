@@ -16,6 +16,9 @@ class Forum {
   /// 今日帖数（-1 表示未知）
   final int todayCount;
 
+  /// 收藏 ID（Discuz space favorite favid）
+  final int? favid;
+
   const Forum({
     required this.fid,
     required this.name,
@@ -24,6 +27,7 @@ class Forum {
     this.iconUrl,
     this.threadCount = -1,
     this.todayCount = -1,
+    this.favid,
   });
 
   @override

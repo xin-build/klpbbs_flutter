@@ -48,6 +48,9 @@ class UserSpace {
   /// 在线状态文本描述（如 "当前在线"、"离线" 或 "最后访问: 2026-8-22"）
   final String onlineStatusText;
 
+  /// 资料完整度百分比（如 88 表示 88%）
+  final int profileProgress;
+
   const UserSpace({
     required this.uid,
     required this.username,
@@ -66,5 +69,6 @@ class UserSpace {
     this.gameProfile = const {},
     this.isOnline = false,
     this.onlineStatusText = '',
+    this.profileProgress = 0,
   });
 }

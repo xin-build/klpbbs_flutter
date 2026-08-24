@@ -56,29 +56,42 @@ class _ForumsPageState extends State<ForumsPage> {
 
   Future<void> _toggleFav(Forum forum) async {
     final isFav = _favFids.contains(forum.fid);
+    final nextFav = !isFav;
+
+    // 立即响应 UI，无需等待网络返回，保证即时刷新
+    setState(() {
+      if (nextFav) {
+        _favFids.add(forum.fid);
+      } else {
+        _favFids.remove(forum.fid);
+      }
+    });
+
     final prefs = await SharedPreferences.getInstance();
     final list = (prefs.getStringList('fav_forums') ?? []).toSet();
-    if (isFav) {
-      _favFids.remove(forum.fid);
-      list.remove('${forum.fid}');
-    } else {
-      _favFids.add(forum.fid);
+    if (nextFav) {
       list.add('${forum.fid}');
+    } else {
+      list.remove('${forum.fid}');
     }
     await prefs.setStringList('fav_forums', list.toList());
+
     if (mounted) {
-      setState(() {});
       ScaffoldMessenger.of(context).hideCurrentSnackBar();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(isFav ? '已取消收藏「${forum.name}」' : '已收藏版块「${forum.name}」'),
+          content: Text(nextFav ? '已收藏版块「${forum.name}」' : '已取消收藏「${forum.name}」'),
           duration: const Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
         ),
       );
     }
     // 同步到 Discuz 服务端
-    KlpbbsApi.favoriteForum(forum.fid).catchError((_) => false);
+    if (nextFav) {
+      KlpbbsApi.favoriteForum(forum.fid).catchError((_) => (success: false, message: ''));
+    } else {
+      KlpbbsApi.unfavoriteForum(forum.fid).catchError((_) => (success: false, message: ''));
+    }
   }
 
   void _load() {

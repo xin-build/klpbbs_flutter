@@ -9,10 +9,11 @@ sealed class PostBlock {
 /// 纯文本/富文本段落（含行内加粗、斜体、下划线、颜色、字号、超链接）
 class TextBlock extends PostBlock {
   final String html;
-  const TextBlock(this.html);
+  final String? align;
+  const TextBlock(this.html, {this.align});
 
   @override
-  String toString() => 'TextBlock(html: $html)';
+  String toString() => 'TextBlock(html: $html, align: $align)';
 }
 
 /// 行内或独占图片区块
@@ -24,15 +25,19 @@ class ImageBlock extends PostBlock {
   /// 是否为表情小图（`static/image/smiley/` 或带 smilieid），按原始比例渲染
   final bool isEmoji;
 
+  /// 排版对齐方式（center / left / right）
+  final String? align;
+
   const ImageBlock({
     required this.src,
     this.alt,
     this.caption,
     this.isEmoji = false,
+    this.align,
   });
 
   @override
-  String toString() => 'ImageBlock(src: $src, isEmoji: $isEmoji)';
+  String toString() => 'ImageBlock(src: $src, isEmoji: $isEmoji, align: $align)';
 }
 
 /// Discuz 引用区块（[quote] 或 <blockquote>）
@@ -40,20 +45,27 @@ class QuoteBlock extends PostBlock {
   final String author;
   final String contentHtml;
   final int? pid;
-  const QuoteBlock({required this.author, required this.contentHtml, this.pid});
+  final String? align;
+  const QuoteBlock({
+    required this.author,
+    required this.contentHtml,
+    this.pid,
+    this.align,
+  });
 
   @override
-  String toString() => 'QuoteBlock(author: $author, content: $contentHtml)';
+  String toString() => 'QuoteBlock(author: $author, content: $contentHtml, align: $align)';
 }
 
 /// 代码块（[code] 或 <pre><code>）
 class CodeBlock extends PostBlock {
   final String code;
   final String? language;
-  const CodeBlock({required this.code, this.language});
+  final String? align;
+  const CodeBlock({required this.code, this.language, this.align});
 
   @override
-  String toString() => 'CodeBlock(code: $code)';
+  String toString() => 'CodeBlock(code: $code, align: $align)';
 }
 
 /// 折叠 / 收起内容区块（[spoiler]）
@@ -70,10 +82,15 @@ class SpoilerBlock extends PostBlock {
 class TableBlock extends PostBlock {
   final List<String> headers;
   final List<List<String>> rows;
-  const TableBlock({this.headers = const [], this.rows = const []});
+  final String? align;
+  const TableBlock({
+    this.headers = const [],
+    this.rows = const [],
+    this.align,
+  });
 
   @override
-  String toString() => 'TableBlock(headers: $headers, rows: ${rows.length})';
+  String toString() => 'TableBlock(headers: $headers, rows: ${rows.length}, align: $align)';
 }
 
 /// 视频/内嵌视频播放区块（原生视频 / Bilibili / 优酷 / YouTube）
@@ -82,25 +99,32 @@ class VideoBlock extends PostBlock {
   final bool isBilibili;
   final String? bvid;
   final String? aid;
+  final String? align;
   const VideoBlock({
     required this.src,
     this.isBilibili = false,
     this.bvid,
     this.aid,
+    this.align,
   });
 
   @override
-  String toString() => 'VideoBlock(src: $src, isBilibili: $isBilibili)';
+  String toString() => 'VideoBlock(src: $src, isBilibili: $isBilibili, align: $align)';
 }
 
 /// 音频播放区块
 class AudioBlock extends PostBlock {
   final String src;
   final String title;
-  const AudioBlock({required this.src, this.title = '音频文件'});
+  final String? align;
+  const AudioBlock({
+    required this.src,
+    this.title = '音频文件',
+    this.align,
+  });
 
   @override
-  String toString() => 'AudioBlock(src: $src, title: $title)';
+  String toString() => 'AudioBlock(src: $src, title: $title, align: $align)';
 }
 
 /// 附件下载区块
@@ -114,6 +138,7 @@ class AttachmentBlock extends PostBlock {
   final String? priceText;
   final String? uploadTime;
   final int? downloadCount;
+  final String? align;
 
   const AttachmentBlock({
     required this.name,
@@ -123,10 +148,11 @@ class AttachmentBlock extends PostBlock {
     this.priceText,
     this.uploadTime,
     this.downloadCount,
+    this.align,
   });
 
   @override
-  String toString() => 'AttachmentBlock(name: $name, url: $url)';
+  String toString() => 'AttachmentBlock(name: $name, url: $url, align: $align)';
 }
 
 /// 网盘下载与提取码区块（百度网盘/123云盘/夸克网盘/蓝奏云）
@@ -134,14 +160,16 @@ class NetdiskBlock extends PostBlock {
   final String panName;
   final String url;
   final String extractCode;
+  final String? align;
   const NetdiskBlock({
     required this.panName,
     required this.url,
     required this.extractCode,
+    this.align,
   });
 
   @override
-  String toString() => 'NetdiskBlock($panName: $url, code: $extractCode)';
+  String toString() => 'NetdiskBlock($panName: $url, code: $extractCode, align: $align)';
 }
 
 /// 隐藏内容提示区块（[hide] 回复后可见）
@@ -306,5 +334,21 @@ class DebateBlock extends PostBlock {
 
   @override
   String toString() => 'DebateBlock(affirm: $affirmvotes, negat: $negatvotes)';
+}
+
+/// 屏蔽/封禁/审核中/锁定状态区块（Discuz 提示: 作者被禁止或删除 内容自动屏蔽 / 该帖被管理员屏蔽 / 审核中）
+class ShieldBlock extends PostBlock {
+  final String title;
+  final String reason;
+  final String? iconType; // 'banned', 'shielded', 'review', 'locked'
+
+  const ShieldBlock({
+    this.title = '提示',
+    required this.reason,
+    this.iconType,
+  });
+
+  @override
+  String toString() => 'ShieldBlock(title: $title, reason: $reason)';
 }
 
