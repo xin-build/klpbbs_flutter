@@ -849,8 +849,8 @@ class _ProfileEditPageState extends State<ProfileEditPage>
       child: SegmentedButton<int>(
         style: ButtonStyle(
           visualDensity: VisualDensity.comfortable,
-          shape: WidgetStateProperty.all(RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-          side: WidgetStateProperty.all(BorderSide(color: colorScheme.outlineVariant.withAlpha(60))),
+          shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+          side: WidgetStatePropertyAll(BorderSide(color: colorScheme.outlineVariant.withAlpha(60))),
         ),
         segments: const [
           ButtonSegment<int>(
