@@ -9,7 +9,7 @@ import '../widgets/thread_card.dart';
 import 'pm_detail_page.dart';
 import 'user_space_page.dart';
 
-/// 好友与关注粉丝中心页面（1:1 对齐 Discuz 移动端 7 大 Tab 与快捷操作体系）
+/// 好友与关注粉丝中心页面（深度统一 App Material 3 现代视觉与操作体系）
 class FriendPage extends StatefulWidget {
   final int uid;
   final String? username;
@@ -62,7 +62,7 @@ class _FriendPageState extends State<FriendPage>
   Future<void> _checkMyUid() async {
     if (DioClient.isLoggedIn) {
       final uid = await KlpbbsApi.getMyUid();
-      if (mounted) {
+      if (mounted && uid != null) {
         setState(() => _myUid = uid);
       }
     }
@@ -78,7 +78,7 @@ class _FriendPageState extends State<FriendPage>
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isMe = DioClient.isLoggedIn && (_myUid == widget.uid);
+    final isMe = DioClient.isLoggedIn && (_myUid == widget.uid || widget.uid <= 0);
     final title = isMe
         ? '我的好友'
         : (widget.username != null && widget.username!.isNotEmpty
@@ -116,17 +116,25 @@ class _FriendPageState extends State<FriendPage>
           constraints: const BoxConstraints(maxWidth: 880),
           child: Column(
             children: [
-              // 顶部全局搜索过滤条 (Material 3 风格)
+              // 顶部全局搜索过滤条 (统一 Material 3 风格)
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
                 child: TextField(
                   controller: _searchCtrl,
                   decoration: InputDecoration(
                     hintText: '搜索好友昵称、用户组或 UID...',
-                    prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                    hintStyle: TextStyle(
+                      fontSize: 13,
+                      color: theme.colorScheme.onSurfaceVariant.withAlpha(150),
+                    ),
+                    prefixIcon: Icon(
+                      Icons.search_rounded,
+                      size: 20,
+                      color: theme.colorScheme.primary,
+                    ),
                     suffixIcon: _filterKeyword.isNotEmpty
                         ? IconButton(
-                            icon: const Icon(Icons.clear_rounded, size: 18),
+                            icon: const Icon(Icons.cancel_rounded, size: 18),
                             onPressed: () => _searchCtrl.clear(),
                           )
                         : null,
@@ -136,26 +144,26 @@ class _FriendPageState extends State<FriendPage>
                       horizontal: 14,
                     ),
                     border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(24),
                       borderSide: BorderSide(
-                        color: theme.colorScheme.outlineVariant.withAlpha(80),
+                        color: theme.colorScheme.outlineVariant.withAlpha(60),
                       ),
                     ),
                     enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(24),
                       borderSide: BorderSide(
-                        color: theme.colorScheme.outlineVariant.withAlpha(80),
+                        color: theme.colorScheme.outlineVariant.withAlpha(60),
                       ),
                     ),
                     focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(24),
                       borderSide: BorderSide(
                         color: theme.colorScheme.primary,
                         width: 1.5,
                       ),
                     ),
                     filled: true,
-                    fillColor: theme.colorScheme.surfaceContainerHighest.withAlpha(40),
+                    fillColor: theme.colorScheme.surfaceContainerHighest.withAlpha(50),
                   ),
                 ),
               ),
@@ -206,6 +214,8 @@ class _FriendTabListView extends StatefulWidget {
 class _FriendTabListViewState extends State<_FriendTabListView>
     with AutomaticKeepAliveClientMixin {
   late Future<List<FriendItem>> _future;
+  final TextEditingController _blacklistAddCtrl = TextEditingController();
+  bool _isAddingBlacklist = false;
 
   @override
   bool get wantKeepAlive => true;
@@ -216,124 +226,230 @@ class _FriendTabListViewState extends State<_FriendTabListView>
     _load();
   }
 
+  @override
+  void dispose() {
+    _blacklistAddCtrl.dispose();
+    super.dispose();
+  }
+
   void _load() {
     setState(() {
       _future = KlpbbsApi.getFriends(widget.uid, view: widget.view);
     });
   }
 
+  Future<void> _addBlacklist() async {
+    final name = _blacklistAddCtrl.text.trim();
+    if (name.isEmpty) return;
+    setState(() => _isAddingBlacklist = true);
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await KlpbbsApi.addToBlacklistByUsername(name);
+    if (mounted) {
+      setState(() => _isAddingBlacklist = false);
+      if (ok) {
+        _blacklistAddCtrl.clear();
+        messenger.showSnackBar(
+          SnackBar(content: Text('已将「$name」加入黑名单')),
+        );
+        _load();
+      } else {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('添加失败，请确认用户名是否存在或网络正常')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
 
-    return FutureBuilder<List<FriendItem>>(
-      future: _future,
-      builder: (context, snap) {
-        if (snap.connectionState != ConnectionState.done) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snap.hasError) {
-          return EmptyView(
-            icon: Icons.error_outline,
-            title: '加载${widget.tabTitle}失败',
-            subtitle: '${snap.error}',
-            action: FilledButton.tonal(
-              onPressed: _load,
-              child: const Text('重试'),
+    return Column(
+      children: [
+        // 黑名单 Tab 顶部现代 Material 提示框与添加栏
+        if (widget.view == 'blacklist') ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 4),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: isDark
+                    ? theme.colorScheme.tertiaryContainer.withAlpha(50)
+                    : const Color(0xFFFFF8E1),
+                border: Border.all(
+                  color: isDark
+                      ? theme.colorScheme.tertiary.withAlpha(60)
+                      : const Color(0xFFFFE082),
+                ),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.info_outline_rounded,
+                    size: 18,
+                    color: isDark
+                        ? theme.colorScheme.tertiary
+                        : const Color(0xFFF57F17),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '加入到黑名单的用户，将会从您的好友列表中删除。同时，对方将不能进行与您相关的打招呼、踩日志、加好友、评论、留言、短消息等互动行为。',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        color: isDark
+                            ? theme.colorScheme.onSurface
+                            : const Color(0xFF5D4037),
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
-          );
-        }
-
-        final allList = snap.data ?? [];
-        if (allList.isEmpty) {
-          return EmptyView(
-            icon: _getTabEmptyIcon(widget.view),
-            title: '暂无数据',
-            subtitle: widget.isMe ? '您目前没有${widget.tabTitle}数据' : '暂无公开${widget.tabTitle}',
-            action: FilledButton.tonal(
-              onPressed: _load,
-              child: const Text('刷新'),
-            ),
-          );
-        }
-
-        final filteredList = widget.filterKeyword.isEmpty
-            ? allList
-            : allList.where((f) {
-                return f.username.toLowerCase().contains(widget.filterKeyword) ||
-                    f.usergroup.toLowerCase().contains(widget.filterKeyword) ||
-                    f.uid.toString().contains(widget.filterKeyword) ||
-                    f.note.toLowerCase().contains(widget.filterKeyword);
-              }).toList();
-
-        final onlineCount = allList.where((f) => f.isOnline).length;
-
-        return RefreshIndicator(
-          onRefresh: () async => _load(),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // 统计信息条
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                child: Text(
-                  widget.view == 'me'
-                      ? '共 ${allList.length} 位好友 · $onlineCount 人在线'
-                      : '共 ${allList.length} 条记录',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
-                    fontWeight: FontWeight.w500,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _blacklistAddCtrl,
+                    decoration: InputDecoration(
+                      hintText: '输入需要添加黑名单的用户名',
+                      hintStyle: TextStyle(
+                        fontSize: 13,
+                        color: theme.colorScheme.onSurfaceVariant.withAlpha(150),
+                      ),
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(
+                          color: theme.colorScheme.outlineVariant.withAlpha(80),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-              ),
+                const SizedBox(width: 8),
+                FilledButton.icon(
+                  icon: _isAddingBlacklist
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.person_add_disabled_rounded, size: 16),
+                  label: const Text('添加', style: TextStyle(fontWeight: FontWeight.bold)),
+                  style: FilledButton.styleFrom(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+                  ),
+                  onPressed: _isAddingBlacklist ? null : _addBlacklist,
+                ),
+              ],
+            ),
+          ),
+        ],
 
-              Expanded(
+        Expanded(
+          child: FutureBuilder<List<FriendItem>>(
+            future: _future,
+            builder: (context, snap) {
+              if (snap.connectionState != ConnectionState.done) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snap.hasError) {
+                return EmptyView(
+                  icon: Icons.error_outline,
+                  title: '加载${widget.tabTitle}失败',
+                  subtitle: '${snap.error}',
+                  action: FilledButton.tonal(
+                    onPressed: _load,
+                    child: const Text('重试'),
+                  ),
+                );
+              }
+
+              final allList = snap.data ?? [];
+              if (allList.isEmpty) {
+                return EmptyView(
+                  icon: _getTabEmptyIcon(widget.view),
+                  title: widget.view == 'blacklist' ? '没有相关用户列表' : '暂无数据',
+                  subtitle: widget.isMe ? '您目前没有${widget.tabTitle}数据' : '暂无公开${widget.tabTitle}',
+                  action: FilledButton.tonal(
+                    onPressed: _load,
+                    child: const Text('刷新'),
+                  ),
+                );
+              }
+
+              final filteredList = widget.filterKeyword.isEmpty
+                  ? allList
+                  : allList.where((f) {
+                      return f.username.toLowerCase().contains(widget.filterKeyword) ||
+                          f.usergroup.toLowerCase().contains(widget.filterKeyword) ||
+                          f.uid.toString().contains(widget.filterKeyword) ||
+                          f.note.toLowerCase().contains(widget.filterKeyword);
+                    }).toList();
+
+              return RefreshIndicator(
+                onRefresh: () async => _load(),
                 child: filteredList.isEmpty
                     ? Center(
                         child: Text(
                           '未找到匹配「${widget.filterKeyword}」的结果',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
+                          style: TextStyle(color: theme.colorScheme.outline),
                         ),
                       )
-                    : ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(14, 4, 14, 24),
+                    : ListView.builder(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: const EdgeInsets.symmetric(vertical: 8),
                         itemCount: filteredList.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 8),
-                        itemBuilder: (ctx, idx) {
-                          final f = filteredList[idx];
+                        itemBuilder: (context, index) {
+                          final item = filteredList[index];
                           return _FriendCard(
-                            item: f,
+                            key: ValueKey('${widget.view}_${item.uid}'),
+                            item: item,
                             view: widget.view,
                             isMe: widget.isMe,
                             onChanged: _load,
                           );
                         },
                       ),
-              ),
-            ],
+              );
+            },
           ),
-        );
-      },
+        ),
+      ],
     );
   }
 
   IconData _getTabEmptyIcon(String view) {
     switch (view) {
       case 'follow':
-        return Icons.favorite_outline;
+        return Icons.favorite_border;
       case 'fans':
-        return Icons.star_outline;
+        return Icons.star_border;
       case 'visitor':
-        return Icons.visibility_outlined;
+        return Icons.visibility_off_outlined;
       case 'trace':
-        return Icons.history_outlined;
+        return Icons.history;
       case 'request':
-        return Icons.person_add_outlined;
+        return Icons.person_add_disabled_outlined;
       case 'blacklist':
         return Icons.block_outlined;
       default:
@@ -342,7 +458,7 @@ class _FriendTabListViewState extends State<_FriendTabListView>
   }
 }
 
-/// 单个好友卡片组件（1:1 高保真对齐 Discuz 移动端布局与交互）
+/// 单个好友/用户条目卡片 (精细打磨的 Material 3 风格)
 class _FriendCard extends StatefulWidget {
   final FriendItem item;
   final String view;
@@ -350,6 +466,7 @@ class _FriendCard extends StatefulWidget {
   final VoidCallback onChanged;
 
   const _FriendCard({
+    super.key,
     required this.item,
     required this.view,
     required this.isMe,
@@ -361,7 +478,7 @@ class _FriendCard extends StatefulWidget {
 }
 
 class _FriendCardState extends State<_FriendCard> {
-  bool _isFollowing = false;
+  late bool _isFollowing;
   bool _isActionLoading = false;
 
   @override
@@ -370,21 +487,7 @@ class _FriendCardState extends State<_FriendCard> {
     _isFollowing = widget.item.isFollowing;
   }
 
-  @override
-  void didUpdateWidget(covariant _FriendCard oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.item.isFollowing != widget.item.isFollowing) {
-      _isFollowing = widget.item.isFollowing;
-    }
-  }
-
   Future<void> _toggleFollow() async {
-    if (!DioClient.isLoggedIn) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请先登录')),
-      );
-      return;
-    }
     setState(() => _isActionLoading = true);
     final messenger = ScaffoldMessenger.of(context);
     final nextState = !_isFollowing;
@@ -398,65 +501,225 @@ class _FriendCardState extends State<_FriendCard> {
         if (ok) _isFollowing = nextState;
       });
       messenger.showSnackBar(
-        SnackBar(content: Text(ok ? (nextState ? '已关注' : '已取消关注') : '操作失败，请重试')),
+        SnackBar(
+          content: Text(
+            ok
+                ? (nextState ? '已关注「${widget.item.username}」' : '已取消关注「${widget.item.username}」')
+                : '操作失败，请重试',
+          ),
+          duration: const Duration(seconds: 2),
+        ),
       );
+      if (ok) widget.onChanged();
     }
   }
 
-  Future<void> _pokeUser() async {
-    if (!DioClient.isLoggedIn) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请先登录')),
-      );
-      return;
-    }
-    final pokeCtrl = TextEditingController(text: '打个招呼');
-    final confirm = await showDialog<String>(
+  Future<void> _editNote() async {
+    final ctrl = TextEditingController(text: widget.item.note);
+    final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('向「${widget.item.username}」打招呼'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: pokeCtrl,
-              decoration: const InputDecoration(
-                labelText: '招呼内容',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 6,
-              children: ['打个招呼', '握个手', '踩一下', '摸摸头'].map((s) {
-                return ActionChip(
-                  label: Text(s, style: const TextStyle(fontSize: 11)),
-                  padding: EdgeInsets.zero,
-                  onPressed: () => pokeCtrl.text = s,
-                );
-              }).toList(),
-            ),
-          ],
+        title: Text('修改「${widget.item.username}」备注'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '输入好友备注（如真实姓名、联系方式）',
+            isDense: true,
+          ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
+            onPressed: () => Navigator.of(ctx).pop(false),
             child: const Text('取消'),
           ),
           FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(pokeCtrl.text.trim()),
-            child: const Text('发送'),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('保存'),
           ),
         ],
       ),
     );
 
-    if (confirm != null && confirm.isNotEmpty && mounted) {
+    if (ok == true && mounted) {
+      final newNote = ctrl.text.trim();
       final messenger = ScaffoldMessenger.of(context);
-      final ok = await KlpbbsApi.pokeUser(widget.item.uid, confirm);
-      messenger.showSnackBar(
-        SnackBar(content: Text(ok ? '已成功打招呼' : '打招呼失败，请重试')),
-      );
+      final res = await KlpbbsApi.editFriendNote(widget.item.uid, newNote);
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(res ? '备注已更新' : '更新备注失败，请重试'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        if (res) widget.onChanged();
+      }
+    }
+    ctrl.dispose();
+  }
+
+  Future<void> _showGroupPicker() async {
+    const groups = [
+      (0, '特别关注'),
+      (1, '认识的人'),
+      (2, '朋友'),
+      (3, '网友'),
+      (4, '同事'),
+      (5, '家人'),
+    ];
+
+    final selected = await showModalBottomSheet<int>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  '选择好友「${widget.item.username}」分组',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+              ),
+              const Divider(height: 1),
+              for (final g in groups)
+                ListTile(
+                  leading: const Icon(Icons.folder_outlined),
+                  title: Text(g.$2),
+                  onTap: () => Navigator.of(ctx).pop(g.$1),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selected != null && mounted) {
+      final messenger = ScaffoldMessenger.of(context);
+      final ok = await KlpbbsApi.changeFriendGroup(widget.item.uid, selected);
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(ok ? '分组修改成功' : '修改分组失败，请重试'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        if (ok) widget.onChanged();
+      }
+    }
+  }
+
+  Future<void> _pokeUser() async {
+    const pokes = [
+      '打了个招呼',
+      '握了个手',
+      '踩了一下',
+      '摸了摸头',
+      '比了个心',
+      '抛了个媚眼',
+    ];
+
+    final msg = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text('向「${widget.item.username}」打招呼'),
+        children: pokes.map((p) {
+          return SimpleDialogOption(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            onPressed: () => Navigator.of(ctx).pop(p),
+            child: Text(p, style: const TextStyle(fontSize: 14.5)),
+          );
+        }).toList(),
+      ),
+    );
+
+    if (msg != null && mounted) {
+      final messenger = ScaffoldMessenger.of(context);
+      final ok = await KlpbbsApi.pokeUser(widget.item.uid, msg);
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(ok ? '已向「${widget.item.username}」$msg' : '打招呼失败，请重试'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _deleteFriend() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除好友'),
+        content: Text('确定要删除好友「${widget.item.username}」吗？此操作不可逆。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true && mounted) {
+      final messenger = ScaffoldMessenger.of(context);
+      final ok = await KlpbbsApi.deleteFriend(widget.item.uid);
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(ok ? '已删除好友「${widget.item.username}」' : '删除失败，请重试'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        if (ok) widget.onChanged();
+      }
+    }
+  }
+
+  Future<void> _addToBlacklist() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('加入黑名单'),
+        content: Text(
+          '确定要将「${widget.item.username}」加入黑名单吗？该用户将从好友列表中移除，且无法与您互动。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('确认拉黑'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true && mounted) {
+      final messenger = ScaffoldMessenger.of(context);
+      final ok = await KlpbbsApi.addToBlacklist(widget.item.uid);
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(ok ? '已将「${widget.item.username}」加入黑名单' : '操作失败，请重试'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        if (ok) widget.onChanged();
+      }
     }
   }
 
@@ -464,81 +727,68 @@ class _FriendCardState extends State<_FriendCard> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
     final f = widget.item;
 
     return Card(
       elevation: 0,
-      color: colorScheme.surfaceContainerLow,
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(
-          color: colorScheme.outlineVariant.withAlpha(50),
-        ),
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: colorScheme.outlineVariant.withAlpha(45)),
       ),
-      clipBehavior: Clip.antiAlias,
+      color: isDark ? colorScheme.surfaceContainerHigh : colorScheme.surfaceContainerLowest,
       child: InkWell(
+        borderRadius: BorderRadius.circular(14),
         onTap: () {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => UserSpacePage(uid: f.uid),
-            ),
-          );
+          if (f.uid > 0) {
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => UserSpacePage(uid: f.uid)),
+            );
+          }
         },
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           child: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              // 头像与在线状态
+              // 1. 头像区（带在线指示徽标）
               UserAvatarWidget(
-                avatarUrl: f.avatarUrl,
                 uid: f.uid,
-                size: 46,
+                avatarUrl: f.avatarUrl,
+                author: f.username,
+                size: 44,
                 isOnline: f.isOnline,
                 showOnlineBadge: true,
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => UserSpacePage(uid: f.uid),
-                    ),
-                  );
-                },
               ),
               const SizedBox(width: 12),
 
-              // 中间信息列 (用户名、用户组、积分、在线提示)
+              // 2. 用户核心信息区
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
                   children: [
                     Row(
                       children: [
                         Flexible(
                           child: Text(
                             f.username,
-                            maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                              fontSize: 15.5,
+                              fontSize: 14.5,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
                         ),
-                        if (f.isOnline) ...[
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-                            decoration: BoxDecoration(
-                              color: Colors.green.withAlpha(30),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: const Text(
-                              '在线',
+                        if (f.note.isNotEmpty) ...[
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              '（${f.note}）',
+                              overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.green,
+                                fontSize: 12,
+                                color: colorScheme.primary,
+                                fontWeight: FontWeight.w500,
                               ),
                             ),
                           ),
@@ -553,18 +803,18 @@ class _FriendCardState extends State<_FriendCard> {
                       children: [
                         if (f.usergroup.isNotEmpty)
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                             decoration: BoxDecoration(
                               color: f.usergroup.contains('禁止')
                                   ? colorScheme.errorContainer
                                   : colorScheme.primaryContainer.withAlpha(120),
-                              borderRadius: BorderRadius.circular(6),
+                              borderRadius: BorderRadius.circular(4),
                             ),
                             child: Text(
                               f.usergroup,
                               style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.bold,
                                 color: f.usergroup.contains('禁止')
                                     ? colorScheme.error
                                     : colorScheme.onPrimaryContainer,
@@ -578,10 +828,11 @@ class _FriendCardState extends State<_FriendCard> {
                               Icon(Icons.stars_rounded, size: 13, color: Colors.amber.shade700),
                               const SizedBox(width: 2),
                               Text(
-                                f.credits.contains('积分') ? f.credits : '积分:${f.credits}',
+                                f.credits.contains('积分') ? f.credits : '积分: ${f.credits}',
                                 style: TextStyle(
-                                  fontSize: 11.5,
+                                  fontSize: 11,
                                   color: colorScheme.onSurfaceVariant,
+                                  fontWeight: FontWeight.w500,
                                 ),
                               ),
                             ],
@@ -591,14 +842,14 @@ class _FriendCardState extends State<_FriendCard> {
                     if (f.recentActivity.isNotEmpty &&
                         !f.recentActivity.startsWith('UID') &&
                         !f.recentActivity.contains('积分')) ...[
-                      const SizedBox(height: 3),
+                      const SizedBox(height: 2),
                       Text(
                         f.recentActivity,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 11,
-                          color: colorScheme.secondary,
+                          fontSize: 10.5,
+                          color: colorScheme.outline,
                         ),
                       ),
                     ],
@@ -606,7 +857,9 @@ class _FriendCardState extends State<_FriendCard> {
                 ),
               ),
 
-              // 右侧 App 风格操作栏 (根据当前 Tab 动态展示对应操作)
+              const SizedBox(width: 6),
+
+              // 3. 右侧 Material 3 快捷操作组
               if (widget.view == 'request') ...[
                 Row(
                   mainAxisSize: MainAxisSize.min,
@@ -671,48 +924,11 @@ class _FriendCardState extends State<_FriendCard> {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // 1. 关注 / 取消关注
+                    // 发消息 (Chat)
                     IconButton.filledTonal(
-                      iconSize: 18,
+                      icon: const Icon(Icons.chat_bubble_outline_rounded, size: 18),
+                      tooltip: '发消息',
                       visualDensity: VisualDensity.compact,
-                      tooltip: _isFollowing ? '取消关注' : '关注',
-                      style: IconButton.styleFrom(
-                        foregroundColor: _isFollowing ? Colors.redAccent : colorScheme.onSurfaceVariant,
-                        backgroundColor: _isFollowing ? Colors.red.withAlpha(25) : null,
-                      ),
-                      icon: _isActionLoading
-                          ? const SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : Icon(_isFollowing ? Icons.favorite_rounded : Icons.favorite_border_rounded),
-                      onPressed: _isActionLoading ? null : _toggleFollow,
-                    ),
-
-                    // 2. 打招呼
-                    IconButton.filledTonal(
-                      iconSize: 18,
-                      visualDensity: VisualDensity.compact,
-                      tooltip: '打招呼',
-                      style: IconButton.styleFrom(
-                        foregroundColor: Colors.teal,
-                        backgroundColor: Colors.teal.withAlpha(20),
-                      ),
-                      icon: const Icon(Icons.waving_hand_rounded),
-                      onPressed: _pokeUser,
-                    ),
-
-                    // 3. 发私信
-                    IconButton.filledTonal(
-                      iconSize: 18,
-                      visualDensity: VisualDensity.compact,
-                      tooltip: '发私信',
-                      style: IconButton.styleFrom(
-                        foregroundColor: colorScheme.primary,
-                        backgroundColor: colorScheme.primary.withAlpha(20),
-                      ),
-                      icon: const Icon(Icons.chat_bubble_outline_rounded),
                       onPressed: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(
@@ -724,12 +940,95 @@ class _FriendCardState extends State<_FriendCard> {
                         );
                       },
                     ),
+                    const SizedBox(width: 4),
 
-                    // 4. 更多菜单 (查看空间、修改备注、删除好友、黑名单)
+                    // 打招呼 (Poke)
+                    IconButton.filledTonal(
+                      icon: Icon(
+                        Icons.waving_hand_rounded,
+                        size: 18,
+                        color: isDark ? Colors.tealAccent : const Color(0xFF00897B),
+                      ),
+                      tooltip: '打招呼',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: _pokeUser,
+                    ),
+                    const SizedBox(width: 4),
+
+                    // 关注 / 取消 (Follow / Unfollow)
+                    IconButton.filledTonal(
+                      icon: _isActionLoading
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Icon(
+                              _isFollowing ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                              size: 18,
+                              color: _isFollowing ? const Color(0xFFE53935) : colorScheme.onSurfaceVariant,
+                            ),
+                      tooltip: _isFollowing ? '取消关注' : '关注',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: _isActionLoading ? null : _toggleFollow,
+                    ),
+
+                    // 更多操作 (分组、备注、空间、拉黑、删除)
                     PopupMenuButton<String>(
-                      icon: const Icon(Icons.more_vert_rounded, size: 18),
+                      icon: Icon(
+                        Icons.more_vert_rounded,
+                        size: 18,
+                        color: colorScheme.outline,
+                      ),
                       tooltip: '更多操作',
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      onSelected: (action) {
+                        switch (action) {
+                          case 'group':
+                            _showGroupPicker();
+                            break;
+                          case 'note':
+                            _editNote();
+                            break;
+                          case 'space':
+                            if (f.uid > 0) {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(builder: (_) => UserSpacePage(uid: f.uid)),
+                              );
+                            }
+                            break;
+                          case 'blacklist':
+                            _addToBlacklist();
+                            break;
+                          case 'delete':
+                            _deleteFriend();
+                            break;
+                        }
+                      },
                       itemBuilder: (ctx) => [
+                        const PopupMenuItem(
+                          value: 'group',
+                          child: Row(
+                            children: [
+                              Icon(Icons.folder_outlined, size: 18),
+                              SizedBox(width: 8),
+                              Text('好友分组'),
+                            ],
+                          ),
+                        ),
+                        if (widget.isMe && widget.view == 'me')
+                          const PopupMenuItem(
+                            value: 'note',
+                            child: Row(
+                              children: [
+                                Icon(Icons.edit_note_rounded, size: 18),
+                                SizedBox(width: 8),
+                                Text('修改备注'),
+                              ],
+                            ),
+                          ),
                         const PopupMenuItem(
                           value: 'space',
                           child: Row(
@@ -744,9 +1043,9 @@ class _FriendCardState extends State<_FriendCard> {
                           value: 'blacklist',
                           child: Row(
                             children: [
-                              Icon(Icons.block_outlined, size: 18),
+                              Icon(Icons.block_outlined, size: 18, color: Colors.orange),
                               SizedBox(width: 8),
-                              Text('加入黑名单'),
+                              Text('加入黑名单', style: TextStyle(color: Colors.orange)),
                             ],
                           ),
                         ),
@@ -755,40 +1054,13 @@ class _FriendCardState extends State<_FriendCard> {
                             value: 'delete',
                             child: Row(
                               children: [
-                                Icon(Icons.person_remove_outlined, color: Colors.redAccent, size: 18),
+                                Icon(Icons.person_remove_outlined, size: 18, color: Colors.red),
                                 SizedBox(width: 8),
-                                Text('删除好友', style: TextStyle(color: Colors.redAccent)),
+                                Text('删除好友', style: TextStyle(color: Colors.red)),
                               ],
                             ),
                           ),
                       ],
-                      onSelected: (action) async {
-                        if (action == 'space') {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => UserSpacePage(uid: f.uid),
-                            ),
-                          );
-                        } else if (action == 'blacklist') {
-                          final messenger = ScaffoldMessenger.of(context);
-                          final ok = await KlpbbsApi.addToBlacklist(f.uid);
-                          if (mounted) {
-                            messenger.showSnackBar(
-                              SnackBar(content: Text(ok ? '已加入黑名单' : '操作失败，请重试')),
-                            );
-                            if (ok) widget.onChanged();
-                          }
-                        } else if (action == 'delete') {
-                          final messenger = ScaffoldMessenger.of(context);
-                          final ok = await KlpbbsApi.deleteFriend(f.uid);
-                          if (mounted) {
-                            messenger.showSnackBar(
-                              SnackBar(content: Text(ok ? '已删除好友' : '操作失败，请重试')),
-                            );
-                            if (ok) widget.onChanged();
-                          }
-                        }
-                      },
                     ),
                   ],
                 ),
@@ -800,3 +1072,4 @@ class _FriendCardState extends State<_FriendCard> {
     );
   }
 }
+

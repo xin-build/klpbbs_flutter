@@ -73,6 +73,7 @@ class _HomePageState extends State<HomePage> {
   List<ThreadSummary> _memoizedAllThreads = [];
   List<ThreadSummary>? _lastInitialThreads;
   int _lastMoreLength = -1;
+  bool _showBackToTop = false;
   ValueChanged<int>? get _onSwitchTab => widget.onSwitchTab;
 
   @override
@@ -295,17 +296,164 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  /// 提前 600px 后台静默预加载更多，实现完全无感平滑无限流
+  /// 提前 600px 后台静默预加载更多，并管理回到顶部悬浮按钮显示状态
   void _onHomeScroll() {
-    if (!_homeScrollCtrl.hasClients || _loadingMore) return;
+    if (!_homeScrollCtrl.hasClients) return;
     final pos = _homeScrollCtrl.position;
-    if (pos.pixels >= pos.maxScrollExtent - 600) {
+    if (pos.pixels > 380 && !_showBackToTop) {
+      setState(() => _showBackToTop = true);
+    } else if (pos.pixels <= 380 && _showBackToTop) {
+      setState(() => _showBackToTop = false);
+    }
+    if (!_loadingMore && pos.pixels >= pos.maxScrollExtent - 600) {
       _loadMore();
     }
   }
 
+  void _scrollToTop() {
+    HapticFeedback.lightImpact();
+    _homeScrollCtrl.animateTo(
+      0,
+      duration: const Duration(milliseconds: 450),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  Future<void> _openNotifications() async {
+    if (!DioClient.isLoggedIn) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先登录')));
+      return;
+    }
+    setState(() => _unreadNotice = 0);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final notices = await KlpbbsApi.getNotices('mypost');
+      if (notices.isNotEmpty) {
+        final top = notices.first;
+        await prefs.setString(
+          'notice_last_read_key',
+          '${top.tid}_${top.pid}_${top.timeText}',
+        );
+      }
+    } catch (_) {}
+    if (mounted) {
+      await Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const NoticePage()),
+      );
+    }
+  }
+
+  void _openPmInbox() {
+    if (!DioClient.isLoggedIn) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先登录')));
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const PmInboxPage()),
+    );
+  }
+
+  Future<void> _openAccountMenu() async {
+    if (DioClient.isLoggedIn) {
+      final action = await showModalBottomSheet<String>(
+        context: context,
+        builder: (ctx) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.account_circle),
+                title: const Text('我的空间'),
+                onTap: () => Navigator.of(ctx).pop('space'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.account_balance_wallet_outlined),
+                title: const Text('积分中心'),
+                onTap: () => Navigator.of(ctx).pop('credit'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.military_tech_outlined),
+                title: const Text('勋章中心'),
+                onTap: () => Navigator.of(ctx).pop('medal'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.auto_fix_high_outlined),
+                title: const Text('道具中心'),
+                onTap: () => Navigator.of(ctx).pop('magic'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.mail_outline),
+                title: const Text('私信收件箱'),
+                trailing: _unreadPm > 0
+                    ? Badge.count(count: _unreadPm)
+                    : null,
+                onTap: () => Navigator.of(ctx).pop('pm'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.notifications_outlined),
+                title: const Text('通知'),
+                onTap: () => Navigator.of(ctx).pop('notice'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.settings_outlined),
+                title: const Text('设置'),
+                onTap: () => Navigator.of(ctx).pop('settings'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.logout),
+                title: const Text('退出登录'),
+                onTap: () => Navigator.of(ctx).pop('logout'),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (!mounted) return;
+      if (action == 'space') {
+        final uid = await KlpbbsApi.getMyUid() ?? 1;
+        if (!mounted) return;
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => UserSpacePage(uid: uid)),
+        );
+      } else if (action == 'credit') {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const CreditPage(initialTabIndex: 0)),
+        );
+      } else if (action == 'medal') {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const MedalPage()),
+        );
+      } else if (action == 'magic') {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const MagicPage()),
+        );
+      } else if (action == 'pm') {
+        _openPmInbox();
+      } else if (action == 'notice') {
+        _openNotifications();
+      } else if (action == 'settings') {
+        widget.onOpenSettings?.call();
+      } else if (action == 'logout') {
+        final ok = await KlpbbsApi.logout();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(ok ? '已退出登录' : '退出失败')),
+          );
+          _reload();
+        }
+      }
+      return;
+    }
+    final ok = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const LoginPage()),
+    );
+    if (ok == true && mounted) _reload();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+
     return DesktopShortcutsWrapper(
       onRefresh: _reload,
       onSearch: () => Navigator.of(
@@ -313,9 +461,12 @@ class _HomePageState extends State<HomePage> {
       ).push(MaterialPageRoute(builder: (_) => const SearchPage())),
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('苦力怕论坛'),
-          automaticallyImplyLeading: !ResponsiveBreakpoints.isDesktop(context),
-          leading: (!ResponsiveBreakpoints.isDesktop(context) && widget.showDrawerButton)
+          title: const Text(
+            '苦力怕论坛',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+          ),
+          automaticallyImplyLeading: !isDesktop,
+          leading: (!isDesktop && widget.showDrawerButton)
               ? IconButton(
                   icon: const Icon(Icons.menu),
                   tooltip: '打开导航菜单',
@@ -325,8 +476,12 @@ class _HomePageState extends State<HomePage> {
           actions: [
             IconButton(
               icon: const Icon(Icons.refresh_rounded),
-              tooltip: '手动刷新 (F5)',
+              tooltip: '手动刷新',
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
               onPressed: () {
+                HapticFeedback.lightImpact();
                 _reload();
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
@@ -339,6 +494,9 @@ class _HomePageState extends State<HomePage> {
             IconButton(
               icon: const Icon(Icons.search),
               tooltip: '搜索 (Ctrl+F)',
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
               onPressed: () {
                 Navigator.of(
                   context,
@@ -354,147 +512,39 @@ class _HomePageState extends State<HomePage> {
               child: IconButton(
                 icon: const Icon(Icons.notifications_outlined),
                 tooltip: '通知',
-                onPressed: () async {
-                  if (!DioClient.isLoggedIn) {
-                    ScaffoldMessenger.of(
-                      context,
-                    ).showSnackBar(const SnackBar(content: Text('请先登录')));
-                    return;
-                  }
-                  setState(() => _unreadNotice = 0);
-                  try {
-                    final prefs = await SharedPreferences.getInstance();
-                    final notices = await KlpbbsApi.getNotices('mypost');
-                    if (notices.isNotEmpty) {
-                      final top = notices.first;
-                      await prefs.setString(
-                        'notice_last_read_key',
-                        '${top.tid}_${top.pid}_${top.timeText}',
-                      );
-                    }
-                  } catch (_) {}
-                  if (context.mounted) {
-                    await Navigator.of(
-                      context,
-                    ).push(MaterialPageRoute(builder: (_) => const NoticePage()));
-                  }
-                },
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.all(6),
+                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                onPressed: _openNotifications,
               ),
             ),
-            IconButton(
-              icon: const Icon(Icons.settings_outlined),
-              tooltip: '设置',
-              onPressed: widget.onOpenSettings,
-            ),
+            if (isDesktop)
+              IconButton(
+                icon: const Icon(Icons.settings_outlined),
+                tooltip: '设置',
+                onPressed: widget.onOpenSettings,
+              ),
             Badge(
               isLabelVisible: _unreadPm > 0,
               label: Text('$_unreadPm', style: const TextStyle(fontSize: 10)),
               child: IconButton(
                 icon: const Icon(Icons.mail_outline),
                 tooltip: '私信收件箱',
-                onPressed: () {
-                  if (!DioClient.isLoggedIn) {
-                    ScaffoldMessenger.of(
-                      context,
-                    ).showSnackBar(const SnackBar(content: Text('请先登录')));
-                    return;
-                  }
-                  Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const PmInboxPage()),
-                  );
-                },
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.all(6),
+                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                onPressed: _openPmInbox,
               ),
             ),
             IconButton(
               icon: Icon(
                 DioClient.isLoggedIn ? Icons.account_circle : Icons.login,
               ),
-              tooltip: DioClient.isLoggedIn ? '已登录' : '登录（本地测试）',
-              onPressed: () async {
-                if (DioClient.isLoggedIn) {
-                  // 已登录：弹出菜单（用户空间/退出）
-                  final action = await showModalBottomSheet<String>(
-                    context: context,
-                    builder: (ctx) => SafeArea(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          ListTile(
-                            leading: const Icon(Icons.account_circle),
-                            title: const Text('我的空间'),
-                            onTap: () => Navigator.of(ctx).pop('space'),
-                          ),
-                          ListTile(
-                            leading: const Icon(Icons.account_balance_wallet_outlined),
-                            title: const Text('积分中心'),
-                            onTap: () => Navigator.of(ctx).pop('credit'),
-                          ),
-                          ListTile(
-                            leading: const Icon(Icons.military_tech_outlined),
-                            title: const Text('勋章中心'),
-                            onTap: () => Navigator.of(ctx).pop('medal'),
-                          ),
-                          ListTile(
-                            leading: const Icon(Icons.auto_fix_high_outlined),
-                            title: const Text('道具中心'),
-                            onTap: () => Navigator.of(ctx).pop('magic'),
-                          ),
-                          ListTile(
-                            leading: const Icon(Icons.notifications_outlined),
-                            title: const Text('通知'),
-                            onTap: () => Navigator.of(ctx).pop('notice'),
-                          ),
-                          ListTile(
-                            leading: const Icon(Icons.logout),
-                            title: const Text('退出登录'),
-                            onTap: () => Navigator.of(ctx).pop('logout'),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                  if (!context.mounted) return;
-                  if (action == 'space') {
-                    // 打开当前登录用户空间（从登录态解析 uid）
-                    final uid = await KlpbbsApi.getMyUid() ?? 1;
-                    if (!context.mounted) return;
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => UserSpacePage(uid: uid),
-                      ),
-                    );
-                  } else if (action == 'credit') {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const CreditPage(initialTabIndex: 0)),
-                    );
-                  } else if (action == 'medal') {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const MedalPage()),
-                    );
-                  } else if (action == 'magic') {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const MagicPage()),
-                    );
-                  } else if (action == 'notice') {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const NoticePage()),
-                    );
-                  } else if (action == 'logout') {
-                    final ok = await KlpbbsApi.logout();
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text(ok ? '已退出登录' : '退出失败')),
-                      );
-                      _reload();
-                    }
-                  }
-                  return;
-                }
-                final ok = await Navigator.of(context).push<bool>(
-                  MaterialPageRoute(builder: (_) => const LoginPage()),
-                );
-                if (ok == true && mounted) _reload();
-              },
+              tooltip: DioClient.isLoggedIn ? '我的空间' : '登录',
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+              onPressed: _openAccountMenu,
             ),
           ],
         ),
@@ -529,10 +579,15 @@ class _HomePageState extends State<HomePage> {
               backgroundColor: Theme.of(context).colorScheme.surface,
               displacement: 40,
               edgeOffset: 8,
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1280),
-                  child: CustomScrollView(
+              child: SafeArea(
+                top: false,
+                left: true,
+                right: true,
+                bottom: true,
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1280),
+                    child: CustomScrollView(
                     controller: _homeScrollCtrl,
                     physics: const AlwaysScrollableScrollPhysics(),
                     slivers: [
@@ -581,7 +636,7 @@ class _HomePageState extends State<HomePage> {
                       // 快捷入口：仅在移动端展示（桌面端已有左侧侧边栏导航）
                       if (!isDesktop)
                         SliverToBoxAdapter(
-                          child: _QuickActions(onNavigate: _onNavigateTab),
+                          child: QuickActionsWidget(onNavigate: _onNavigateTab),
                         ),
                       // 推荐分区头
                       SliverToBoxAdapter(
@@ -700,15 +755,25 @@ class _HomePageState extends State<HomePage> {
                           ),
                         ),
                       ),
-                      // 给右下角发帖 FAB 预留空间，避免遮挡最后一张卡片
+                      // 给右下角发帖与回到顶部 FAB 预留空间，避免遮挡最后一张卡片
                       const SliverToBoxAdapter(child: SizedBox(height: 96)),
                     ],
                   ),
                 ),
               ),
-            );
-          },
-        ),
+            ),
+          );
+        },
+      ),
+        floatingActionButton: _showBackToTop
+            ? FloatingActionButton.small(
+                key: const ValueKey('home_back_to_top_btn'),
+                tooltip: '回到顶部',
+                elevation: 3,
+                onPressed: _scrollToTop,
+                child: const Icon(Icons.arrow_upward_rounded),
+              )
+            : null,
       ),
     );
   }
@@ -1558,62 +1623,97 @@ class _FavForumsSheetState extends State<_FavForumsSheet> {
   }
 }
 
-class _QuickActions extends StatelessWidget {
+class QuickActionsWidget extends StatelessWidget {
   final ValueChanged<int> onNavigate;
 
-  const _QuickActions({required this.onNavigate});
+  const QuickActionsWidget({super.key, required this.onNavigate});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    // 快捷入口：版块/签到/勋章/导读/搜索/封神榜/排行
+    // 快捷金刚区：舒展的 2 排 × 4 宫格排布，带 M3 触觉反馈与色彩主题
     final items = [
-      (Icons.forum_outlined, '版块', const Color(0xFF008AC5), 1),
-      (Icons.event_available, '签到', const Color(0xFF00A2FF), 2),
-      (Icons.military_tech, '勋章', const Color(0xFF9C27B0), 3),
-      (Icons.local_fire_department, '导读', const Color(0xFFFF7043), 10),
-      (Icons.search, '搜索', const Color(0xFF2E7D32), 11),
+      (Icons.forum_outlined, '版块导航', const Color(0xFF008AC5), 1),
+      (Icons.event_available, '今日签到', const Color(0xFF00A2FF), 2),
+      (Icons.military_tech, '勋章中心', const Color(0xFF9C27B0), 3),
+      (Icons.local_fire_department, '导读精选', const Color(0xFFFF7043), 10),
+      (Icons.search, '全站搜索', const Color(0xFF2E7D32), 11),
       (Icons.gavel, '封神榜', Colors.redAccent, 12),
-      (Icons.leaderboard, '排行', const Color(0xFF7E57C2), 13),
+      (Icons.leaderboard, '积分排行', const Color(0xFF7E57C2), 13),
+      (Icons.mail_outline, '私信消息', const Color(0xFF009688), 14),
     ];
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 14, 14, 4),
-      child: Row(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 4),
+      child: Column(
         children: [
-          for (final (icon, label, color, tabIndex) in items) ...[
-            Expanded(
-              child: InkWell(
-                borderRadius: BorderRadius.circular(10),
-                onTap: () => onNavigate(tabIndex),
-                child: Column(
-                  children: [
-                    Container(
-                      width: 46,
-                      height: 46,
-                      decoration: BoxDecoration(
-                        color: color.withAlpha(26),
-                        borderRadius: BorderRadius.circular(16),
-                        boxShadow: [
-                          BoxShadow(
-                            color: color.withAlpha(18),
-                            blurRadius: 6,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: Icon(icon, color: color, size: 22),
-                    ),
-                    const SizedBox(height: 5),
-                    Text(
-                      label,
-                      style: theme.textTheme.bodySmall?.copyWith(fontSize: 11),
-                    ),
-                  ],
+          Row(
+            children: [
+              for (var i = 0; i < 4; i++)
+                Expanded(
+                  child: _buildItem(context, theme, items[i]),
                 ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              for (var i = 4; i < 8; i++)
+                Expanded(
+                  child: _buildItem(context, theme, items[i]),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildItem(
+    BuildContext context,
+    ThemeData theme,
+    (IconData, String, Color, int) item,
+  ) {
+    final (icon, label, color, tabIndex) = item;
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: () {
+        HapticFeedback.lightImpact();
+        onNavigate(tabIndex);
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 46,
+              height: 46,
+              decoration: BoxDecoration(
+                color: color.withAlpha(24),
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: [
+                  BoxShadow(
+                    color: color.withAlpha(16),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
               ),
+              child: Icon(icon, color: color, size: 22),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w500,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ],
-        ],
+        ),
       ),
     );
   }

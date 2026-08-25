@@ -30,6 +30,7 @@ class _GuidePageState extends State<GuidePage>
 
   late final TabController _tabController;
   late Future<List<ThreadSummary>> _future;
+  final Map<String, List<ThreadSummary>> _tabCache = {};
   String _view = 'hot';
   int _page = 1;
 
@@ -41,8 +42,18 @@ class _GuidePageState extends State<GuidePage>
     _fetch();
   }
 
-  void _fetch() {
-    _future = KlpbbsApi.getGuide(_view, page: _page);
+  void _fetch({bool forceRefresh = false}) {
+    final cacheKey = '${_view}_$_page';
+    if (!forceRefresh && _tabCache.containsKey(cacheKey)) {
+      _future = Future.value(_tabCache[cacheKey]);
+      return;
+    }
+    _future = KlpbbsApi.getGuide(_view, page: _page, forceRefresh: forceRefresh).then((list) {
+      if (list.isNotEmpty) {
+        _tabCache[cacheKey] = list;
+      }
+      return list;
+    });
   }
 
   void _onTabChanged() {
@@ -57,8 +68,8 @@ class _GuidePageState extends State<GuidePage>
     }
   }
 
-  void _reload() {
-    setState(() => _fetch());
+  void _reload({bool forceRefresh = true}) {
+    setState(() => _fetch(forceRefresh: forceRefresh));
   }
 
   void _goPage(int p) {
@@ -124,7 +135,7 @@ class _GuidePageState extends State<GuidePage>
                 );
               }
               return RefreshIndicator(
-                onRefresh: () async => _reload(),
+                onRefresh: () async => _reload(forceRefresh: true),
                 child: ListView.separated(
                   padding: const EdgeInsets.only(bottom: 24),
                   itemCount: threads.length + 1,

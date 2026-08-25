@@ -902,23 +902,26 @@ class _SignRankPageState extends State<SignRankPage>
             style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
           ),
           const SizedBox(height: 2),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
-            children: [
-              Text(
-                value,
-                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-              ),
-              if (unit.isNotEmpty) ...[
-                const SizedBox(width: 1),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
                 Text(
-                  unit,
-                  style: TextStyle(fontSize: 10, color: scheme.onSurfaceVariant),
+                  value,
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                 ),
+                if (unit.isNotEmpty) ...[
+                  const SizedBox(width: 1),
+                  Text(
+                    unit,
+                    style: TextStyle(fontSize: 10, color: scheme.onSurfaceVariant),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ],
       ),
@@ -1033,8 +1036,7 @@ class _SignRankPageState extends State<SignRankPage>
                       ? e.totalReward
                       : (e.rewardText.isNotEmpty ? e.rewardText : '');
 
-                  return ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  return InkWell(
                     onTap: () {
                       if (e.uid > 0) {
                         Navigator.of(context).push(
@@ -1042,73 +1044,87 @@ class _SignRankPageState extends State<SignRankPage>
                         );
                       }
                     },
-                    leading: UserAvatarWidget(uid: e.uid, author: e.name, size: 40),
-                    title: Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            e.name,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                          ),
-                        ),
-                        if (e.displayLevel.isNotEmpty) ...[
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-                            decoration: BoxDecoration(
-                              color: scheme.primary.withAlpha(20),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              e.displayLevel,
-                              style: TextStyle(
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.bold,
-                                color: scheme.primary,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                    subtitle: Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Wrap(
-                        spacing: 8,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      child: Row(
                         children: [
-                          Text('总签到: ${e.totalDays}天', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
-                          Text('月签到: ${e.monthDays}天', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
-                          if (e.timeText.isNotEmpty)
-                            Text(e.timeText.replaceAll('2026-', ''), style: TextStyle(fontSize: 11.5, color: scheme.outline)),
-                        ],
-                      ),
-                    ),
-                    trailing: isRewardOp && rewardDisplay.isNotEmpty
-                        ? Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                            decoration: BoxDecoration(
-                              color: Colors.amber.withAlpha(25),
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(color: Colors.amber.withAlpha(80)),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
+                          UserAvatarWidget(uid: e.uid, author: e.name, size: 40),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Icon(Icons.monetization_on_rounded, size: 14, color: Colors.amber),
-                                const SizedBox(width: 4),
-                                Text(
-                                  rewardDisplay,
-                                  style: TextStyle(
-                                    fontSize: 12.5,
-                                    fontWeight: FontWeight.bold,
-                                    color: isDark ? Colors.amber.shade400 : Colors.amber.shade800,
-                                  ),
+                                Row(
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        e.name,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                      ),
+                                    ),
+                                    if (e.displayLevel.isNotEmpty) ...[
+                                      const SizedBox(width: 6),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                                        decoration: BoxDecoration(
+                                          color: scheme.primary.withAlpha(20),
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                        child: Text(
+                                          e.displayLevel,
+                                          style: TextStyle(
+                                            fontSize: 10.5,
+                                            fontWeight: FontWeight.bold,
+                                            color: scheme.primary,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                Wrap(
+                                  spacing: 8,
+                                  children: [
+                                    Text('总签到: ${e.totalDays}天', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+                                    Text('月签到: ${e.monthDays}天', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+                                    if (e.timeText.isNotEmpty)
+                                      Text(e.timeText.replaceAll('2026-', ''), style: TextStyle(fontSize: 11.5, color: scheme.outline)),
+                                  ],
                                 ),
                               ],
                             ),
-                          )
-                        : Icon(Icons.chevron_right_rounded, size: 18, color: scheme.outline.withAlpha(150)),
+                          ),
+                          if (isRewardOp && rewardDisplay.isNotEmpty)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                              decoration: BoxDecoration(
+                                color: Colors.amber.withAlpha(25),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: Colors.amber.withAlpha(80)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.monetization_on_rounded, size: 14, color: Colors.amber),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    rewardDisplay,
+                                    style: TextStyle(
+                                      fontSize: 12.5,
+                                      fontWeight: FontWeight.bold,
+                                      color: isDark ? Colors.amber.shade400 : Colors.amber.shade800,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                          else
+                            Icon(Icons.chevron_right_rounded, size: 18, color: scheme.outline.withAlpha(150)),
+                        ],
+                      ),
+                    ),
                   );
                 },
               ),

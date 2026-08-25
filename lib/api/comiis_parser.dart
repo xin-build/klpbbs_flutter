@@ -867,108 +867,174 @@ class ComiisParser {
     return false;
   }
 
-  /// 解析好友列表（精确支持 Discuz 移动端 Comiis 全结构与 PC 端结构，对齐截图一）
+  /// 解析好友列表（精确支持 Discuz 移动端 Comiis 全结构与 PC 端结构，对齐网页截图）
   static List<FriendItem> parseFriends(String html, {int? excludeUid}) {
     if (html.isEmpty) return const [];
     final doc = html_parser.parse(html);
 
-    // 移除全局非内容节点（页头、页脚、侧边栏、浮动菜单、导航），防止误解析非好友链接
+    // 1. 移除全局非内容节点（页头、页脚、侧边栏、浮动菜单、顶部导航、登录框等），防止误解析当前登录用户链接
     doc.querySelectorAll(
-      '#nv, #toptb, #hd, #ft, #comiis_nav, .comiis_nav, .comiis_foot, .comiis_footer, '
-      '.comiis_head, .comiis_header, .comiis_sidenv, .comiis_menu, .comiis_gobtn_tbox, '
-      '.comiis_sidenv_box, .comiis_nav_box, #comiis_foot_menu, script, style, header, footer',
+      '#nv, #toptb, #hd, #ft, #comiis_head, .comiis_head, .comiis_header, '
+      '#comiis_nav, .comiis_nav, .comiis_foot, .comiis_footer, .comiis_menu, '
+      '.comiis_sidenv, .comiis_sidenv_box, .comiis_fmenu, .comiis_gobtn, '
+      '.comiis_lrmenu, .comiis_loginbox, script, style, header, footer',
     ).forEach((e) => e.remove());
 
     final out = <FriendItem>[];
     final seen = <int>{};
 
-    // 1. 优先解析移动端 Comiis 好友列表结构（对齐截图一：头像、名称、用户组与积分、快捷按钮）
-    final mobileFriends = doc.querySelectorAll(
-      '.comiis_friend_list li, .comiis_friend_list div.comiis_flex, '
-      '.comiis_userlist div.comiis_flex, .comiis_user_list div.comiis_flex, '
-      '.comiis_userlist li, .comiis_user_list li, '
-      '.comiis_mh_userlist div.comiis_flex, .comiis_mh_userlist li, '
-      '.comiis_p12 div.comiis_flex, .comiis_p12 li, .comiis_box div.comiis_flex, '
-      '.comiis_box li, div.b_b, li.b_b, div.comiis_flex',
+    // 2. 查找好友列表容器内的所有好友条目
+    final candidateElements = <html_dom.Element>[];
+
+    // 优先匹配标准列表项
+    final listItems = doc.querySelectorAll(
+      '.comiis_userlist li, .comiis_friend_list li, .comiis_mh_userlist li, '
+      '.comiis_user_list li, .comiis_p12 li, .comiis_box li, '
+      'ul#friend_ul > li, ul.buddy > li, li.bbda, div.bbda',
     );
 
-    for (final el in mobileFriends) {
-      final a = el.querySelector(
-        'h4 a, div.avt a, a.xi2, a[href*="space-uid-"], a[href*="mod=space&uid="]',
+    if (listItems.isNotEmpty) {
+      candidateElements.addAll(listItems);
+    } else {
+      // 备用选择器：查找直接子 div 或 flex 项
+      final divItems = doc.querySelectorAll(
+        '.comiis_userlist > div, .comiis_friend_list > div, .comiis_mh_userlist > div, '
+        '.comiis_user_list > div, .comiis_p12 > div, #friend_ul > div',
       );
-      if (a == null) continue;
-      final href = a.attributes['href'] ?? '';
-      final uidM = RegExp(r'space-uid-(\d+)\.html|(?:uid=)(\d+)').firstMatch(href);
-      if (uidM == null) continue;
-      final uid = int.tryParse(uidM.group(1) ?? uidM.group(2) ?? '');
-      if (uid == null || uid <= 0 || (excludeUid != null && uid == excludeUid) || !seen.add(uid)) continue;
-
-      var name = '';
-      final h4 = el.querySelector('h4 a, h4, p.title, .f16, .f15, strong, a.xi2');
-      if (h4 != null) {
-        final t = h4.text.trim();
-        if (t.isNotEmpty && t != '好友' && t != '空间' && t != '个人资料') {
-          name = t;
+      if (divItems.isNotEmpty) {
+        candidateElements.addAll(divItems);
+      } else {
+        // 全局查找所有包含好友操作或好友头像的独立行
+        final allFlex = doc.querySelectorAll('li, div.b_b, div.comiis_flex');
+        for (final el in allFlex) {
+          if (el.querySelector('a[href*="op=ignore"], a[href*="op=editnote"], a[href*="op=changegroup"], a[href*="space-uid-"], a[href*="mod=space&uid="]') != null) {
+            final subCount = el.querySelectorAll('a[href*="space-uid-"], a[href*="mod=space&uid="]').length;
+            if (subCount <= 6 && subCount >= 1) {
+              candidateElements.add(el);
+            }
+          }
         }
       }
-      if (name.isEmpty) {
+    }
+
+    for (final el in candidateElements) {
+      int? uid;
+
+      // 从各类相关链接提取目标 UID
+      final spaceLinks = el.querySelectorAll(
+        'a[href*="space-uid-"], a[href*="mod=space&uid="], a[href*="op=editnote&uid="], '
+        'a[href*="op=ignore&uid="], a[href*="op=changegroup&uid="], a[href*="ac=poke&op=send&uid="], '
+        'a[href*="subop=view&touid="], a[href*="fuid="], a[href*="uid="]',
+      );
+
+      for (final a in spaceLinks) {
+        final href = a.attributes['href'] ?? '';
+        final m = RegExp(r'space-uid-(\d+)\.html|(?:[?&](?:u|to|f)?uid=)(\d+)').firstMatch(href);
+        if (m != null) {
+          final parsed = int.tryParse(m.group(1) ?? m.group(2) ?? '');
+          if (parsed != null && parsed > 0) {
+            uid = parsed;
+            break;
+          }
+        }
+      }
+
+      if (uid == null || uid <= 0) continue;
+      if (excludeUid != null && uid == excludeUid) continue;
+      if (!seen.add(uid)) continue;
+
+      // 提取真实昵称
+      String name = '';
+      for (final a in spaceLinks) {
+        final href = a.attributes['href'] ?? '';
+        if (href.contains('op=') || href.contains('subop=') || href.contains('ac=poke') || href.contains('ac=follow')) {
+          continue;
+        }
         final t = a.text.trim();
-        if (t.isNotEmpty && t != '好友' && t != '空间' && t != '个人资料') name = t;
+        if (t.isNotEmpty &&
+            t != '好友' &&
+            t != '空间' &&
+            t != '个人资料' &&
+            t != '分组' &&
+            t != '关注' &&
+            t != '取消' &&
+            t != '打招呼' &&
+            t != '发消息' &&
+            t != '×' &&
+            !t.startsWith('热度')) {
+          name = t;
+          break;
+        }
       }
+
       if (name.isEmpty) {
-        final img = el.querySelector('img');
-        name = img?.attributes['alt'] ?? '';
+        final h4 = el.querySelector('h4 a, h4, p.title a, p.title, dt a, strong a, .f16, .f15, a.xi2');
+        if (h4 != null) {
+          final t = h4.text.trim();
+          if (t.isNotEmpty && t != '好友' && t != '空间' && t != '个人资料') name = t;
+        }
       }
+
+      if (name.isEmpty) {
+        final img = el.querySelector('img[alt]');
+        final alt = img?.attributes['alt']?.trim() ?? '';
+        if (alt.isNotEmpty && !alt.startsWith('avatar') && !alt.contains('http')) {
+          name = alt;
+        }
+      }
+
       if (name.isEmpty || name.contains('http') || name.length > 30) {
         name = '坛友 $uid';
       }
 
-      final imgEl = el.querySelector('img[src*="avatar"], img[data-src*="avatar"], div.avt img, img');
+      // 提取头像
+      final imgEl = el.querySelector('div.avt img, img[src*="avatar"], img[data-src*="avatar"], img');
       final rawImg = imgEl?.attributes['src'] ?? imgEl?.attributes['data-src'];
       final avatar = _avatarUrl(rawImg) ?? AppConfig.avatarUrl(uid, size: 'middle');
 
+      // 提取用户组、积分、附注与时间
       String group = '';
       String credits = '';
-      String recentActivity = '';
       String note = '';
+      String recentActivity = '';
 
-      final infoEl = el.querySelector('p.maxh, p.xg1, div.xg1, .f12, .desc, .km_time');
-      if (infoEl != null) {
-        final fullText = infoEl.text.replaceAll('\u00a0', ' ').trim();
-        final fontEl = infoEl.querySelector('font, span.xi1, .b_ok');
-        if (fontEl != null && fontEl.text.trim().isNotEmpty) {
-          group = fontEl.text.trim();
-        }
+      final fullText = el.text.replaceAll('\u00a0', ' ').trim();
 
-        final credM = RegExp(r'积分[数:：]?\s*(\d+)').firstMatch(fullText);
-        if (credM != null) {
-          credits = credM.group(1)!;
-        }
-
-        if (group.isEmpty) {
-          final groupM = RegExp(
-            r'(Lv\.\d+[^积分\s]+|版主|超级版主|管理员|荣誉会员|贵宾会员|金牌会员|元老会员|普通会员|禁止发言|等待验证会员)',
-          ).firstMatch(fullText);
-          if (groupM != null) {
-            group = groupM.group(1)!.trim();
-          }
-        }
-
-        // 提取来访/足迹时间
-        final timeM = RegExp(
-          r'(\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2})?|\d+\s*(?:分钟|小时|天)前|刚刚)',
-        ).firstMatch(fullText);
-        if (timeM != null) {
-          recentActivity = timeM.group(1)!;
-        }
+      // 用户组匹配（如 Lv.5 金牌会员 / 禁止发言 / 注册会员）
+      final groupM = RegExp(
+        r'(Lv\.\d+\s*[^积分\s\n]+|版主|超级版主|管理员|荣誉会员|贵宾会员|金牌会员|元老会员|中级会员|高级会员|注册会员|普通会员|禁止发言|等待验证会员)',
+      ).firstMatch(fullText);
+      if (groupM != null) {
+        group = groupM.group(1)!.trim();
       }
 
-      // 是否已关注（检测页面中的 取消关注 / 取消 按钮）
-      final isFollowing = el.querySelector('a')?.text.contains('取消') == true ||
-          el.outerHtml.contains('取消关注') ||
-          el.outerHtml.contains('op=del');
+      // 积分匹配
+      final credM = RegExp(r'积分[数:：]?\s*(\d+)').firstMatch(fullText);
+      if (credM != null) {
+        credits = credM.group(1)!;
+      }
 
+      // 附注/自定义备注匹配
+      final noteM = RegExp(r'[(（]备注[：:]\s*([^()（）]+)[)）]').firstMatch(fullText);
+      if (noteM != null) {
+        note = noteM.group(1)!.trim();
+      }
+
+      // 时间匹配 (来访/足迹/申请时间)
+      final timeM = RegExp(
+        r'(\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2})?|\d+\s*(?:分钟|小时|天)前|刚刚)',
+      ).firstMatch(fullText);
+      if (timeM != null) {
+        recentActivity = timeM.group(1)!;
+      }
+
+      // 是否已关注（检测页面中的 取消 / 取消关注 按钮）
       final elHtml = el.outerHtml;
+      final isFollowing = elHtml.contains('取消') ||
+          elHtml.contains('op=del') ||
+          elHtml.contains('取消关注');
+
+      // 在线状态检测
       final bool hasOnlineMark = (el.querySelector(
             'img:not(.authicn)[src*="online.png"], img:not(.authicn)[src*="online.gif"], img[src*="ol.gif"], img[title*="当前在线"], img[title="在线"], .comiis_o, em.online, span.online',
           ) !=
@@ -1000,99 +1066,6 @@ class ComiisParser {
           isFollowing: isFollowing,
           note: note,
           recentActivity: recentActivity,
-        ),
-      );
-    }
-
-    if (out.isNotEmpty) return out;
-
-    // 2. 解析 Discuz PC 经典好友结构（ul#friend_ul li.bbda, ul.buddy li, div#friend_ul li）
-    final pcFriends = doc.querySelectorAll(
-      'ul#friend_ul > li, ul.buddy > li, div#friend_ul li, li.bbda, div.bbda',
-    );
-
-    for (final li in pcFriends) {
-      final a = li.querySelector(
-        'h4 a[href*="space-uid-"]:not([href*="changenum"]):not([href*="op="]), '
-        'h4 a[href*="mod=space&uid="]:not([href*="changenum"]):not([href*="op="]), '
-        'div.avt a[href*="space-uid-"], div.avt a[href*="mod=space&uid="], '
-        'a.xi2, a[href*="space-uid-"]:not([href*="changenum"]):not([href*="op="])',
-      );
-      if (a == null) continue;
-      final href = a.attributes['href'] ?? '';
-      final uidM = RegExp(r'space-uid-(\d+)\.html|(?:uid=)(\d+)').firstMatch(href);
-      if (uidM == null) continue;
-      final uid = int.tryParse(uidM.group(1) ?? uidM.group(2) ?? '');
-      if (uid == null || uid <= 0 || (excludeUid != null && uid == excludeUid) || !seen.add(uid)) continue;
-
-      // 提取真实昵称
-      var name = '';
-      final h4Links = li.querySelectorAll('h4 a');
-      for (final h4a in h4Links) {
-        final t = h4a.text.trim();
-        final h = h4a.attributes['href'] ?? '';
-        if (t.isNotEmpty && !t.startsWith('热度') && !h.contains('changenum') && !h.contains('op=')) {
-          name = t;
-          break;
-        }
-      }
-      if (name.isEmpty) {
-        final t = a.text.trim();
-        if (t.isNotEmpty && !t.startsWith('热度')) name = t;
-      }
-      if (name.isEmpty) {
-        final img = li.querySelector('img');
-        name = img?.attributes['alt'] ?? '';
-      }
-      if (name.isEmpty || name.startsWith('热度') || name.contains('http') || name.length > 40) {
-        name = '坛友 $uid';
-      }
-
-      // 提取头像
-      final imgEl = li.querySelector('div.avt img, img[src*="avatar"], img[data-src*="avatar"], img');
-      final rawImg = imgEl?.attributes['src'] ?? imgEl?.attributes['data-src'];
-      final avatar = _avatarUrl(rawImg) ?? AppConfig.avatarUrl(uid, size: 'middle');
-
-      // 提取附注/动态说明
-      String signature = '';
-      final descEl = li.querySelector('p.maxh, p.xg1, div.xg1, .desc');
-      if (descEl != null) {
-        final t = descEl.text.trim().replaceAll('\u00a0', ' ');
-        if (t.isNotEmpty && !t.contains('热度') && !t.contains('收听TA') && t != name && t != '$name ()') {
-          signature = t;
-        }
-      }
-
-      final liHtml = li.outerHtml;
-      final bool hasOnlineMark = (li.querySelector(
-            'img:not(.authicn)[src*="online.png"], img:not(.authicn)[src*="online.gif"], img[src*="ol.gif"], img[title*="当前在线"], img[title="在线"], .comiis_o, em.online, span.online',
-          ) !=
-          null ||
-          li.classes.contains('online') ||
-          liHtml.contains('title="当前在线"') ||
-          liHtml.contains('class="comiis_o"') ||
-          liHtml.contains('>当前在线<'));
-
-      final bool hasOfflineMark = (li.querySelector(
-            'img[src*="offline.png"], img[src*="offline.gif"], img[title*="当前离线"], img[title="离线"], .comiis_f, em.offline, span.offline',
-          ) !=
-          null ||
-          liHtml.contains('title="当前离线"') ||
-          liHtml.contains('class="comiis_f"') ||
-          liHtml.contains('>当前离线<'));
-
-      final isFriendOnline = (hasOnlineMark && !hasOfflineMark) ||
-          (!hasOfflineMark && _isRecentActivity(signature));
-
-      out.add(
-        FriendItem(
-          uid: uid,
-          username: _cleanTitle(name),
-          avatarUrl: avatar,
-          usergroup: '',
-          credits: '',
-          isOnline: isFriendOnline,
-          recentActivity: signature,
         ),
       );
     }
@@ -3108,6 +3081,30 @@ class ComiisParser {
     return result;
   }
 
+  static final Map<String, String> _smileyCodeToUrlMap = {};
+
+  /// 获取表情代号 -> 图片完整 URL 映射表（供发帖实时排版预览与 BBCode 转 HTML 使用）
+  static Map<String, String> getSmileyCodeMap([List<SmileyCategory>? categories]) {
+    if (categories != null && categories.isNotEmpty) {
+      for (final cat in categories) {
+        for (final s in cat.smileys) {
+          _smileyCodeToUrlMap[s.code] = s.imageUrl;
+          _smileyCodeToUrlMap['{:${cat.typeid}_${s.id}:}'] = s.imageUrl;
+        }
+      }
+    }
+    if (_smileyCodeToUrlMap.isEmpty) {
+      final defaultList = parseSmilies(kDefaultSmiliesJs);
+      for (final cat in defaultList) {
+        for (final s in cat.smileys) {
+          _smileyCodeToUrlMap[s.code] = s.imageUrl;
+          _smileyCodeToUrlMap['{:${cat.typeid}_${s.id}:}'] = s.imageUrl;
+        }
+      }
+    }
+    return _smileyCodeToUrlMap;
+  }
+
   /// 苦力怕论坛内置常用 Discuz 表情 JS 常量兜底（贴吧/B站/抖音/QQ）
   static const String kDefaultSmiliesJs = r'''
 var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧', 'tieba'];smilies_type['_13'] = ['B站', 'bilibili'];smilies_type['_15'] = ['抖音', 'dy'];smilies_type['_17'] = ['QQ', 'qq'];var smilies_array = new Array();var smilies_fast = new Array();smilies_array[12] = new Array();smilies_array[12][1] = [['292', '[贴吧_呵呵]','1.png','20','20','30'],['313', '[贴吧_哈哈]','2.png','20','20','30'],['280', '[贴吧_吐舌]','3.png','20','20','30'],['288', '[贴吧_啊]','4.png','20','20','30'],['284', '[贴吧_酷]','5.png','20','20','30'],['301', '[贴吧_怒]','6.png','20','20','30'],['322', '[贴吧_开心]','7.png','20','20','30'],['289', '[贴吧_汗]','8.png','20','20','30'],['308', '[贴吧_泪]','9.png','20','20','30'],['303', '[贴吧_黑线]','10.png','20','20','30'],['285', '[贴吧_鄙视]','11.png','20','20','30'],['293', '[贴吧_不高兴]','12.png','20','20','30'],['319', '[贴吧_真棒]','13.png','20','20','30'],['294', '[贴吧_钱]','14.png','20','20','30'],['323', '[贴吧_疑问]','15.png','20','20','30'],['325', '[贴吧_阴脸]','16.png','20','20','30'],['318', '[贴吧_吐]','17.png','20','20','30'],['307', '[贴吧_咦]','18.png','20','20','30'],['306', '[贴吧_委屈]','19.png','20','20','30'],['305', '[贴吧_花心]','20.png','20','20','30'],['314', '[贴吧_呼~]','21.png','20','20','30'],['296', '[贴吧_笑脸]','22.png','20','20','30'],['320', '[贴吧_冷]','23.png','20','20','30'],['281', '[贴吧_太开心]','24.png','20','20','30'],['304', '[贴吧_滑稽]','25.png','20','20','30'],['316', '[贴吧_勉强]','26.png','20','20','30'],['309', '[贴吧_狂汗]','27.png','20','20','30'],['287', '[贴吧_乖]','28.png','20','20','30'],['278', '[贴吧_睡觉]','29.png','20','20','30'],['282', '[贴吧_惊哭]','30.png','20','20','30'],['312', '[贴吧_升起]','31.png','20','20','30'],['310', '[贴吧_惊讶]','32.png','20','20','30'],['283', '[贴吧_喷]','33.png','20','20','30'],['286', '[贴吧_爱心]','34.png','20','20','30'],['295', '[贴吧_心碎]','35.png','20','20','30'],['291', '[贴吧_玫瑰]','36.png','20','20','30'],['300', '[贴吧_礼物]','37.png','20','20','30'],['290', '[贴吧_彩虹]','38.png','20','20','30'],['302', '[贴吧_星星月亮]','39.png','20','20','30'],['324', '[贴吧_太阳]','40.png','20','20','30']];smilies_array[12][2] = [['276', '[贴吧_钱币]','41.png','20','20','30'],['279', '[贴吧_灯泡]','42.png','20','20','30'],['299', '[贴吧_茶杯]','43.png','20','20','30'],['315', '[贴吧_蛋糕]','44.png','20','20','30'],['277', '[贴吧_音乐]','45.png','20','20','30'],['297', '[贴吧_haha]','46.png','20','20','30'],['298', '[贴吧_胜利]','47.png','20','20','30'],['321', '[贴吧_大拇指]','48.png','20','20','30'],['311', '[贴吧_弱]','49.png','20','20','30'],['317', '[贴吧_OK]','50.png','20','20','30']];smilies_array[13] = new Array();smilies_array[13][1] = [['879', '[哔哩_脱单]','72.png','20','20','50'],['377', '[哔哩_口罩]','1.png','20','20','50'],['435', '[哔哩_微笑]','2.png','20','20','50'],['347', '[哔哩_笑]','3.png','20','20','50'],['367', '[哔哩_呲牙]','4.png','20','20','50'],['357', '[哔哩_OK]','5.png','20','20','50'],['399', '[哔哩_星星眼]','6.png','20','20','50'],['461', '[哔哩_哦呼]','7.png','20','20','50'],['369', '[哔哩_嫌弃]','8.png','20','20','50'],['419', '[哔哩_喜欢]','9.png','20','20','50'],['405', '[哔哩_酸了]','10.png','20','20','50'],['361', '[哔哩_大哭]','11.png','20','20','50'],['379', '[哔哩_害羞]','12.png','20','20','50'],['455', '[哔哩_无语]','13.png','20','20','50'],['381', '[哔哩_疑惑]','14.png','20','20','50'],['463', '[哔哩_调皮]','15.png','20','20','50'],['467', '[哔哩_喜极而泣]','16.png','20','20','50'],['449', '[哔哩_奸笑]','17.png','20','20','50'],['415', '[哔哩_偷笑]','18.png','20','20','50'],['413', '[哔哩_大笑]','19.png','20','20','50'],['411', '[哔哩_阴险]','20.png','20','20','50'],['441', '[哔哩_捂脸]','21.png','20','20','50'],['385', '[哔哩_囧]','22.png','20','20','50'],['457', '[哔哩_呆]','23.png','20','20','50'],['351', '[哔哩_抠鼻]','24.png','20','20','50'],['409', '[哔哩_惊喜]','25.png','20','20','50'],['445', '[哔哩_惊讶]','26.png','20','20','50'],['423', '[哔哩_笑哭]','27.png','20','20','50'],['365', '[哔哩_妙啊]','28.png','20','20','50'],['339', '[哔哩_doge]','29.png','20','20','50'],['353', '[哔哩_滑稽]','30.png','20','20','50'],['431', '[哔哩_吃瓜]','31.png','20','20','50'],['427', '[哔哩_打call]','32.png','20','20','50'],['355', '[哔哩_点赞]','33.png','20','20','50'],['363', '[哔哩_鼓掌]','34.png','20','20','50'],['383', '[哔哩_尴尬]','35.png','20','20','50'],['373', '[哔哩_冷]','36.png','20','20','50'],['397', '[哔哩_灵魂出窍]','37.png','20','20','50'],['371', '[哔哩_委屈]','38.png','20','20','50'],['403', '[哔哩_傲娇]','39.png','20','20','50']];smilies_array[13][2] = [['465', '[哔哩_疼]','40.png','20','20','50'],['333', '[哔哩_吓]','41.png','20','20','50'],['341', '[哔哩_生病]','42.png','20','20','50'],['395', '[哔哩_吐]','43.png','20','20','50'],['443', '[哔哩_嘘声]','44.png','20','20','50'],['337', '[哔哩_捂眼]','45.png','20','20','50'],['387', '[哔哩_思考]','46.png','20','20','50'],['391', '[哔哩_再见]','47.png','20','20','50'],['459', '[哔哩_翻白眼]','48.png','20','20','50'],['429', '[哔哩_哈欠]','49.png','20','20','50'],['447', '[哔哩_奋斗]','50.png','20','20','50'],['451', '[哔哩_墨镜]','51.png','20','20','50'],['343', '[哔哩_撇嘴]','52.png','20','20','50'],['469', '[哔哩_难过]','53.png','20','20','50'],['375', '[哔哩_抓狂]','54.png','20','20','50'],['393', '[哔哩_生气]','55.png','20','20','50'],['345', '[哔哩_视频卫星]','56.png','20','20','50'],['470', '[哔哩_歪嘴]','57.png','20','20','50'],['359', '[哔哩_鸡腿]','58.png','20','20','50'],['439', '[哔哩_干杯]','59.png','20','20','50'],['437', '[哔哩_爱心]','60.png','20','20','50'],['453', '[哔哩_锦鲤]','61.png','20','20','50'],['335', '[哔哩_胜利]','62.png','20','20','50'],['331', '[哔哩_加油]','63.png','20','20','50'],['349', '[哔哩_保佑]','64.png','20','20','50'],['421', '[哔哩_抱拳]','65.png','20','20','50'],['425', '[哔哩_响指]','66.png','20','20','50'],['417', '[哔哩_支持]','67.png','20','20','50'],['389', '[哔哩_拥抱]','68.png','20','20','50'],['401', '[哔哩_怪我咯]','69.png','20','20','50'],['407', '[哔哩_跪了]','70.png','20','20','50'],['471', '[哔哩_辣眼睛]','71.png','20','20','50']];smilies_array[15] = new Array();smilies_array[15][1] = [['525', '[抖音_525]','emoji_1.png','20','20','50'],['487', '[抖音_487]','emoji_2.png','20','20','50'],['500', '[抖音_500]','emoji_3.png','20','20','50'],['564', '[抖音_564]','emoji_4.png','20','20','50'],['481', '[抖音_481]','emoji_5.png','20','20','50'],['502', '[抖音_502]','emoji_6.png','20','20','50'],['533', '[抖音_533]','emoji_7.png','20','20','50'],['534', '[抖音_534]','emoji_8.png','20','20','50'],['515', '[抖音_515]','emoji_9.png','20','20','50'],['491', '[抖音_491]','emoji_10.png','20','20','50'],['541', '[抖音_541]','emoji_11.png','20','20','50'],['538', '[抖音_538]','emoji_12.png','20','20','50'],['542', '[抖音_542]','emoji_13.png','20','20','50'],['566', '[抖音_566]','emoji_14.png','20','20','50'],['565', '[抖音_565]','emoji_15.png','20','20','50'],['547', '[抖音_547]','emoji_16.png','20','19','50'],['524', '[抖音_524]','emoji_17.png','20','19','50'],['526', '[抖音_526]','emoji_18.png','20','19','50'],['488', '[抖音_488]','emoji_19.png','20','20','50'],['518', '[抖音_518]','emoji_20.png','20','20','50'],['554', '[抖音_554]','emoji_21.png','20','20','50'],['535', '[抖音_535]','emoji_22.png','20','20','50'],['578', '[抖音_578]','emoji_23.png','20','18','50'],['551', '[抖音_551]','emoji_24.png','20','20','50'],['506', '[抖音_506]','emoji_25.png','20','20','50'],['521', '[抖音_521]','emoji_26.png','20','18','50'],['497', '[抖音_497]','emoji_27.png','20','20','50'],['550', '[抖音_550]','emoji_28.png','20','19','50'],['540', '[抖音_540]','emoji_29.png','20','20','50'],['536', '[抖音_536]','emoji_30.png','20','20','50'],['513', '[抖音_513]','emoji_31.png','20','20','50'],['494', '[抖音_494]','emoji_32.png','20','20','50'],['484', '[抖音_484]','emoji_33.png','20','19','50'],['570', '[抖音_570]','emoji_34.png','20','20','50'],['520', '[抖音_520]','emoji_35.png','20','20','50'],['482', '[抖音_482]','emoji_36.png','20','20','50'],['516', '[抖音_516]','emoji_37.png','20','20','50'],['478', '[抖音_478]','emoji_38.png','20','18','50'],['477', '[抖音_477]','emoji_39.png','20','20','50'],['557', '[抖音_557]','emoji_40.png','20','20','50']];smilies_array[15][2] = [['539', '[抖音_539]','emoji_41.png','20','20','50'],['474', '[抖音_474]','emoji_42.png','20','20','50'],['490', '[抖音_490]','emoji_43.png','20','20','50'],['572', '[抖音_572]','emoji_44.png','20','20','50'],['509', '[抖音_509]','emoji_45.png','20','20','50'],['548', '[抖音_548]','emoji_46.png','20','20','50'],['559', '[抖音_559]','emoji_47.png','20','20','50'],['499', '[抖音_499]','emoji_48.png','20','20','50'],['579', '[抖音_579]','emoji_49.png','20','20','50'],['476', '[抖音_476]','emoji_50.png','20','20','50'],['501', '[抖音_501]','emoji_51.png','20','19','50'],['475', '[抖音_475]','emoji_52.png','20','20','50'],['530', '[抖音_530]','emoji_53.png','20','20','50'],['581', '[抖音_581]','emoji_54.png','20','20','50'],['495', '[抖音_495]','emoji_55.png','20','20','50'],['507', '[抖音_507]','emoji_56.png','20','20','50'],['527', '[抖音_527]','emoji_57.png','20','20','50'],['505', '[抖音_505]','emoji_58.png','20','20','50'],['532', '[抖音_532]','emoji_59.png','20','20','50'],['577', '[抖音_577]','emoji_60.png','20','20','50'],['545', '[抖音_545]','emoji_61.png','20','19','50'],['560', '[抖音_560]','emoji_62.png','20','20','50'],['492', '[抖音_492]','emoji_63.png','20','20','50'],['574', '[抖音_574]','emoji_64.png','20','20','50'],['529', '[抖音_529]','emoji_65.png','20','20','50'],['543', '[抖音_543]','emoji_66.png','20','19','50'],['568', '[抖音_568]','emoji_67.png','20','19','50'],['562', '[抖音_562]','emoji_68.png','20','18','50'],['480', '[抖音_480]','emoji_69.png','20','15','50'],['552', '[抖音_552]','emoji_70.png','20','20','50'],['537', '[抖音_537]','emoji_71.png','20','20','50'],['556', '[抖音_556]','emoji_72.png','20','20','50'],['510', '[抖音_510]','emoji_73.png','20','20','50'],['504', '[抖音_504]','emoji_74.png','20','20','50'],['485', '[抖音_485]','emoji_75.png','20','20','50'],['522', '[抖音_522]','emoji_76.png','20','20','50'],['528', '[抖音_528]','emoji_77.png','20','20','50'],['473', '[抖音_473]','emoji_78.png','20','20','50'],['512', '[抖音_512]','emoji_80.png','20','20','50'],['496', '[抖音_496]','emoji_81.png','20','19','50']];smilies_array[15][3] = [['549', '[抖音_549]','emoji_82.png','20','20','50'],['563', '[抖音_563]','emoji_83.png','20','20','50'],['479', '[抖音_479]','emoji_84.png','20','19','50'],['546', '[抖音_546]','emoji_85.png','20','20','50'],['489', '[抖音_489]','emoji_86.png','20','20','50'],['571', '[抖音_571]','emoji_87.png','20','20','50'],['511', '[抖音_511]','emoji_88.png','20','19','50'],['575', '[抖音_575]','emoji_89.png','20','20','50'],['567', '[抖音_567]','emoji_90.png','20','20','50'],['555', '[抖音_555]','emoji_91.png','20','20','50'],['483', '[抖音_483]','emoji_92.png','20','20','50'],['519', '[抖音_519]','emoji_93.png','20','20','50'],['544', '[抖音_544]','emoji_94.png','20','20','50'],['531', '[抖音_531]','emoji_95.png','20','18','50'],['576', '[抖音_576]','emoji_96.png','20','20','50'],['756', '[抖音_756]','emoji_97.png','20','20','50'],['523', '[抖音_523]','emoji_98.png','20','20','50'],['569', '[抖音_569]','emoji_99.png','20','20','50'],['486', '[抖音_486]','emoji_100.png','20','20','50'],['508', '[抖音_508]','emoji_101.png','20','20','50'],['585', '[抖音_585]','emoji_10001.png','20','20','50'],['553', '[抖音_553]','emoji_102.png','20','20','50'],['561', '[抖音_561]','emoji_103.png','20','20','50'],['580', '[抖音_580]','emoji_104.png','20','20','50'],['558', '[抖音_558]','emoji_105.png','20','20','50'],['573', '[抖音_573]','emoji_106.png','20','20','50'],['517', '[抖音_517]','emoji_107.png','20','20','50'],['503', '[抖音_503]','emoji_108.png','20','20','28'],['514', '[抖音_514]','emoji_109.png','20','20','50'],['498', '[抖音_498]','emoji_110.png','20','20','50'],['493', '[抖音_493]','emoji_111.png','20','20','50'],['584', '[抖音_584]','emoji_112.png','20','20','50'],['583', '[抖音_583]','emoji_113.png','20','20','50'],['582', '[抖音_582]','emoji_114.png','20','20','50']];smilies_array[17] = new Array();smilies_array[17][1] = [['757', '[QQ_106]','106.png','20','20','28'],['758', '[QQ_107]','107.png','20','20','28'],['759', '[QQ_88]','88.png','20','20','28'],['760', '[QQ_89]','89.png','20','20','28'],['761', '[QQ_103]','103.png','20','20','28'],['762', '[QQ_100]','100.png','20','20','28'],['763', '[QQ_101]','101.png','20','20','28'],['764', '[QQ_110]','110.png','20','20','28'],['765', '[QQ_99]','99.png','20','20','28'],['766', '[QQ_91]','91.png','20','20','28'],['767', '[QQ_112]','112.png','20','20','28'],['768', '[QQ_104]','104.png','20','20','28'],['769', '[QQ_105]','105.png','20','20','28'],['770', '[QQ_92]','92.png','20','20','28'],['771', '[QQ_108]','108.png','20','20','28'],['772', '[QQ_109]','109.png','20','20','28'],['773', '[QQ_90]','90.png','20','20','28'],['774', '[QQ_93]','93.png','20','20','28'],['775', '[QQ_87]','87.png','20','20','28'],['776', '[QQ_102]','102.png','20','20','28'],['777', '[QQ_86]','86.png','20','20','28'],['778', '[QQ_131]','131.gif','20','20','24'],['779', '[QQ_128]','128.gif','20','20','24'],['780', '[QQ_124]','124.png','20','20','28'],['781', '[QQ_130]','130.gif','20','20','24'],['782', '[QQ_115]','115.png','20','20','28'],['783', '[QQ_114]','114.gif','20','20','24'],['784', '[QQ_141]','141.gif','20','20','24'],['785', '[QQ_129]','129.gif','20','20','24'],['786', '[QQ_126]','126.gif','20','20','24'],['787', '[QQ_123]','123.gif','20','20','24'],['788', '[QQ_120]','120.png','20','20','28'],['789', '[QQ_136]','136.gif','20','20','24'],['790', '[QQ_121]','121.png','20','20','28'],['791', '[QQ_132]','132.gif','20','20','24'],['792', '[QQ_134]','134.gif','20','20','24'],['793', '[QQ_127]','127.gif','20','20','24'],['794', '[QQ_139]','139.gif','20','20','24'],['795', '[QQ_118]','118.png','20','20','28'],['796', '[QQ_122]','122.png','20','20','28']];smilies_array[17][2] = [['797', '[QQ_119]','119.png','20','20','28'],['798', '[QQ_140]','140.gif','20','20','24'],['799', '[QQ_117]','117.png','20','20','28'],['800', '[QQ_135]','135.gif','20','20','24'],['801', '[QQ_142]','142.gif','20','20','24'],['802', '[QQ_113]','113.png','20','20','28'],['803', '[QQ_138]','138.gif','20','20','24'],['804', '[QQ_137]','137.gif','20','20','24'],['805', '[QQ_125]','125.gif','20','20','24'],['806', '[QQ_116]','116.png','20','20','28'],['701', '[QQ_1]','1.png','20','20','28'],['735', '[QQ_2]','2.png','20','20','28'],['680', '[QQ_3]','3.png','20','20','28'],['692', '[QQ_4]','4.png','20','20','28'],['687', '[QQ_5]','5.png','20','20','28'],['712', '[QQ_6]','6.png','20','20','28'],['693', '[QQ_8]','8.png','20','20','28'],['723', '[QQ_9]','9.png','20','20','28'],['716', '[QQ_10]','10.png','20','20','28'],['689', '[QQ_11]','11.png','20','20','28'],['702', '[QQ_12]','12.png','20','20','28'],['747', '[QQ_13]','13.png','20','20','28'],['703', '[QQ_14]','14.png','20','20','28'],['751', '[QQ_15]','15.png','20','20','28'],['753', '[QQ_16]','16.png','20','20','28'],['744', '[QQ_17]','17.png','20','20','28'],['721', '[QQ_18]','18.png','20','20','28'],['720', '[QQ_19]','19.png','20','20','28'],['719', '[QQ_20]','20.png','20','20','28'],['739', '[QQ_21]','21.png','20','20','28'],['705', '[QQ_22]','22.png','20','20','28'],['748', '[QQ_23]','23.png','20','20','28'],['682', '[QQ_24]','24.png','20','20','28'],['718', '[QQ_25]','25.png','20','20','28'],['741', '[QQ_26]','26.png','20','20','28'],['727', '[QQ_27]','27.png','20','20','28'],['691', '[QQ_28]','28.png','20','20','28'],['675', '[QQ_29]','29.png','20','20','28'],['685', '[QQ_30]','30.png','20','20','28'],['733', '[QQ_31]','31.png','20','20','28']];smilies_array[17][3] = [['730', '[QQ_32]','32.png','20','20','28'],['686', '[QQ_33]','33.png','20','20','28'],['690', '[QQ_34]','34.png','20','20','28'],['704', '[QQ_35]','35.png','20','20','28'],['697', '[QQ_36]','36.png','20','20','28'],['711', '[QQ_37]','37.png','20','20','28'],['695', '[QQ_38]','38.png','20','20','28'],['715', '[QQ_39]','39.png','20','20','28'],['752', '[QQ_40]','40.png','20','20','28'],['672', '[QQ_41]','41.png','20','20','28'],['677', '[QQ_42]','42.png','20','20','28'],['710', '[QQ_43]','43.png','20','20','28'],['740', '[QQ_44]','44.png','20','20','28'],['674', '[QQ_45]','45.png','20','20','28'],['706', '[QQ_46]','46.png','20','20','28'],['708', '[QQ_47]','47.png','20','20','28'],['750', '[QQ_48]','48.png','20','20','28'],['731', '[QQ_49]','49.png','20','20','28'],['743', '[QQ_50]','50.png','20','20','28'],['745', '[QQ_51]','51.png','20','20','28'],['678', '[QQ_52]','52.png','20','20','28'],['755', '[QQ_53]','53.png','20','20','28'],['699', '[QQ_54]','54.png','20','20','28'],['709', '[QQ_55]','55.png','20','20','28'],['679', '[QQ_56]','56.png','20','20','28'],['734', '[QQ_57]','57.png','20','20','28'],['688', '[QQ_58]','58.png','20','20','28'],['738', '[QQ_59]','59.png','20','20','28'],['737', '[QQ_60]','60.png','20','20','28'],['746', '[QQ_61]','61.png','20','20','28'],['673', '[QQ_62]','62.png','20','20','28'],['694', '[QQ_625]','625.png','20','20','28'],['671', '[QQ_63]','63.png','20','20','28'],['681', '[QQ_64]','64.png','20','20','28'],['725', '[QQ_65]','65.png','20','20','28'],['728', '[QQ_66]','66.png','20','20','28'],['722', '[QQ_67]','67.png','20','20','28'],['707', '[QQ_68]','68.png','20','20','28'],['714', '[QQ_69]','69.png','20','20','28'],['717', '[QQ_70]','70.png','20','20','28']];smilies_array[17][4] = [['749', '[QQ_71]','71.png','20','20','28'],['683', '[QQ_72]','72.png','20','20','28'],['754', '[QQ_73]','73.png','20','20','28'],['713', '[QQ_74]','74.png','20','20','28'],['698', '[QQ_75]','75.png','20','20','28'],['736', '[QQ_76]','76.png','20','20','28'],['729', '[QQ_77]','77.png','20','20','28'],['724', '[QQ_78]','78.png','20','20','28'],['732', '[QQ_79]','79.png','20','20','28'],['676', '[QQ_80]','80.png','20','20','28'],['696', '[QQ_81]','81.png','20','20','28'],['726', '[QQ_82]','82.png','20','20','28'],['684', '[QQ_83]','83.png','20','20','28'],['742', '[QQ_84]','84.png','20','20','28'],['700', '[QQ_85]','85.png','20','20','28']];var smilies_fast=[['12','1','15'],['12','1','24'],['12','1','32'],['12','1','34'],['12','1','35'],['12','2','2'],['12','2','7'],['12','2','8']];
@@ -4365,18 +4362,11 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
 
       final floorLikes = _parseFloorLikes(post);
-      final floorIsLiked =
-          post.querySelector(
-                '.reply_liked, .supported, .comiis_yizan, a.voted, a.on, a.cur, .km_recommend_on, a[class*="voted"], a[class*="liked"], a[id^="recommend"][class*="on"]',
-              ) !=
-              null ||
-          post.text.contains('已赞') ||
-          post.text.contains('已支持') ||
-          post.text.contains('已顶') ||
-          post.text.contains('已评价') ||
-          html.contains('您已给该楼层点过赞了') ||
-          html.contains('您已评价过本主题');
-
+      final likeBtn = post.querySelector(
+        '.reply_liked, .supported, .comiis_yizan, a.voted, a.on, a.cur, .km_recommend_on, a[class*="voted"], a[class*="liked"], a[id^="recommend"][class*="on"]',
+      );
+      final floorIsLiked = likeBtn != null ||
+          (post.querySelector('a.reply_like, a.support, a[id^="reply_like_"]')?.text.contains('已赞') ?? false);
       // 处罚与警告状态解析（受到警告 / 屏蔽 / 禁言 / 审核中 / 锁定）
       final warnEl = post.querySelector(
         'a[href*="viewwarning"], a[href*="mod=misc&action=viewwarning"], img[src*="warning.gif"], .pwarning, .comiis_pwarning, .warn, [title*="受到警告"]',
@@ -4564,32 +4554,39 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
-    // 总页数：取 viewthread 分页链接中最大的 page（thread-{tid}-{page}-1.html），
-    // 并兜底「共 N 页」文本；旧正则 page=(\d+) 会误命中表单/custompage 的当前页
+    // 总页数：从分页 DOM 节点（.pg, .pages, .comiis_pg）中提取真实页码
     var totalPages = 1;
-    for (final m in RegExp(r'thread-\d+-(\d+)-1\.html').allMatches(html)) {
-      final p = int.tryParse(m.group(1) ?? '');
-      if (p != null && p > totalPages) totalPages = p;
+    for (final pageEl in doc.querySelectorAll('.pg a, .pages a, .comiis_page a, .comiis_pg a, .page a, #pgt a, #fd_page_top a')) {
+      final href = pageEl.attributes['href'] ?? '';
+      final text = pageEl.text.trim();
+      final p1 = int.tryParse(RegExp(r'thread-\d+-(\d+)').firstMatch(href)?.group(1) ?? '');
+      final p2 = int.tryParse(RegExp(r'page=(\d+)').firstMatch(href)?.group(1) ?? '');
+      final p3 = int.tryParse(text);
+      final p = p1 ?? p2 ?? p3;
+      if (p != null && p > totalPages && p < 10000) totalPages = p;
     }
-    final spanM = RegExp(r'共\s*(\d+)\s*页').firstMatch(html);
-    if (spanM != null) {
-      final p = int.tryParse(spanM.group(1) ?? '');
-      if (p != null && p > totalPages) totalPages = p;
+    final pageTotalEl = doc.querySelector('.pg label span, .pages span, .comiis_pg label span');
+    if (pageTotalEl != null) {
+      final m = RegExp(r'共\s*(\d+)\s*页|\/\s*(\d+)\s*页').firstMatch(pageTotalEl.text);
+      if (m != null) {
+        final p = int.tryParse(m.group(1) ?? m.group(2) ?? '');
+        if (p != null && p > totalPages) totalPages = p;
+      }
     }
-    // 首楼作者积分（"用户组 积分: N"）
+
+    // 首楼作者积分（从作者信息 DOM 中提取）
     var firstAuthorCredits = -1;
-    final creditM = RegExp(r'积分:\s*(\d+)').firstMatch(html);
-    if (creditM != null) {
-      firstAuthorCredits = int.tryParse(creditM.group(1) ?? '') ?? -1;
+    final creditEl = doc.querySelector('.authi .xi1, .authi .credits, .kmuser .credits');
+    if (creditEl != null) {
+      firstAuthorCredits = int.tryParse(RegExp(r'\d+').firstMatch(creditEl.text)?.group(0) ?? '') ?? -1;
     }
-    // 点赞数（comiis_recommend_num / recommendv_add / recommend_add / postreview / support）
+    // 点赞数（仅从 Discuz/Comiis 真实点赞 DOM 元素提取真实数值，不使用全文本模糊匹配）
     var likes = 0;
     final likeSelectors = [
       '#recommendv_add',
       'span#recommendv_add',
       '#recommend_add',
       'span#recommend_add',
-      'a.recommend_add i',
       'a.recommend_add span',
       '.comiis_recommend_num',
       '.comiis_recommend_nums',
@@ -4603,51 +4600,29 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     for (final sel in likeSelectors) {
       final el = doc.querySelector(sel);
       if (el != null) {
-        final count =
-            int.tryParse(RegExp(r'\d+').firstMatch(el.text)?.group(0) ?? '') ??
-            0;
-        if (count > likes) likes = count;
-      }
-    }
-    if (likes <= 0) {
-      final likeM = RegExp(
-        r'id="recommendv_add"[^>]*>(\d+)|id="recommend_add"[^>]*>(\d+)|id="review_support_\d+"[^>]*>(\d+)|(\d+)\s*人点赞|点赞[:：\s]*(\d+)|\+(\d+)',
-      ).firstMatch(html);
-      if (likeM != null) {
-        likes =
-            int.tryParse(
-              likeM.group(1) ??
-                  likeM.group(2) ??
-                  likeM.group(3) ??
-                  likeM.group(4) ??
-                  likeM.group(5) ??
-                  likeM.group(6) ??
-                  '',
-            ) ??
-            0;
+        final rawText = el.text.trim();
+        if (rawText.isNotEmpty) {
+          final count = int.tryParse(RegExp(r'\d+').firstMatch(rawText)?.group(0) ?? '') ?? 0;
+          if (count > likes) likes = count;
+        }
       }
     }
     if (floors.isNotEmpty && floors.first.likes > likes) {
       likes = floors.first.likes;
     }
 
-    // 收藏数（排除版块关注数 #comiis_forum_favtimes）
+    // 收藏数（从真实收藏 DOM 节点提取）
     var favorites = 0;
     final favNumEl = doc.querySelector(
-      '#favoritenumber, #comiis_favorite_a, .thread_favtimes',
+      '.comiis_favorite_a_num, #favoritenumber, .thread_favtimes, #comiis_favorite_a span.comiis_favorite_a_num',
     );
-    if (favNumEl != null) {
-      favorites =
-          int.tryParse(
-            RegExp(r'\d+').firstMatch(favNumEl.text)?.group(0) ?? '',
-          ) ??
-          0;
+    if (favNumEl != null && favNumEl.text.trim().isNotEmpty) {
+      favorites = int.tryParse(RegExp(r'\d+').firstMatch(favNumEl.text)?.group(0) ?? '') ?? 0;
     } else {
-      final favM = RegExp(
-        r'本帖被收藏[:：\s]*<em>?(\d+)<em>?|(\d+)\s*次收藏',
-      ).firstMatch(html);
-      if (favM != null) {
-        favorites = int.tryParse(favM.group(1) ?? favM.group(2) ?? '') ?? 0;
+      final favA = doc.querySelector('#comiis_favorite_a, #k_favorite');
+      if (favA != null) {
+        final m = RegExp(r'\d+').firstMatch(favA.text);
+        if (m != null) favorites = int.tryParse(m.group(0)!) ?? 0;
       }
     }
 
@@ -4684,37 +4659,6 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
-    if (views <= 0) {
-      final viewM = RegExp(
-        r'查看[:：\s]*<em>?(\d+)<em>?|(\d+)\s*次阅读|(\d+)\s*阅读|(\d+)\s*浏览|(\d+)\s*次查看|(\d+)\s*查看',
-      ).firstMatch(html);
-      if (viewM != null) {
-        views = int.tryParse(
-          viewM.group(1) ??
-              viewM.group(2) ??
-              viewM.group(3) ??
-              viewM.group(4) ??
-              viewM.group(5) ??
-              viewM.group(6) ??
-              '',
-        ) ?? 0;
-      }
-    }
-    if (replies <= 0) {
-      final repM = RegExp(
-        r'回复[:：\s]*<em>?(\d+)<em>?|(\d+)\s*个回复|(\d+)\s*条回复|全部\s*(\d+)\s*评论|(\d+)\s*条评论',
-      ).firstMatch(html);
-      if (repM != null) {
-        replies = int.tryParse(
-          repM.group(1) ??
-              repM.group(2) ??
-              repM.group(3) ??
-              repM.group(4) ??
-              repM.group(5) ??
-              '',
-        ) ?? 0;
-      }
-    }
     if (replies <= 0 && floors.length > 1) {
       replies = floors.length - 1;
     }
@@ -4840,21 +4784,16 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
     if (!isFavorited) {
       isFavorited = doc.querySelector(
-            '#k_favorite.on, #k_favorite.cur, #k_favorite.fav_on, #comiis_favorite_a.on, a[href*="ac=favorite"][class*="on"], a[href*="ac=favorite"][class*="cur"], a[href*="ac=favorite"][class*="fav_on"], a[href*="op=delete"][href*="favorite"], a[href*="delfav"], a.fav_on, a.k_fav.on',
+            '#k_favorite.on, #k_favorite.cur, #k_favorite.fav_on, #comiis_favorite_a.on, #comiis_favorite_a.f_a, a[href*="ac=favorite"][class*="on"], a[href*="ac=favorite"][class*="cur"], a[href*="ac=favorite"][class*="fav_on"], a[href*="op=delete"][href*="favorite"], a[href*="delfav"], a.fav_on, a.k_fav.on',
           ) !=
-          null ||
-          html.contains('您已收藏过本主题');
+          null;
     }
 
     final isLiked = (floors.isNotEmpty && floors.first.isLiked) ||
         doc.querySelector(
-          '#recommendv_add.on, #recommend_add.on, .reply_liked, .supported, .comiis_yizan, a.voted, a.on, a.cur, .km_recommend_on, a[class*="voted"], a[class*="liked"], a[id^="recommend"][class*="on"]',
+          '#recommendv_add.on, #recommend_add.on, .reply_liked, .supported, .comiis_yizan, a.voted, a.km_recommend_on, a[class*="voted"], a[class*="liked"], a[id^="recommend"][class*="on"], #comiis_foot_memu .comiis_recommend_color.f_a',
         ) !=
-        null ||
-        html.contains('您已给该楼层点过赞了') ||
-        html.contains('您已评价过本主题') ||
-        html.contains('您已赞过') ||
-        html.contains('您已支持过');
+        null;
 
     int? favid;
     for (final el in favElements) {
@@ -4961,7 +4900,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
   static String? _extractBountyPrice(html_dom.Document doc, String html) {
     final rwdEl = doc.querySelector(
-      '.rusl, .rwd, div.comiis_rwds, span.reward, table.rwd, div.rwd_c',
+      '.rusl, .rwd, div.comiis_rwds, span.reward, table.rwd, div.rwd_c, .comiis_reward',
     );
     if (rwdEl != null) {
       final m = RegExp(
@@ -4969,14 +4908,6 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       ).firstMatch(rwdEl.text);
       if (m != null) return m.group(0);
     }
-    final m2 = RegExp(
-      r'悬赏[:：\s]*<em>?(\d+\s*(?:个)?(?:铁粒|金粒|金币|经验|贡献|积分))',
-    ).firstMatch(html);
-    if (m2 != null) return m2.group(1);
-    final m3 = RegExp(
-      r'\[悬赏\s*(\d+\s*(?:个)?(?:铁粒|金粒|金币|经验|贡献|积分))\]',
-    ).firstMatch(html);
-    if (m3 != null) return m3.group(1);
     return null;
   }
 
@@ -7261,21 +7192,35 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       allowed.add(int.tryParse(m.group(1)!) ?? 0);
     }
 
-    // 权限错误：Discuz 常见 showmessage 弹窗（无权限/未登录/等级不足）
-    final errM = RegExp(r'''showmessage\(['"]([^'"]+)['"]''').firstMatch(html);
-    if (errM != null) {
-      error = errM.group(1)!;
+    // 权限与提示信息：DOM 解析 .alert_error 或 #messagetext
+    final alertErrEl = doc.querySelector('.alert_error') ?? doc.querySelector('#messagetext') ?? doc.querySelector('.alert_info');
+    if (alertErrEl != null) {
+      error = alertErrEl.text.trim();
     } else {
-      final jumpM = RegExp(
-        r'''class=["']alert_error["'][^>]*>([^<]+)<''',
-      ).firstMatch(html);
-      if (jumpM != null) error = jumpM.group(1)!.trim();
+      final errM = RegExp(r'''showmessage\(['"]([^'"]+)['"]''').firstMatch(html);
+      if (errM != null) {
+        error = errM.group(1)!;
+      }
     }
     if (error.isEmpty &&
         !html.contains('postform') &&
         !html.contains('needsubject')) {
       final titleM = RegExp(r'<title>([^<]*)</title>').firstMatch(html);
       if (titleM != null) error = titleM.group(1)!.trim();
+    }
+    if (formhash.isNotEmpty ||
+        error.contains('发表帖子') ||
+        error.contains('发布主题') ||
+        error.contains('发帖') ||
+        error.contains('苦力怕论坛') ||
+        error.contains('Minecraft')) {
+      if (!error.contains('抱歉') &&
+          !error.contains('无权') &&
+          !error.contains('登录') &&
+          !error.contains('限制') &&
+          !error.contains('error')) {
+        error = '';
+      }
     }
 
     return (
@@ -7922,107 +7867,11 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           continue;
         }
 
-        // 8. 独占图片 / 图片包装容器 (ignore_js_op, div[align="center"] 包裹的图片, span.comiis_postimg, div.postimg, a.zoom 等)
-        final imgEl = tag == 'img'
-            ? node
-            : ((tag == 'ignore_js_op' ||
-                        node.querySelector('ignore_js_op') != null ||
-                        tag == 'div' ||
-                        tag == 'span' ||
-                        tag == 'p' ||
-                        tag == 'center') &&
-                    node.querySelector('img') != null &&
-                    (innerText.isEmpty ||
-                        node.children.every((c) =>
-                            c.localName == 'img' ||
-                            c.localName == 'br' ||
-                            c.localName == 'a' ||
-                            c.localName == 'ignore_js_op' ||
-                            c.localName == 'div' ||
-                            c.classes.contains('tip') ||
-                            c.classes.contains('aimg_tip')))
-                ? node.querySelector('img')
-                : null);
-        if (imgEl != null) {
-          var rawSrc = imgEl.attributes['comiis_loadimages'] ?? '';
-          if (rawSrc.isEmpty ||
-              rawSrc.contains('none.png') ||
-              rawSrc.contains('spacer.gif')) {
-            rawSrc = imgEl.attributes['file'] ?? '';
-          }
-          if (rawSrc.isEmpty ||
-              rawSrc.contains('none.png') ||
-              rawSrc.contains('spacer.gif')) {
-            rawSrc = imgEl.attributes['zoomfile'] ?? '';
-          }
-          if (rawSrc.isEmpty ||
-              rawSrc.contains('none.png') ||
-              rawSrc.contains('spacer.gif')) {
-            rawSrc = imgEl.attributes['data-src'] ?? '';
-          }
-          if (rawSrc.isEmpty ||
-              rawSrc.contains('none.png') ||
-              rawSrc.contains('spacer.gif')) {
-            rawSrc = imgEl.attributes['src'] ?? '';
-          }
-          if (rawSrc.isNotEmpty &&
-              !rawSrc.contains('none.png') &&
-              !rawSrc.contains('spacer.gif')) {
-            final src = _absolute(rawSrc);
-            if (src != null && src.isNotEmpty) {
-              final isEmoji =
-                  src.contains('static/image/smiley/') ||
-                  src.contains('post/smile') ||
-                  imgEl.attributes.containsKey('smilieid');
-              if (isEmoji) {
-                // 表情小图保留在 TextBlock 内，由富文本行内渲染引擎处理，避免打断连续行内句子排版
-                _appendOrMergeTextBlock(blocks, outerHtml, align: nodeAlign);
-                continue;
-              }
-              blocks.add(
-                ImageBlock(
-                  src: src,
-                  alt: imgEl.attributes['alt'],
-                  isEmoji: false,
-                  align: nodeAlign,
-                ),
-              );
-              continue;
-            }
-          }
-        }
+        // 8. 附件下载识别（优先于独立图片解析，防止附件文件类型小图标被错误识别为独立帖子图片）
+        // 支持移动端 .comiis_attach、PC 端 dl.tattl / p.attnm / .attach_nopermission / a[href*="attachment"] / a[href*="aid="] / a[href*="klpbbs_download"] / a[href*="download.php"]
+        final hasRealContentImage = node.querySelector('img.zoom, img[aid], img[file], img[zoomfile], img.comiis_poster') != null;
 
-        // 9. 网盘下载链接与提取码识别
-        final netdiskMatch = RegExp(
-          r'(https?://(?:pan\.baidu\.com|www\.123pan\.com|pan\.quark\.cn|[a-zA-Z0-9]+\.lanzou[a-z]\.com)/[^\s"<>]+)[\s\S]*?(?:提取码|密码)[:：\s]*([a-zA-Z0-9]{4,6})?',
-          caseSensitive: false,
-        ).firstMatch(innerText);
-        if (netdiskMatch != null) {
-          final url = netdiskMatch.group(1)!;
-          final code = netdiskMatch.group(2) ?? '';
-          var panName = '网盘下载';
-          if (url.contains('baidu')) panName = '百度网盘';
-          if (url.contains('123pan')) panName = '123 云盘';
-          if (url.contains('quark')) panName = '夸克网盘';
-          if (url.contains('lanzou')) panName = '蓝奏云';
-          blocks.add(
-            NetdiskBlock(
-              panName: panName,
-              url: url,
-              extractCode: code,
-              align: nodeAlign,
-            ),
-          );
-        }
-
-        // 10. 附件下载识别（支持移动端 .comiis_attach、PC 端 dl.tattl / p.attnm / .attach_nopermission / a[href*="attachment"] / a[href*="aid="] / a[href*="klpbbs_download"] / a[href*="download.php"]）
-        // 排除图片自带的 ignore_js_op 下载浮层
-        final hasImageOrIgnoreJsOp = node.querySelector('ignore_js_op') != null ||
-            node.querySelector('img.zoom, img[aid]') != null ||
-            tag == 'ignore_js_op' ||
-            tag == 'img';
-
-        final attachA = !hasImageOrIgnoreJsOp
+        final attachA = !hasRealContentImage
             ? (node.querySelector(
                   'a[href*="mod=attachment"], a[href*="attachment.php"], a[href*="aid="], a[href*="klpbbs_download"], a[href*="download.php"], a[href*="attach"]',
                 ) ??
@@ -8034,7 +7883,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
                     : null))
             : null;
 
-        final isAttachNode = !hasImageOrIgnoreJsOp &&
+        final isAttachNode = !hasRealContentImage &&
             (node.classes.any((c) => c.contains('attach')) ||
                 node.id.contains('attach') ||
                 node.querySelector(
@@ -8069,7 +7918,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
             final name = _cleanAttachmentName(rawName);
 
             final iconEl = node.querySelector(
-              '.attach_tit img, img[src*="filetype"], img[src*="attach"]',
+              '.attach_tit img, img[src*="filetype"], img[src*="attach"], img.vm',
             );
             final iconUrl = _absolute(iconEl?.attributes['src']);
             final uploadTime = _formatUploadTime(
@@ -8114,6 +7963,115 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
             );
             continue;
           }
+        }
+
+        // 9. 独占图片 / 图片包装容器 (ignore_js_op, div[align="center"] 包裹的图片, span.comiis_postimg, div.postimg, a.zoom 等)
+        final isAttachContainer = node.classes.any((c) => c.contains('attach')) ||
+            node.id.contains('attach') ||
+            node.querySelector('.comiis_attach, .attach_tit, .tattl, .attnm, .attach_size') != null ||
+            node.querySelector('a[href*="mod=attachment"], a[href*="attachment.php"], a[href*="aid="], a[href*="klpbbs_download"], a[href*="download.php"]') != null;
+
+        final imgEl = (!isAttachContainer)
+            ? (tag == 'img'
+                ? node
+                : ((tag == 'ignore_js_op' ||
+                            node.querySelector('ignore_js_op') != null ||
+                            tag == 'div' ||
+                            tag == 'span' ||
+                            tag == 'p' ||
+                            tag == 'center') &&
+                        node.querySelector('img') != null &&
+                        (innerText.isEmpty ||
+                            node.children.every((c) =>
+                                c.localName == 'img' ||
+                                c.localName == 'br' ||
+                                c.localName == 'a' ||
+                                c.localName == 'ignore_js_op' ||
+                                c.localName == 'div' ||
+                                c.classes.contains('tip') ||
+                                c.classes.contains('aimg_tip')))
+                    ? node.querySelector('img')
+                    : null))
+            : null;
+        if (imgEl != null) {
+          var rawSrc = imgEl.attributes['comiis_loadimages'] ?? '';
+          if (rawSrc.isEmpty ||
+              rawSrc.contains('none.png') ||
+              rawSrc.contains('spacer.gif')) {
+            rawSrc = imgEl.attributes['file'] ?? '';
+          }
+          if (rawSrc.isEmpty ||
+              rawSrc.contains('none.png') ||
+              rawSrc.contains('spacer.gif')) {
+            rawSrc = imgEl.attributes['zoomfile'] ?? '';
+          }
+          if (rawSrc.isEmpty ||
+              rawSrc.contains('none.png') ||
+              rawSrc.contains('spacer.gif')) {
+            rawSrc = imgEl.attributes['data-src'] ?? '';
+          }
+          if (rawSrc.isEmpty ||
+              rawSrc.contains('none.png') ||
+              rawSrc.contains('spacer.gif')) {
+            rawSrc = imgEl.attributes['src'] ?? '';
+          }
+          if (rawSrc.isNotEmpty &&
+              !rawSrc.contains('none.png') &&
+              !rawSrc.contains('spacer.gif')) {
+            final src = _absolute(rawSrc);
+            if (src != null && src.isNotEmpty) {
+              final isEmoji =
+                  src.contains('static/image/smiley/') ||
+                  src.contains('post/smile') ||
+                  imgEl.attributes.containsKey('smilieid');
+              final isFileTypeIcon = src.contains('/filetype/') ||
+                  src.contains('static/image/filetype') ||
+                  src.contains('image/filetype') ||
+                  src.contains('/common/none.gif') ||
+                  src.contains('/common/attach');
+              if (isEmoji) {
+                // 表情小图保留在 TextBlock 内，由富文本行内渲染引擎处理，避免打断连续行内句子排版
+                _appendOrMergeTextBlock(blocks, outerHtml, align: nodeAlign);
+                continue;
+              }
+              if (isFileTypeIcon) {
+                // 附件类型图标小图标，不作为独立帖子插图渲染
+                continue;
+              }
+              blocks.add(
+                ImageBlock(
+                  src: src,
+                  alt: imgEl.attributes['alt'],
+                  isEmoji: false,
+                  align: nodeAlign,
+                ),
+              );
+              continue;
+            }
+          }
+        }
+
+        // 10. 网盘下载链接与提取码识别
+        final netdiskMatch = RegExp(
+          r'(https?://(?:pan\.baidu\.com|www\.123pan\.com|pan\.quark\.cn|[a-zA-Z0-9]+\.lanzou[a-z]\.com)/[^\s"<>]+)[\s\S]*?(?:提取码|密码)[:：\s]*([a-zA-Z0-9]{4,6})?',
+          caseSensitive: false,
+        ).firstMatch(innerText);
+        if (netdiskMatch != null) {
+          final url = netdiskMatch.group(1)!;
+          final code = netdiskMatch.group(2) ?? '';
+          var panName = '网盘下载';
+          if (url.contains('baidu')) panName = '百度网盘';
+          if (url.contains('123pan')) panName = '123 云盘';
+          if (url.contains('quark')) panName = '夸克网盘';
+          if (url.contains('lanzou')) panName = '蓝奏云';
+          blocks.add(
+            NetdiskBlock(
+              panName: panName,
+              url: url,
+              extractCode: code,
+              align: nodeAlign,
+            ),
+          );
         }
 
         // 如果内部包含独立 iframe/video/embed，拆成视频区块
@@ -8199,7 +8157,10 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
                 final isSmiley = src.contains('static/image/smiley/') ||
                     src.contains('post/smile') ||
                     img.attributes.containsKey('smilieid');
-                return !isSmiley;
+                final isFileTypeIcon = src.contains('/filetype/') ||
+                    src.contains('static/image/filetype') ||
+                    src.contains('image/filetype');
+                return !isSmiley && !isFileTypeIcon;
               });
 
           if (hasRichChildren && node.children.isNotEmpty) {
@@ -8257,6 +8218,17 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         .replaceAll('&amp;', '&')
         .replaceAll('&lt;', '<')
         .replaceAll('&gt;', '>');
+
+    // 表情短码与 Discuz 标准表情代码转换 (如 [贴吧_滑稽], [哔哩_doge], {:12_292:}, {:6_178:} 等)
+    final smileyMap = getSmileyCodeMap();
+    for (final entry in smileyMap.entries) {
+      if (html.contains(entry.key)) {
+        html = html.replaceAll(
+          entry.key,
+          '<img src="${entry.value}" class="vm" smilieid="1" alt="${entry.key}" />',
+        );
+      }
+    }
 
     // 循环处理可能嵌套的标签（最多循环 3 轮以展开内嵌标签）
     for (var i = 0; i < 3; i++) {

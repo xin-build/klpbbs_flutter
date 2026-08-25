@@ -99,30 +99,39 @@ class _ThreadListPageState extends State<ThreadListPage> {
     } catch (_) {}
   }
 
-  Future<({List<ThreadSummary> threads, ForumHeaderInfo header})> _fetchData({int page = 1}) async {
-    final results = await Future.wait([
-      KlpbbsApi.getThreadList(
-        widget.fid,
-        page: page,
-        typeid: _selectedType,
-        orderby: _orderby,
-      ),
-      KlpbbsApi.getForumHeader(widget.fid),
-    ]);
-    final header = results[1] as ForumHeaderInfo;
-    // 仅当服务端明确识别为已收藏且本地尚未标记时主动标记，绝不单向清空用户本地状态
-    if (mounted && header.isFavorited && !_isFav) {
-      setState(() => _isFav = true);
-      SharedPreferences.getInstance().then((prefs) {
-        final list = (prefs.getStringList('fav_forums') ?? []).toSet();
-        if (list.add('${widget.fid}')) {
-          prefs.setStringList('fav_forums', list.toList());
-        }
-      }).catchError((_) {});
+  Future<({List<ThreadSummary> threads, ForumHeaderInfo header})> _fetchData({
+    int page = 1,
+    bool forceRefresh = false,
+  }) async {
+    final bundle = await KlpbbsApi.getForumBundle(
+      widget.fid,
+      page: page,
+      typeid: _selectedType,
+      orderby: _orderby,
+      forceRefresh: forceRefresh,
+    );
+
+    if (mounted) {
+      if (bundle.types.isNotEmpty) {
+        setState(() => _types = bundle.types);
+      }
+      if (bundle.subForums.isNotEmpty) {
+        setState(() => _subForums = bundle.subForums);
+      }
+      if (bundle.header.isFavorited && !_isFav) {
+        setState(() => _isFav = true);
+        SharedPreferences.getInstance().then((prefs) {
+          final list = (prefs.getStringList('fav_forums') ?? []).toSet();
+          if (list.add('${widget.fid}')) {
+            prefs.setStringList('fav_forums', list.toList());
+          }
+        }).catchError((_) {});
+      }
     }
+
     return (
-      threads: results[0] as List<ThreadSummary>,
-      header: header,
+      threads: bundle.threads,
+      header: bundle.header,
     );
   }
 
@@ -143,9 +152,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
   void _reload() {
     setState(() {
       _page = 1;
-      _future = _fetchData(page: 1);
-      _loadTypes();
-      _loadSubForums();
+      _future = _fetchData(page: 1, forceRefresh: true);
     });
   }
 

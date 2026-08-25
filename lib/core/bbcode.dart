@@ -1,15 +1,28 @@
 /// Discuz BBCode → HTML 轻量转换器（编辑器「预览」与离线解析用）
-/// 覆盖常用代码：b/i/u/s/color/size/font/backcolor/align/url/img/quote/code/hide/spoiler/collapse/fold/free/password/list/table/attach/audio/media/bili。
-/// 表情短码（如 [贴吧_呵呵]）不在本地展开，预览时按原文显示。
+/// 覆盖常用代码：b/i/u/s/color/size/font/backcolor/align/url/img/quote/code/hide/spoiler/collapse/fold/free/password/list/table/attach/audio/media/bili 以及论坛表情代码。
 library;
 
-String bbcodeToHtml(String input) {
+import '../api/comiis_parser.dart';
+import '../models/smiley.dart';
+
+String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
   var s = input;
   // 1. 先转义 HTML 特殊字符（BBCode 用 []，不受影响）
   s = s
       .replaceAll('&', '&amp;')
       .replaceAll('<', '&lt;')
       .replaceAll('>', '&gt;');
+
+  // 1.5 表情短码与 Discuz 标准表情代码转换 (如 [贴吧_滑稽], [哔哩_doge], {:12_292:}, {:6_178:} 等)
+  final smileyMap = ComiisParser.getSmileyCodeMap(customSmileys);
+  for (final entry in smileyMap.entries) {
+    if (s.contains(entry.key)) {
+      s = s.replaceAll(
+        entry.key,
+        '<img src="${entry.value}" class="vm" smilieid="1" alt="${entry.key}" />',
+      );
+    }
+  }
 
   // 2. 成对标签（非贪婪跨行）
   void replacePair(String open, String close, String tag) {

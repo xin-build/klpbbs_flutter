@@ -576,7 +576,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
 
         // 安全提问下拉菜单
         DropdownButtonFormField<int>(
-          value: _questionId,
+          initialValue: _questionId,
           decoration: const InputDecoration(
             labelText: '安全提问',
             prefixIcon: Icon(Icons.help_outline_rounded),

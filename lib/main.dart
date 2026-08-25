@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:dynamic_color/dynamic_color.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -848,7 +849,7 @@ class _MainShellState extends State<_MainShell> {
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: Text(
-                  '苦力怕论坛客户端 v1.0 (Build 20260822)',
+                  '苦力怕论坛客户端 v1.0.4',
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.outline,
                     fontSize: 11.5,

@@ -957,16 +957,6 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
                 },
               ),
               const Divider(height: 1),
-              SwitchListTile(
-                title: const Text('启动时自动签到'),
-                subtitle: const Text('每次启动应用自动尝试完成每日签到 (k_misign)'),
-                value: AppConfig.autoCheckin,
-                onChanged: (v) {
-                  AppConfig.setAutoCheckin(v);
-                  setState(() {});
-                },
-              ),
-              const Divider(height: 1),
               ListTile(
                 title: const Text('默认启动页'),
                 trailing: DropdownButton<int>(
@@ -1356,7 +1346,7 @@ class _AboutSettingsViewState extends State<_AboutSettingsView> {
               child: Column(
                 children: [
                   Text(
-                    '苦力怕论坛客户端 v1.0.3',
+                    '苦力怕论坛客户端 v1.0.4',
                     style: TextStyle(
                       color: colorScheme.outline,
                       fontSize: 12.5,

@@ -667,7 +667,7 @@ class _SearchPageState extends State<SearchPage> {
                   _buildFilterRow(
                     label: '排序方式',
                     child: DropdownButtonFormField<String>(
-                      value: _sortOrder,
+                      initialValue: _sortOrder,
                       decoration: _dropdownDeco(),
                       isDense: true,
                       items: const [
@@ -689,43 +689,46 @@ class _SearchPageState extends State<SearchPage> {
                   ),
                   const SizedBox(height: 6),
                   if (_forumGroups.isNotEmpty)
-                    Container(
-                      constraints: const BoxConstraints(maxHeight: 160),
-                      decoration: BoxDecoration(
-                        color: colorScheme.surface,
+                    Material(
+                      color: colorScheme.surface,
+                      shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: colorScheme.outlineVariant.withAlpha(80)),
+                        side: BorderSide(color: colorScheme.outlineVariant.withAlpha(80)),
                       ),
-                      child: ListView.builder(
-                        shrinkWrap: true,
-                        itemCount: _forumGroups.length,
-                        itemBuilder: (ctx, i) {
-                          final group = _forumGroups[i];
-                          return ExpansionTile(
-                            dense: true,
-                            title: Text(
-                              group.name,
-                              style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
-                            ),
-                            children: [
-                              for (final f in group.forums)
-                                CheckboxListTile(
-                                  dense: true,
-                                  title: Text(f.name, style: const TextStyle(fontSize: 12)),
-                                  value: _selectedFids.contains(f.fid),
-                                  onChanged: (checked) {
-                                    setState(() {
-                                      if (checked == true) {
-                                        _selectedFids.add(f.fid);
-                                      } else {
-                                        _selectedFids.remove(f.fid);
-                                      }
-                                    });
-                                  },
-                                ),
-                            ],
-                          );
-                        },
+                      clipBehavior: Clip.antiAlias,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 160),
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: _forumGroups.length,
+                          itemBuilder: (ctx, i) {
+                            final group = _forumGroups[i];
+                            return ExpansionTile(
+                              dense: true,
+                              title: Text(
+                                group.name,
+                                style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                              ),
+                              children: [
+                                for (final f in group.forums)
+                                  CheckboxListTile(
+                                    dense: true,
+                                    title: Text(f.name, style: const TextStyle(fontSize: 12)),
+                                    value: _selectedFids.contains(f.fid),
+                                    onChanged: (checked) {
+                                      setState(() {
+                                        if (checked == true) {
+                                          _selectedFids.add(f.fid);
+                                        } else {
+                                          _selectedFids.remove(f.fid);
+                                        }
+                                      });
+                                    },
+                                  ),
+                              ],
+                            );
+                          },
+                        ),
                       ),
                     ),
                   const SizedBox(height: 10),

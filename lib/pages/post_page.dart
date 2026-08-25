@@ -55,6 +55,11 @@ class PostPage extends StatefulWidget {
   final int? fid; // 发帖版块
   final int? tid; // 回复帖子 ID
   final int? pid; // 编辑楼层 pid
+  final int? reppost; // 回复指定楼层 pid
+  final int? repquote; // 引用指定楼层 pid
+  final String? noticeauthor; // 被回复/引用用户
+  final String? noticetrimstr; // 引用摘要
+  final String? replyToFloorText; // 提示标题（如：回复 2# 沙发 (小明)）
   final String? editSubject; // 编辑预填标题
   final String? editMessage; // 编辑预填内容
   final List<Forum>? forums; // 可选版块列表
@@ -69,6 +74,11 @@ class PostPage extends StatefulWidget {
     this.fid,
     this.tid,
     this.pid,
+    this.reppost,
+    this.repquote,
+    this.noticeauthor,
+    this.noticetrimstr,
+    this.replyToFloorText,
     this.editSubject,
     this.editMessage,
     this.forums,
@@ -101,6 +111,7 @@ class _PostPageState extends State<PostPage> {
   bool _preview = false;
   bool _isPlainMode = false;
   double _editorMinHeight = 280;
+  int _activeToolbarTab = 0; // 0 常用, 1 排版, 2 媒体, 3 辅助, 4 全部平铺
 
   // 投票
   final _pollDaysCtrl = TextEditingController(text: '7');
@@ -815,7 +826,13 @@ class _PostPageState extends State<PostPage> {
       final ext = p.extension(path).toLowerCase();
       final isImg = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'].contains(ext);
       try {
-        final aid = await KlpbbsApi.uploadAttachment(fid, path, isImage: isImg);
+        final aid = await KlpbbsApi.uploadAttachment(
+          fid,
+          path,
+          tid: widget.tid,
+          pid: widget.pid,
+          isImage: isImg,
+        );
         if (aid != null && aid > 0) {
           final item = PostAttachmentItem(
             aid: aid,
@@ -916,6 +933,7 @@ class _PostPageState extends State<PostPage> {
           finalContent += '\n${att.isImage ? tag2 : tag1}\n';
         }
       }
+      final attachAids = _uploadedAttachments.map((a) => a.aid).toList();
       final ok = _isEdit
           ? await KlpbbsApi.editPost(
               _fid ?? 2,
@@ -923,11 +941,18 @@ class _PostPageState extends State<PostPage> {
               widget.pid!,
               subject: _subjectCtrl.text.trim(),
               message: finalContent,
+              attachAids: attachAids,
             )
           : _isReply
           ? await KlpbbsApi.replyThread(
               widget.tid!,
               finalContent,
+              pid: widget.reppost ?? widget.repquote,
+              reppost: widget.reppost,
+              repquote: widget.repquote,
+              noticeauthor: widget.noticeauthor,
+              noticetrimstr: widget.noticetrimstr,
+              attachAids: attachAids,
               asMobile: _asMobile,
             )
           : await KlpbbsApi.postThread(
@@ -946,6 +971,11 @@ class _PostPageState extends State<PostPage> {
               affirmPoint: _special == 5 ? _affirmCtrl.text.trim() : null,
               negaPoint: _special == 5 ? _negaCtrl.text.trim() : null,
               endTime: _special == 5 ? _endTimeCtrl.text.trim() : null,
+              attachAids: attachAids,
+              readPerm: int.tryParse(_readPermCtrl.text.trim()),
+              rewardCredit: int.tryParse(_rewardCreditCtrl.text.trim()),
+              rewardTimes: int.tryParse(_rewardTimesCtrl.text.trim()),
+              tags: _tagCtrl.text.split(RegExp(r'[,，\s]+')).where((s) => s.isNotEmpty).toList(),
               asMobile: _asMobile,
             );
 
@@ -1339,158 +1369,460 @@ class _PostPageState extends State<PostPage> {
     }
   }
 
-  // --- PC 双行工具栏构建 ---
-  Widget _buildPcToolbar(ThemeData theme) {
-    return Container(
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withAlpha(50),
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
-        border: Border(
-          bottom: BorderSide(
-            color: theme.colorScheme.outlineVariant.withAlpha(70),
-            width: 0.8,
+  // --- 智能自适应响应式工具栏（无 Emoji，流畅动画与 Material 3 风格） ---
+  Widget _buildAdaptiveToolbar(ThemeData theme) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isWide = constraints.maxWidth >= 640;
+
+        return Container(
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHighest.withAlpha(45),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
+            border: Border(
+              bottom: BorderSide(
+                color: theme.colorScheme.outlineVariant.withAlpha(70),
+                width: 0.8,
+              ),
+            ),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 顶部分类切换栏 + 核心全局控制 (撤销/重做/预览)
+              Row(
+                children: [
+                  Expanded(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          _toolbarCategoryChip(0, '常用', Icons.flash_on_outlined, theme),
+                          const SizedBox(width: 4),
+                          _toolbarCategoryChip(1, '排版', Icons.format_paint_outlined, theme),
+                          const SizedBox(width: 4),
+                          _toolbarCategoryChip(2, '媒体', Icons.perm_media_outlined, theme),
+                          const SizedBox(width: 4),
+                          _toolbarCategoryChip(3, '辅助', Icons.tune_outlined, theme),
+                          if (isWide) ...[
+                            const SizedBox(width: 4),
+                            _toolbarCategoryChip(4, '全部平铺', Icons.grid_view_outlined, theme),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  // 高频通用控制
+                  _toolIcon(Icons.undo, '撤销', _undo),
+                  _toolIcon(Icons.redo, '重做', _redo),
+                  _toolIcon(
+                    _preview ? Icons.edit_outlined : Icons.visibility_outlined,
+                    _preview ? '返回编辑' : '实时预览',
+                    () => setState(() => _preview = !_preview),
+                    isActive: _preview,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 5),
+              Divider(height: 1, thickness: 0.6, color: theme.colorScheme.outlineVariant.withAlpha(50)),
+              const SizedBox(height: 5),
+
+              // 自适应功能区：平滑过渡动画展开/切换
+              AnimatedSize(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeInOutCubic,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  transitionBuilder: (child, animation) {
+                    return FadeTransition(
+                      opacity: animation,
+                      child: child,
+                    );
+                  },
+                  child: KeyedSubtree(
+                    key: ValueKey<int>(_activeToolbarTab),
+                    child: _buildActiveToolbarContent(theme, isWide),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _toolbarCategoryChip(int index, String label, IconData icon, ThemeData theme) {
+    final isActive = _activeToolbarTab == index;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeInOut,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: () => setState(() => _activeToolbarTab = index),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4.5),
+          decoration: BoxDecoration(
+            color: isActive ? theme.colorScheme.primaryContainer : Colors.transparent,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: isActive
+                  ? theme.colorScheme.primary.withAlpha(120)
+                  : theme.colorScheme.outlineVariant.withAlpha(50),
+              width: 0.8,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 13.5,
+                color: isActive ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
+                  color: isActive ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
           ),
         ),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-      child: Column(
-        children: [
-          // 第一行：字体、字号、表格、对齐、表情、图片、附件、音乐、视频、Flash、@朋友、引用、代码、折叠、颜色
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                // 字体下拉
-                PopupMenuButton<String>(
-                  tooltip: '字体',
-                  onSelected: _insertFont,
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'Tahoma', child: Text('Tahoma')),
-                    PopupMenuItem(value: '微软雅黑', child: Text('微软雅黑')),
-                    PopupMenuItem(value: '宋体', child: Text('宋体')),
-                    PopupMenuItem(value: '黑体', child: Text('黑体')),
-                    PopupMenuItem(value: 'Arial', child: Text('Arial')),
-                    PopupMenuItem(value: 'Courier New', child: Text('Courier New')),
-                  ],
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(80)),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text('Tahoma', style: TextStyle(fontSize: 12)),
-                        Icon(Icons.arrow_drop_down, size: 16),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 4),
-                // 字号下拉
-                PopupMenuButton<int>(
-                  tooltip: '字号',
-                  onSelected: _insertSize,
-                  itemBuilder: (_) => [
-                    for (var i = 1; i <= 7; i++)
-                      PopupMenuItem(
-                        value: i,
-                        child: Text('字号 $i', style: TextStyle(fontSize: 11.0 + i * 2)),
-                      ),
-                  ],
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(80)),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text('2', style: TextStyle(fontSize: 12)),
-                        Icon(Icons.arrow_drop_down, size: 16),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                _toolIcon(Icons.table_chart_outlined, '添加表格', _insertTable),
-                _toolIcon(Icons.format_align_left, '居左', () => _insertAlign('left')),
-                _toolIcon(Icons.format_align_center, '居中', () => _insertAlign('center')),
-                _toolIcon(Icons.format_align_right, '居右', () => _insertAlign('right')),
-                const _ToolbarDivider(),
-                _toolIcon(
-                  Icons.emoji_emotions_outlined,
-                  '表情',
-                  () => setState(() => _showEmoji = !_showEmoji),
-                  isActive: _showEmoji,
-                ),
-                _toolIcon(Icons.image_outlined, '图片', () => _pickAndUploadAttachment(imageOnly: true)),
-                _toolIcon(Icons.attach_file, '附件', () => _pickAndUploadAttachment(imageOnly: false)),
-                _toolIcon(Icons.music_note_outlined, '音乐 (网易云/直链)', _showInsertMusicDialog),
-                _toolIcon(Icons.videocam_outlined, '视频 (Bilibili/直链)', _showInsertVideoDialog),
-                _toolIcon(Icons.flash_on_outlined, 'Flash', () => _insertTag('[flash]', '[/flash]')),
-                _toolIcon(Icons.alternate_email, '@朋友', () => _insertText('[@用户名] ')),
-                const _ToolbarDivider(),
-                _toolIcon(Icons.format_quote, '引用', () => _insertTag('[quote]', '[/quote]')),
-                _toolIcon(Icons.code, '代码', () => _insertTag('[code]', '[/code]')),
-                _toolIcon(Icons.card_giftcard, '免费信息', () => _insertTag('[free]', '[/free]')),
-                _toolIcon(Icons.unfold_less, '插入折叠内容 (Spoiler)', _showInsertSpoilerDialog),
-                _toolIcon(Icons.lock_outline, '插入隐藏内容 (Hide)', _showInsertHideDialog),
-                _toolIcon(Icons.format_color_text, '字体颜色', () => _showColorPicker(isBackground: false)),
-                _toolIcon(Icons.format_color_fill, '背景色', () => _showColorPicker(isBackground: true)),
-                _toolIcon(Icons.horizontal_rule, '分隔线', () => _insertText('\n[hr]\n')),
-              ],
-            ),
+    );
+  }
+
+  Widget _buildActiveToolbarContent(ThemeData theme, bool isWide) {
+    switch (_activeToolbarTab) {
+      case 0:
+        // 常用高频栏 (自适应横向流动)
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              _toolIcon(
+                Icons.emoji_emotions_outlined,
+                '表情',
+                () => setState(() => _showEmoji = !_showEmoji),
+                isActive: _showEmoji,
+              ),
+              _toolIcon(Icons.image_outlined, '插入图片', () => _pickAndUploadAttachment(imageOnly: true)),
+              _toolIcon(Icons.attach_file, '上传附件', () => _pickAndUploadAttachment(imageOnly: false)),
+              const _ToolbarDivider(),
+              _bbTextBtn('B', '粗体', () => _insertTag('[b]', '[/b]'), isBold: true),
+              _bbTextBtn('I', '斜体', () => _insertTag('[i]', '[/i]'), isItalic: true),
+              _bbTextBtn('U', '下划线', () => _insertTag('[u]', '[/u]'), isUnderline: true),
+              _bbTextBtn('S', '删除线', () => _insertTag('[s]', '[/s]'), isStrike: true),
+              const _ToolbarDivider(),
+              _toolIcon(Icons.link, '添加链接', _showInsertLinkDialog),
+              _toolIcon(Icons.format_quote, '引用', () => _insertTag('[quote]', '[/quote]')),
+              _toolIcon(Icons.code, '代码块', () => _insertTag('[code]', '[/code]')),
+              _toolIcon(Icons.unfold_less, '折叠内容 (Spoiler)', _showInsertSpoilerDialog),
+              _toolIcon(Icons.lock_outline, '隐藏内容 (Hide)', _showInsertHideDialog),
+              _toolIcon(Icons.format_color_text, '调色板', () => _showColorPicker(isBackground: false)),
+            ],
           ),
-          const SizedBox(height: 4),
-          // 第二行：B, I, U, S, 链接, 清除格式, 列表, 撤销, 重做, 全屏, 纯文本
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                _bbTextBtn('B', '粗体', () => _insertTag('[b]', '[/b]'), isBold: true),
-                _bbTextBtn('I', '斜体', () => _insertTag('[i]', '[/i]'), isItalic: true),
-                _bbTextBtn('U', '下划线', () => _insertTag('[u]', '[/u]'), isUnderline: true),
-                _bbTextBtn('S', '删除线', () => _insertTag('[s]', '[/s]'), isStrike: true),
-                const _ToolbarDivider(),
-                _toolIcon(Icons.link, '添加链接', _showInsertLinkDialog),
-                _toolIcon(Icons.link_off, '清除格式/链接', () => _insertText(_contentCtrl.text.replaceAll(RegExp(r'\[/?(b|i|u|s|color|size|url|font|align)[^\]]*\]'), ''))),
-                _toolIcon(Icons.format_list_numbered, '有序列表', () => _insertText('\n[list=1]\n[*]项目一\n[*]项目二\n[/list]\n')),
-                _toolIcon(Icons.format_list_bulleted, '无序列表', () => _insertText('\n[list]\n[*]项目一\n[*]项目二\n[/list]\n')),
-                const _ToolbarDivider(),
-                _toolIcon(Icons.undo, '撤销', _undo),
-                _toolIcon(Icons.redo, '重做', _redo),
-                _toolIcon(
-                  _preview ? Icons.edit_outlined : Icons.visibility_outlined,
-                  _preview ? '返回编辑' : '实时预览',
-                  () => setState(() => _preview = !_preview),
-                  isActive: _preview,
+        );
+
+      case 1:
+        // 排版与样式栏
+        return Wrap(
+          spacing: 5,
+          runSpacing: 5,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            // 常用字号直接点选
+            _quickSizeChip(1, '极小'),
+            _quickSizeChip(2, '标准'),
+            _quickSizeChip(3, '中号'),
+            _quickSizeChip(4, '大号'),
+            _quickSizeChip(5, '特大'),
+            const _ToolbarDivider(),
+            // 常用快捷色点
+            _quickColorDot(const Color(0xFFF44336), 'red', '红色'),
+            _quickColorDot(const Color(0xFFFF9800), 'orange', '橙色'),
+            _quickColorDot(const Color(0xFF4CAF50), 'green', '绿色'),
+            _quickColorDot(const Color(0xFF2196F3), 'blue', '蓝色'),
+            _quickColorDot(const Color(0xFF9C27B0), 'purple', '紫色'),
+            _quickColorDot(const Color(0xFF212121), 'black', '深黑'),
+            _toolIcon(Icons.palette_outlined, '自定义文字颜色', () => _showColorPicker(isBackground: false)),
+            _toolIcon(Icons.format_color_fill, '背景色', () => _showColorPicker(isBackground: true)),
+            const _ToolbarDivider(),
+            // 字体选择下拉
+            PopupMenuButton<String>(
+              tooltip: '选择字体',
+              onSelected: _insertFont,
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'Tahoma', child: Text('Tahoma')),
+                PopupMenuItem(value: '微软雅黑', child: Text('微软雅黑')),
+                PopupMenuItem(value: '宋体', child: Text('宋体')),
+                PopupMenuItem(value: '黑体', child: Text('黑体')),
+                PopupMenuItem(value: 'Arial', child: Text('Arial')),
+                PopupMenuItem(value: 'Courier New', child: Text('Courier New')),
+              ],
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                decoration: BoxDecoration(
+                  border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(80)),
+                  borderRadius: BorderRadius.circular(4),
                 ),
-                _toolIcon(
-                  Icons.fullscreen,
-                  '加大/缩小编辑区',
-                  () => setState(() {
-                    _editorMinHeight = _editorMinHeight >= 450 ? 280 : 480;
-                  }),
-                ),
-                // 纯文本切换 Checkbox
-                Row(
+                child: const Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Checkbox(
-                      value: _isPlainMode,
-                      visualDensity: VisualDensity.compact,
-                      onChanged: (v) => setState(() => _isPlainMode = v ?? false),
-                    ),
-                    const Text('纯文本', style: TextStyle(fontSize: 12)),
+                    Text('字体', style: TextStyle(fontSize: 11.5)),
+                    Icon(Icons.arrow_drop_down, size: 15),
                   ],
                 ),
-              ],
+              ),
             ),
+            const _ToolbarDivider(),
+            _toolIcon(Icons.format_align_left, '居左', () => _insertAlign('left')),
+            _toolIcon(Icons.format_align_center, '居中', () => _insertAlign('center')),
+            _toolIcon(Icons.format_align_right, '居右', () => _insertAlign('right')),
+            _toolIcon(Icons.format_list_bulleted, '无序列表', () => _insertText('\n[list]\n[*]项目一\n[*]项目二\n[/list]\n')),
+            _toolIcon(Icons.format_list_numbered, '有序列表', () => _insertText('\n[list=1]\n[*]项目一\n[*]项目二\n[/list]\n')),
+            _toolIcon(Icons.table_chart_outlined, '添加表格', _insertTable),
+            _toolIcon(Icons.horizontal_rule, '分隔线', () => _insertText('\n[hr]\n')),
+            _toolIcon(Icons.link_off, '清除格式', () => _insertText(_contentCtrl.text.replaceAll(RegExp(r'\[/?(b|i|u|s|color|size|url|font|align)[^\]]*\]'), ''))),
+          ],
+        );
+
+      case 2:
+        // 媒体与扩展
+        return Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            _toolButtonWithLabel(Icons.music_note_outlined, '网易云音乐', _showInsertMusicDialog, theme),
+            _toolButtonWithLabel(Icons.videocam_outlined, '视频', _showInsertVideoDialog, theme),
+            _toolButtonWithLabel(Icons.table_chart_outlined, '表格', _insertTable, theme),
+            _toolButtonWithLabel(Icons.unfold_less, '折叠 Spoiler', _showInsertSpoilerDialog, theme),
+            _toolButtonWithLabel(Icons.lock_outline, '隐藏 Hide', _showInsertHideDialog, theme),
+            _toolButtonWithLabel(Icons.card_giftcard, '免费信息 [free]', () => _insertTag('[free]', '[/free]'), theme),
+            _toolButtonWithLabel(Icons.alternate_email, '@朋友', () => _insertText('[@用户名] '), theme),
+            _toolButtonWithLabel(Icons.flash_on_outlined, 'Flash', () => _insertTag('[flash]', '[/flash]'), theme),
+          ],
+        );
+
+      case 3:
+        // 辅助设置与编辑控制
+        return Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            _toolButtonWithLabel(
+              _isPlainMode ? Icons.code : Icons.text_format,
+              _isPlainMode ? '纯文本: 开启' : '纯文本: 关闭',
+              () => setState(() => _isPlainMode = !_isPlainMode),
+              theme,
+              isActive: _isPlainMode,
+            ),
+            _toolButtonWithLabel(Icons.add_circle_outline, '加大编辑区', () => setState(() => _editorMinHeight = min(600, _editorMinHeight + 80)), theme),
+            _toolButtonWithLabel(Icons.remove_circle_outline, '缩小编辑区', () => setState(() => _editorMinHeight = max(200, _editorMinHeight - 80)), theme),
+            _toolButtonWithLabel(Icons.save_outlined, '手动保存草稿', _saveDraftManual, theme),
+            _toolButtonWithLabel(Icons.drafts_outlined, '草稿箱 ($_draftCount)', () => _showDraftsModal(context), theme),
+            _toolButtonWithLabel(
+              Icons.delete_sweep_outlined,
+              '清空内容',
+              () {
+                if (_contentCtrl.text.isEmpty) return;
+                showDialog(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('确认清空内容？'),
+                    content: const Text('清空后可通过撤销 (Ctrl+Z) 恢复。'),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+                      FilledButton(
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          setState(() => _contentCtrl.clear());
+                        },
+                        child: const Text('确认清空'),
+                      ),
+                    ],
+                  ),
+                );
+              },
+              theme,
+              isDanger: true,
+            ),
+          ],
+        );
+
+      case 4:
+      default:
+        // 全部平铺 (宽屏模式)
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildToolbarSectionTitle('常用与排版', theme),
+            const SizedBox(height: 3),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _toolIcon(Icons.emoji_emotions_outlined, '表情', () => setState(() => _showEmoji = !_showEmoji), isActive: _showEmoji),
+                  _toolIcon(Icons.image_outlined, '插入图片', () => _pickAndUploadAttachment(imageOnly: true)),
+                  _toolIcon(Icons.attach_file, '上传附件', () => _pickAndUploadAttachment(imageOnly: false)),
+                  const _ToolbarDivider(),
+                  _bbTextBtn('B', '粗体', () => _insertTag('[b]', '[/b]'), isBold: true),
+                  _bbTextBtn('I', '斜体', () => _insertTag('[i]', '[/i]'), isItalic: true),
+                  _bbTextBtn('U', '下划线', () => _insertTag('[u]', '[/u]'), isUnderline: true),
+                  _bbTextBtn('S', '删除线', () => _insertTag('[s]', '[/s]'), isStrike: true),
+                  const _ToolbarDivider(),
+                  _toolIcon(Icons.link, '添加链接', _showInsertLinkDialog),
+                  _toolIcon(Icons.format_quote, '引用', () => _insertTag('[quote]', '[/quote]')),
+                  _toolIcon(Icons.code, '代码块', () => _insertTag('[code]', '[/code]')),
+                  _toolIcon(Icons.format_align_left, '居左', () => _insertAlign('left')),
+                  _toolIcon(Icons.format_align_center, '居中', () => _insertAlign('center')),
+                  _toolIcon(Icons.format_align_right, '居右', () => _insertAlign('right')),
+                  _toolIcon(Icons.format_list_bulleted, '无序列表', () => _insertText('\n[list]\n[*]项目一\n[*]项目二\n[/list]\n')),
+                  _toolIcon(Icons.format_list_numbered, '有序列表', () => _insertText('\n[list=1]\n[*]项目一\n[*]项目二\n[/list]\n')),
+                  _toolIcon(Icons.format_color_text, '文字颜色', () => _showColorPicker(isBackground: false)),
+                  _toolIcon(Icons.format_color_fill, '背景色', () => _showColorPicker(isBackground: true)),
+                  _toolIcon(Icons.horizontal_rule, '分隔线', () => _insertText('\n[hr]\n')),
+                ],
+              ),
+            ),
+            const SizedBox(height: 6),
+            _buildToolbarSectionTitle('多媒体与扩展', theme),
+            const SizedBox(height: 3),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _toolButtonWithLabel(Icons.music_note_outlined, '网易云音乐', _showInsertMusicDialog, theme),
+                  const SizedBox(width: 4),
+                  _toolButtonWithLabel(Icons.videocam_outlined, '视频', _showInsertVideoDialog, theme),
+                  const SizedBox(width: 4),
+                  _toolButtonWithLabel(Icons.table_chart_outlined, '表格', _insertTable, theme),
+                  const SizedBox(width: 4),
+                  _toolButtonWithLabel(Icons.unfold_less, '折叠', _showInsertSpoilerDialog, theme),
+                  const SizedBox(width: 4),
+                  _toolButtonWithLabel(Icons.lock_outline, '隐藏', _showInsertHideDialog, theme),
+                  const SizedBox(width: 4),
+                  _toolButtonWithLabel(Icons.card_giftcard, '免费信息', () => _insertTag('[free]', '[/free]'), theme),
+                  const SizedBox(width: 4),
+                  _toolButtonWithLabel(Icons.alternate_email, '@朋友', () => _insertText('[@用户名] '), theme),
+                ],
+              ),
+            ),
+          ],
+        );
+    }
+  }
+
+  Widget _quickSizeChip(int size, String label) {
+    return Tooltip(
+      message: '字号 $size',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(4),
+        onTap: () => _insertSize(size),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.black12, width: 0.6),
+            borderRadius: BorderRadius.circular(4),
           ),
-        ],
+          child: Text(label, style: const TextStyle(fontSize: 11)),
+        ),
+      ),
+    );
+  }
+
+  Widget _quickColorDot(Color color, String colorCode, String tooltip) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => _insertTag('[color=$colorCode]', '[/color]'),
+        child: Container(
+          width: 18,
+          height: 18,
+          margin: const EdgeInsets.symmetric(horizontal: 2),
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.black26, width: 0.8),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _toolButtonWithLabel(
+    IconData icon,
+    String label,
+    VoidCallback onTap,
+    ThemeData theme, {
+    bool isActive = false,
+    bool isDanger = false,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4.5),
+        decoration: BoxDecoration(
+          color: isActive
+              ? theme.colorScheme.primaryContainer
+              : (isDanger
+                  ? Colors.red.withAlpha(15)
+                  : theme.colorScheme.surfaceContainerHighest.withAlpha(35)),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+            color: isActive
+                ? theme.colorScheme.primary
+                : (isDanger
+                    ? Colors.red.withAlpha(70)
+                    : theme.colorScheme.outlineVariant.withAlpha(50)),
+            width: 0.6,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 14,
+              color: isDanger
+                  ? Colors.redAccent
+                  : (isActive ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
+                color: isDanger
+                    ? Colors.redAccent
+                    : (isActive ? theme.colorScheme.primary : theme.colorScheme.onSurface),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildToolbarSectionTitle(String title, ThemeData theme) {
+    return Text(
+      title,
+      style: TextStyle(
+        fontSize: 11,
+        fontWeight: FontWeight.w600,
+        color: theme.colorScheme.primary,
       ),
     );
   }
@@ -1554,7 +1886,6 @@ class _PostPageState extends State<PostPage> {
       ),
     );
   }
-
   // --- 高级选项卡片 (附加选项 / 阅读权限 / 回帖奖励 / 主题标签 / 定时发布) ---
   Widget _buildAdvancedOptionsCard(ThemeData theme) {
     return Container(
@@ -1581,14 +1912,17 @@ class _PostPageState extends State<PostPage> {
                 ),
               ),
             ),
-            child: Row(
-              children: [
-                _optionTab('附加选项', 0),
-                _optionTab('阅读权限', 1),
-                _optionTab('回帖奖励', 2),
-                _optionTab('主题标签', 3, isHighlighted: true),
-                _optionTab('定时发布', 4),
-              ],
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _optionTab('附加选项', 0),
+                  _optionTab('阅读权限', 1),
+                  _optionTab('回帖奖励', 2),
+                  _optionTab('主题标签', 3, isHighlighted: true),
+                  _optionTab('定时发布', 4),
+                ],
+              ),
             ),
           ),
           // Tab 对应内容区
@@ -2036,7 +2370,10 @@ class _PostPageState extends State<PostPage> {
           tooltip: '返回',
           onPressed: () => Navigator.of(context).maybePop(),
         ),
-        title: Text(_isEdit ? '编辑帖子' : (_isReply ? '回复主题' : '发表帖子')),
+        title: Text(
+          widget.replyToFloorText ??
+              (_isEdit ? '编辑帖子' : (_isReply ? '回复主题' : '发表帖子')),
+        ),
         actions: [
           IconButton(
             tooltip: _asMobile ? '发帖设备：手机 (点击切换为电脑)' : '发帖设备：电脑 (点击切换为手机)',
@@ -2143,41 +2480,44 @@ class _PostPageState extends State<PostPage> {
 
               // 主题类型 Tab（发表帖子 / 发起投票 / 发起辩论 | 发帖设备 | 草稿箱）
               if (!_isReply && !_isEdit)
-                Row(
-                  children: [
-                    ChoiceChip(
-                      label: const Text('发表帖子'),
-                      selected: _special == 0,
-                      onSelected: (_) => _selectSpecial(0),
-                    ),
-                    const SizedBox(width: 8),
-                    ChoiceChip(
-                      label: const Text('发起投票'),
-                      selected: _special == 1,
-                      onSelected: (_) => _selectSpecial(1),
-                    ),
-                    const SizedBox(width: 8),
-                    ChoiceChip(
-                      label: const Text('发起辩论'),
-                      selected: _special == 5,
-                      onSelected: (_) => _selectSpecial(5),
-                    ),
-                    const Spacer(),
-                    ChoiceChip(
-                      avatar: Icon(_asMobile ? Icons.phone_android : Icons.computer, size: 14),
-                      label: Text(_asMobile ? '手机' : '电脑', style: const TextStyle(fontSize: 11)),
-                      selected: true,
-                      onSelected: (_) {
-                        setState(() => _asMobile = !_asMobile);
-                      },
-                    ),
-                    const SizedBox(width: 6),
-                    TextButton.icon(
-                      onPressed: () => _showDraftsModal(context),
-                      icon: const Icon(Icons.drafts_outlined, size: 16),
-                      label: Text('草稿箱($_draftCount)'),
-                    ),
-                  ],
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      ChoiceChip(
+                        label: const Text('发表帖子'),
+                        selected: _special == 0,
+                        onSelected: (_) => _selectSpecial(0),
+                      ),
+                      const SizedBox(width: 8),
+                      ChoiceChip(
+                        label: const Text('发起投票'),
+                        selected: _special == 1,
+                        onSelected: (_) => _selectSpecial(1),
+                      ),
+                      const SizedBox(width: 8),
+                      ChoiceChip(
+                        label: const Text('发起辩论'),
+                        selected: _special == 5,
+                        onSelected: (_) => _selectSpecial(5),
+                      ),
+                      const SizedBox(width: 12),
+                      ChoiceChip(
+                        avatar: Icon(_asMobile ? Icons.phone_android : Icons.computer, size: 14),
+                        label: Text(_asMobile ? '手机' : '电脑', style: const TextStyle(fontSize: 11)),
+                        selected: true,
+                        onSelected: (_) {
+                          setState(() => _asMobile = !_asMobile);
+                        },
+                      ),
+                      const SizedBox(width: 6),
+                      TextButton.icon(
+                        onPressed: () => _showDraftsModal(context),
+                        icon: const Icon(Icons.drafts_outlined, size: 16),
+                        label: Text('草稿箱($_draftCount)'),
+                      ),
+                    ],
+                  ),
                 ),
 
               // 回复模式：原帖标题前缀提示（图三）
@@ -2213,64 +2553,133 @@ class _PostPageState extends State<PostPage> {
 
               // 发帖模式：主题分类下拉 + 标题输入框 + 剩余字数统计（图二）
               if (!_isReply) ...[
-                Row(
-                  children: [
-                    // 版块分类选择
-                    if (_typeOptions.isNotEmpty) ...[
-                      Container(
-                        height: 38,
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        decoration: BoxDecoration(
-                          border: Border.all(color: theme.colorScheme.outlineVariant),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: DropdownButtonHideUnderline(
-                          child: DropdownButton<int>(
-                            value: _typeid,
-                            hint: const Text('选择主题分类', style: TextStyle(fontSize: 13)),
-                            items: [
-                              const DropdownMenuItem(value: 0, child: Text('选择主题分类')),
-                              for (final t in _typeOptions)
-                                DropdownMenuItem(value: t.value, child: Text(t.name)),
-                            ],
-                            onChanged: (v) => setState(() => _typeid = v == 0 ? null : v),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                    ],
-                    // 标题输入框
-                    Expanded(
-                      child: TextField(
-                        controller: _subjectCtrl,
-                        maxLength: 120,
-                        onChanged: (_) => setState(() {}),
-                        decoration: InputDecoration(
-                          hintText: '请输入标题',
-                          isDense: true,
-                          counterText: '',
-                          border: OutlineInputBorder(
+                if (isDesktop)
+                  Row(
+                    children: [
+                      // 版块分类选择
+                      if (_typeOptions.isNotEmpty) ...[
+                        Container(
+                          height: 38,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          decoration: BoxDecoration(
+                            border: Border.all(color: theme.colorScheme.outlineVariant),
                             borderRadius: BorderRadius.circular(6),
                           ),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<int>(
+                              value: _typeid,
+                              hint: const Text('选择主题分类', style: TextStyle(fontSize: 13)),
+                              items: [
+                                const DropdownMenuItem(value: 0, child: Text('选择主题分类')),
+                                for (final t in _typeOptions)
+                                  DropdownMenuItem(value: t.value, child: Text(t.name)),
+                              ],
+                              onChanged: (v) => setState(() => _typeid = v == 0 ? null : v),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      // 标题输入框
+                      Expanded(
+                        child: TextField(
+                          controller: _subjectCtrl,
+                          maxLength: 120,
+                          onChanged: (_) => setState(() {}),
+                          decoration: InputDecoration(
+                            hintText: '请输入标题',
+                            isDense: true,
+                            counterText: '',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                    Text(
-                      '还可输入 ${120 - _subjectCtrl.text.length} 个字符',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: _subjectCtrl.text.length >= 100
-                            ? Colors.redAccent
-                            : theme.colorScheme.outline,
-                        fontWeight: FontWeight.w500,
+                      const SizedBox(width: 10),
+                      Text(
+                        '还可输入 ${120 - _subjectCtrl.text.length} 个字符',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: _subjectCtrl.text.length >= 100
+                              ? Colors.redAccent
+                              : theme.colorScheme.outline,
+                          fontWeight: FontWeight.w500,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 4),
-                    Text('(需审核)', style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
-                  ],
-                ),
+                      const SizedBox(width: 4),
+                      Text('(需审核)', style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
+                    ],
+                  )
+                else
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          if (_typeOptions.isNotEmpty) ...[
+                            Container(
+                              height: 42,
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              decoration: BoxDecoration(
+                                border: Border.all(color: theme.colorScheme.outlineVariant),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: DropdownButtonHideUnderline(
+                                child: DropdownButton<int>(
+                                  value: _typeid,
+                                  hint: const Text('分类', style: TextStyle(fontSize: 13)),
+                                  items: [
+                                    const DropdownMenuItem(value: 0, child: Text('分类')),
+                                    for (final t in _typeOptions)
+                                      DropdownMenuItem(value: t.value, child: Text(t.name)),
+                                  ],
+                                  onChanged: (v) => setState(() => _typeid = v == 0 ? null : v),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
+                          Expanded(
+                            child: TextField(
+                              controller: _subjectCtrl,
+                              maxLength: 120,
+                              onChanged: (_) => setState(() {}),
+                              decoration: InputDecoration(
+                                hintText: '请输入帖子标题',
+                                isDense: true,
+                                counterText: '',
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              '还可输入 ${120 - _subjectCtrl.text.length} 个字符',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: _subjectCtrl.text.length >= 100
+                                    ? Colors.redAccent
+                                    : theme.colorScheme.outline,
+                              ),
+                            ),
+                            Text('(需审核)', style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 const SizedBox(height: 10),
               ],
 
@@ -2378,7 +2787,7 @@ class _PostPageState extends State<PostPage> {
                 ),
                 child: Column(
                   children: [
-                    _buildPcToolbar(theme),
+                    _buildAdaptiveToolbar(theme),
                     ConstrainedBox(
                       constraints: BoxConstraints(minHeight: _editorMinHeight),
                       child: _preview
@@ -2426,9 +2835,15 @@ class _PostPageState extends State<PostPage> {
                                   DiscuzPostRenderer(
                                     floor: PostFloor(
                                       author: '',
-                                      contentHtml: bbcodeToHtml(_contentCtrl.text),
+                                      contentHtml: bbcodeToHtml(
+                                        _contentCtrl.text,
+                                        customSmileys: _smileyCats,
+                                      ),
                                       blocks: ComiisParser.parseStructuredBlocksFromHtml(
-                                        bbcodeToHtml(_contentCtrl.text),
+                                        bbcodeToHtml(
+                                          _contentCtrl.text,
+                                          customSmileys: _smileyCats,
+                                        ),
                                       ),
                                     ),
                                     tid: 0,

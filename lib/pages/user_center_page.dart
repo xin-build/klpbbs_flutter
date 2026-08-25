@@ -683,34 +683,27 @@ class _UserCenterPageState extends State<UserCenterPage> {
   }
 
   Widget _buildCardGroup(List<Widget> children, ColorScheme colorScheme) {
-    return Container(
-      decoration: BoxDecoration(
-        color: colorScheme.surface,
+    return Material(
+      color: colorScheme.surface,
+      elevation: 0.5,
+      shadowColor: Colors.black.withAlpha(20),
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: colorScheme.outlineVariant.withAlpha(50)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withAlpha(4),
-            blurRadius: 6,
-            offset: const Offset(0, 2),
-          ),
-        ],
+        side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(14),
-        child: Column(
-          children: [
-            for (int i = 0; i < children.length; i++) ...[
-              if (i > 0)
-                Divider(
-                  height: 1,
-                  thickness: 0.6,
-                  color: colorScheme.outlineVariant.withAlpha(35),
-                ),
-              children[i],
-            ],
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          for (int i = 0; i < children.length; i++) ...[
+            if (i > 0)
+              Divider(
+                height: 1,
+                thickness: 0.6,
+                color: colorScheme.outlineVariant.withAlpha(35),
+              ),
+            children[i],
           ],
-        ),
+        ],
       ),
     );
   }

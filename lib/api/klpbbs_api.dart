@@ -47,12 +47,26 @@ class KlpbbsApi {
     if (fh.isNotEmpty) _cachedFormhash = fh;
   }
 
-  /// 清空预加载缓存（写操作/点赞/回复/刷新后调用）
+  static final Map<String, Future<String>> _inFlightGets = {};
+  static final Map<String, ({String html, DateTime time})> _quickGetCache = {};
+
+  /// 清空内存中的快速 GET 缓存（在写操作、退出登录、手动强制刷新时调用）
+  static void clearQuickCache([String? pathPrefix]) {
+    if (pathPrefix != null) {
+      _quickGetCache.removeWhere((k, _) => k.startsWith(pathPrefix));
+    } else {
+      _quickGetCache.clear();
+    }
+  }
+
+  /// 清空预加载缓存与内存快速 GET 缓存（写操作/点赞/回复/刷新后调用）
   static void _clearCache([int? tid]) {
     if (tid != null) {
       PreloadService.instance.clear('thread_detail_$tid');
+      clearQuickCache('forum.php?mod=viewthread&tid=$tid');
     } else {
       PreloadService.instance.clear();
+      clearQuickCache();
     }
   }
 
@@ -60,8 +74,53 @@ class KlpbbsApi {
   static String _decode(List<int> bytes) =>
       const Utf8Decoder(allowMalformed: true).convert(bytes);
 
-  /// 实时 GET 请求（始终直连服务器拉取最新数据）
+  /// 实时 GET 请求（内置并发请求防抖复用与短期热数据缓存，彻底避免同页面重复抓取）
   static Future<String> _get(
+    String path, {
+    Map<String, String>? headers,
+    int retries = 2,
+    bool forceRefresh = false,
+    Duration cacheTtl = const Duration(seconds: 15),
+  }) async {
+    final headerKey = headers != null
+        ? headers.entries.map((e) => '${e.key}:${e.value}').join(';')
+        : '';
+    final cacheKey = '$path|$headerKey';
+
+    // 1. 若非强制刷新，优先命中短期热缓存（默认 15 秒，快速页面切换无感知）
+    if (!forceRefresh && cacheTtl > Duration.zero) {
+      final cached = _quickGetCache[cacheKey];
+      if (cached != null && DateTime.now().difference(cached.time) < cacheTtl) {
+        return cached.html;
+      }
+    }
+
+    // 2. 并发请求防抖合并：若同地址请求正在网络传输中，直接复用同一个 Future，杜绝多次并发抓取
+    if (!forceRefresh && _inFlightGets.containsKey(cacheKey)) {
+      return _inFlightGets[cacheKey]!;
+    }
+
+    final future = _doGet(path, headers: headers, retries: retries);
+    _inFlightGets[cacheKey] = future;
+
+    try {
+      final html = await future;
+      if (cacheTtl > Duration.zero) {
+        _quickGetCache[cacheKey] = (html: html, time: DateTime.now());
+        if (_quickGetCache.length > 80) {
+          final now = DateTime.now();
+          _quickGetCache.removeWhere(
+            (_, v) => now.difference(v.time) > const Duration(minutes: 3),
+          );
+        }
+      }
+      return html;
+    } finally {
+      _inFlightGets.remove(cacheKey);
+    }
+  }
+
+  static Future<String> _doGet(
     String path, {
     Map<String, String>? headers,
     int retries = 2,
@@ -646,6 +705,66 @@ class KlpbbsApi {
     return ComiisParser.parseAnnouncements(html);
   }
 
+  /// 一站式整合获取版块完整数据包（帖子列表、版头信息、主题分类、子版块列表），单次网络抓取全量解析，零重复抓取
+  static Future<({
+    List<ThreadSummary> threads,
+    ForumHeaderInfo header,
+    List<({int typeid, String name})> types,
+    List<Forum> subForums,
+  })> getForumBundle(
+    int fid, {
+    int page = 1,
+    int? typeid,
+    String? orderby,
+    bool forceRefresh = false,
+  }) async {
+    final results = await Future.wait([
+      _get(
+        'forum.php?mod=forumdisplay&fid=$fid${typeid != null && typeid > 0 ? '&filter=typeid&typeid=$typeid' : ''}${orderby != null && orderby.isNotEmpty ? '&orderby=$orderby' : ''}&page=$page&mobile=2',
+        forceRefresh: forceRefresh,
+      ).catchError((_) => ''),
+      _get(
+        'forum.php?mod=forumdisplay&fid=$fid&mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+        forceRefresh: forceRefresh,
+      ).catchError((_) => ''),
+    ]);
+
+    final mobileHtml = results[0];
+    final pcHtml = results[1];
+
+    // 1. 帖子列表
+    final threads = ComiisParser.parseThreadList(mobileHtml, pageFid: fid);
+
+    // 2. 版头信息
+    var header = ComiisParser.parseForumHeader(pcHtml, fid);
+    if (header.rulesHtml.isEmpty && header.bannerUrl == null) {
+      final mHeader = ComiisParser.parseForumHeader(mobileHtml, fid);
+      if (mHeader.rulesHtml.isNotEmpty || mHeader.bannerUrl != null || mHeader.todayPosts > 0) {
+        header = mHeader;
+      }
+    }
+
+    // 3. 分类选项
+    var types = ComiisParser.parseThreadTypes(pcHtml);
+    if (types.isEmpty) {
+      types = ComiisParser.parseThreadTypes(mobileHtml);
+    }
+
+    // 4. 子版块
+    var subForums = ComiisParser.parseSubForums(mobileHtml, currentFid: fid);
+    if (subForums.isEmpty && pcHtml.isNotEmpty) {
+      subForums = ComiisParser.parseSubForums(pcHtml, currentFid: fid);
+    }
+
+    return (
+      threads: threads,
+      header: header,
+      types: types,
+      subForums: subForums,
+    );
+  }
+
   /// 版块帖子列表（实时获取）
   static Future<List<ThreadSummary>> getThreadList(
     int fid, {
@@ -940,132 +1059,81 @@ class KlpbbsApi {
   getThread(int tid, {int page = 1, bool forceRefresh = false}) =>
       getThreadDetail(tid, page: page, forceRefresh: forceRefresh);
 
-  /// 导读（hot / new / newthread / digest / pic，多端合并提取 PC 端完整元数据与移动端高清封面）
+  /// 导读（hot / new / newthread / digest / pic，优先极速移动端流式加载，支持预加载与多级缓存）
   static Future<List<ThreadSummary>> getGuide(
     String view, {
     int page = 1,
+    bool forceRefresh = false,
   }) async {
+    final cacheKey = 'guide_${view}_$page';
+    if (!forceRefresh) {
+      final cached = PreloadService.instance.get<List<ThreadSummary>>(cacheKey);
+      if (cached != null && cached.isNotEmpty) {
+        return cached;
+      }
+    }
     try {
-      if (page > 1) {
-        final mobileHtml = await _get(
-          'forum.php?mod=guide&view=$view&mobile=2&page=$page',
-        );
-        if (mobileHtml.isEmpty) return const [];
-        final threads = await Isolate.run(
-          () => ComiisParser.parseThreadList(mobileHtml),
-        );
-        for (final t in threads) {
-          ComiisParser.registerThread(t.tid, fid: t.fid, forumName: t.forumName);
-        }
-        return threads;
-      }
-      final results = await Future.wait([
-        _get(
-          'forum.php?mod=guide&view=$view&mobile=2',
-        ),
-        _get(
-          'forum.php?mod=guide&view=$view&mobile=no',
-          headers: {'User-Agent': AppConfig.pcUserAgent},
-        ),
-      ]);
-      final mobileThreads = ComiisParser.parseThreadList(results[0]);
-      final pcThreads = ComiisParser.parseThreadList(results[1]);
-
-      if (mobileThreads.isNotEmpty && pcThreads.isNotEmpty) {
-        final mobileMap = <int, ThreadSummary>{
-          for (final t in mobileThreads) t.tid: t,
-        };
-        final merged = <ThreadSummary>[];
-        for (final pt in pcThreads) {
-          final mt = mobileMap[pt.tid];
-          final rawForum = (mt?.forumName != null && mt!.forumName!.isNotEmpty)
-              ? mt.forumName
-              : pt.forumName;
-          final fid = mt?.fid ?? pt.fid;
-          final resolvedForum = ComiisParser.resolveForumName(
-            tid: pt.tid,
-            fid: fid,
-            rawForumName: rawForum,
-            title: pt.title,
-            typeName: pt.typeName ?? mt?.typeName,
-          );
-          merged.add(
-            pt.copyWith(
-              fid: fid,
-              coverUrl: pt.coverUrl ?? mt?.coverUrl,
-              forumName: resolvedForum,
-              uid: pt.uid ?? mt?.uid,
-              author: pt.author.isNotEmpty ? pt.author : (mt?.author ?? ''),
-            ),
-          );
-        }
-        final seen = merged.map((t) => t.tid).toSet();
-        for (final mt in mobileThreads) {
-          if (seen.add(mt.tid)) {
-            final resolvedForum = ComiisParser.resolveForumName(
-              tid: mt.tid,
-              fid: mt.fid,
-              rawForumName: mt.forumName,
-              title: mt.title,
-              typeName: mt.typeName,
-            );
-            merged.add(mt.copyWith(forumName: resolvedForum));
-          }
-        }
-        if (merged.isNotEmpty) return merged;
-      }
-      if (mobileThreads.isNotEmpty) {
-        return mobileThreads
-            .map(
-              (t) => t.copyWith(
-                forumName: ComiisParser.resolveForumName(
-                  tid: t.tid,
-                  fid: t.fid,
-                  rawForumName: t.forumName,
-                  title: t.title,
-                  typeName: t.typeName,
-                ),
-              ),
-            )
-            .toList();
-      }
-      if (pcThreads.isNotEmpty) {
-        return pcThreads
-            .map(
-              (t) => t.copyWith(
-                forumName: ComiisParser.resolveForumName(
-                  tid: t.tid,
-                  fid: t.fid,
-                  rawForumName: t.forumName,
-                  title: t.title,
-                  typeName: t.typeName,
-                ),
-              ),
-            )
-            .toList();
-      }
-    } catch (_) {}
-
-    try {
-      final html = await _get(
+      final mobileHtml = await _get(
         'forum.php?mod=guide&view=$view&mobile=2${page > 1 ? '&page=$page' : ''}',
+        forceRefresh: forceRefresh,
       );
-      final threads = ComiisParser.parseThreadList(html);
-      if (threads.isNotEmpty) {
-        return threads
-            .map(
-              (t) => t.copyWith(
-                forumName: ComiisParser.resolveForumName(
-                  fid: t.fid,
-                  rawForumName: t.forumName,
-                  title: t.title,
-                  typeName: t.typeName,
+      if (mobileHtml.isNotEmpty) {
+        final mobileThreads = ComiisParser.parseThreadList(mobileHtml);
+        if (mobileThreads.isNotEmpty) {
+          final result = mobileThreads
+              .map(
+                (t) => t.copyWith(
+                  forumName: ComiisParser.resolveForumName(
+                    tid: t.tid,
+                    fid: t.fid,
+                    rawForumName: t.forumName,
+                    title: t.title,
+                    typeName: t.typeName,
+                  ),
                 ),
-              ),
-            )
-            .toList();
+              )
+              .toList();
+          for (final t in result) {
+            ComiisParser.registerThread(t.tid, fid: t.fid, forumName: t.forumName);
+          }
+          PreloadService.instance.set(cacheKey, result);
+          return result;
+        }
+      }
+
+      // 若移动端无内容，才降级尝试 PC 端解析
+      final pcHtml = await _get(
+        'forum.php?mod=guide&view=$view&mobile=no${page > 1 ? '&page=$page' : ''}',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+        forceRefresh: forceRefresh,
+      );
+      if (pcHtml.isNotEmpty) {
+        final pcThreads = ComiisParser.parseThreadList(pcHtml);
+        if (pcThreads.isNotEmpty) {
+          final result = pcThreads
+              .map(
+                (t) => t.copyWith(
+                  forumName: ComiisParser.resolveForumName(
+                    tid: t.tid,
+                    fid: t.fid,
+                    rawForumName: t.forumName,
+                    title: t.title,
+                    typeName: t.typeName,
+                  ),
+                ),
+              )
+              .toList();
+          for (final t in result) {
+            ComiisParser.registerThread(t.tid, fid: t.fid, forumName: t.forumName);
+          }
+          PreloadService.instance.set(cacheKey, result);
+          return result;
+        }
       }
     } catch (_) {}
+
+    final cached = PreloadService.instance.get<List<ThreadSummary>>(cacheKey, ignoreExpired: true);
+    if (cached != null && cached.isNotEmpty) return cached;
 
     return getThreadList(52, page: page);
   }
@@ -2368,7 +2436,7 @@ class KlpbbsApi {
     return info;
   }
 
-  /// 发帖（支持投票帖：传 pollOptions 列表）
+  /// 发帖（支持投票、辩论、附件关联与高级选项，完全对齐 Discuz Web 端）
   /// 发帖。成功返回新帖 tid，失败返回 null
   static Future<int?> postThread(
     int fid,
@@ -2383,6 +2451,11 @@ class KlpbbsApi {
     String? negaPoint,
     String? endTime,
     String? umpire,
+    List<int>? attachAids,
+    int? readPerm,
+    int? rewardCredit,
+    int? rewardTimes,
+    List<String>? tags,
     bool? asMobile,
   }) async {
     var formhash = _cachedFormhash;
@@ -2415,6 +2488,31 @@ class KlpbbsApi {
       if (special != 0) 'special': '$special',
     };
     if (typeid != null) data['typeid'] = '$typeid';
+
+    // 自动关联上传的附件到新主题
+    final aids = <int>{
+      ...?attachAids,
+      for (final m in RegExp(r'\[attach(?:img)?\](\d+)\[/attach(?:img)?\]').allMatches(message))
+        if (int.tryParse(m.group(1)!) != null) int.parse(m.group(1)!),
+    };
+    for (final aid in aids) {
+      data['attachnew[$aid][description]'] = '';
+      data['unused[]'] = '$aid';
+    }
+
+    // 附加高级选项支持：阅读权限、回帖奖励、主题标签
+    if (readPerm != null && readPerm > 0) {
+      data['readperm'] = '$readPerm';
+    }
+    if (rewardCredit != null && rewardCredit > 0) {
+      data['rewardprice'] = '$rewardCredit';
+      if (rewardTimes != null && rewardTimes > 0) {
+        data['rewardtimes'] = '$rewardTimes';
+      }
+    }
+    if (tags != null && tags.isNotEmpty) {
+      data['tags'] = tags.join(',');
+    }
     // 投票帖
     if (special == 1 && pollOptions != null && pollOptions.isNotEmpty) {
       data['polls'] = '${pollOptions.length}';
@@ -2468,11 +2566,16 @@ class KlpbbsApi {
     return -1; // 成功但无法确认 tid
   }
 
-  /// 回复
+  /// 回复（支持楼层回复、引用、点评与附件关联）
   static Future<bool> replyThread(
     int tid,
     String message, {
     int? pid,
+    int? reppost,
+    int? repquote,
+    String? noticeauthor,
+    String? noticetrimstr,
+    List<int>? attachAids,
     bool asComment = false,
     bool? asMobile,
   }) async {
@@ -2496,19 +2599,39 @@ class KlpbbsApi {
     // 注意：commentsubmit 的 submitcheck 要求 formhash 在 GET
     final url = asComment && pid != null
         ? 'forum.php?mod=post&action=reply&tid=$tid&extra=&replysubmit=yes&comment=$pid&formhash=$formhash${asMobile == true ? '&mobile=2' : ''}'
-        : 'forum.php?mod=post&action=reply&tid=$tid&extra=&replysubmit=yes${asMobile == true ? '&mobile=2' : ''}';
+        : (reppost != null
+            ? 'forum.php?mod=post&action=reply&tid=$tid&reppost=$reppost&extra=&replysubmit=yes${asMobile == true ? '&mobile=2' : ''}'
+            : (repquote != null
+                ? 'forum.php?mod=post&action=reply&tid=$tid&repquote=$repquote&extra=&replysubmit=yes${asMobile == true ? '&mobile=2' : ''}'
+                : 'forum.php?mod=post&action=reply&tid=$tid&extra=&replysubmit=yes${asMobile == true ? '&mobile=2' : ''}'));
+    final replyData = <String, dynamic>{
+      'formhash': formhash,
+      'posttime': '${DateTime.now().millisecondsSinceEpoch ~/ 1000}',
+      'wysiwyg': '1',
+      'usesig': '1',
+      'handlekey': 'fastpost',
+      'replysubmit': 'yes',
+      'message': message,
+      if (asComment && pid != null) 'comment': '$pid',
+      if (reppost != null) 'reppost': '$reppost',
+      if (repquote != null) 'repquote': '$repquote',
+      if (noticeauthor != null && noticeauthor.isNotEmpty) 'noticeauthor': noticeauthor,
+      if (noticetrimstr != null && noticetrimstr.isNotEmpty) 'noticetrimstr': noticetrimstr,
+    };
+
+    final aids = <int>{
+      ...?attachAids,
+      for (final m in RegExp(r'\[attach(?:img)?\](\d+)\[/attach(?:img)?\]').allMatches(message))
+        if (int.tryParse(m.group(1)!) != null) int.parse(m.group(1)!),
+    };
+    for (final aid in aids) {
+      replyData['attachnew[$aid][description]'] = '';
+      replyData['unused[]'] = '$aid';
+    }
+
     final html = await _post(
       url,
-      {
-        'formhash': formhash,
-        'posttime': '${DateTime.now().millisecondsSinceEpoch ~/ 1000}',
-        'wysiwyg': '1',
-        'usesig': '1',
-        'handlekey': 'fastpost',
-        'replysubmit': 'yes',
-        'message': message,
-        if (asComment && pid != null) 'comment': '$pid',
-      },
+      replyData,
       headers: {
         'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
         if (asMobile == true) 'User-Agent': AppConfig.mobileUserAgent,
@@ -3322,23 +3445,23 @@ class KlpbbsApi {
     return ComiisParser.parsePromotion(html);
   }
 
-  /// 好友列表（支持 7 个 Tab: 我的好友、我的关注、我的粉丝、最近来访、我看过谁、好友请求、黑名单）
+  /// 获取好友列表（支持 7 大 Tab 分类，对齐移动端手机版与 PC 版）
   static Future<List<FriendItem>> getFriends(
     int uid, {
     String view = 'me',
     int page = 1,
   }) async {
     final myUid = await getMyUid();
-    final isMe = (myUid != null && myUid > 0 && myUid == uid);
+    final isMe = (myUid != null && myUid > 0 && myUid == uid) || (uid <= 0);
 
-    // 根据 view 构造请求路径 (优先移动端手机版结构，对齐截图一)
+    // 根据 view 构造请求路径 (优先移动端手机版结构，对齐网页截图)
     String url;
     switch (view) {
       case 'follow':
-        url = 'home.php?mod=follow&page=$page&mobile=2';
+        url = 'home.php?mod=space&do=friend&view=follow&page=$page&mobile=2';
         break;
       case 'fans':
-        url = 'home.php?mod=follow&do=follower&page=$page&mobile=2';
+        url = 'home.php?mod=space&do=friend&view=fans&page=$page&mobile=2';
         break;
       case 'visitor':
         url = isMe
@@ -3354,7 +3477,7 @@ class KlpbbsApi {
         url = 'home.php?mod=spacecp&ac=friend&op=request&page=$page&mobile=2';
         break;
       case 'blacklist':
-        url = 'home.php?mod=space&do=friend&group=-1&page=$page&mobile=2';
+        url = 'home.php?mod=space&do=friend&view=blacklist&page=$page&mobile=2';
         break;
       case 'me':
       default:
@@ -3370,7 +3493,7 @@ class KlpbbsApi {
       if (list.isNotEmpty) return list;
     } catch (_) {}
 
-    // 移动端兜底接口
+    // 移动端/PC 多端回退接口
     if (view == 'me') {
       try {
         final myFriendsHtml = await _get('home.php?mod=space&do=friend&page=$page&mobile=2');
@@ -3388,19 +3511,107 @@ class KlpbbsApi {
       } catch (_) {}
     } else if (view == 'follow') {
       try {
-        final fHtml = await _get('home.php?mod=space&do=friend&view=follow&page=$page&mobile=2');
+        final fHtml = await _get('home.php?mod=follow&page=$page&mobile=2');
         final list = ComiisParser.parseFriends(fHtml, excludeUid: isMe ? uid : null);
+        if (list.isNotEmpty) return list;
+      } catch (_) {}
+
+      try {
+        final pcFollowHtml = await _get(
+          'home.php?mod=space&uid=$uid&do=friend&view=follow&page=$page&mobile=no',
+          headers: {'User-Agent': AppConfig.pcUserAgent},
+        );
+        final list = ComiisParser.parseFriends(pcFollowHtml, excludeUid: isMe ? uid : null);
         if (list.isNotEmpty) return list;
       } catch (_) {}
     } else if (view == 'fans') {
       try {
-        final fHtml = await _get('home.php?mod=space&do=friend&view=fans&page=$page&mobile=2');
+        final fHtml = await _get('home.php?mod=follow&do=follower&page=$page&mobile=2');
         final list = ComiisParser.parseFriends(fHtml, excludeUid: isMe ? uid : null);
+        if (list.isNotEmpty) return list;
+      } catch (_) {}
+
+      try {
+        final pcFansHtml = await _get(
+          'home.php?mod=space&uid=$uid&do=friend&view=fans&page=$page&mobile=no',
+          headers: {'User-Agent': AppConfig.pcUserAgent},
+        );
+        final list = ComiisParser.parseFriends(pcFansHtml, excludeUid: isMe ? uid : null);
+        if (list.isNotEmpty) return list;
+      } catch (_) {}
+    } else if (view == 'blacklist') {
+      try {
+        final blHtml = await _get('home.php?mod=spacecp&ac=friend&op=blacklist&mobile=2');
+        final list = ComiisParser.parseFriends(blHtml, excludeUid: isMe ? uid : null);
         if (list.isNotEmpty) return list;
       } catch (_) {}
     }
 
     return const [];
+  }
+
+  /// 修改好友备注/附注
+  static Future<bool> editFriendNote(int uid, String note) async {
+    try {
+      final page = await _get('home.php?mod=spacecp&ac=friend&op=editnote&uid=$uid&mobile=2');
+      final formhash = _extractFormhash(page) ?? _cachedFormhash;
+      if (formhash == null) return false;
+      final res = await _post(
+        'home.php?mod=spacecp&ac=friend&op=editnote&uid=$uid&inajax=1',
+        {
+          'formhash': formhash,
+          'note': note,
+          'editnotesubmit': 'true',
+          'handlekey': 'editnote_$uid',
+        },
+      );
+      return !res.contains('alert_error');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 更改好友分组
+  static Future<bool> changeFriendGroup(int uid, int group) async {
+    try {
+      final page = await _get('home.php?mod=spacecp&ac=friend&op=changegroup&uid=$uid&mobile=2');
+      final formhash = _extractFormhash(page) ?? _cachedFormhash;
+      if (formhash == null) return false;
+      final res = await _post(
+        'home.php?mod=spacecp&ac=friend&op=changegroup&uid=$uid&inajax=1',
+        {
+          'formhash': formhash,
+          'group': group.toString(),
+          'changegroupsubmit': 'true',
+          'handlekey': 'cghk_$uid',
+        },
+      );
+      return !res.contains('alert_error');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 按用户名添加黑名单 (对齐截图三)
+  static Future<bool> addToBlacklistByUsername(String username) async {
+    if (username.trim().isEmpty) return false;
+    try {
+      final page = await _get('home.php?mod=space&do=friend&view=blacklist&mobile=2');
+      final formhash = _extractFormhash(page) ?? _cachedFormhash;
+      if (formhash == null) return false;
+      final res = await _post(
+        'home.php?mod=spacecp&ac=friend&op=blacklist&inajax=1',
+        {
+          'formhash': formhash,
+          'username': username.trim(),
+          'blacklistsubmit': 'true',
+          'handlekey': 'addblackhk',
+        },
+      );
+      return !res.contains('alert_error');
+    } catch (_) {
+      return false;
+    }
   }
 
   /// 打招呼 (Poke)
@@ -3528,7 +3739,7 @@ class KlpbbsApi {
   /// 移出黑名单
   static Future<bool> removeFromBlacklist(int uid) async {
     try {
-      final page = await _get('home.php?mod=space&do=friend&group=-1&mobile=2');
+      final page = await _get('home.php?mod=space&do=friend&view=blacklist&mobile=2');
       final formhash = _extractFormhash(page) ?? _cachedFormhash;
       if (formhash == null) return false;
       final res = await _post(
@@ -3824,13 +4035,14 @@ class KlpbbsApi {
     );
   }
 
-  /// 编辑自己的帖子（先取编辑页 formhash，再提交）
+  /// 编辑自己的帖子（先取编辑页 formhash，再提交，支持附件关联）
   static Future<bool> editPost(
     int fid,
     int tid,
     int pid, {
     required String subject,
     required String message,
+    List<int>? attachAids,
   }) async {
     var formhash = _cachedFormhash;
     try {
@@ -3844,17 +4056,29 @@ class KlpbbsApi {
     } catch (_) {}
 
     if (formhash == null || formhash.isEmpty) return false;
+    final editData = <String, dynamic>{
+      'formhash': formhash,
+      'posttime': '${DateTime.now().millisecondsSinceEpoch ~/ 1000}',
+      'wysiwyg': '1',
+      'usesig': '1',
+      'editsubmit': 'yes',
+      'subject': subject,
+      'message': message,
+    };
+
+    final aids = <int>{
+      ...?attachAids,
+      for (final m in RegExp(r'\[attach(?:img)?\](\d+)\[/attach(?:img)?\]').allMatches(message))
+        if (int.tryParse(m.group(1)!) != null) int.parse(m.group(1)!),
+    };
+    for (final aid in aids) {
+      editData['attachnew[$aid][description]'] = '';
+      editData['unused[]'] = '$aid';
+    }
+
     final html = await _post(
       'forum.php?mod=post&action=edit&fid=$fid&tid=$tid&pid=$pid&editsubmit=yes',
-      {
-        'formhash': formhash,
-        'posttime': '${DateTime.now().millisecondsSinceEpoch ~/ 1000}',
-        'wysiwyg': '1',
-        'usesig': '1',
-        'editsubmit': 'yes',
-        'subject': subject,
-        'message': message,
-      },
+      editData,
       headers: {
         'Referer':
             '${AppConfig.baseUrl}forum.php?mod=post&action=edit&fid=$fid&tid=$tid&pid=$pid',
@@ -4170,32 +4394,78 @@ class KlpbbsApi {
     }
   }
 
-  /// 上传附件/文件/图片（发帖附件；Discuz swfupload 接口）
+  /// 上传附件/文件/图片（发帖附件；Discuz swfupload 接口，深度兼容 Web 端）
   /// 返回上传成功后的 aid，失败返回 null
   static Future<int?> uploadAttachment(
     int fid,
     String filePath, {
+    int? tid,
+    int? pid,
     bool isImage = false,
   }) async {
     try {
-      // 1) 获取发帖页（uid/hash 会话）
-      final page = await _get(
-        'forum.php?mod=post&action=newthread&fid=$fid&mobile=no',
-      );
+      // 1) 优先从发帖/回复/编辑页面获取 uid 与 upload hash 会话凭证
+      final postUrl = (pid != null && pid > 0 && tid != null && tid > 0)
+          ? 'forum.php?mod=post&action=edit&fid=$fid&tid=$tid&pid=$pid&mobile=no'
+          : ((tid != null && tid > 0)
+              ? 'forum.php?mod=post&action=reply&fid=$fid&tid=$tid&mobile=no'
+              : 'forum.php?mod=post&action=newthread&fid=$fid&mobile=no');
+
+      final refererUrl = (tid != null && tid > 0)
+          ? '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid'
+          : '${AppConfig.baseUrl}forum.php?mod=forumdisplay&fid=$fid';
+
+      String page = '';
+      try {
+        page = await _get(
+          postUrl,
+          headers: {
+            'Referer': refererUrl,
+            'User-Agent': AppConfig.pcUserAgent,
+          },
+        );
+      } catch (_) {}
+
+      // 解析 uid
       final uidM = RegExp(
-        r'''(?:name=["']uid["']\s+value=["'](\d+)["']|uid\s*[:=]\s*["']?(\d+))''',
+        r'''(?:name=["']uid["']\s+value=["'](\d+)["']|uid\s*[:=]\s*["']?(\d+)["']?|'uid'\s*:\s*['"]?(\d+)['"]?)''',
       ).firstMatch(page);
+      var uid = uidM?.group(1) ?? uidM?.group(2) ?? uidM?.group(3);
+      if (uid == null || uid.isEmpty) {
+        // 尝试从 cookie 中读取 auth uid
+        for (final k in ['2132_uid', 'uid', 'c7Xn_2132_uid']) {
+          final cval = DioClient.cookie(k);
+          if (cval != null && cval.isNotEmpty && int.tryParse(cval) != null) {
+            uid = cval;
+            break;
+          }
+        }
+      }
+
+      // 解析 upload hash
       final hashM = RegExp(
-        r'''(?:name=["']hash["']\s+value=["']([a-f0-9]+)["']|hash\s*[:=]\s*["']?([a-f0-9]+))''',
+        r'''(?:name=["'](?:upload)?hash["']\s+value=["']([a-f0-9]{16,64})["']|(?:upload)?hash\s*[:=]\s*["']([a-f0-9]{16,64})["']|['"](?:upload)?hash['"]\s*:\s*['"]([a-f0-9]{16,64})['"]|hash=([a-f0-9]{16,64}))''',
+        caseSensitive: false,
       ).firstMatch(page);
-      final uid = uidM?.group(1) ?? uidM?.group(2);
-      final hash = hashM?.group(1) ?? hashM?.group(2);
+      var hash = hashM?.group(1) ?? hashM?.group(2) ?? hashM?.group(3) ?? hashM?.group(4);
+
+      if (hash == null || hash.isEmpty) {
+        final fhash = _extractFormhash(page) ?? _cachedFormhash;
+        if (fhash != null && fhash.isNotEmpty) {
+          hash = fhash;
+        }
+      }
+
       if (uid == null || hash == null) return null;
 
+      final filename = filePath.split(RegExp(r'[/\\]')).last;
       final formMap = <String, dynamic>{
         'uid': uid,
         'hash': hash,
-        'Filedata': await MultipartFile.fromFile(filePath),
+        'Filedata': await MultipartFile.fromFile(
+          filePath,
+          filename: filename,
+        ),
       };
       if (isImage) {
         formMap['type'] = 'image';
@@ -4208,13 +4478,46 @@ class KlpbbsApi {
         options: Options(
           responseType: ResponseType.bytes,
           validateStatus: (code) => code != null && code < 400,
+          headers: {
+            'Referer': '${AppConfig.baseUrl}$postUrl',
+            'User-Agent': AppConfig.pcUserAgent,
+          },
         ),
       );
       final raw = _decode(resp.data ?? const []).trim();
-      final aid = int.tryParse(raw);
-      if (aid != null && aid > 0) return aid;
-      final aidMatch = RegExp(r'(\d+)').firstMatch(raw);
-      if (aidMatch != null) return int.tryParse(aidMatch.group(1)!);
+
+      // 1. DISCUZUPLOAD|0|aid|... 格式解析
+      if (raw.startsWith('DISCUZUPLOAD')) {
+        final parts = raw.split('|');
+        if (parts.length >= 3 && (parts[1] == '0' || parts[0] == 'DISCUZUPLOAD')) {
+          final aid = int.tryParse(parts[2]);
+          if (aid != null && aid > 0) return aid;
+        }
+      }
+
+      // 2. 纯整数字符串
+      final directAid = int.tryParse(raw);
+      if (directAid != null && directAid > 0) return directAid;
+
+      // 3. JSON 格式解析
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          final aidVal = decoded['aid'] ?? decoded['id'] ?? decoded['data']?['aid'];
+          if (aidVal != null) {
+            final aid = int.tryParse('$aidVal');
+            if (aid != null && aid > 0) return aid;
+          }
+        }
+      } catch (_) {}
+
+      // 4. 正则匹配 aid 数字（排除负数错误码）
+      final aidMatch = RegExp(r'(?:aid[:=]|id[:=]|\||^)(\d{2,10})').firstMatch(raw) ??
+          RegExp(r'(\d{2,10})').firstMatch(raw);
+      if (aidMatch != null) {
+        final aid = int.tryParse(aidMatch.group(1)!);
+        if (aid != null && aid > 0) return aid;
+      }
     } catch (_) {}
     return null;
   }

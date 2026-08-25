@@ -993,7 +993,7 @@ class _ProfileEditPageState extends State<ProfileEditPage>
             Expanded(
               flex: 4,
               child: DropdownButtonFormField<int?>(
-                value: field.birthYear,
+                initialValue: field.birthYear,
                 isDense: true,
                 decoration: InputDecoration(
                   labelText: '年份',
@@ -1012,7 +1012,7 @@ class _ProfileEditPageState extends State<ProfileEditPage>
             Expanded(
               flex: 3,
               child: DropdownButtonFormField<int?>(
-                value: field.birthMonth,
+                initialValue: field.birthMonth,
                 isDense: true,
                 decoration: InputDecoration(
                   labelText: '月份',
@@ -1031,7 +1031,7 @@ class _ProfileEditPageState extends State<ProfileEditPage>
             Expanded(
               flex: 3,
               child: DropdownButtonFormField<int?>(
-                value: field.birthDay,
+                initialValue: field.birthDay,
                 isDense: true,
                 decoration: InputDecoration(
                   labelText: '日期',
