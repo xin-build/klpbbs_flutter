@@ -32,7 +32,6 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.5'
           channel: 'stable'
           cache: true
 
@@ -74,7 +73,6 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.5'
           channel: 'stable'
           cache: true
 
@@ -99,8 +97,7 @@ jobs:
         run: |
           $releaseDir = Resolve-Path "build\windows\*\runner\Release" | Select-Object -ExpandProperty Path -First 1
           if (-not $releaseDir) { $releaseDir = Resolve-Path "build\windows\runner\Release" | Select-Object -ExpandProperty Path -First 1 }
-          Write-Host "Found Release Dir: $releaseDir"
-          Get-ChildItem -Path $releaseDir | Compress-Archive -DestinationPath "klpbbs-windows-x64.zip" -Force
+          Compress-Archive -Path "$releaseDir\*" -DestinationPath "klpbbs-windows-x64.zip" -Force
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
@@ -121,7 +118,6 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.5'
           channel: 'stable'
           cache: true
 
@@ -159,7 +155,6 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.5'
           channel: 'stable'
           cache: true
 
@@ -203,7 +198,6 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.5'
           channel: 'stable'
           cache: true
 
