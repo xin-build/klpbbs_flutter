@@ -40,7 +40,17 @@ jobs:
         run: flutter pub get
 
       - name: Build Android APK
-        run: flutter build apk --release
+        run: |
+          set -o pipefail
+          flutter build apk --release 2>&1 | tee android.log
+
+      - name: Report Android Failure
+        if: failure()
+        run: |
+          echo "### Android Build Error" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 60 android.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Locate and Package Android APK
         run: |
@@ -89,7 +99,14 @@ jobs:
         env:
           PreferredToolArchitecture: x64
         run: |
-          flutter build windows --release
+          flutter build windows --release 2>&1 | Tee-Object -FilePath windows.log
+          if ($LASTEXITCODE -ne 0) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Windows Build Error"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            Get-Content windows.log -Tail 60 | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            exit $LASTEXITCODE
+          }
 
       - name: Package Windows Binary
         shell: pwsh
@@ -133,7 +150,17 @@ jobs:
         run: flutter pub get
 
       - name: Build macOS Release
-        run: flutter build macos --release
+        run: |
+          set -o pipefail
+          flutter build macos --release 2>&1 | tee macos.log
+
+      - name: Report macOS Failure
+        if: failure()
+        run: |
+          echo "### macOS Build Error" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 60 macos.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Package macOS Binary
         run: |
@@ -171,7 +198,17 @@ jobs:
         run: flutter pub get
 
       - name: Build iOS Release (Unsigned)
-        run: flutter build ios --release --no-codesign
+        run: |
+          set -o pipefail
+          flutter build ios --release --no-codesign 2>&1 | tee ios.log
+
+      - name: Report iOS Failure
+        if: failure()
+        run: |
+          echo "### iOS Build Error" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 60 ios.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Package iOS IPA
         run: |
@@ -215,7 +252,17 @@ jobs:
         run: flutter pub get
 
       - name: Build Linux Release
-        run: flutter build linux --release
+        run: |
+          set -o pipefail
+          flutter build linux --release 2>&1 | tee linux.log
+
+      - name: Report Linux Failure
+        if: failure()
+        run: |
+          echo "### Linux Build Error" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 60 linux.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Package Linux Binary
         run: |
