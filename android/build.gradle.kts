@@ -1,21 +1,7 @@
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-        gradlePluginPortal()
-        maven { url = uri("https://maven.aliyun.com/repository/google") }
-        maven { url = uri("https://maven.aliyun.com/repository/public") }
-        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
-    }
-}
-
 allprojects {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://maven.aliyun.com/repository/google") }
-        maven { url = uri("https://maven.aliyun.com/repository/public") }
-        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
     }
 }
 
@@ -23,15 +9,6 @@ val newBuildDir: Directory = rootProject.layout.buildDirectory.dir("../../build"
 rootProject.layout.buildDirectory.value(newBuildDir)
 
 subprojects {
-    buildscript {
-        repositories {
-            google()
-            mavenCentral()
-            maven { url = uri("https://maven.aliyun.com/repository/google") }
-            maven { url = uri("https://maven.aliyun.com/repository/public") }
-            maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
-        }
-    }
     val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
