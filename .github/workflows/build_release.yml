@@ -93,7 +93,7 @@ jobs:
         env:
           PreferredToolArchitecture: x64
         run: |
-          flutter build windows --release --no-tree-shake-icons
+          flutter build windows --release
 
       - name: Package Windows Binary
         shell: pwsh
@@ -139,7 +139,7 @@ jobs:
         run: flutter pub get
 
       - name: Build macOS Release
-        run: flutter build macos --release --no-tree-shake-icons
+        run: flutter build macos --release
 
       - name: Package macOS Binary
         run: |
@@ -179,7 +179,7 @@ jobs:
         run: flutter pub get
 
       - name: Build iOS Release (Unsigned)
-        run: flutter build ios --release --no-codesign --no-tree-shake-icons
+        run: flutter build ios --release --no-codesign
 
       - name: Package iOS IPA
         run: |
@@ -225,7 +225,7 @@ jobs:
         run: flutter pub get
 
       - name: Build Linux Release
-        run: flutter build linux --release --no-tree-shake-icons
+        run: flutter build linux --release
 
       - name: Package Linux Binary
         run: |
