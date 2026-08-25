@@ -545,13 +545,13 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> {
                                           SizedBox(
                                             width: 20,
                                             child: sp == _speed
-                                                ? Icon(Icons.check_rounded, color: Theme.of(ctx).colorScheme.primary, size: 16)
+                                                ? const Icon(Icons.check_rounded, color: Color(0xFF4ADE80), size: 16)
                                                 : null,
                                           ),
                                           Text(
                                             '${sp}x 倍速',
                                             style: TextStyle(
-                                              color: sp == _speed ? Theme.of(ctx).colorScheme.primary : Colors.white,
+                                              color: sp == _speed ? const Color(0xFF4ADE80) : Colors.white,
                                               fontSize: 12.5,
                                               fontWeight: sp == _speed ? FontWeight.bold : FontWeight.normal,
                                             ),
@@ -612,16 +612,17 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> {
                                               SizedBox(
                                                 width: 20,
                                                 child: id == (_currentVideo?.id ?? -1)
-                                                    ? Icon(Icons.check_rounded, color: Theme.of(ctx).colorScheme.primary, size: 16)
+                                                    ? const Icon(Icons.check_rounded, color: Color(0xFF4ADE80), size: 16)
                                                     : null,
                                               ),
                                               Text(
                                                 _qualityLabel(id),
                                                 style: TextStyle(
                                                   color: id == (_currentVideo?.id ?? -1)
-                                                      ? Theme.of(ctx).colorScheme.primary
+                                                      ? const Color(0xFF4ADE80)
                                                       : Colors.white,
                                                   fontSize: 12.5,
+                                                  fontWeight: id == (_currentVideo?.id ?? -1) ? FontWeight.bold : FontWeight.normal,
                                                 ),
                                               ),
                                             ],
@@ -1120,6 +1121,10 @@ class _FullscreenBiliPlayerState extends State<_FullscreenBiliPlayer> {
                             initialValue: _speed,
                             tooltip: '倍速',
                             color: const Color(0xFF1E2420),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              side: const BorderSide(color: Colors.white24, width: 0.6),
+                            ),
                             onSelected: (s) {
                               setState(() => _speed = s);
                               widget.onSpeedChanged(s);
@@ -1129,7 +1134,24 @@ class _FullscreenBiliPlayerState extends State<_FullscreenBiliPlayer> {
                               for (final sp in const [0.5, 0.75, 1.0, 1.25, 1.5, 2.0])
                                 PopupMenuItem(
                                   value: sp,
-                                  child: Text('${sp}x 倍速', style: const TextStyle(color: Colors.white)),
+                                  height: 36,
+                                  child: Row(
+                                    children: [
+                                      SizedBox(
+                                        width: 20,
+                                        child: sp == _speed
+                                            ? const Icon(Icons.check_rounded, color: Color(0xFF4ADE80), size: 16)
+                                            : null,
+                                      ),
+                                      Text(
+                                        '${sp}x 倍速',
+                                        style: TextStyle(
+                                          color: sp == _speed ? const Color(0xFF4ADE80) : Colors.white,
+                                          fontWeight: sp == _speed ? FontWeight.bold : FontWeight.normal,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                             ],
                             child: Container(

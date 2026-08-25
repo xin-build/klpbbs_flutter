@@ -665,17 +665,22 @@ class _HomeStylePageState extends State<HomeStylePage>
 
   /// 底部免责声明条（1:1 对齐截图底部黄色提示条）
   Widget _buildBottomNotice() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      color: const Color(0xFFFFFBE6),
-      child: const Text(
-        '图片来自网络，侵权立删',
-        style: TextStyle(
-          fontSize: 12,
-          color: Color(0xFFFA8C16),
-        ),
-      ),
+    return Builder(
+      builder: (ctx) {
+        final isDark = Theme.of(ctx).brightness == Brightness.dark;
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          color: isDark ? const Color(0xFF2E2612) : const Color(0xFFFFFBE6),
+          child: Text(
+            '图片来自网络，侵权立删',
+            style: TextStyle(
+              fontSize: 12,
+              color: isDark ? const Color(0xFFFFD591) : const Color(0xFFFA8C16),
+            ),
+          ),
+        );
+      },
     );
   }
 }

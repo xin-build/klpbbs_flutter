@@ -122,57 +122,64 @@ class _DarkroomPageState extends State<DarkroomPage> {
         ],
       ),
       bottomNavigationBar: SafeArea(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surface,
-            border: Border(
-              top: BorderSide(
-                color: theme.colorScheme.outlineVariant.withAlpha(60),
-                width: 0.5,
+        child: SizedBox(
+          height: 62,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              border: Border(
+                top: BorderSide(
+                  color: theme.colorScheme.outlineVariant.withAlpha(60),
+                  width: 0.5,
+                ),
               ),
             ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              FilledButton.tonalIcon(
-                onPressed: _page > 1 && !_loading ? () => _loadPage(_page - 1) : null,
-                icon: const Icon(Icons.chevron_left_rounded, size: 20),
-                label: const Text('上一页'),
-                style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                ),
-              ),
-              Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '第 $_page 页',
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                    ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                FilledButton.tonalIcon(
+                  onPressed: _page > 1 && !_loading ? () => _loadPage(_page - 1) : null,
+                  icon: const Icon(Icons.chevron_left_rounded, size: 18),
+                  label: const Text('上一页'),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                   ),
-                  if (!_loading && _entries.isNotEmpty)
+                ),
+                const SizedBox(width: 20),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
                     Text(
-                      '本页 ${_entries.length} 位违规公示',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: theme.colorScheme.outline,
+                      '第 $_page 页',
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
-                ],
-              ),
-              FilledButton.tonalIcon(
-                onPressed: _nextCid != null && !_loading ? () => _loadPage(_page + 1) : null,
-                icon: const Icon(Icons.chevron_right_rounded, size: 20),
-                label: const Text('下一页'),
-                style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    if (!_loading && _entries.isNotEmpty)
+                      Text(
+                        '本页 ${_entries.length} 位违规公示',
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          color: theme.colorScheme.outline,
+                        ),
+                      ),
+                  ],
                 ),
-              ),
-            ],
+                const SizedBox(width: 20),
+                FilledButton.tonalIcon(
+                  onPressed: _nextCid != null && !_loading ? () => _loadPage(_page + 1) : null,
+                  icon: const Icon(Icons.chevron_right_rounded, size: 18),
+                  label: const Text('下一页'),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -216,7 +223,7 @@ class _DarkroomPageState extends State<DarkroomPage> {
                           final isBanAccess = e.action.contains('禁止访问');
                           final actionColor = isBanAccess
                               ? theme.colorScheme.error
-                              : Colors.orange.shade800;
+                              : (theme.brightness == Brightness.dark ? Colors.orange.shade300 : Colors.orange.shade800);
 
                           return Card(
                             elevation: 0,

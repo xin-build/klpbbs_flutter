@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/cache_manager.dart';
+import '../core/preload_service.dart';
 import '../core/seed_data.dart';
 import '../models/forum.dart';
 import '../widgets/empty_view.dart';
@@ -94,13 +97,28 @@ class _ForumsPageState extends State<ForumsPage> {
     }
   }
 
-  void _load() {
-    _future = KlpbbsApi.getForumGroups();
+  void _load({bool forceRefresh = false}) {
+    final cached = PreloadService.instance.get<List<ForumGroup>>('forum_groups', ignoreExpired: true);
+    if (!forceRefresh && cached != null && cached.isNotEmpty) {
+      _future = Future.value(cached);
+      // 后台静默刷新
+      unawaited(
+        KlpbbsApi.getForumGroups().then((fresh) {
+          if (mounted && fresh.isNotEmpty) {
+            setState(() {
+              _future = Future.value(fresh);
+            });
+          }
+        }).catchError((_) {}),
+      );
+    } else {
+      _future = KlpbbsApi.getForumGroups();
+    }
   }
 
   void _reload() {
     setState(() {
-      _load();
+      _load(forceRefresh: true);
     });
   }
 
@@ -271,6 +289,7 @@ class _ForumsPageState extends State<ForumsPage> {
 
           return RefreshIndicator(
             onRefresh: () async {
+              HapticFeedback.lightImpact();
               _reload();
               await Future.delayed(const Duration(milliseconds: 300));
             },
@@ -310,6 +329,7 @@ class _ForumsPageState extends State<ForumsPage> {
                         visualDensity: VisualDensity.compact,
                         onSelected: (selected) {
                           if (selected) {
+                            HapticFeedback.selectionClick();
                             setState(() => _selectedGroupGid = g.gid);
                           }
                         },
@@ -475,7 +495,7 @@ class _ForumsPageState extends State<ForumsPage> {
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: 12,
-                          color: colorScheme.outline,
+                          color: colorScheme.onSurfaceVariant.withAlpha(210),
                         ),
                       ),
                     ],
@@ -487,7 +507,7 @@ class _ForumsPageState extends State<ForumsPage> {
               IconButton(
                 icon: Icon(
                   isFav ? Icons.star_rounded : Icons.star_border_rounded,
-                  color: isFav ? const Color(0xFFFFB300) : colorScheme.outline,
+                  color: isFav ? const Color(0xFFFFB300) : colorScheme.onSurfaceVariant.withAlpha(160),
                   size: 22,
                 ),
                 tooltip: isFav ? '已收藏（点击取消）' : '收藏版块',
@@ -496,7 +516,7 @@ class _ForumsPageState extends State<ForumsPage> {
               Icon(
                 Icons.chevron_right,
                 size: 18,
-                color: colorScheme.outlineVariant,
+                color: colorScheme.onSurfaceVariant.withAlpha(140),
               ),
             ],
           ),

@@ -1,12 +1,11 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:html/dom.dart' as html_dom;
 import 'package:html/parser.dart' as html_parser;
 
 import '../core/app_config.dart';
-import '../core/cache_manager.dart';
 import '../core/url_helper.dart';
+import 'retry_image.dart';
 
 /// 行内富文本渲染（表情 / 链接 / 加粗 / 颜色 / 换行）。
 ///
@@ -225,17 +224,13 @@ class InlineHtmlText extends StatelessWidget {
                     alignment: PlaceholderAlignment.middle,
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 1.5),
-                      child: CachedNetworkImage(
+                      child: RetryImage(
                         imageUrl: src,
-                        cacheManager: KlpbbsCacheManager.instance,
-                        httpHeaders: AppConfig.imageHeadersFor(src),
                         width: size,
                         height: size,
                         fit: BoxFit.contain,
-                        errorWidget: (_, __, ___) => SizedBox(
-                          width: size,
-                          height: size,
-                        ),
+                        placeholder: (_, __) => SizedBox(width: size, height: size),
+                        errorWidget: (_, __, ___) => SizedBox(width: size, height: size),
                       ),
                     ),
                   ),
@@ -251,18 +246,31 @@ class InlineHtmlText extends StatelessWidget {
                         constraints: const BoxConstraints(maxHeight: 220, maxWidth: 420),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(6),
-                          child: CachedNetworkImage(
+                          child: RetryImage(
                             imageUrl: src,
-                            cacheManager: KlpbbsCacheManager.instance,
-                            httpHeaders: AppConfig.imageHeadersFor(src),
                             fit: BoxFit.contain,
+                            placeholder: (_, __) => Container(
+                              width: 80,
+                              height: 36,
+                              color: theme.colorScheme.surfaceContainerHighest.withAlpha(80),
+                              child: const Center(
+                                child: SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(strokeWidth: 1.5),
+                                ),
+                              ),
+                            ),
                             errorWidget: (_, __, ___) => Container(
-                              padding: const EdgeInsets.all(8),
-                              color: theme.colorScheme.surfaceContainerHighest,
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: theme.colorScheme.surfaceContainerHighest.withAlpha(80),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Icon(Icons.broken_image_outlined, size: 16, color: theme.colorScheme.outline),
+                                  Icon(Icons.broken_image_outlined, size: 14, color: theme.colorScheme.outline),
                                   const SizedBox(width: 4),
                                   Text('图片加载失败', style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
                                 ],
@@ -360,16 +368,16 @@ class InlineHtmlText extends StatelessWidget {
     }
 
     if (!isBackground) {
+      final lum = baseColor.computeLuminance();
       if (brightness == Brightness.dark) {
-        if (baseColor.computeLuminance() < 0.15 && baseColor != Colors.black) {
-          return const Color(0xFFCFD8DC);
+        // 深色模式下：如果字体太暗（如纯黑 #000000、深灰、深蓝），自动提升为高对比度银白色
+        if (lum < 0.28) {
+          return const Color(0xFFE2E8F0);
         }
       } else if (brightness == Brightness.light) {
-        if (baseColor.computeLuminance() > 0.88 &&
-            baseColor != Colors.amber &&
-            baseColor != const Color(0xFFFFD700) &&
-            baseColor != Colors.white) {
-          return const Color(0xFF37474F);
+        // 浅色模式下：如果字体太亮（如纯白 #FFFFFF、极浅灰、浅黄），自动调整为高对比度深色
+        if (lum > 0.82) {
+          return const Color(0xFF1E293B);
         }
       }
     }
@@ -377,16 +385,26 @@ class InlineHtmlText extends StatelessWidget {
   }
 
   String _absolute(String href) {
-    final trimmed = href.trim();
+    var trimmed = href.trim();
     if (trimmed.isEmpty) return '';
-    if (trimmed.startsWith('//')) return 'https:$trimmed';
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
-    if (trimmed.startsWith('www.')) return 'https://$trimmed';
-    var clean = trimmed;
-    while (clean.startsWith('/')) {
-      clean = clean.substring(1);
+    if (trimmed.startsWith('//')) {
+      trimmed = 'https:$trimmed';
+    } else if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+      if (trimmed.startsWith('www.')) {
+        trimmed = 'https://$trimmed';
+      } else {
+        var clean = trimmed;
+        while (clean.startsWith('/')) {
+          clean = clean.substring(1);
+        }
+        trimmed = '${AppConfig.baseUrl}$clean';
+      }
     }
-    return '${AppConfig.baseUrl}$clean';
+    try {
+      return Uri.encodeFull(trimmed);
+    } catch (_) {
+      return trimmed;
+    }
   }
 
   void _openLink(BuildContext context, String link) {

@@ -113,25 +113,50 @@ class AppConfig extends ChangeNotifier {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   };
 
-  /// 根据图片 URL 动态生成防盗链与 UA 标头（避免第三方图床因 Referer: klpbbs.com 报 403）
+  /// 根据图片 URL 动态生成防盗链与 UA 标头（针对 B站、Wiki、Loli计数器与第三方图床智能分流）
   static Map<String, String> imageHeadersFor(String url) {
-    final uri = Uri.tryParse(url);
+    var uri = Uri.tryParse(url);
+    if (uri == null) {
+      try {
+        uri = Uri.tryParse(Uri.encodeFull(url));
+      } catch (_) {}
+    }
     final host = uri?.host.toLowerCase() ?? '';
-    if (host.endsWith('bilibili.com') || host.endsWith('hdslb.com')) {
+    const imageAccept = 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8';
+
+    // 1. 哔哩哔哩图床
+    if (host.endsWith('bilibili.com') || host.endsWith('hdslb.com') || host.endsWith('bilivideo.com')) {
       return {
         'Referer': 'https://www.bilibili.com/',
         'User-Agent': pcUserAgent,
+        'Accept': imageAccept,
       };
     }
-    if (host.endsWith('klpbbs.com') || host == 'localhost' || host == '127.0.0.1' || host.isEmpty) {
+    // 2. Minecraft Wiki / Fandom / MediaWiki 类知识库图床（必须使用规范 UA 且不可发送跨域 Referer）
+    if (host.contains('minecraft.wiki') ||
+        host.contains('weirdgloop.org') ||
+        host.contains('fandom.com') ||
+        host.contains('nocookie.net') ||
+        host.contains('huijiwiki.com') ||
+        host.contains('moegirl.org.cn') ||
+        host.contains('wikia.org')) {
+      return {
+        'User-Agent': 'KlpbbsApp/1.0 (https://klpbbs.com; contact@klpbbs.com)',
+        'Accept': imageAccept,
+      };
+    }
+    // 3. Moe-Counter 等萌系计数器与论坛内部图片
+    if (host.endsWith('count.getloli.com') || host.endsWith('getloli.com') || host.endsWith('klpbbs.com') || host == 'localhost' || host == '127.0.0.1' || host.isEmpty) {
       return {
         'Referer': 'https://klpbbs.com/',
         'User-Agent': pcUserAgent,
+        'Accept': imageAccept,
       };
     }
-    // 第三方外链图床（如微博/sm.ms/图虫等）：不发送跨域 Referer 避免 403 拦截
+    // 4. 第三方外链图床（路过图床/sm.ms/微博/图虫/imgbb等）：不发送跨域 Referer 避免 403
     return {
       'User-Agent': pcUserAgent,
+      'Accept': imageAccept,
     };
   }
 
@@ -144,6 +169,38 @@ class AppConfig extends ChangeNotifier {
       return '${baseUrl}uc_server/avatar.php?uid=$uid&size=$size';
     }
     return '$avatarHost/avatar.php?uid=$uid&size=$size';
+  }
+
+  /// 将低清缩略图自动提升为高清原图 URL（去除 Discuz .thumb.jpg、&thumb=yes 等低清压缩参数）
+  static String? toHighResImageUrl(String? url) {
+    if (url == null || url.trim().isEmpty) return null;
+    var clean = url.trim();
+
+    // 1. 去除 Discuz 缩略图后缀：xxx.jpg.thumb.jpg -> xxx.jpg, xxx.png.thumb.png -> xxx.png, xxx.thumb.jpg -> xxx.jpg
+    clean = clean.replaceAll(RegExp(r'\.(?:thumb|small|middle)\.(?:jpg|png|webp|jpeg)$', caseSensitive: false), '');
+    clean = clean.replaceAll(RegExp(r'(\.(?:jpg|png|webp|jpeg|gif))\.thumb\.(?:jpg|png|webp|jpeg)$', caseSensitive: false), r'$1');
+    clean = clean.replaceAll(RegExp(r'_(?:thumb|small|middle)\.(?:jpg|png|webp|jpeg)$', caseSensitive: false), '.jpg');
+
+    // 2. 去除 URL query 中的 thumb 参数：&thumb=yes, &thumb=1, &thumb=2
+    if (clean.contains('thumb=')) {
+      clean = clean.replaceAll(RegExp(r'[?&]thumb=(?:yes|1|2|true)', caseSensitive: false), '');
+      if (clean.contains('?') && !clean.contains('=')) {
+        clean = clean.replaceAll('?', '');
+      }
+    }
+
+    // 3. 处理 thumb.php 代理链接：pic/thumb.php?w=200&h=150&src=http... -> 提取 src
+    if (clean.contains('thumb.php') && clean.contains('src=')) {
+      final m = RegExp(r'[?&]src=([^&]+)').firstMatch(clean);
+      if (m != null) {
+        final decoded = Uri.decodeFull(m.group(1)!);
+        if (decoded.startsWith('http') || decoded.startsWith('data/')) {
+          clean = decoded;
+        }
+      }
+    }
+
+    return clean;
   }
 
   /// 浏览器 UA（可切换 PC/手机）

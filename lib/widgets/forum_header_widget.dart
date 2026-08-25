@@ -90,11 +90,20 @@ class _ForumHeaderWidgetState extends State<ForumHeaderWidget> {
           if (info.bannerUrl != null && info.bannerUrl!.isNotEmpty)
             Stack(
               children: [
-                RetryImage(
-                  imageUrl: info.bannerUrl!,
-                  width: double.infinity,
-                  height: 85,
-                  fit: BoxFit.cover,
+                ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    minHeight: 90,
+                    maxHeight: 180,
+                  ),
+                  child: AspectRatio(
+                    aspectRatio: 3.8,
+                    child: RetryImage(
+                      imageUrl: info.bannerUrl!,
+                      width: double.infinity,
+                      fit: BoxFit.cover,
+                      alignment: Alignment.center,
+                    ),
+                  ),
                 ),
                 Positioned.fill(
                   child: Container(
@@ -104,7 +113,7 @@ class _ForumHeaderWidgetState extends State<ForumHeaderWidget> {
                         end: Alignment.bottomCenter,
                         colors: [
                           Colors.transparent,
-                          Colors.black.withAlpha(80),
+                          Colors.black.withAlpha(70),
                         ],
                       ),
                     ),
@@ -116,82 +125,138 @@ class _ForumHeaderWidgetState extends State<ForumHeaderWidget> {
           // 2. 版块基础信息与统计数据栏
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // 统计指标
-                Expanded(
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 4,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      _buildStatChip(
-                        label: '今日',
-                        value: '${info.todayPosts}',
-                        color: colorScheme.primary,
-                      ),
-                      _buildStatChip(
-                        label: '主题',
-                        value: '${info.threadsCount}',
-                        color: colorScheme.onSurface,
-                      ),
-                      if (info.rank > 0)
+                // 第一行：统计标签（左） + 积分规则与导览切换（右）
+                Row(
+                  children: [
+                    // 统计指标
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
                         _buildStatChip(
-                          label: '排名',
-                          value: '${info.rank}',
-                          color: const Color(0xFFE6A23C),
+                          label: '今日',
+                          value: '${info.todayPosts}',
+                          color: colorScheme.primary,
                         ),
-                      if (info.moderators.isNotEmpty) ...[
-                        Text(
-                          '•',
-                          style: TextStyle(color: colorScheme.outlineVariant),
+                        _buildStatChip(
+                          label: '主题',
+                          value: '${info.threadsCount}',
+                          color: colorScheme.onSurface,
                         ),
+                        if (info.rank > 0)
+                          _buildStatChip(
+                            label: '排名',
+                            value: '${info.rank}',
+                            color: const Color(0xFFE6A23C),
+                          ),
+                      ],
+                    ),
+                    const Spacer(),
+
+                    // 积分规则按钮
+                    InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: () => _showCreditRulesDialog(context),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.monetization_on_outlined,
+                              size: 14,
+                              color: colorScheme.primary,
+                            ),
+                            const SizedBox(width: 3),
+                            Text(
+                              '积分规则',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: colorScheme.primary,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+
+                    // 展开收起导览
+                    if (info.rulesHtml.isNotEmpty)
+                      InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () => setState(() => _expanded = !_expanded),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                _expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                                size: 16,
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                              const SizedBox(width: 2),
+                              Text(
+                                _expanded ? '收起导览' : '展开导览',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: colorScheme.onSurfaceVariant,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+
+                // 第二行：版主列表（独立整齐展示，带盾牌图标）
+                if (info.moderators.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(
+                          Icons.admin_panel_settings_outlined,
+                          size: 14,
+                          color: colorScheme.primary.withAlpha(220),
+                        ),
+                        const SizedBox(width: 4),
                         Text(
-                          '版主: ${info.moderators}',
+                          '版主: ',
                           style: TextStyle(
                             fontSize: 11.5,
-                            color: colorScheme.outline,
+                            fontWeight: FontWeight.w600,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            info.moderators,
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              color: colorScheme.onSurfaceVariant.withAlpha(220),
+                              height: 1.3,
+                            ),
                           ),
                         ),
                       ],
-                    ],
-                  ),
-                ),
-
-                // 积分规则按钮
-                TextButton.icon(
-                  style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 6),
-                  ),
-                  icon: const Icon(
-                    Icons.monetization_on_outlined,
-                    size: 15,
-                  ),
-                  label: const Text(
-                    '积分规则',
-                    style: TextStyle(fontSize: 12),
-                  ),
-                  onPressed: () => _showCreditRulesDialog(context),
-                ),
-
-                // 展开收起导览
-                if (info.rulesHtml.isNotEmpty)
-                  TextButton.icon(
-                    style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(horizontal: 6),
                     ),
-                    icon: Icon(
-                      _expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-                      size: 16,
-                    ),
-                    label: Text(
-                      _expanded ? '收起导览' : '展开导览',
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                    onPressed: () => setState(() => _expanded = !_expanded),
                   ),
+                ],
               ],
             ),
           ),
@@ -502,7 +567,9 @@ class _ForumHeaderWidgetState extends State<ForumHeaderWidget> {
                               style: TextStyle(
                                 fontSize: 12,
                                 fontWeight: FontWeight.w600,
-                                color: isNegative ? Colors.red : Colors.amber.shade800,
+                                color: isNegative
+                                    ? (theme.brightness == Brightness.dark ? Colors.red.shade300 : Colors.red)
+                                    : (theme.brightness == Brightness.dark ? Colors.amber.shade300 : Colors.amber.shade800),
                               ),
                             ),
                           ),

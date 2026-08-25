@@ -506,40 +506,52 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
           const SizedBox(height: 12),
 
           // 转账规则与手续费说明（1:1 对齐官方网页）
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: Colors.amber.shade50,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.amber.shade200, width: 0.8),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(Icons.info_outline, size: 18, color: Colors.amber.shade800),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '转账后最低余额 50 粒, 积分交易税 3.00%',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.amber.shade900,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '转账操作即时生效，积分将直接转入对方账户；请仔细核对对方用户名，切勿输入错误。',
-                        style: TextStyle(fontSize: 11.5, color: Colors.amber.shade900),
-                      ),
-                    ],
+          Builder(
+            builder: (ctx) {
+              final isDark = Theme.of(ctx).brightness == Brightness.dark;
+              final iconColor = isDark ? Colors.amber.shade400 : Colors.amber.shade800;
+              final titleColor = isDark ? Colors.amber.shade300 : Colors.amber.shade900;
+              final bodyColor = isDark ? Colors.amber.shade200 : Colors.amber.shade900;
+
+              return Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: isDark ? Colors.amber.withAlpha(20) : Colors.amber.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: isDark ? Colors.amber.withAlpha(60) : Colors.amber.shade200,
+                    width: 0.8,
                   ),
                 ),
-              ],
-            ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.info_outline, size: 18, color: iconColor),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '转账后最低余额 50 粒, 积分交易税 3.00%',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: titleColor,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '转账操作即时生效，积分将直接转入对方账户；请仔细核对对方用户名，切勿输入错误。',
+                            style: TextStyle(fontSize: 11.5, color: bodyColor),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
           const SizedBox(height: 24),
 

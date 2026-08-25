@@ -559,31 +559,6 @@ class _PmInboxPageState extends State<PmInboxPage> {
                                     ),
                                   ),
                                 ),
-                              if (c.messageCount > 1)
-                                Padding(
-                                  padding: const EdgeInsets.only(left: 6),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 5,
-                                      vertical: 1,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.surfaceContainerHighest,
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    child: Text(
-                                      '${c.messageCount}',
-                                      style: TextStyle(
-                                        fontSize: 10,
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.outline,
-                                      ),
-                                    ),
-                                  ),
-                                ),
                             ],
                           ),
                           subtitle: Row(

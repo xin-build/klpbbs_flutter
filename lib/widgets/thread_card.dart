@@ -83,10 +83,11 @@ class UserAvatarWidget extends StatelessWidget {
     final hasUid = effectiveUid != null && effectiveUid > 0;
     final resolvedUrl = (avatarUrl != null && avatarUrl!.isNotEmpty)
         ? avatarUrl
-        : (hasUid ? AppConfig.avatarUrl(effectiveUid, size: size >= 40 ? 'middle' : 'small') : null);
+        : (hasUid ? AppConfig.avatarUrl(effectiveUid, size: size >= 32 ? 'middle' : 'small') : null);
 
     Widget imageContent;
     if (resolvedUrl != null && AppConfig.imageQuality != ImageQuality.noImage) {
+      final avatarMemSize = (size * 2.5).clamp(48, 256).toInt();
       imageContent = CachedNetworkImage(
         imageUrl: resolvedUrl,
         cacheManager: KlpbbsCacheManager.instance,
@@ -94,6 +95,9 @@ class UserAvatarWidget extends StatelessWidget {
         width: size,
         height: size,
         fit: BoxFit.cover,
+        filterQuality: FilterQuality.medium,
+        memCacheWidth: avatarMemSize,
+        memCacheHeight: avatarMemSize,
         placeholder: (_, __) => Container(
           color: theme.colorScheme.surfaceContainerHighest,
           child: Center(
@@ -283,11 +287,12 @@ class _ThreadCardState extends State<ThreadCard> {
       title: widget.thread.title,
       typeName: widget.thread.typeName,
     );
-    if (_resolvedForum == null || _resolvedForum!.isEmpty) {
-      KlpbbsApi.resolveThreadForumAsync(widget.thread.tid).then((forum) {
-        if (mounted && forum != null && forum.isNotEmpty) {
+    if (_resolvedForum == null && widget.thread.tid > 0) {
+      // 方案 C：异步轻量补全版块
+      KlpbbsApi.resolveThreadForumAsync(widget.thread.tid).then((res) {
+        if (mounted && res != null && res.isNotEmpty && res != _resolvedForum) {
           setState(() {
-            _resolvedForum = forum;
+            _resolvedForum = res;
           });
         }
       });
@@ -385,6 +390,9 @@ class _ThreadCardState extends State<ThreadCard> {
                   RetryImage(
                     imageUrl: thread.coverUrl!,
                     fit: BoxFit.cover,
+                    alignment: Alignment.center,
+                    filterQuality: FilterQuality.medium,
+                    memCacheWidth: 720,
                     placeholder: (_, __) => Container(
                       color: colorScheme.surfaceContainerHighest.withAlpha(80),
                       child: const Center(
@@ -441,14 +449,14 @@ class _ThreadCardState extends State<ThreadCard> {
         _buildTitle(theme),
         _buildTagRow(theme),
         if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
-          const SizedBox(height: 4),
+          const SizedBox(height: 5),
           Text(
             thread.excerpt!,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
             style: theme.textTheme.bodyMedium?.copyWith(
-              color: colorScheme.outline,
-              height: 1.35,
+              color: colorScheme.onSurfaceVariant.withAlpha(220),
+              height: 1.38,
               fontSize: 13,
             ),
           ),
@@ -486,7 +494,8 @@ class _ThreadCardState extends State<ThreadCard> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: colorScheme.outline,
+                    color: colorScheme.onSurfaceVariant.withAlpha(210),
+                    fontSize: 12,
                   ),
                 ),
               ],
@@ -500,17 +509,21 @@ class _ThreadCardState extends State<ThreadCard> {
           ClipRRect(
             borderRadius: BorderRadius.circular(8),
             child: SizedBox(
-              width: 84,
-              height: 64,
+              width: 92,
+              height: 68,
               child: RetryImage(
                 imageUrl: thread.coverUrl!,
                 fit: BoxFit.cover,
+                alignment: Alignment.center,
+                filterQuality: FilterQuality.medium,
+                memCacheWidth: 280,
+                memCacheHeight: 210,
                 placeholder: (_, __) => Container(
                   color: colorScheme.surfaceContainerHighest.withAlpha(60),
                   child: Center(
                     child: Icon(
                       Icons.image_outlined,
-                      color: colorScheme.outlineVariant.withAlpha(80),
+                      color: colorScheme.outlineVariant.withAlpha(120),
                       size: 20,
                     ),
                   ),
@@ -520,7 +533,7 @@ class _ThreadCardState extends State<ThreadCard> {
                   child: Center(
                     child: Icon(
                       Icons.image_outlined,
-                      color: colorScheme.outlineVariant.withAlpha(80),
+                      color: colorScheme.outlineVariant.withAlpha(120),
                       size: 20,
                     ),
                   ),
@@ -550,17 +563,21 @@ class _ThreadCardState extends State<ThreadCard> {
           ClipRRect(
             borderRadius: BorderRadius.circular(8),
             child: SizedBox(
-              width: 108,
-              height: 92,
+              width: 112,
+              height: 86,
               child: RetryImage(
                 imageUrl: thread.coverUrl!,
                 fit: BoxFit.cover,
+                alignment: Alignment.center,
+                filterQuality: FilterQuality.medium,
+                memCacheWidth: 340,
+                memCacheHeight: 260,
                 placeholder: (_, __) => Container(
                   color: colorScheme.surfaceContainerHighest.withAlpha(60),
                   child: Center(
                     child: Icon(
                       Icons.image_outlined,
-                      color: colorScheme.outlineVariant.withAlpha(80),
+                      color: colorScheme.outlineVariant.withAlpha(120),
                       size: 24,
                     ),
                   ),
@@ -570,7 +587,7 @@ class _ThreadCardState extends State<ThreadCard> {
                   child: Center(
                     child: Icon(
                       Icons.image_outlined,
-                      color: colorScheme.outlineVariant.withAlpha(80),
+                      color: colorScheme.outlineVariant.withAlpha(120),
                       size: 24,
                     ),
                   ),
@@ -580,33 +597,38 @@ class _ThreadCardState extends State<ThreadCard> {
           ),
           const SizedBox(width: 12),
         ],
-        // 主要信息区
+        // 主要信息区：确保标题、标签、摘要与底部作者行层次分明且绝不溢出或被裁切
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildTitle(theme, maxLines: 2),
-                  _buildTagRow(theme),
-                  if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      thread.excerpt!,
-                      maxLines: hasCover ? 1 : 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                        fontSize: 11.5,
-                        height: 1.3,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _buildTitle(theme, maxLines: 2),
+                    const SizedBox(height: 2),
+                    _buildTagRow(theme),
+                    if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Flexible(
+                        child: Text(
+                          thread.excerpt!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant.withAlpha(220),
+                            fontSize: 11.5,
+                            height: 1.25,
+                          ),
+                        ),
                       ),
-                    ),
+                    ],
                   ],
-                ],
+                ),
               ),
-              const SizedBox(height: 4),
+              const SizedBox(height: 2),
               _buildFooter(theme),
             ],
           ),
@@ -680,17 +702,17 @@ class _ThreadCardState extends State<ThreadCard> {
       }
     }
     if (thread.isDigest) {
-      addTag('精', Colors.white, const Color(0xFFF59E0B));
+      addTag('精', Colors.white, const Color(0xFFD97706));
     }
     if (thread.isRecommend) {
       addTag(
         thread.recommendCount > 0 ? '荐${thread.recommendCount}' : '荐',
         Colors.white,
-        const Color(0xFFFF6B35),
+        const Color(0xFFEA580C),
       );
     }
     if (thread.isHot) {
-      addTag('热', Colors.white, const Color(0xFFFF7043));
+      addTag('热', Colors.white, const Color(0xFFF97316));
     }
 
     // 确保每个帖子均展示 100% 准确的版块识别标签
@@ -706,16 +728,16 @@ class _ThreadCardState extends State<ThreadCard> {
     if (forumToDisplay != null && forumToDisplay.isNotEmpty) {
       addTag(
         forumToDisplay,
-        colorScheme.secondary,
-        colorScheme.secondaryContainer.withAlpha(150),
+        colorScheme.primary,
+        colorScheme.primaryContainer.withAlpha(160),
       );
     }
 
     if (thread.typeName != null && thread.typeName!.isNotEmpty) {
       addTag(
         thread.typeName!,
-        colorScheme.primary,
-        colorScheme.primaryContainer.withAlpha(120),
+        colorScheme.secondary,
+        colorScheme.secondaryContainer.withAlpha(160),
       );
     }
 
@@ -723,7 +745,7 @@ class _ThreadCardState extends State<ThreadCard> {
       addTag(
         thread.badge!,
         colorScheme.primary,
-        colorScheme.primaryContainer,
+        colorScheme.primaryContainer.withAlpha(140),
       );
     }
 
@@ -737,10 +759,11 @@ class _ThreadCardState extends State<ThreadCard> {
         children: [
           for (final (cleanLabel, fg, bg) in tags)
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
               decoration: BoxDecoration(
                 color: bg,
                 borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: fg.withAlpha(45), width: 0.5),
               ),
               child: Text(
                 cleanLabel,
@@ -800,7 +823,7 @@ class _ThreadCardState extends State<ThreadCard> {
           Icon(
             Icons.visibility_outlined,
             size: 13,
-            color: colorScheme.outline,
+            color: colorScheme.onSurfaceVariant.withAlpha(180),
           ),
           const SizedBox(width: 3),
           Text(
@@ -808,8 +831,8 @@ class _ThreadCardState extends State<ThreadCard> {
                 ? '${(thread.views / 10000).toStringAsFixed(1)}w'
                 : '${thread.views}',
             style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.outline,
-              fontSize: 11,
+              color: colorScheme.onSurfaceVariant.withAlpha(200),
+              fontSize: 11.5,
             ),
           ),
           const SizedBox(width: 8),
@@ -818,14 +841,14 @@ class _ThreadCardState extends State<ThreadCard> {
           Icon(
             Icons.chat_bubble_outline_rounded,
             size: 12,
-            color: colorScheme.outline,
+            color: colorScheme.onSurfaceVariant.withAlpha(180),
           ),
           const SizedBox(width: 3),
           Text(
             '${thread.replies}',
             style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.outline,
-              fontSize: 11,
+              color: colorScheme.onSurfaceVariant.withAlpha(200),
+              fontSize: 11.5,
             ),
           ),
           const SizedBox(width: 8),
@@ -834,27 +857,71 @@ class _ThreadCardState extends State<ThreadCard> {
           Icon(
             Icons.thumb_up_outlined,
             size: 12,
-            color: colorScheme.outline,
+            color: colorScheme.onSurfaceVariant.withAlpha(180),
           ),
           const SizedBox(width: 3),
           Text(
             '${thread.recommendCount}',
             style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.outline,
-              fontSize: 11,
+              color: colorScheme.onSurfaceVariant.withAlpha(200),
+              fontSize: 11.5,
             ),
           ),
           const SizedBox(width: 8),
         ],
         if (thread.timeText != null && thread.timeText!.isNotEmpty)
           Text(
-            thread.timeText!,
+            _formatThreadTime(thread.timeText!),
             style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.outline,
-              fontSize: 11,
+              color: colorScheme.onSurfaceVariant.withAlpha(200),
+              fontSize: 11.5,
             ),
           ),
       ],
     );
+  }
+
+  static String _formatThreadTime(String raw) {
+    if (raw.isEmpty) return '';
+    final trimmed = raw.trim();
+    if (trimmed.contains('前') ||
+        trimmed.contains('昨天') ||
+        trimmed.contains('今天') ||
+        trimmed.contains('刚刚') ||
+        trimmed == '近期') {
+      return trimmed;
+    }
+    // 匹配类似 2026-2-21 或 2026-02-21 或 2026-2-21 15:30
+    final fullMatch = RegExp(r'^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}:\d{2}))?').firstMatch(trimmed);
+    if (fullMatch != null) {
+      final y = int.tryParse(fullMatch.group(1)!) ?? 0;
+      final m = int.tryParse(fullMatch.group(2)!) ?? 0;
+      final d = int.tryParse(fullMatch.group(3)!) ?? 0;
+      final hm = fullMatch.group(4);
+      final now = DateTime.now();
+      if (y == now.year && m == now.month && d == now.day) {
+        return hm != null ? '今天 $hm' : '今天';
+      }
+      final yesterday = now.subtract(const Duration(days: 1));
+      if (y == yesterday.year && m == yesterday.month && d == yesterday.day) {
+        return hm != null ? '昨天 $hm' : '昨天';
+      }
+      if (y == now.year) {
+        return hm != null ? '$m月$d日 $hm' : '$m月$d日';
+      }
+      return hm != null ? '$y-$m-$d $hm' : '$y-$m-$d';
+    }
+    final shortMatch = RegExp(r'^(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}:\d{2}))?$').firstMatch(trimmed);
+    if (shortMatch != null) {
+      final m = int.tryParse(shortMatch.group(1)!) ?? 0;
+      final d = int.tryParse(shortMatch.group(2)!) ?? 0;
+      final hm = shortMatch.group(3);
+      final now = DateTime.now();
+      if (m == now.month && d == now.day) {
+        return hm != null ? '今天 $hm' : '今天';
+      }
+      return hm != null ? '$m月$d日 $hm' : '$m月$d日';
+    }
+    return trimmed;
   }
 }

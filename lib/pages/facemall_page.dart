@@ -317,9 +317,10 @@ class _FacemallPageState extends State<FacemallPage>
                           : ((unitPrice * effectiveDays) / 30).round())));
 
           final shortage = (totalPrice - _userIronPoints).clamp(0, 999999);
+          final theme = Theme.of(ctx);
 
           return Dialog(
-            backgroundColor: Colors.white,
+            backgroundColor: theme.colorScheme.surface,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 420),
@@ -329,7 +330,7 @@ class _FacemallPageState extends State<FacemallPage>
                     top: 10,
                     right: 10,
                     child: IconButton(
-                      icon: const Icon(Icons.close, color: Color(0xFF8C8C8C), size: 20),
+                      icon: Icon(Icons.close, color: theme.colorScheme.outline, size: 20),
                       onPressed: () => Navigator.of(ctx).pop(),
                     ),
                   ),
@@ -349,10 +350,10 @@ class _FacemallPageState extends State<FacemallPage>
                         const SizedBox(height: 14),
                         Text(
                           item.name,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.bold,
-                            color: Color(0xFF262626),
+                            color: theme.colorScheme.onSurface,
                           ),
                         ),
                         const SizedBox(height: 20),
@@ -362,7 +363,7 @@ class _FacemallPageState extends State<FacemallPage>
                             '购买天数',
                             style: TextStyle(
                               fontSize: 13,
-                              color: Colors.grey.shade700,
+                              color: theme.colorScheme.onSurfaceVariant,
                             ),
                           ),
                         ),
@@ -380,18 +381,24 @@ class _FacemallPageState extends State<FacemallPage>
                                       height: 36,
                                       alignment: Alignment.center,
                                       decoration: BoxDecoration(
-                                        color: selectedDays == d ? const Color(0xFFE6F7FF) : Colors.white,
-                                        borderRadius: BorderRadius.circular(4),
+                                        color: selectedDays == d
+                                            ? theme.colorScheme.primaryContainer.withAlpha(120)
+                                            : theme.colorScheme.surfaceContainerHighest.withAlpha(60),
+                                        borderRadius: BorderRadius.circular(6),
                                         border: Border.all(
-                                          color: selectedDays == d ? const Color(0xFF1890FF) : const Color(0xFFD9D9D9),
-                                          width: 1,
+                                          color: selectedDays == d
+                                              ? theme.colorScheme.primary
+                                              : theme.colorScheme.outlineVariant.withAlpha(80),
+                                          width: selectedDays == d ? 1.4 : 0.8,
                                         ),
                                       ),
                                       child: Text(
                                         d > 0 ? '$d天' : '自定义',
                                         style: TextStyle(
                                           fontSize: 13,
-                                          color: selectedDays == d ? const Color(0xFF1890FF) : const Color(0xFF595959),
+                                          color: selectedDays == d
+                                              ? (theme.brightness == Brightness.dark ? const Color(0xFF4ADE80) : theme.colorScheme.primary)
+                                              : theme.colorScheme.onSurfaceVariant,
                                           fontWeight: selectedDays == d ? FontWeight.bold : FontWeight.normal,
                                         ),
                                       ),
@@ -407,17 +414,18 @@ class _FacemallPageState extends State<FacemallPage>
                           const SizedBox(height: 10),
                           Row(
                             children: [
-                              const Text('自定义天数：', style: TextStyle(fontSize: 13, color: Color(0xFF555555))),
+                              Text('自定义天数：', style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurfaceVariant)),
                               Expanded(
                                 child: SizedBox(
                                   height: 36,
                                   child: TextField(
                                     controller: customCtrl,
                                     keyboardType: TextInputType.number,
-                                    decoration: const InputDecoration(
+                                    decoration: InputDecoration(
                                       hintText: '输入天数 (1-999)',
-                                      border: OutlineInputBorder(),
-                                      contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                      border: const OutlineInputBorder(),
+                                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                      fillColor: theme.colorScheme.surfaceContainerHighest.withAlpha(80),
                                     ),
                                     onChanged: (v) {
                                       final val = int.tryParse(v) ?? 30;
@@ -436,13 +444,17 @@ class _FacemallPageState extends State<FacemallPage>
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                             decoration: BoxDecoration(
-                              color: const Color(0xFFE6F7FF),
+                              color: theme.colorScheme.primaryContainer.withAlpha(80),
                               borderRadius: BorderRadius.circular(4),
-                              border: Border.all(color: const Color(0xFF1890FF)),
+                              border: Border.all(color: theme.colorScheme.primary.withAlpha(120)),
                             ),
-                            child: const Text(
+                            child: Text(
                               '铁粒兑换',
-                              style: TextStyle(fontSize: 12.5, color: Color(0xFF1890FF)),
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                color: theme.brightness == Brightness.dark ? const Color(0xFF4ADE80) : theme.colorScheme.primary,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
                         ),
@@ -460,12 +472,12 @@ class _FacemallPageState extends State<FacemallPage>
                               ),
                               children: [
                                 if (!item.isFree)
-                                  const TextSpan(
+                                  TextSpan(
                                     text: ' 铁粒',
                                     style: TextStyle(
                                       fontSize: 13,
                                       fontWeight: FontWeight.normal,
-                                      color: Color(0xFF8C8C8C),
+                                      color: theme.colorScheme.outline,
                                     ),
                                   ),
                               ],
@@ -478,7 +490,7 @@ class _FacemallPageState extends State<FacemallPage>
                           children: [
                             Text(
                               '当前拥有: $_userIronPoints',
-                              style: const TextStyle(fontSize: 12, color: Color(0xFF8C8C8C)),
+                              style: TextStyle(fontSize: 12, color: theme.colorScheme.outline),
                             ),
                             const Spacer(),
                             InkWell(
@@ -492,7 +504,10 @@ class _FacemallPageState extends State<FacemallPage>
                               },
                               child: Text(
                                 '还差$shortage，如何获取？',
-                                style: const TextStyle(fontSize: 12, color: Color(0xFF1890FF)),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: theme.brightness == Brightness.dark ? const Color(0xFF60A5FA) : const Color(0xFF1890FF),
+                                ),
                               ),
                             ),
                           ],

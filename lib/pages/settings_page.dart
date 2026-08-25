@@ -1,6 +1,9 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
+import '../core/dio_client.dart';
+import '../services/auto_sign_service.dart';
 import '../services/download_service.dart';
 import '../services/push_notification_service.dart';
 import '../services/rgb_theme_service.dart';
@@ -9,6 +12,7 @@ import 'download_manager_page.dart';
 
 enum SettingsCategory {
   appearance('外观与个性化', Icons.palette_outlined, Icons.palette_rounded),
+  sign('自动签到', Icons.event_available_outlined, Icons.event_available_rounded),
   notification('消息推送与后台', Icons.notifications_outlined, Icons.notifications_rounded),
   layout('排版与多端模式', Icons.devices_outlined, Icons.devices_rounded),
   download('下载与存储管理', Icons.download_outlined, Icons.download_rounded),
@@ -30,6 +34,8 @@ class SettingsPage extends StatefulWidget {
     switch (category) {
       case SettingsCategory.appearance:
         return _AppearanceSettingsView();
+      case SettingsCategory.sign:
+        return _SignSettingsView();
       case SettingsCategory.notification:
         return _NotificationSettingsView();
       case SettingsCategory.layout:
@@ -1350,7 +1356,7 @@ class _AboutSettingsViewState extends State<_AboutSettingsView> {
               child: Column(
                 children: [
                   Text(
-                    '苦力怕论坛客户端 v1.0.2',
+                    '苦力怕论坛客户端 v1.0.3',
                     style: TextStyle(
                       color: colorScheme.outline,
                       fontSize: 12.5,
@@ -1372,6 +1378,756 @@ class _AboutSettingsViewState extends State<_AboutSettingsView> {
         ),
         const SizedBox(height: 16),
       ],
+    );
+  }
+}
+
+/// 8. 自动签到设置
+class _SignSettingsView extends StatefulWidget {
+  @override
+  State<_SignSettingsView> createState() => _SignSettingsViewState();
+}
+
+class _SignSettingsViewState extends State<_SignSettingsView> {
+  bool _testingToday = false;
+
+  Future<void> _testTodayNotification() async {
+    setState(() => _testingToday = true);
+    try {
+      // 1. 验证登录状态
+      final loginStatus = await KlpbbsApi.checkLoginStatus();
+      if (!loginStatus.isLoggedIn && !DioClient.isLoggedIn) {
+        PushNotificationService.instance.pushCustomNotification(
+          title: '苦力怕论坛 · 今日签到数据 📅',
+          body: '⚠️ 当前尚未登录论坛账号，请先登录账号后再查看今日签到数据',
+        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('⚠️ 当前尚未登录论坛账号，请先登录')),
+          );
+        }
+        return;
+      }
+
+      // 2. 实时拉取签到头部数据
+      final info = await KlpbbsApi.getSignHeaderInfo(forceRefresh: true);
+      final userText = info.username.isNotEmpty
+          ? '（${info.username}）'
+          : (loginStatus.username != null && loginStatus.username!.isNotEmpty
+              ? '（${loginStatus.username}）'
+              : '');
+      final continuousText = info.continuousDays > 0 ? ' | 连续签到 ${info.continuousDays} 天' : '';
+      final totalText = info.totalDays > 0 ? ' | 累计打卡 ${info.totalDays} 天' : '';
+      final rewardText = info.rewardIron.isNotEmpty ? ' | 奖励 +${info.rewardIron} 粒铁粒' : '';
+
+      if (info.isSignedToday) {
+        PushNotificationService.instance.pushCustomNotification(
+          title: '苦力怕论坛 · 今日签到数据 📅',
+          body: '今日状态：已完成打卡$userText$continuousText$totalText$rewardText',
+        );
+      } else {
+        PushNotificationService.instance.pushCustomNotification(
+          title: '苦力怕论坛 · 今日签到提醒 📅',
+          body: '今日状态：今日尚未签到$userText$continuousText$totalText | 点击前往签到打卡',
+        );
+      }
+    } catch (e) {
+      PushNotificationService.instance.pushCustomNotification(
+        title: '苦力怕论坛 · 今日签到数据 📅',
+        body: '今日数据获取提示：请确认网络连接或登录状态 ($e)',
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _testingToday = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final sign = AutoSignService.instance;
+    final isDark = theme.brightness == Brightness.dark;
+
+    return ListenableBuilder(
+      listenable: sign,
+      builder: (context, _) {
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            // 顶部状态 Hero Banner
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: isDark
+                      ? [colorScheme.primaryContainer.withAlpha(80), colorScheme.surfaceContainerHigh]
+                      : [colorScheme.primary.withAlpha(25), colorScheme.surfaceContainerLow],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: colorScheme.primary.withAlpha(40)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: colorScheme.primary.withAlpha(30),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(Icons.event_available_rounded, color: colorScheme.primary, size: 24),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Text(
+                              '自动签到管理系统',
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: (sign.autoSignOnLaunch || sign.scheduledSignEnabled || sign.burstModeEnabled)
+                                    ? Colors.green.withAlpha(30)
+                                    : colorScheme.outlineVariant.withAlpha(50),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(
+                                (sign.autoSignOnLaunch || sign.scheduledSignEnabled || sign.burstModeEnabled)
+                                    ? '🟢 已启用自动化'
+                                    : '⚪ 未启用自动化',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: (sign.autoSignOnLaunch || sign.scheduledSignEnabled || sign.burstModeEnabled)
+                                      ? Colors.green.shade600
+                                      : colorScheme.outline,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '支持启动静默打卡、每日定时探测打卡与 23:59 零点极速冲榜模式',
+                          style: TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+
+            // 1. 基础自动签到
+            _buildSectionHeader('基础自动化'),
+            Card(
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
+              ),
+              child: Column(
+                children: [
+                  SwitchListTile(
+                    secondary: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.green.withAlpha(25),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.rocket_launch_rounded, color: Colors.green, size: 20),
+                    ),
+                    title: const Text('启动时自动静默打卡', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+                    subtitle: const Text('打开应用时自动检测今日打卡状态，未签则后台自动打卡并推送结果', style: TextStyle(fontSize: 12)),
+                    value: sign.autoSignOnLaunch,
+                    onChanged: (v) => sign.setAutoSignOnLaunch(v),
+                  ),
+                  Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                  SwitchListTile(
+                    secondary: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withAlpha(25),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.notifications_active_rounded, color: Colors.blue, size: 20),
+                    ),
+                    title: const Text('签到结果全平台消息推送', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+                    subtitle: const Text('打卡成功后推送奖励铁粒、经验与连续签到天数（全平台支持系统 Toast 与应用内横幅）', style: TextStyle(fontSize: 12)),
+                    value: sign.notifyOnResult,
+                    onChanged: (v) => sign.setNotifyOnResult(v),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+
+            // 2. 每日定时签到
+            _buildSectionHeader('每日定时签到'),
+            Card(
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
+              ),
+              child: Column(
+                children: [
+                  SwitchListTile(
+                    secondary: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.indigo.withAlpha(25),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.alarm_on_rounded, color: Colors.indigo, size: 20),
+                    ),
+                    title: const Text('开启每日定时签到', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+                    subtitle: const Text('每天到达指定时间时自动探测服务端打卡状态并触发签到', style: TextStyle(fontSize: 12)),
+                    value: sign.scheduledSignEnabled,
+                    onChanged: (v) => sign.setScheduledSignEnabled(v),
+                  ),
+                  if (sign.scheduledSignEnabled) ...[
+                    Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                    ListTile(
+                      leading: const Icon(Icons.schedule_rounded),
+                      title: const Text('定时执行时间', style: TextStyle(fontSize: 14)),
+                      subtitle: Text('每天将在 ${sign.scheduledTimeString} 自动打卡（持续探测 ${sign.scheduledWindowSec} 秒）', style: const TextStyle(fontSize: 12)),
+                      trailing: FilledButton.tonal(
+                        style: FilledButton.styleFrom(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                        ),
+                        onPressed: () async {
+                          final picked = await showTimePicker(
+                            context: context,
+                            initialTime: TimeOfDay(
+                              hour: sign.scheduledHour,
+                              minute: sign.scheduledMinute,
+                            ),
+                          );
+                          if (picked != null) {
+                            sign.setScheduledTime(picked.hour, picked.minute);
+                          }
+                        },
+                        child: Text(sign.scheduledTimeString, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                      ),
+                    ),
+                    Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                    ListTile(
+                      leading: const Icon(Icons.timelapse_rounded),
+                      title: const Text('定时容差探测区间', style: TextStyle(fontSize: 14)),
+                      subtitle: const Text('到达定时后持续探测状态，防止服务端产生秒级延迟', style: TextStyle(fontSize: 12)),
+                      trailing: DropdownButton<int>(
+                        value: sign.scheduledWindowSec,
+                        underline: const SizedBox(),
+                        items: const [
+                          DropdownMenuItem(value: 15, child: Text('15 秒')),
+                          DropdownMenuItem(value: 30, child: Text('30 秒 (推荐)')),
+                          DropdownMenuItem(value: 60, child: Text('60 秒')),
+                        ],
+                        onChanged: (v) => v != null ? sign.setScheduledWindowSec(v) : null,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+
+            // 3. 零点极速冲榜模式
+            _buildSectionHeader('零点极速冲榜模式（冲刺第一名）'),
+            Card(
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SwitchListTile(
+                      secondary: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.amber.withAlpha(25),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.military_tech_rounded, color: Colors.amber, size: 20),
+                      ),
+                      title: const Text('开启 23:59 零点极速冲榜', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+                      subtitle: const Text('每天北京时间 23:59 激活准备状态并校准时钟，在跨天窗口期极速打卡抢占前排', style: TextStyle(fontSize: 12)),
+                      value: sign.burstModeEnabled,
+                      onChanged: (v) => sign.setBurstModeEnabled(v),
+                    ),
+                    if (sign.burstModeEnabled) ...[
+                      Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                      ListTile(
+                        title: const Text('冲榜策略模式', style: TextStyle(fontSize: 14)),
+                        subtitle: Text(sign.burstStrategy.label, style: const TextStyle(fontSize: 12)),
+                        trailing: DropdownButton<BurstStrategy>(
+                          value: sign.burstStrategy,
+                          underline: const SizedBox(),
+                          items: BurstStrategy.values.map((s) {
+                            return DropdownMenuItem(
+                              value: s,
+                              child: Text(s == BurstStrategy.statusPolling ? '探测抢签 (推荐)' : '高频冲刺'),
+                            );
+                          }).toList(),
+                          onChanged: (v) => v != null ? sign.setBurstStrategy(v) : null,
+                        ),
+                      ),
+                      Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('发包间隔 / 延迟调节', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: colorScheme.primaryContainer,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                '${sign.burstIntervalMs} ms',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                  color: colorScheme.onPrimaryContainer,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Slider(
+                        value: sign.burstIntervalMs.toDouble(),
+                        min: 50,
+                        max: 1000,
+                        divisions: 19,
+                        label: '${sign.burstIntervalMs} ms',
+                        onChanged: (v) => sign.setBurstIntervalMs(v.round()),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            _buildIntervalChip(sign, '极限 100ms', 100),
+                            _buildIntervalChip(sign, '极速 200ms (推荐)', 200),
+                            _buildIntervalChip(sign, '平衡 300ms', 300),
+                            _buildIntervalChip(sign, '稳健 500ms', 500),
+                            _buildIntervalChip(sign, '安全 1000ms', 1000),
+                          ],
+                        ),
+                      ),
+                      Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+
+                      // 防时钟不同步时间区间
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: colorScheme.outlineVariant.withAlpha(40)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  const Icon(Icons.shield_outlined, size: 16, color: Colors.blueAccent),
+                                  const SizedBox(width: 6),
+                                  const Text('跨天保护时间区间', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                sign.burstTimeWindowDescription,
+                                style: TextStyle(fontSize: 12, color: colorScheme.primary, height: 1.3),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      ListTile(
+                        title: const Text('提前开跑区间（防服务器时钟比本地快）', style: TextStyle(fontSize: 13.5)),
+                        subtitle: Text('23:59:${(60 - sign.burstPreSeconds).toString().padLeft(2, '0')} 开始进入开跑探测', style: const TextStyle(fontSize: 11.5)),
+                        trailing: DropdownButton<int>(
+                          value: sign.burstPreSeconds,
+                          underline: const SizedBox(),
+                          items: const [
+                            DropdownMenuItem(value: 5, child: Text('提前 5 秒')),
+                            DropdownMenuItem(value: 10, child: Text('提前 10 秒')),
+                            DropdownMenuItem(value: 15, child: Text('提前 15 秒 (推荐)')),
+                            DropdownMenuItem(value: 30, child: Text('提前 30 秒')),
+                            DropdownMenuItem(value: 59, child: Text('提前 60 秒 (23:59:00)')),
+                          ],
+                          onChanged: (v) => v != null ? sign.setBurstPreSeconds(v) : null,
+                        ),
+                      ),
+                      Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                      ListTile(
+                        title: const Text('跨天延后区间（防服务器时钟比本地慢）', style: TextStyle(fontSize: 13.5)),
+                        subtitle: Text('跨过零点后持续探测 / 发包至 00:00:${sign.burstPostSeconds.toString().padLeft(2, '0')}', style: const TextStyle(fontSize: 11.5)),
+                        trailing: DropdownButton<int>(
+                          value: sign.burstPostSeconds,
+                          underline: const SizedBox(),
+                          items: const [
+                            DropdownMenuItem(value: 10, child: Text('延后 10 秒')),
+                            DropdownMenuItem(value: 15, child: Text('延后 15 秒')),
+                            DropdownMenuItem(value: 20, child: Text('延后 20 秒 (默认)')),
+                            DropdownMenuItem(value: 30, child: Text('延后 30 秒')),
+                            DropdownMenuItem(value: 60, child: Text('延后 60 秒')),
+                          ],
+                          onChanged: (v) => v != null ? sign.setBurstPostSeconds(v) : null,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+
+            // 4. 后台防杀与常驻保活设置
+            _buildSectionHeader('后台防杀与常驻保活指南'),
+            Card(
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
+              ),
+              child: Column(
+                children: [
+                  Theme(
+                    data: theme.copyWith(dividerColor: Colors.transparent),
+                    child: ExpansionTile(
+                      leading: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.teal.withAlpha(25),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.shield_moon_rounded, color: Colors.teal, size: 20),
+                      ),
+                      title: const Text('Android 电池白名单与防杀配置教程', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+                      subtitle: const Text('各厂商（小米/华为/OPPO/vivo/三星）后台保活、自启动与忽略电池优化设置', style: TextStyle(fontSize: 12)),
+                      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.amber.withAlpha(25),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.amber.withAlpha(60)),
+                          ),
+                          child: const Text(
+                            '提示：国内 Android 定制系统（MIUI/HyperOS/ColorOS/OriginOS/HarmonyOS）会在息屏后激进查杀后台应用。为确保定时签到准时触发，请对照您的机型完成以下 3 项设置：',
+                            style: TextStyle(fontSize: 12, height: 1.4),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        _buildGuideCard(
+                          title: '通用第 1 步：关闭电池优化（设为无限制）',
+                          content: '进入【系统设置】->【应用】->【苦力怕论坛】->【电池/耗电详情】-> 设置为【无限制 / 不优化】。',
+                          icon: Icons.battery_charging_full_rounded,
+                          color: Colors.green,
+                        ),
+                        const SizedBox(height: 10),
+                        _buildGuideCard(
+                          title: '通用第 2 步：开启自启动与后台活动权限',
+                          content: '进入【系统设置】->【权限管理】->【自启动】-> 开启【苦力怕论坛】；并允许【后台活动】。',
+                          icon: Icons.power_settings_new_rounded,
+                          color: Colors.blue,
+                        ),
+                        const SizedBox(height: 10),
+                        _buildGuideCard(
+                          title: '通用第 3 步：多任务卡片锁定',
+                          content: '打开手机多任务后台界面 -> 找到「苦力怕论坛」卡片 -> 下拉卡片或长按 -> 点击【小锁图标】锁定常驻。',
+                          icon: Icons.lock_outline_rounded,
+                          color: Colors.purple,
+                        ),
+                        const SizedBox(height: 14),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text('主流厂商详细路径说明：', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
+                        ),
+                        const SizedBox(height: 8),
+                        _buildVendorTile('小米 / Redmi / HyperOS / MIUI', '手机管家 -> 应用管理 -> 权限 -> 自启动管理（开启）；电池 -> 应用省电策略 -> 设为「无限制」；多任务下拉加锁。'),
+                        _buildVendorTile('华为 / 荣耀 / HarmonyOS / MagicOS', '设置 -> 电池 -> 应用启动管理 -> 找到苦力怕论坛 -> 关闭「自动管理」，手动开启「允许自启动/关联启动/后台活动」；设置 -> 电池优化 -> 设为不允许。'),
+                        _buildVendorTile('OPPO / 一加 / Realme / ColorOS', '设置 -> 应用 -> 应用管理 -> 苦力怕论坛 -> 耗电管理 -> 开启「允许完全后台行为」与「允许应用自启动」；多任务卡片加锁。'),
+                        _buildVendorTile('vivo / iQOO / OriginOS', '设置 -> 电池 -> 后台高耗电 -> 开启「苦力怕论坛」；设置 -> 权限管理 -> 自启动（开启）；多任务卡片下拉锁定。'),
+                        _buildVendorTile('三星 / One UI', '设置 -> 应用程序 -> 苦力怕论坛 -> 电池 -> 选择「不受限制」；电池与设备维护 -> 后台限制 -> 移出深度休眠名单。'),
+                      ],
+                    ),
+                  ),
+                  Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                  Theme(
+                    data: theme.copyWith(dividerColor: Colors.transparent),
+                    child: ExpansionTile(
+                      leading: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.deepPurple.withAlpha(25),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.phone_iphone_rounded, color: Colors.deepPurple, size: 20),
+                      ),
+                      title: const Text('iOS 快捷指令自动化方案 (100% 必签教程)', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+                      subtitle: const Text('利用 iOS 原生「快捷指令」每天定时唤醒 App，配合启动打卡彻底解决后台墓碑休眠', style: TextStyle(fontSize: 12)),
+                      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.withAlpha(25),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.blue.withAlpha(60)),
+                          ),
+                          child: const Text(
+                            '💡 方案优势：由于 iOS 系统机制会对后台常驻应用执行严格挂起（墓碑），利用 iOS 原生「快捷指令」App 设定每日定时个人自动化，是 iOS 平台 100% 绝对稳定的自动化打卡方案！',
+                            style: TextStyle(fontSize: 12, height: 1.4),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        _buildGuideCard(
+                          title: '第 1 步：在 App 设置中开启启动自动打卡',
+                          content: '在上方【基础自动化】中开启【启动时自动静默打卡】开关。',
+                          icon: Icons.rocket_launch_rounded,
+                          color: Colors.green,
+                        ),
+                        const SizedBox(height: 10),
+                        _buildGuideCard(
+                          title: '第 2 步：打开 iPhone 的「快捷指令」App',
+                          content: '在 iPhone 上打开自带的「快捷指令」应用 -> 点击底部中间的【自动化】标签页。',
+                          icon: Icons.touch_app_rounded,
+                          color: Colors.orange,
+                        ),
+                        const SizedBox(height: 10),
+                        _buildGuideCard(
+                          title: '第 3 步：新建每日特定时间自动化',
+                          content: '点击右上角【+】号 -> 选择【特定时间】（如每天 08:00）-> 重复选择【每天】-> 勾选【立即运行】并关闭【运行时通知】。',
+                          icon: Icons.alarm_rounded,
+                          color: Colors.blue,
+                        ),
+                        const SizedBox(height: 10),
+                        _buildGuideCard(
+                          title: '第 4 步：添加执行动作「打开 App」',
+                          content: '点击下一步 -> 选择【打开 App】动作 -> 在应用列表中选取【苦力怕论坛】-> 点击【完成】。',
+                          icon: Icons.check_circle_rounded,
+                          color: Colors.purple,
+                        ),
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Text(
+                            '🎉 设置完成后，每天到达指定时间时，iPhone 会自动在后台/前台唤醒「苦力怕论坛」，应用在启动 3 秒内将自动完成打卡并推送打卡成功横幅通知！',
+                            style: TextStyle(fontSize: 12, height: 1.4),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                  ListTile(
+                    leading: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withAlpha(25),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.all_inclusive_rounded, color: Colors.blue, size: 20),
+                    ),
+                    title: const Text('生命周期感知与错峰补签保障', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+                    subtitle: const Text('已内置智能补签：若因关机/深度休眠错过准点，在手机解锁或唤醒时会自动立即检测补签', style: TextStyle(fontSize: 12)),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+
+            // 5. 引擎诊断与测试中心
+            _buildSectionHeader('测试与诊断中心'),
+            Card(
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
+              ),
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: (sign.isRunning ? Colors.green : colorScheme.primary).withAlpha(20),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        sign.isRunning ? Icons.sync_rounded : Icons.info_outline_rounded,
+                        color: sign.isRunning ? Colors.green : colorScheme.primary,
+                        size: 20,
+                      ),
+                    ),
+                    title: const Text('当前服务状态', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                    subtitle: Text(sign.statusMessage, style: const TextStyle(fontSize: 12)),
+                  ),
+                  if (sign.lastSuccessDate.isNotEmpty) ...[
+                    Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                    ListTile(
+                      leading: const Icon(Icons.history_rounded),
+                      title: const Text('上次自动打卡成功记录', style: TextStyle(fontSize: 14)),
+                      subtitle: Text(sign.lastSuccessDate, style: const TextStyle(fontSize: 12)),
+                    ),
+                  ],
+                  Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                  Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        FilledButton.tonalIcon(
+                          style: FilledButton.styleFrom(
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          onPressed: sign.isRunning
+                              ? null
+                              : () => sign.checkAndAutoSignIn(triggerSource: '手动测试'),
+                          icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                          label: const Text('立即执行一次签到检测'),
+                        ),
+                        FilledButton.tonalIcon(
+                          style: FilledButton.styleFrom(
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          onPressed: _testingToday ? null : _testTodayNotification,
+                          icon: _testingToday
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.today_rounded, size: 18),
+                          label: const Text('测试推送今日签到数据'),
+                        ),
+                        OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          onPressed: () {
+                            PushNotificationService.instance.pushCustomNotification(
+                              title: '苦力怕论坛 · 签到测试通知 🎉',
+                              body: '签到奖励：+15 粒铁粒 | 经验 +10 EP | 连续签到 100 天',
+                            );
+                          },
+                          icon: const Icon(Icons.notifications_active_outlined, size: 18),
+                          label: const Text('测试模拟成功通知'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildIntervalChip(AutoSignService sign, String label, int ms) {
+    final isSelected = sign.burstIntervalMs == ms;
+    final colorScheme = Theme.of(context).colorScheme;
+    return ChoiceChip(
+      label: Text(label),
+      selected: isSelected,
+      onSelected: (_) => sign.setBurstIntervalMs(ms),
+      selectedColor: colorScheme.primaryContainer,
+      labelStyle: TextStyle(
+        fontSize: 11.5,
+        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+        color: isSelected ? colorScheme.primary : colorScheme.onSurface,
+      ),
+    );
+  }
+
+  Widget _buildGuideCard({
+    required String title,
+    required String content,
+    required IconData icon,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withAlpha(15),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withAlpha(40)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: color)),
+                const SizedBox(height: 4),
+                Text(content, style: const TextStyle(fontSize: 12, height: 1.35)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVendorTile(String title, String desc) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest.withAlpha(50),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('• $title', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
+            const SizedBox(height: 2),
+            Text(desc, style: TextStyle(fontSize: 11.5, color: Theme.of(context).colorScheme.onSurfaceVariant, height: 1.3)),
+          ],
+        ),
+      ),
     );
   }
 }

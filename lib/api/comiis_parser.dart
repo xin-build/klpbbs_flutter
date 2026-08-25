@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:html/dom.dart' as html_dom;
 import 'package:html/parser.dart' as html_parser;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/app_config.dart';
 import '../models/credit_log.dart';
@@ -47,11 +48,11 @@ class ComiisParser {
     return '$base$trimmed';
   }
 
-  /// 将图片 URL 转绝对并保留合法尺寸参数（避免强制修改参数导致 404）
+  /// 将图片 URL 转绝对并自动去除低清缩略图后缀，提升为清晰原图
   static String? _image(String? url) {
     final abs = _absolute(url);
     if (abs == null) return null;
-    return abs;
+    return AppConfig.toHighResImageUrl(abs) ?? abs;
   }
 
   /// 头像 URL：剥离 sunju_facemall 挂件后缀 ##SJ##xxx.png
@@ -1186,6 +1187,51 @@ class ComiisParser {
   /// 全局帖子 TID -> 版块 FID 缓存
   static final Map<int, int> threadFidCache = <int, int>{};
 
+  static const String _tidForumPrefsKey = 'persisted_tid_forum_map_v1';
+  static bool _tidForumLoaded = false;
+  static bool _saveScheduled = false;
+
+  /// 加载本地持久化的 TID -> 版块名缓存
+  static Future<void> loadTidForumCache() async {
+    if (_tidForumLoaded) return;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final list = sp.getStringList(_tidForumPrefsKey) ?? const [];
+      for (final item in list) {
+        final idx = item.indexOf(':');
+        if (idx <= 0) continue;
+        final tid = int.tryParse(item.substring(0, idx)) ?? 0;
+        final forum = item.substring(idx + 1).trim();
+        if (tid > 0 && forum.isNotEmpty) {
+          threadForumCache[tid] = forum;
+        }
+      }
+      _tidForumLoaded = true;
+    } catch (_) {}
+  }
+
+  /// 持久化 TID -> 版块名映射
+  static Future<void> saveTidForumCache() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final list = threadForumCache.entries
+          .where((e) => e.key > 0 && e.value.isNotEmpty)
+          .take(1500)
+          .map((e) => '${e.key}:${e.value}')
+          .toList();
+      await sp.setStringList(_tidForumPrefsKey, list);
+    } catch (_) {}
+  }
+
+  static void _scheduleSaveTidForum() {
+    if (_saveScheduled) return;
+    _saveScheduled = true;
+    Future.delayed(const Duration(seconds: 3), () {
+      _saveScheduled = false;
+      saveTidForumCache();
+    });
+  }
+
   /// 注册帖子的真实版块信息
   static void registerThread(int tid, {int? fid, String? forumName}) {
     if (tid <= 0) return;
@@ -1206,11 +1252,13 @@ class ComiisParser {
           .trim();
       if (clean.isNotEmpty && !_isGenericPortalHeader(clean)) {
         threadForumCache[tid] = clean;
+        _scheduleSaveTidForum();
       }
     } else if (fid != null && fid > 0) {
       final nameByFid = getForumNameByFid(fid);
       if (nameByFid != null && nameByFid.isNotEmpty) {
         threadForumCache[tid] = nameByFid;
+        _scheduleSaveTidForum();
       }
     }
   }
@@ -2123,25 +2171,34 @@ class ComiisParser {
       }
     }
 
-    // 浏览/回复数
+    // 浏览/回复数（优先从真实统计组件提取，杜绝被截断的 5/6 条预览项误导）
     var views = -1, replies = -1;
-    final replyItems = li.querySelectorAll('ul.reply_list li, .reply_list li');
-    if (replyItems.isNotEmpty) {
-      replies = replyItems.length;
-    }
 
-    final wzRead = li.querySelector('.wzlist_bottom em.y, .wzlist_bottom .y');
-    if (wzRead != null) {
-      final m = RegExp(r'(\d+)\s*(?:阅读|查看|浏览)').firstMatch(wzRead.text);
-      if (m != null) views = int.tryParse(m.group(1)!) ?? -1;
-    }
-
-    final bv = li.querySelector('.bottom_views');
+    final bv = li.querySelector('.bottom_views, .forumlist_li_tops .bottom_views, .wxlist_bottom .bottom_views');
     if (bv != null) {
       final ems = bv.querySelectorAll('em');
       if (ems.length >= 2) {
         views = int.tryParse(ems[0].text.trim()) ?? -1;
         replies = int.tryParse(ems[1].text.trim()) ?? -1;
+      } else if (ems.length == 1) {
+        views = int.tryParse(ems[0].text.trim()) ?? -1;
+      }
+    }
+
+    final allCommentsA = li.querySelector('.reply_list a[href*="thread-"], .reply_list a.f_b');
+    if (allCommentsA != null) {
+      final allM = RegExp(r'全部\s*(\d+)\s*评论').firstMatch(allCommentsA.text);
+      if (allM != null) {
+        final total = int.tryParse(allM.group(1)!) ?? -1;
+        if (total > 0) replies = total;
+      }
+    }
+
+    if (views == -1) {
+      final wzRead = li.querySelector('.wzlist_bottom em.y, .wzlist_bottom .y');
+      if (wzRead != null) {
+        final m = RegExp(r'(\d+)\s*(?:阅读|查看|浏览)').firstMatch(wzRead.text);
+        if (m != null) views = int.tryParse(m.group(1)!) ?? -1;
       }
     }
 
@@ -2150,8 +2207,14 @@ class ComiisParser {
       if (vm != null) views = int.tryParse(vm.group(1)!) ?? -1;
     }
     if (replies == -1) {
-      final rm = RegExp(r'(\d+)\s*(?:回复|条回复|次回复|条评论)').firstMatch(li.text);
+      final rm = RegExp(r'(\d+)\s*(?:回复|条回复|次回复|条评论|评论)').firstMatch(li.text);
       if (rm != null) replies = int.tryParse(rm.group(1)!) ?? -1;
+    }
+    if (replies == -1) {
+      final replyItems = li.querySelectorAll('ul.reply_list li[id^="retid_"], .reply_list li[id^="retid_"]');
+      if (replyItems.isNotEmpty) {
+        replies = replyItems.length;
+      }
     }
 
     // 主题分类（如「来自 文章」或「来自 文学」）
@@ -2808,8 +2871,10 @@ class ComiisParser {
           ? rawExcerpt.replaceAll(RegExp(r'^本帖最后由.*?编辑\s*'), '').trim()
           : null;
 
-      final dm = RegExp(r'(\d{4}-\d{1,2}-\d{1,2})').firstMatch(li.text);
-      var timeText = dm?.group(1);
+      final dm = RegExp(
+        r'(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}|\d+\s*(?:秒|分钟|小时|天|周|月|年)前|昨天|前天|刚刚)(?:\s+\d{1,2}:\d{2})?',
+      ).firstMatch(li.text);
+      var timeText = dm?.group(0);
 
       // 首页图文推荐提取版块名与日期；提取真实作者名与 uid
       var author = '';
@@ -2826,11 +2891,13 @@ class ComiisParser {
           if (tag.isNotEmpty) forumName = tag;
           timeText = raw.substring(sep + 1).trim();
         } else {
-          final dateM = RegExp(r'(\d{4}-\d{1,2}-\d{1,2})$').firstMatch(raw);
+          final dateM = RegExp(
+            r'(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}|\d+\s*(?:秒|分钟|小时|天|周|月|年)前|昨天|前天|刚刚)(?:\s+\d{1,2}:\d{2})?$',
+          ).firstMatch(raw);
           if (dateM != null) {
             final tag = raw.substring(0, dateM.start).trim();
             if (tag.isNotEmpty) forumName = tag;
-            timeText = dateM.group(1);
+            timeText = dateM.group(0);
           } else {
             if (raw.isNotEmpty) forumName = raw;
           }
@@ -4584,52 +4651,68 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
-    // 浏览量与回复量
+    // 浏览量与回复量（优先克米移动端底部视口、回复徽章与 PC 端统计）
     var views = 0, replies = 0;
-    final viewEl = doc.querySelector('.comiis_pviews, .views, .view_count');
-    if (viewEl != null) {
-      views =
-          int.tryParse(
-            RegExp(r'\d+').firstMatch(viewEl.text)?.group(0) ?? '',
-          ) ??
-          0;
-    }
-    if (views <= 0) {
-      final viewM = RegExp(
-        r'查看[:：\s]*<em>?(\d+)<em>?|(\d+)\s*次阅读|(\d+)\s*阅读|(\d+)\s*浏览',
-      ).firstMatch(html);
-      if (viewM != null) {
-        views =
-            int.tryParse(
-              viewM.group(1) ??
-                  viewM.group(2) ??
-                  viewM.group(3) ??
-                  viewM.group(4) ??
-                  '',
-            ) ??
-            0;
+
+    final detailBv = doc.querySelector('.bottom_views, .forumlist_li_tops .bottom_views, .comiis_viewtit .bottom_views');
+    if (detailBv != null) {
+      final ems = detailBv.querySelectorAll('em');
+      if (ems.length >= 2) {
+        views = int.tryParse(ems[0].text.trim()) ?? 0;
+        replies = int.tryParse(ems[1].text.trim()) ?? 0;
+      } else if (ems.length == 1) {
+        views = int.tryParse(ems[0].text.trim()) ?? 0;
       }
     }
-    final replyEl = doc.querySelector(
-      '.comiis_preplies, .replies, .reply_count',
-    );
-    if (replyEl != null) {
-      replies =
-          int.tryParse(
-            RegExp(r'\d+').firstMatch(replyEl.text)?.group(0) ?? '',
-          ) ??
-          0;
+
+    if (replies <= 0) {
+      final kmv = doc.querySelector('.comiis_kmvnum, .comiis_position_key, span[class*="comiis_kmvnum"]');
+      if (kmv != null) {
+        final kmvVal = int.tryParse(RegExp(r'\d+').firstMatch(kmv.text)?.group(0) ?? '') ?? 0;
+        if (kmvVal > 0) replies = kmvVal;
+      }
+    }
+
+    if (views <= 0 || replies <= 0) {
+      final viewEl = doc.querySelector('.comiis_pviews, .views, .view_count, td.pls .xi1');
+      if (viewEl != null && views <= 0) {
+        views = int.tryParse(RegExp(r'\d+').firstMatch(viewEl.text)?.group(0) ?? '') ?? 0;
+      }
+      final repEl = doc.querySelector('.comiis_preplies, .replies, .reply_count');
+      if (repEl != null && replies <= 0) {
+        replies = int.tryParse(RegExp(r'\d+').firstMatch(repEl.text)?.group(0) ?? '') ?? 0;
+      }
+    }
+
+    if (views <= 0) {
+      final viewM = RegExp(
+        r'查看[:：\s]*<em>?(\d+)<em>?|(\d+)\s*次阅读|(\d+)\s*阅读|(\d+)\s*浏览|(\d+)\s*次查看|(\d+)\s*查看',
+      ).firstMatch(html);
+      if (viewM != null) {
+        views = int.tryParse(
+          viewM.group(1) ??
+              viewM.group(2) ??
+              viewM.group(3) ??
+              viewM.group(4) ??
+              viewM.group(5) ??
+              viewM.group(6) ??
+              '',
+        ) ?? 0;
+      }
     }
     if (replies <= 0) {
       final repM = RegExp(
-        r'回复[:：\s]*<em>?(\d+)<em>?|(\d+)\s*个回复|(\d+)\s*条回复',
+        r'回复[:：\s]*<em>?(\d+)<em>?|(\d+)\s*个回复|(\d+)\s*条回复|全部\s*(\d+)\s*评论|(\d+)\s*条评论',
       ).firstMatch(html);
       if (repM != null) {
-        replies =
-            int.tryParse(
-              repM.group(1) ?? repM.group(2) ?? repM.group(3) ?? '',
-            ) ??
-            0;
+        replies = int.tryParse(
+          repM.group(1) ??
+              repM.group(2) ??
+              repM.group(3) ??
+              repM.group(4) ??
+              repM.group(5) ??
+              '',
+        ) ?? 0;
       }
     }
     if (replies <= 0 && floors.length > 1) {
@@ -4926,8 +5009,168 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
   }
 
   // ---------------------------------------------------------------------
+  // 签到头部与实时数据（k_misign 插件 1:1 对齐）
+  // ---------------------------------------------------------------------
+  static SignHeaderInfo parseSignPageData(
+    String html, {
+    String? defaultUsername,
+    int? defaultUid,
+  }) {
+    final doc = html_parser.parse(html);
+
+    // 1. 今日签到之星
+    String starUsername = '';
+    int? starUid;
+    final starA = doc.querySelector('span.xg1 a[href*="space-uid-"], span.xg1 a[href*="uid="], a.star_user');
+    if (starA != null) {
+      starUsername = starA.text.trim();
+      starUid = _uidFromHref(starA.attributes['href'] ?? '');
+    }
+    if (starUsername.isEmpty) {
+      final m = RegExp(r'今日签到之星[：:\s]*([^\s|｜<]+)').firstMatch(html);
+      if (m != null) starUsername = m.group(1)!.trim();
+    }
+
+    // 2. 历史最高人数
+    int highestCount = 0;
+    final highMatch = RegExp(r'历史最高人数[：:\s]*(\d+)').firstMatch(html);
+    if (highMatch != null) {
+      highestCount = int.tryParse(highMatch.group(1)!) ?? 0;
+    }
+
+    // 3. 今日已签到人数 (如 .weather_p .con 934人)
+    int todaySignCount = 0;
+    final countEl = doc.querySelector('.weather_p .con, .weather_p, .today_sign_num, div.con');
+    if (countEl != null) {
+      final m = RegExp(r'(\d+)').firstMatch(countEl.text);
+      if (m != null) todaySignCount = int.tryParse(m.group(1)!) ?? 0;
+    }
+    if (todaySignCount == 0) {
+      final m = RegExp(r'今日已签到[^\d]*(\d+)\s*人').firstMatch(html);
+      if (m != null) todaySignCount = int.tryParse(m.group(1)!) ?? 0;
+    }
+
+    // 4. 我的签到状态与排名（严格按照 Discuz k_misign 官方网页 DOM 判定）
+    int? mySignRank;
+    final rankInput = doc.querySelector('input#qiandaobtnnum, input[name="qiandaobtnnum"]');
+    if (rankInput != null && rankInput.attributes['value']?.isNotEmpty == true) {
+      final r = int.tryParse(rankInput.attributes['value']!.trim());
+      if (r != null && r > 0) {
+        mySignRank = r;
+      }
+    }
+
+    bool isSignedToday = false;
+    final fontEl = doc.querySelector('.paiming .font, .qdleft .font, .font, .sign_btn, .btn_sign');
+    final fontText = fontEl?.text.trim() ?? '';
+    if (fontText.contains('还没有签到') ||
+        fontText.contains('未签到') ||
+        fontText.contains('点我签到') ||
+        html.contains('您今天还没有签到') ||
+        html.contains('点我签到')) {
+      isSignedToday = false;
+    } else if (fontText.contains('今日已签') ||
+        fontText.contains('已经签过到') ||
+        fontText.contains('已签到') ||
+        fontText.contains('已打卡') ||
+        fontText.contains('已签') ||
+        html.contains('您今天已经签过到了') ||
+        html.contains('今日已签到') ||
+        html.contains('您今日已签到') ||
+        html.contains('今日已打卡') ||
+        (mySignRank != null && mySignRank > 0)) {
+      isSignedToday = true;
+    } else if (doc.querySelector('.btn-signed, .signed, a.btn_v, .btn_v, .btn_have, .JD_sign, .had_sign') != null ||
+        html.contains('k_misign:tdyq') ||
+        html.contains('k_misign:signed')) {
+      isSignedToday = true;
+    }
+
+    if (!isSignedToday) {
+      mySignRank = null;
+    }
+
+    // 5. 连续签到天数
+    int continuousDays = 0;
+    final lxDaysInput = doc.querySelector('input#lxdays, input[name="lxdays"]');
+    if (lxDaysInput != null && lxDaysInput.attributes['value']?.isNotEmpty == true) {
+      continuousDays = int.tryParse(lxDaysInput.attributes['value']!.trim()) ?? 0;
+    }
+    if (continuousDays == 0) {
+      final m = RegExp(r'(?:连续签到|已连续|连续打卡|连续)[^\d]*(\d+)\s*天').firstMatch(html);
+      if (m != null) continuousDays = int.tryParse(m.group(1)!) ?? 0;
+    }
+
+    // 6. 签到等级
+    String signLevel = '';
+    final lxLevelInput = doc.querySelector('input#lxlevel, input[name="lxlevel"]');
+    if (lxLevelInput != null && lxLevelInput.attributes['value']?.isNotEmpty == true) {
+      signLevel = lxLevelInput.attributes['value']!.trim();
+    }
+    if (signLevel.isEmpty) {
+      final m = RegExp(r'签到等级[^\d]*(\d+|Lv\.\d+)').firstMatch(html);
+      if (m != null) signLevel = m.group(1)!.trim();
+    }
+    if (signLevel.isNotEmpty && !signLevel.toLowerCase().startsWith('lv')) {
+      signLevel = 'Lv.$signLevel';
+    }
+
+    // 7. 积分奖励
+    String rewardIron = '';
+    final lxRewardInput = doc.querySelector('input#lxreward, input[name="lxreward"]');
+    if (lxRewardInput != null && lxRewardInput.attributes['value']?.isNotEmpty == true) {
+      rewardIron = lxRewardInput.attributes['value']!.trim();
+    }
+    if (rewardIron.isEmpty) {
+      final m = RegExp(r'积分奖励[^\d]*(\d+)').firstMatch(html) ??
+          RegExp(r'奖励[^\d]*(\d+)\s*(?:粒)?铁粒').firstMatch(html) ??
+          RegExp(r'\+(\d+)\s*(?:粒)?铁粒').firstMatch(html);
+      if (m != null) rewardIron = m.group(1)!.trim();
+    }
+
+    // 8. 总天数
+    int totalDays = 0;
+    final lxtDaysInput = doc.querySelector('input#lxtdays, input[name="lxtdays"]');
+    if (lxtDaysInput != null && lxtDaysInput.attributes['value']?.isNotEmpty == true) {
+      totalDays = int.tryParse(lxtDaysInput.attributes['value']!.trim()) ?? 0;
+    }
+    if (totalDays == 0) {
+      final m = RegExp(r'(?:总天数|总签到|累计签到|累计打卡|累计天数|累计)[^\d]*(\d+)\s*天').firstMatch(html);
+      if (m != null) totalDays = int.tryParse(m.group(1)!) ?? 0;
+    }
+
+    // 9. 当前用户名与 UID
+    String username = defaultUsername ?? '';
+    int? uid = defaultUid;
+    final userA = doc.querySelector('h3.mainCon .user a.author, .mainCon a.author, .qdright a.author');
+    if (userA != null && userA.text.trim().isNotEmpty) {
+      username = userA.text.trim();
+    }
+    final userAvatarA = doc.querySelector('h3.mainCon .user a[href*="space-uid-"], h3.mainCon .user a[href*="uid="]');
+    if (userAvatarA != null) {
+      final parsedUid = _uidFromHref(userAvatarA.attributes['href'] ?? '');
+      if (parsedUid != null && parsedUid > 0) uid = parsedUid;
+    }
+
+    return SignHeaderInfo(
+      starUsername: starUsername,
+      starUid: starUid,
+      highestCount: highestCount,
+      todaySignCount: todaySignCount,
+      isSignedToday: isSignedToday,
+      mySignRank: mySignRank,
+      username: username,
+      uid: uid,
+      continuousDays: continuousDays,
+      signLevel: signLevel,
+      rewardIron: rewardIron,
+      totalDays: totalDays,
+    );
+  }
+
+  // ---------------------------------------------------------------------
   // 签到排行（k_misign）
-  // 兼容两种结构：klpbbs（tbody#autolist_{uid}）与本地 v4.3.0（table#J_list_detail）
+  // 兼容多种结构：klpbbs（tbody#autolist_{uid}）与本地 v4.3.0（table#J_list_detail）
   // ---------------------------------------------------------------------
   static List<SignEntry> parseSignList(String html) {
     final doc = html_parser.parse(html);
@@ -4958,8 +5201,9 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         final p = tbody.querySelector('p.f_0')?.text.trim() ?? '';
         final md = RegExp(r'月天数\s*(\d+)\s*天').firstMatch(p);
         monthDays = int.tryParse(md?.group(1) ?? '') ?? 0;
-        final rw = RegExp(r'上次奖励\s*(.+)').firstMatch(p);
+        final rw = RegExp(r'(?:上次奖励|总奖励)\s*(.+)').firstMatch(p);
         final rewardText = rw?.group(1)?.trim() ?? '';
+        final isTotalReward = p.contains('总奖励');
 
         result.add(
           SignEntry(
@@ -4969,33 +5213,39 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
             totalDays: totalDays,
             monthDays: monthDays,
             rewardText: rewardText,
+            totalReward: isTotalReward ? rewardText : '',
           ),
         );
       }
       return result;
     }
 
-    // 结构二与三：移动端列表与通用表格（ul.comiis_sign_list li, .sign_list li, table.dt tr, tr 等）
+    // 结构二与三：移动端列表与通用表格（ul.comiis_sign_list li, .ranking_list li, .sign_list li, table.dt tr 等）
     if (result.isEmpty) {
       final listItems = doc.querySelectorAll(
-        'ul.comiis_sign_list li, .k_misign_list li, .sign_list li, .sign_box li, div.comiis_p12 li, table.dt tr, table.tl tr, #ranklist tr, .bm_c table tr, .ct2_a tr, table tr',
+        'ul.comiis_sign_list li, .k_misign_list li, .ranking_list li, ul.ranking_list li, .sign_list li, .sign_box li, div.comiis_p12 li, table.dt tr, table.tl tr, #ranklist tr, .bm_c table tr, .ct2_a tr, table tr',
       );
       for (final el in listItems) {
         if (el.querySelector('th') != null && el.querySelectorAll('td').isEmpty) {
           continue;
         }
-        final a = el.querySelector(
-          'a[href*="space-uid-"], a[href*="uid="], a[href*="space"], a.author, h4 a, .name a',
-        );
-        if (a == null) continue;
-        final name = a.text.trim();
-        if (name.isEmpty || name == '签到' || name == '排行榜' || name == '更多') {
-          continue;
+        html_dom.Element? a;
+        String name = '';
+        for (final candidate in el.querySelectorAll(
+          '.author, h4 a, .name a, .ranking_name a, a[href*="space-uid-"], a[href*="uid="], a[href*="space"]',
+        )) {
+          final t = candidate.text.trim();
+          if (t.isNotEmpty && t != '签到' && t != '排行榜' && t != '更多') {
+            a = candidate;
+            name = t;
+            break;
+          }
         }
+        if (a == null || name.isEmpty) continue;
         final uid = _uidFromHref(a.attributes['href'] ?? '') ?? 0;
 
         final timeEl = el.querySelector(
-          '.time, .timeText, span.xg1, span.kmtime, td.time',
+          '.time, .timeText, span.xg1, span.kmtime, td.time, .ranking_time',
         );
         var timeText = timeEl?.text.trim() ?? '';
 
@@ -5005,6 +5255,11 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         ).firstMatch(el.text);
         if (totalMatch != null) {
           totalDays = int.tryParse(totalMatch.group(1)!) ?? 0;
+        } else {
+          final d = el.querySelector('.ranking_days, .total_days')?.text;
+          if (d != null) {
+            totalDays = int.tryParse(RegExp(r'(\d+)').firstMatch(d)?.group(1) ?? '') ?? 0;
+          }
         }
 
         int monthDays = 0;
@@ -5013,18 +5268,55 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         ).firstMatch(el.text);
         if (monthMatch != null) {
           monthDays = int.tryParse(monthMatch.group(1)!) ?? 0;
+        } else {
+          final d = el.querySelector('.ranking_mdays, .month_days')?.text;
+          if (d != null) {
+            monthDays = int.tryParse(RegExp(r'(\d+)').firstMatch(d)?.group(1) ?? '') ?? 0;
+          }
         }
 
         String rewardText = '';
-        final rewardMatch = RegExp(r'奖励[:：\s]*([^\s,，;]+)').firstMatch(el.text);
+        String totalReward = '';
+        String levelText = '';
+        final levelEl = el.querySelector('.ranking_level, .usergroup, .level');
+        if (levelEl != null && levelEl.text.trim().isNotEmpty) {
+          levelText = levelEl.text.trim();
+        }
+
+        final rewardMatch = RegExp(r'(?:上次奖励|奖励)[:：\s]*([^\s,，;]+)').firstMatch(el.text);
         if (rewardMatch != null) rewardText = rewardMatch.group(1) ?? '';
+        final totalRewardMatch = RegExp(r'总奖励[:：\s]*([^\s,，;]+)').firstMatch(el.text);
+        if (totalRewardMatch != null) totalReward = totalRewardMatch.group(1) ?? '';
+
+        final rankRewardEl = el.querySelector('.ranking_reward');
+        if (rankRewardEl != null && rankRewardEl.text.trim().isNotEmpty) {
+          final txt = rankRewardEl.text.trim();
+          if (totalReward.isEmpty) totalReward = txt;
+          if (rewardText.isEmpty) rewardText = txt;
+        }
 
         // 如果是标准 table tr 结构且未匹配到标签，从 td 顺序提取
         final tds = el.querySelectorAll('td');
-        if (tds.length >= 3 && (totalDays == 0 && monthDays == 0)) {
+        if (tds.length >= 5) {
+          final tdTotal = int.tryParse(RegExp(r'(\d+)').firstMatch(tds[1].text)?.group(1) ?? '');
+          if (tdTotal != null && tdTotal > 0) totalDays = tdTotal;
+          final tdMonth = int.tryParse(RegExp(r'(\d+)').firstMatch(tds[2].text)?.group(1) ?? '');
+          if (tdMonth != null && tdMonth >= 0) monthDays = tdMonth;
+          if (timeText.isEmpty) timeText = tds[3].text.trim();
+          if (levelText.isEmpty) levelText = tds[4].text.trim();
+          if (tds.length >= 6) {
+            final tdRew = tds[5].text.trim();
+            if (tdRew.isNotEmpty) {
+              totalReward = tdRew;
+              rewardText = tdRew;
+            }
+          }
+        } else if (tds.length >= 3 && (totalDays == 0 && monthDays == 0)) {
           for (final td in tds) {
             final txt = td.text.trim();
-            if (timeText.isEmpty && (txt.contains('-') || txt.contains(':'))) {
+            if (txt.contains('LV.') || txt.contains('[LV') || txt.contains('锭') || txt.contains('石') || txt.contains('木')) {
+              levelText = txt;
+            } else if (timeText.isEmpty && (txt.contains('-') || txt.contains(':'))) {
               timeText = txt;
             } else if (rewardText.isEmpty &&
                 (txt.contains('粒') ||
@@ -5053,12 +5345,28 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
             totalDays: totalDays,
             monthDays: monthDays,
             rewardText: rewardText,
+            usergroup: levelText,
+            totalReward: totalReward.isNotEmpty ? totalReward : (rewardText.contains('总') ? rewardText : ''),
           ),
         );
       }
     }
 
     return result;
+  }
+
+  /// 从网页端日历 HTML 中解析已签到日期
+  static Set<int> parseSignedDaysFromCalendarHtml(String html) {
+    final doc = html_parser.parse(html);
+    final days = <int>{};
+    final signedNodes = doc.querySelectorAll('.table_calendar p.signed, .table_calendar td.signed, td p.signed, p.signed');
+    for (final node in signedNodes) {
+      final day = int.tryParse(RegExp(r'(\d+)').firstMatch(node.text)?.group(1) ?? '');
+      if (day != null && day > 0) {
+        days.add(day);
+      }
+    }
+    return days;
   }
 
   // ---------------------------------------------------------------------
@@ -7073,6 +7381,31 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     return fallback;
   }
 
+  /// 清洗投票选项文本（去除 Discuz 选项自带的图标码、□、○、[ ]、序号等前置占位符号）
+  static String cleanPollOptionLabel(String raw) {
+    // 1. 剥离 Unicode 私有区与扩展区图标字体（comiis_font \uE000-\uF8FF 等）
+    var s = raw
+        .replaceAll(
+          RegExp(
+            r'[\uE000-\uF8FF\uFFF0-\uFFFF\u{F0000}-\u{10FFFF}]',
+            unicode: true,
+          ),
+          '',
+        )
+        .trim();
+    // 2. 移除开头的方块、单选圆圈、选择框、多选框、Unicode 特殊符号以及多余标点
+    s = s.replaceAll(
+      RegExp(r'^[\u25A0-\u25FF\u2600-\u26FF\u2700-\u27BF\uFEFF\u00A0\s\[\]\(\)（）○●□■▪▫▲▼◇◆]+\s*'),
+      '',
+    );
+    // 3. 移除开头的类似 "1. □", "1、□" 带有序号加符号的杂质
+    s = s.replaceAll(
+      RegExp(r'^\d+[\.、\s]+[\u25A0-\u25FF\u2600-\u26FF\u2700-\u27BF\uFEFF\u00A0\s\[\]\(\)（）○●□■▪▫▲▼◇◆]+\s*'),
+      '',
+    );
+    return s.trim();
+  }
+
   /// 将 HTML 字符串解析为结构化区块（编辑器 BBCode 预览、折叠块等场景）
   static List<PostBlock> parseStructuredBlocksFromHtml(String html) {
     final doc = html_parser.parseFragment(html);
@@ -7212,6 +7545,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
             if (name.isEmpty && li.classes.contains('kmnop')) {
               name = li.text.trim();
             }
+            name = cleanPollOptionLabel(name);
             if (name.isEmpty) continue;
 
             final inputEl = li.querySelector('input[name="pollanswers[]"], input[type="radio"], input[type="checkbox"]');

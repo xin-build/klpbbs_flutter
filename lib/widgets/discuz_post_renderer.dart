@@ -2320,11 +2320,19 @@ class DiscuzPostRenderer extends StatelessWidget {
       };
       baseColor = colorMap[trimmed] ?? Colors.grey;
     }
-    if (!isBackground &&
-        brightness == Brightness.dark &&
-        baseColor.computeLuminance() < 0.15 &&
-        baseColor != Colors.black) {
-      return const Color(0xFFB0BEC5);
+    if (!isBackground) {
+      final lum = baseColor.computeLuminance();
+      if (brightness == Brightness.dark) {
+        // 深色模式下：如果字体太暗（如纯黑 #000000、深灰、深蓝），自动提升为高对比度银白色
+        if (lum < 0.28) {
+          return const Color(0xFFE2E8F0);
+        }
+      } else if (brightness == Brightness.light) {
+        // 浅色模式下：如果字体太亮（如纯白 #FFFFFF、极浅灰、浅黄），自动调整为高对比度深色
+        if (lum > 0.82) {
+          return const Color(0xFF1E293B);
+        }
+      }
     }
     return baseColor;
   }
@@ -2748,8 +2756,10 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
     super.initState();
     _isVoted = widget.poll.isVoted;
     for (var i = 0; i < widget.poll.options.length; i++) {
-      if (widget.poll.options[i].isChecked) {
-        _selectedIds.add(i + 1);
+      final opt = widget.poll.options[i];
+      if (opt.isChecked) {
+        final optId = int.tryParse(opt.id) ?? (i + 1);
+        _selectedIds.add(optId);
       }
     }
   }
@@ -2898,9 +2908,10 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
             separatorBuilder: (_, __) => const SizedBox(height: 4),
             itemBuilder: (ctx, i) {
               final opt = poll.options[i];
-              final optId = i + 1;
+              final optId = int.tryParse(opt.id) ?? (i + 1);
               final isSelected = _selectedIds.contains(optId);
               final barColor = _parseBarColor(opt.colorHex, i);
+              final cleanLabel = ComiisParser.cleanPollOptionLabel(opt.label);
 
               if (showResults) {
                 // 结果展示模式：标题 + 彩色进度条 + 百分比 (票数)
@@ -2911,7 +2922,7 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
                     children: [
                       // 选项名称
                       Text(
-                        opt.label,
+                        cleanLabel,
                         style: const TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w500,
@@ -2973,7 +2984,7 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          opt.label,
+                          cleanLabel,
                           style: TextStyle(
                             fontSize: 14,
                             fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
@@ -2989,29 +3000,34 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
 
           // 底部提示框或投票提交按钮 (1:1 对齐网页)
           if (poll.tipText != null && poll.tipText!.isNotEmpty)
-            Container(
-              margin: const EdgeInsets.fromLTRB(14, 6, 14, 14),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFFBE6),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: const Color(0xFFFFE58F)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.lightbulb_outline, size: 16, color: Color(0xFFFA8C16)),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      poll.tipText!,
-                      style: const TextStyle(
-                        fontSize: 12.5,
-                        color: Color(0xFFD46B08),
-                      ),
-                    ),
+            Builder(
+              builder: (ctx) {
+                final isDark = Theme.of(ctx).brightness == Brightness.dark;
+                return Container(
+                  margin: const EdgeInsets.fromLTRB(14, 6, 14, 14),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF2E2612) : const Color(0xFFFFFBE6),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: isDark ? const Color(0xFF6B4D16) : const Color(0xFFFFE58F)),
                   ),
-                ],
-              ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.lightbulb_outline, size: 16, color: isDark ? const Color(0xFFFFA940) : const Color(0xFFFA8C16)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          poll.tipText!,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            color: isDark ? const Color(0xFFFFD591) : const Color(0xFFD46B08),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
             )
           else if (!showResults && poll.canVote)
             Padding(

@@ -89,28 +89,6 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    if (_loading && _messages.isEmpty) {
-      return Container(
-        margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: const Center(
-          child: SizedBox(
-            width: 18,
-            height: 18,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-        ),
-      );
-    }
-
-    if (_messages.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 6),
       decoration: BoxDecoration(
@@ -144,10 +122,10 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                     child: Row(
-                      children: const [
-                        Icon(Icons.edit_outlined, size: 14, color: Color(0xFF999999)),
-                        SizedBox(width: 3),
-                        Text('发布', style: TextStyle(fontSize: 12, color: Color(0xFF999999))),
+                      children: [
+                        Icon(Icons.edit_outlined, size: 14, color: theme.colorScheme.onSurfaceVariant),
+                        const SizedBox(width: 3),
+                        Text('发布', style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant)),
                       ],
                     ),
                   ),
@@ -155,14 +133,27 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
                 const SizedBox(width: 6),
                 InkWell(
                   borderRadius: BorderRadius.circular(6),
-                  onTap: () => _load(silent: false),
+                  onTap: _loading ? null : () => _load(silent: false),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                     child: Row(
                       children: [
-                        Icon(Icons.refresh_rounded, size: 14, color: theme.colorScheme.primary),
-                        const SizedBox(width: 3),
-                        Text('刷新', style: TextStyle(fontSize: 12, color: theme.colorScheme.primary)),
+                        if (_loading)
+                          SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 1.8,
+                              color: theme.colorScheme.primary,
+                            ),
+                          )
+                        else
+                          Icon(Icons.refresh_rounded, size: 14, color: theme.colorScheme.primary),
+                        const SizedBox(width: 4),
+                        Text(
+                          _loading ? '刷新中' : '刷新',
+                          style: TextStyle(fontSize: 12, color: theme.colorScheme.primary),
+                        ),
                       ],
                     ),
                   ),
@@ -170,19 +161,87 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
               ],
             ),
           ),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 220),
-            child: ListView.separated(
-              shrinkWrap: true,
-              padding: EdgeInsets.zero,
-              itemCount: _messages.length,
-              separatorBuilder: (_, __) => Divider(
-                height: 1,
-                indent: 14,
-                endIndent: 14,
-                color: theme.colorScheme.outlineVariant.withAlpha(40),
+          if (_loading && _messages.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              child: Row(
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHighest.withAlpha(160),
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 90,
+                          height: 11,
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.surfaceContainerHighest.withAlpha(160),
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Container(
+                          width: double.infinity,
+                          height: 12,
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.surfaceContainerHighest.withAlpha(160),
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              itemBuilder: (context, i) => _HornCard(
+            )
+          else if (_messages.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.campaign_outlined,
+                    size: 16,
+                    color: theme.colorScheme.onSurfaceVariant.withAlpha(150),
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      '暂无全站小喇叭广播，点击右上角发布一条吧~',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 220),
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: _messages.length,
+                separatorBuilder: (_, __) => Divider(
+                  height: 1,
+                  indent: 14,
+                  endIndent: 14,
+                  color: theme.colorScheme.outlineVariant.withAlpha(40),
+                ),
+                itemBuilder: (context, i) => _HornCard(
                 message: _messages[i],
                 canDelete: _myUid != null && (_messages[i].uid == _myUid || _myUid == 1),
                 onAuthorTap: () => _openUserSpace(_messages[i]),

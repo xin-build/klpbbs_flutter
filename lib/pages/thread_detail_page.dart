@@ -438,6 +438,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       return;
     }
 
+    HapticFeedback.lightImpact();
     final nextLiked = !_liked;
     setState(() {
       _liked = nextLiked;
@@ -533,6 +534,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       return;
     }
 
+    HapticFeedback.lightImpact();
     final nextFav = !_favored;
     setState(() {
       _favored = nextFav;
@@ -979,7 +981,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                                             size: 14,
                                             color: Theme.of(
                                               context,
-                                            ).colorScheme.outline,
+                                            ).colorScheme.onSurfaceVariant.withAlpha(200),
                                           ),
                                           Text(
                                             '论坛',
@@ -989,8 +991,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                                                 ?.copyWith(
                                                   color: Theme.of(
                                                     context,
-                                                  ).colorScheme.outline,
+                                                  ).colorScheme.onSurfaceVariant,
                                                   fontSize: 12,
+                                                  fontWeight: FontWeight.w500,
                                                 ),
                                           ),
                                           for (final bc in (data?.breadcrumbs ?? [
@@ -1110,7 +1113,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                                         .titleLarge
                                         ?.copyWith(
                                           fontWeight: FontWeight.bold,
-                                          height: 1.3,
+                                          height: 1.35,
+                                          fontSize: 18,
                                         ),
                                   ),
                                 ],
@@ -1133,7 +1137,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                                         size: 13,
                                         color: Theme.of(
                                           context,
-                                        ).colorScheme.outline,
+                                        ).colorScheme.onSurfaceVariant.withAlpha(190),
                                       ),
                                       const SizedBox(width: 4),
                                       Text(
@@ -1144,7 +1148,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                                             ?.copyWith(
                                               color: Theme.of(
                                                 context,
-                                              ).colorScheme.outline,
+                                              ).colorScheme.onSurfaceVariant.withAlpha(200),
+                                              fontSize: 11.5,
                                             ),
                                       ),
                                     ],
@@ -1158,7 +1163,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                                         ?.copyWith(
                                           color: Theme.of(
                                             context,
-                                          ).colorScheme.outline,
+                                          ).colorScheme.onSurfaceVariant.withAlpha(200),
+                                          fontSize: 11.5,
                                         ),
                                   ),
                                 Row(
@@ -1167,7 +1173,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                                     Icon(
                                       Icons.visibility_outlined,
                                       size: 13,
-                                      color: Theme.of(context).colorScheme.outline,
+                                      color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(190),
                                     ),
                                     const SizedBox(width: 4),
                                     Text(
@@ -1178,7 +1184,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                                           ?.copyWith(
                                             color: Theme.of(
                                               context,
-                                            ).colorScheme.outline,
+                                            ).colorScheme.onSurfaceVariant.withAlpha(200),
+                                            fontSize: 11.5,
                                           ),
                                     ),
                                   ],
@@ -1743,7 +1750,7 @@ class _FloorViewState extends State<_FloorView> {
                 Icon(
                   effectiveLiked ? Icons.thumb_up : Icons.thumb_up_outlined,
                   size: 15,
-                  color: effectiveLiked ? theme.colorScheme.primary : theme.colorScheme.outline,
+                  color: effectiveLiked ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant.withAlpha(200),
                 ),
                 const SizedBox(width: 4),
                 Text(
@@ -1751,8 +1758,8 @@ class _FloorViewState extends State<_FloorView> {
                       ? (effectiveLiked ? '已赞 $effectiveCount' : '赞 $effectiveCount')
                       : (effectiveLiked ? '已赞' : '赞'),
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: effectiveLiked ? theme.colorScheme.primary : theme.colorScheme.outline,
-                    fontWeight: effectiveLiked ? FontWeight.bold : FontWeight.normal,
+                    color: effectiveLiked ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant,
+                    fontWeight: effectiveLiked ? FontWeight.bold : FontWeight.w500,
                   ),
                 ),
               ],
@@ -1817,13 +1824,14 @@ class _FloorViewState extends State<_FloorView> {
                 Icon(
                   Icons.comment_outlined,
                   size: 15,
-                  color: theme.colorScheme.outline,
+                  color: theme.colorScheme.onSurfaceVariant.withAlpha(200),
                 ),
                 const SizedBox(width: 4),
                 Text(
                   '回复',
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.outline,
+                    color: theme.colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ],
@@ -1839,13 +1847,14 @@ class _FloorViewState extends State<_FloorView> {
                 Icon(
                   Icons.format_quote_outlined,
                   size: 15,
-                  color: theme.colorScheme.outline,
+                  color: theme.colorScheme.onSurfaceVariant.withAlpha(200),
                 ),
                 const SizedBox(width: 4),
                 Text(
                   '引用',
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.outline,
+                    color: theme.colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ],
@@ -1868,13 +1877,14 @@ class _FloorViewState extends State<_FloorView> {
                 Icon(
                   Icons.share_outlined,
                   size: 15,
-                  color: theme.colorScheme.outline,
+                  color: theme.colorScheme.onSurfaceVariant.withAlpha(200),
                 ),
                 const SizedBox(width: 4),
                 Text(
                   '分享',
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.outline,
+                    color: theme.colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ],
@@ -1898,6 +1908,7 @@ class _FloorViewState extends State<_FloorView> {
                     '道具',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.primary,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ],
@@ -1913,13 +1924,13 @@ class _FloorViewState extends State<_FloorView> {
                 Icon(
                   Icons.flag_outlined,
                   size: 15,
-                  color: theme.colorScheme.outline,
+                  color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
                 ),
                 const SizedBox(width: 4),
                 Text(
                   '举报',
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.outline,
+                    color: theme.colorScheme.onSurfaceVariant.withAlpha(200),
                   ),
                 ),
               ],
@@ -2088,8 +2099,9 @@ class _FloorViewState extends State<_FloorView> {
                           Text(
                             _friendlyTime(floor.timeText),
                             style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.outline,
-                              fontSize: 11,
+                              color: theme.colorScheme.onSurfaceVariant.withAlpha(200),
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w500,
                             ),
                           ),
                         if (floor.ipText.isNotEmpty) ...[
@@ -2097,7 +2109,7 @@ class _FloorViewState extends State<_FloorView> {
                           Text(
                             floor.ipText,
                             style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.outline.withAlpha(150),
+                              color: theme.colorScheme.onSurfaceVariant.withAlpha(160),
                               fontSize: 11,
                             ),
                           ),
@@ -2226,6 +2238,17 @@ class _FloorViewState extends State<_FloorView> {
             // 评分/打赏记录
             if (floor.rewards.isNotEmpty || floor.rewardCount.isNotEmpty)
               _RewardSection(floor: floor, tid: tid),
+            // 楼主签名档（仅限 1 楼，排在点赞列表前面）
+            if (widget.isFirstFloor)
+              ListenableBuilder(
+                listenable: AppConfig.instance,
+                builder: (context, _) {
+                  if (AppConfig.showFloorSignature && floor.signature.isNotEmpty) {
+                    return _buildSignature(theme);
+                  }
+                  return const SizedBox.shrink();
+                },
+              ),
             // 首楼点赞专区 (点赞绿色胶囊按钮 + 帖子ID + 点赞用户头像列表 + 赞数角标)
             if (widget.isFirstFloor)
               _buildDzhanSection(theme, floor),
@@ -2241,16 +2264,17 @@ class _FloorViewState extends State<_FloorView> {
             // 点评
             if (floor.comments.isNotEmpty)
               _CommentsSection(comments: floor.comments),
-            // 签名档
-            ListenableBuilder(
-              listenable: AppConfig.instance,
-              builder: (context, _) {
-                if (AppConfig.showFloorSignature && floor.signature.isNotEmpty) {
-                  return _buildSignature(theme);
-                }
-                return const SizedBox.shrink();
-              },
-            ),
+            // 普通楼层签名档（仅限非 1 楼回复）
+            if (!widget.isFirstFloor)
+              ListenableBuilder(
+                listenable: AppConfig.instance,
+                builder: (context, _) {
+                  if (AppConfig.showFloorSignature && floor.signature.isNotEmpty) {
+                    return _buildSignature(theme);
+                  }
+                  return const SizedBox.shrink();
+                },
+              ),
             // 操作栏
             _buildActionRow(context, theme),
           ],
@@ -2415,6 +2439,14 @@ class _FloorViewState extends State<_FloorView> {
     final isSolved = floor.isBountySolved;
     final price = floor.bountyPrice ?? '';
 
+    final isDark = theme.brightness == Brightness.dark;
+    final iconColor = isSolved
+        ? (isDark ? Colors.green.shade400 : Colors.green.shade700)
+        : (isDark ? Colors.amber.shade400 : Colors.amber.shade800);
+    final titleColor = isSolved
+        ? (isDark ? Colors.green.shade300 : Colors.green.shade900)
+        : (isDark ? Colors.amber.shade300 : Colors.amber.shade900);
+
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -2430,7 +2462,7 @@ class _FloorViewState extends State<_FloorView> {
         children: [
           Icon(
             isSolved ? Icons.check_circle : Icons.monetization_on,
-            color: isSolved ? Colors.green.shade700 : Colors.amber.shade800,
+            color: iconColor,
             size: 22,
           ),
           const SizedBox(width: 10),
@@ -2443,7 +2475,7 @@ class _FloorViewState extends State<_FloorView> {
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 14,
-                    color: isSolved ? Colors.green.shade900 : Colors.amber.shade900,
+                    color: titleColor,
                   ),
                 ),
                 const SizedBox(height: 2),
@@ -3211,14 +3243,14 @@ class _ReplyFloorSection extends StatelessWidget {
               Icon(
                 Icons.subdirectory_arrow_right,
                 size: 14,
-                color: theme.colorScheme.outline,
+                color: theme.colorScheme.primary,
               ),
               const SizedBox(width: 4),
               Text(
                 '楼中楼',
                 style: theme.textTheme.bodySmall?.copyWith(
                   fontWeight: FontWeight.w600,
-                  color: theme.colorScheme.outline,
+                  color: theme.colorScheme.primary,
                 ),
               ),
               if (count > 0) ...[
@@ -3444,13 +3476,13 @@ class _ReplyFloorItem extends StatelessWidget {
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.flag_outlined, size: 12, color: colorScheme.outline),
+                              Icon(Icons.flag_outlined, size: 12, color: colorScheme.onSurfaceVariant.withAlpha(180)),
                               const SizedBox(width: 2),
                               Text(
                                 '举报',
                                 style: TextStyle(
                                   fontSize: 11,
-                                  color: colorScheme.outline,
+                                  color: colorScheme.onSurfaceVariant.withAlpha(200),
                                 ),
                               ),
                             ],
@@ -3726,8 +3758,8 @@ class _RewardSectionState extends State<_RewardSection> {
                   r.amount,
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: negative
-                        ? Colors.red.shade400
-                        : Colors.orange.shade800,
+                        ? (theme.brightness == Brightness.dark ? Colors.red.shade300 : Colors.red.shade600)
+                        : (theme.brightness == Brightness.dark ? Colors.orange.shade300 : Colors.orange.shade800),
                     fontWeight: FontWeight.bold,
                     fontSize: 11,
                   ),
@@ -3742,6 +3774,7 @@ class _RewardSectionState extends State<_RewardSection> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     final rewards = floor.rewards;
     if (rewards.isEmpty && floor.rewardCount.isEmpty) {
       return const SizedBox.shrink();
@@ -3763,7 +3796,7 @@ class _RewardSectionState extends State<_RewardSection> {
               Icon(
                 Icons.card_giftcard_rounded,
                 size: 16,
-                color: Colors.orange.shade800,
+                color: isDark ? Colors.orange.shade400 : Colors.orange.shade800,
               ),
               const SizedBox(width: 6),
               Expanded(
@@ -3773,7 +3806,7 @@ class _RewardSectionState extends State<_RewardSection> {
                       : '打赏',
                   style: theme.textTheme.bodySmall?.copyWith(
                     fontWeight: FontWeight.w700,
-                    color: Colors.orange.shade900,
+                    color: isDark ? Colors.orange.shade300 : Colors.orange.shade900,
                   ),
                 ),
               ),

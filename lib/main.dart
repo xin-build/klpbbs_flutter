@@ -28,10 +28,12 @@ import 'pages/notice_page.dart';
 import 'pages/sign_rank_page.dart';
 import 'pages/user_center_page.dart';
 import 'pages/user_space_page.dart';
+import 'services/auto_sign_service.dart';
 import 'services/download_service.dart';
 import 'services/push_notification_service.dart';
 import 'services/rgb_theme_service.dart';
 import 'services/tray_service.dart';
+import 'widgets/in_app_notification_overlay.dart';
 import 'widgets/responsive_layout.dart';
 import 'widgets/thread_card.dart';
 
@@ -55,6 +57,7 @@ void main() async {
   await RgbThemeService.instance.init();
   await PushNotificationService.instance.init();
   await TrayService.instance.init();
+  await AutoSignService.instance.init();
 
   PushNotificationService.instance.onOpenNoticeCallback = () {
     TrayService.instance.showWindow();
@@ -219,7 +222,7 @@ class KlpbbsApp extends StatelessWidget {
                         data: MediaQuery.of(context).copyWith(
                           textScaler: TextScaler.linear(AppConfig.fontScale),
                         ),
-                        child: child!,
+                        child: GlobalInAppNotificationOverlay(child: child!),
                       ),
                     ),
                   ),
@@ -345,11 +348,11 @@ class _AppThemeDataCache {
       ),
       pageTransitionsTheme: const PageTransitionsTheme(
         builders: <TargetPlatform, PageTransitionsBuilder>{
-          TargetPlatform.android: ZoomPageTransitionsBuilder(),
+          TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
           TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
           TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
-          TargetPlatform.windows: FadeUpwardsPageTransitionsBuilder(),
-          TargetPlatform.linux: FadeUpwardsPageTransitionsBuilder(),
+          TargetPlatform.windows: ZoomPageTransitionsBuilder(),
+          TargetPlatform.linux: ZoomPageTransitionsBuilder(),
         },
       ),
       snackBarTheme: SnackBarThemeData(
@@ -434,6 +437,10 @@ class _AppThemeDataCache {
           side: BorderSide(color: colorScheme.outlineVariant.withAlpha(60), width: 0.6),
         ),
         elevation: 4,
+        textStyle: const TextStyle(
+          color: Color(0xFFE2E8F0),
+          fontSize: 13.5,
+        ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
@@ -454,6 +461,8 @@ class _AppThemeDataCache {
       ),
       chipTheme: ChipThemeData(
         backgroundColor: isOled ? const Color(0xFF161817) : const Color(0xFF222825),
+        labelStyle: const TextStyle(color: Color(0xFFE2E8F0), fontSize: 12.5),
+        secondaryLabelStyle: const TextStyle(color: Colors.white, fontSize: 12.5),
         side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50), width: 0.6),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
@@ -483,11 +492,11 @@ class _AppThemeDataCache {
       ),
       pageTransitionsTheme: const PageTransitionsTheme(
         builders: <TargetPlatform, PageTransitionsBuilder>{
-          TargetPlatform.android: ZoomPageTransitionsBuilder(),
+          TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
           TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
           TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
-          TargetPlatform.windows: FadeUpwardsPageTransitionsBuilder(),
-          TargetPlatform.linux: FadeUpwardsPageTransitionsBuilder(),
+          TargetPlatform.windows: ZoomPageTransitionsBuilder(),
+          TargetPlatform.linux: ZoomPageTransitionsBuilder(),
         },
       ),
     );
@@ -648,7 +657,12 @@ class _MainShellState extends State<_MainShell> {
       currentIndex: _index.clamp(0, pages.length - 1),
       onNavigationChanged: (i) {
         if (i < pages.length) {
-          setState(() => _index = i);
+          if (_index == i) {
+            HapticFeedback.lightImpact();
+          } else {
+            HapticFeedback.selectionClick();
+            setState(() => _index = i);
+          }
         }
       },
       navItems: navItems,
@@ -855,9 +869,23 @@ class _MainShellState extends State<_MainShell> {
               label: const Text('发帖'),
             )
           : null,
-      body: IndexedStack(
-        index: _index.clamp(0, pages.length - 1),
-        children: pages,
+      body: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 200),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (child, animation) {
+          return FadeTransition(
+            opacity: animation,
+            child: child,
+          );
+        },
+        child: KeyedSubtree(
+          key: ValueKey<int>(_index.clamp(0, pages.length - 1)),
+          child: IndexedStack(
+            index: _index.clamp(0, pages.length - 1),
+            children: pages,
+          ),
+        ),
       ),
     );
   }

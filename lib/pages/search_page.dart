@@ -367,11 +367,14 @@ class _SearchPageState extends State<SearchPage> {
         title: const Text('论坛搜索 (Xunsearch)'),
         actions: const [GlobalNavButton()],
       ),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 1000),
-          child: ListView(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      body: GestureDetector(
+        onTap: () => FocusScope.of(context).unfocus(),
+        behavior: HitTestBehavior.translucent,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 1000),
+            child: ListView(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             children: [
               // 模式切换 Pills [ 帖子 ] [ 用户 ]
               Row(
@@ -502,7 +505,7 @@ class _SearchPageState extends State<SearchPage> {
                   alignment: Alignment.center,
                   child: Text(
                     _error!,
-                    style: TextStyle(color: colorScheme.outline, fontSize: 14),
+                    style: TextStyle(color: colorScheme.onSurfaceVariant, fontSize: 14),
                   ),
                 ),
 
@@ -518,6 +521,7 @@ class _SearchPageState extends State<SearchPage> {
             ],
           ),
         ),
+      ),
       ),
     );
   }
@@ -605,33 +609,57 @@ class _SearchPageState extends State<SearchPage> {
                   const SizedBox(height: 12),
                   _buildFilterRow(
                     label: '搜索范围',
-                    child: Row(
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        Radio<String>(
-                          value: 'fulltext',
-                          groupValue: _srchScope,
-                          onChanged: (v) => setState(() => _srchScope = v!),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Radio<String>(
+                              value: 'fulltext',
+                              groupValue: _srchScope,
+                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              onChanged: (v) => setState(() => _srchScope = v!),
+                            ),
+                            const Text('全文', style: TextStyle(fontSize: 13)),
+                          ],
                         ),
-                        const Text('全文', style: TextStyle(fontSize: 13)),
-                        const SizedBox(width: 16),
-                        Radio<String>(
-                          value: 'title',
-                          groupValue: _srchScope,
-                          onChanged: (v) => setState(() => _srchScope = v!),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Radio<String>(
+                              value: 'title',
+                              groupValue: _srchScope,
+                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              onChanged: (v) => setState(() => _srchScope = v!),
+                            ),
+                            const Text('标题', style: TextStyle(fontSize: 13)),
+                          ],
                         ),
-                        const Text('标题', style: TextStyle(fontSize: 13)),
-                        const Spacer(),
-                        Checkbox(
-                          value: _fuzzy,
-                          onChanged: (v) => setState(() => _fuzzy = v ?? false),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Checkbox(
+                              value: _fuzzy,
+                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              onChanged: (v) => setState(() => _fuzzy = v ?? false),
+                            ),
+                            const Text('模糊', style: TextStyle(fontSize: 13)),
+                          ],
                         ),
-                        const Text('模糊', style: TextStyle(fontSize: 13)),
-                        const SizedBox(width: 8),
-                        Checkbox(
-                          value: _synonym,
-                          onChanged: (v) => setState(() => _synonym = v ?? true),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Checkbox(
+                              value: _synonym,
+                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              onChanged: (v) => setState(() => _synonym = v ?? true),
+                            ),
+                            const Text('同义词', style: TextStyle(fontSize: 13)),
+                          ],
                         ),
-                        const Text('同义词', style: TextStyle(fontSize: 13)),
                       ],
                     ),
                   ),
@@ -880,7 +908,10 @@ class _SearchPageState extends State<SearchPage> {
           width: 80,
           child: Text(
             label,
-            style: const TextStyle(fontSize: 13, color: Colors.black87),
+            style: TextStyle(
+              fontSize: 13,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
           ),
         ),
         Expanded(child: child),
@@ -932,7 +963,7 @@ class _SearchPageState extends State<SearchPage> {
           child: Center(
             child: Text(
               '没有符合当前过滤条件的帖子',
-              style: TextStyle(color: Theme.of(context).colorScheme.outline, fontSize: 13),
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 13),
             ),
           ),
         ),

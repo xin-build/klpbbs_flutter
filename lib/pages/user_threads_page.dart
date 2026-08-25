@@ -18,6 +18,8 @@ class UserThreadsPage extends StatefulWidget {
   final String type; // thread | reply | favorite
   final String title;
   final bool showAppBar;
+  final bool shrinkWrap;
+  final ScrollPhysics? physics;
 
   const UserThreadsPage({
     super.key,
@@ -25,6 +27,8 @@ class UserThreadsPage extends StatefulWidget {
     required this.type,
     required this.title,
     this.showAppBar = true,
+    this.shrinkWrap = false,
+    this.physics,
   });
 
   @override
@@ -194,115 +198,135 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
               )
             : const SizedBox.shrink());
 
+    final listWidget = FutureBuilder<List<ThreadSummary>>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(child: Padding(
+            padding: EdgeInsets.all(24),
+            child: CircularProgressIndicator(),
+          ));
+        }
+        if (snap.hasError) {
+          return Center(child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text('加载失败：${snap.error}'),
+          ));
+        }
+        var list = snap.data ?? [];
+        if (_sortByName && _currentType == 'favorite') {
+          list = List.of(list)..sort((a, b) => a.title.compareTo(b.title));
+        }
+        if (list.isEmpty) {
+          final isNotLoggedIn = !DioClient.isLoggedIn;
+          return EmptyView(
+            icon: _currentType == 'favorite'
+                ? Icons.bookmark_border
+                : Icons.article_outlined,
+            title: isNotLoggedIn
+                ? '需要登录论坛账号'
+                : (_currentType == 'favorite'
+                    ? '暂无收藏'
+                    : (_currentType == 'reply' ? '暂未发表任何回复' : '暂未发表任何主题')),
+            subtitle: isNotLoggedIn
+                ? '苦力怕论坛要求登录账号后才可查阅用户的空间帖子与回复记录'
+                : (_currentType == 'favorite'
+                    ? '在帖子详情中收藏的帖子将显示在此处'
+                    : '该用户尚未发表公开的${_currentType == 'reply' ? '回复' : '主题'}'),
+            action: isNotLoggedIn
+                ? FilledButton.icon(
+                    onPressed: () async {
+                      await Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const LoginPage()),
+                      );
+                      if (mounted) setState(() => _fetch());
+                    },
+                    icon: const Icon(Icons.login_rounded, size: 16),
+                    label: const Text('立即登录'),
+                  )
+                : null,
+          );
+        }
+        final listView = ListView.separated(
+          shrinkWrap: widget.shrinkWrap,
+          physics: widget.physics ?? (widget.shrinkWrap ? const NeverScrollableScrollPhysics() : const AlwaysScrollableScrollPhysics()),
+          padding: const EdgeInsets.only(bottom: 24),
+          itemCount: list.length + 1,
+          separatorBuilder: (_, __) => const Divider(height: 1),
+          itemBuilder: (context, i) {
+            if (i == list.length) {
+              return PaginationControl(
+                page: _page,
+                hasMore: list.length >= 8,
+                onPageChanged: _goPage,
+              );
+            }
+            final t = list[i];
+            final fallbackAuthor = widget.title
+                .replaceAll(' 的主题', '')
+                .replaceAll(' 的回复', '')
+                .replaceAll(' 的收藏', '')
+                .replaceAll('我', '');
+            final filledThread = t.copyWith(
+              author: t.author.isNotEmpty ? t.author : fallbackAuthor,
+              uid: t.uid ?? widget.uid,
+            );
+            if (_currentType == 'reply') {
+              return _buildReplyTimelineTile(filledThread, colorScheme);
+            }
+            return GestureDetector(
+              onLongPress: _currentType == 'favorite'
+                  ? () async {
+                      final res = await FavoriteDialog.show(
+                        context,
+                        tid: filledThread.tid,
+                        title: filledThread.title,
+                        isFavorited: true,
+                        favid: filledThread.favid,
+                      );
+                      if (res == false && mounted) {
+                        setState(() => _fetch());
+                      }
+                    }
+                  : null,
+              child: ThreadCard(
+                thread: filledThread,
+                onTap: () async {
+                  await Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => ThreadDetailPage(tid: filledThread.tid),
+                    ),
+                  );
+                  if (_currentType == 'favorite' && mounted) {
+                    setState(() => _fetch());
+                  }
+                },
+              ),
+            );
+          },
+        );
+
+        if (widget.shrinkWrap) {
+          return listView;
+        }
+
+        return RefreshIndicator(
+          onRefresh: () async => setState(() => _fetch()),
+          child: listView,
+        );
+      },
+    );
+
     final body = Column(
+      mainAxisSize: widget.shrinkWrap ? MainAxisSize.min : MainAxisSize.max,
       children: [
         typeSelector,
-        Expanded(
-          child: FutureBuilder<List<ThreadSummary>>(
-            future: _future,
-            builder: (context, snap) {
-              if (snap.connectionState != ConnectionState.done) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (snap.hasError) {
-                return Center(child: Text('加载失败：${snap.error}'));
-              }
-              var list = snap.data ?? [];
-              if (_sortByName && _currentType == 'favorite') {
-                list = List.of(list)..sort((a, b) => a.title.compareTo(b.title));
-              }
-              if (list.isEmpty) {
-                final isNotLoggedIn = !DioClient.isLoggedIn;
-                return EmptyView(
-                  icon: _currentType == 'favorite'
-                      ? Icons.bookmark_border
-                      : Icons.article_outlined,
-                  title: isNotLoggedIn
-                      ? '需要登录论坛账号'
-                      : (_currentType == 'favorite'
-                          ? '暂无收藏'
-                          : (_currentType == 'reply' ? '暂未发表任何回复' : '暂未发表任何主题')),
-                  subtitle: isNotLoggedIn
-                      ? '苦力怕论坛要求登录账号后才可查阅用户的空间帖子与回复记录'
-                      : (_currentType == 'favorite'
-                          ? '在帖子详情中收藏的帖子将显示在此处'
-                          : '该用户尚未发表公开的${_currentType == 'reply' ? '回复' : '主题'}'),
-                  action: isNotLoggedIn
-                      ? FilledButton.icon(
-                          onPressed: () async {
-                            await Navigator.of(context).push(
-                              MaterialPageRoute(builder: (_) => const LoginPage()),
-                            );
-                            if (mounted) setState(() => _fetch());
-                          },
-                          icon: const Icon(Icons.login_rounded, size: 16),
-                          label: const Text('立即登录'),
-                        )
-                      : null,
-                );
-              }
-              return RefreshIndicator(
-                onRefresh: () async => setState(() => _fetch()),
-                child: ListView.separated(
-                  padding: const EdgeInsets.only(bottom: 24),
-                  itemCount: list.length + 1,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (context, i) {
-                    if (i == list.length) {
-                      return PaginationControl(
-                        page: _page,
-                        hasMore: list.length >= 8,
-                        onPageChanged: _goPage,
-                      );
-                    }
-                    final t = list[i];
-                    final fallbackAuthor = widget.title
-                        .replaceAll(' 的主题', '')
-                        .replaceAll(' 的回复', '')
-                        .replaceAll(' 的收藏', '')
-                        .replaceAll('我', '');
-                    final filledThread = t.copyWith(
-                      author: t.author.isNotEmpty ? t.author : fallbackAuthor,
-                      uid: t.uid ?? widget.uid,
-                    );
-                    if (_currentType == 'reply') {
-                      return _buildReplyTimelineTile(filledThread, colorScheme);
-                    }
-                    return GestureDetector(
-                      onLongPress: _currentType == 'favorite'
-                          ? () async {
-                              final res = await FavoriteDialog.show(
-                                context,
-                                tid: filledThread.tid,
-                                title: filledThread.title,
-                                isFavorited: true,
-                                favid: filledThread.favid,
-                              );
-                              if (res == false && mounted) {
-                                setState(() => _fetch());
-                              }
-                            }
-                          : null,
-                      child: ThreadCard(
-                        thread: filledThread,
-                        onTap: () async {
-                          await Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => ThreadDetailPage(tid: filledThread.tid),
-                            ),
-                          );
-                          if (_currentType == 'favorite' && mounted) {
-                            setState(() => _fetch());
-                          }
-                        },
-                      ),
-                    );
-                  },
-                ),
-              );
-            },
+        if (widget.shrinkWrap)
+          listWidget
+        else
+          Expanded(
+            child: listWidget,
           ),
-        ),
       ],
     );
 

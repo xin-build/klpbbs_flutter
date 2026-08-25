@@ -327,13 +327,13 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                                                   SizedBox(
                                                     width: 20,
                                                     child: sp == _speed
-                                                        ? Icon(Icons.check_rounded, color: theme.colorScheme.primary, size: 16)
+                                                        ? const Icon(Icons.check_rounded, color: Color(0xFF4ADE80), size: 16)
                                                         : null,
                                                   ),
                                                   Text(
                                                     '${sp}x 倍速',
                                                     style: TextStyle(
-                                                      color: sp == _speed ? theme.colorScheme.primary : Colors.white,
+                                                      color: sp == _speed ? const Color(0xFF4ADE80) : Colors.white,
                                                       fontWeight: sp == _speed ? FontWeight.bold : FontWeight.normal,
                                                     ),
                                                   ),

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -5,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../api/comiis_parser.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
+import '../core/preload_service.dart';
 import '../models/user_space.dart';
 import '../models/usergroup_comparison.dart';
 import '../widgets/global_nav.dart';
@@ -53,10 +55,22 @@ class _UserSpacePageState extends State<UserSpacePage> {
     }
   }
 
-  void _loadData() {
-    setState(() {
-      _future = KlpbbsApi.getUserSpace(widget.uid);
-    });
+  void _loadData({bool forceRefresh = false}) {
+    final cached = PreloadService.instance.get<UserSpace>('user_space_${widget.uid}', ignoreExpired: true);
+    if (!forceRefresh && cached != null) {
+      _future = Future.value(cached);
+      unawaited(
+        KlpbbsApi.getUserSpace(widget.uid).then((fresh) {
+          if (mounted && fresh != null) {
+            setState(() => _future = Future.value(fresh));
+          }
+        }).catchError((_) {}),
+      );
+    } else {
+      setState(() {
+        _future = KlpbbsApi.getUserSpace(widget.uid);
+      });
+    }
     if (widget.isMe != null) {
       _isMe = widget.isMe!;
     } else {
@@ -735,13 +749,15 @@ class _UserSpacePageState extends State<UserSpacePage> {
                   child: Center(
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 880),
-                      child: SizedBox(
-                        height: 600,
+                      child: Padding(
+                        padding: const EdgeInsets.only(bottom: 20),
                         child: UserThreadsPage(
                           uid: widget.uid,
                           type: 'thread',
                           title: '${user.username} 的主题',
                           showAppBar: false,
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
                         ),
                       ),
                     ),
@@ -981,7 +997,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         child: Row(
           children: [
-            Text('用户组', style: TextStyle(fontSize: 13.5, color: theme.colorScheme.outline)),
+            Text('用户组', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: theme.colorScheme.onSurfaceVariant)),
             const SizedBox(width: 14),
             _buildSmallBadge(
               _formatUserLevel(user),
@@ -992,7 +1008,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
               onTap: () => _showUsergroupPrivilegesDialog(user),
               child: const Row(
                 children: [
-                  Text('看看我能做什么', style: TextStyle(fontSize: 12.5, color: Color(0xFFF57C00))),
+                  Text('看看我能做什么', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: Color(0xFFF57C00))),
                   Icon(Icons.chevron_right, size: 16, color: Color(0xFFF57C00)),
                 ],
               ),
@@ -1017,7 +1033,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
           children: [
             Row(
               children: [
-                Text('勋章荣誉', style: TextStyle(fontSize: 13.5, color: theme.colorScheme.outline)),
+                Text('勋章荣誉', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: theme.colorScheme.onSurfaceVariant)),
                 const Spacer(),
                 InkWell(
                   onTap: () => Navigator.of(context).push(
@@ -1025,8 +1041,8 @@ class _UserSpacePageState extends State<UserSpacePage> {
                   ),
                   child: Row(
                     children: [
-                      Text('勋章中心', style: TextStyle(fontSize: 12.5, color: theme.colorScheme.outline)),
-                      Icon(Icons.chevron_right, size: 16, color: theme.colorScheme.outline),
+                      Text('勋章中心', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500, color: theme.colorScheme.primary)),
+                      Icon(Icons.chevron_right, size: 16, color: theme.colorScheme.primary),
                     ],
                   ),
                 ),
@@ -1078,7 +1094,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
     final sigRaw = user.signature.isNotEmpty
         ? user.signature
         : (user.gameProfile['个人签名'] ?? '暂未设置个性签名');
-    final sigHtml = ComiisParser.bbcodeToHtml(sigRaw);
+    final sigHtml = sigRaw.contains('<') ? sigRaw : ComiisParser.bbcodeToHtml(sigRaw);
 
     return Card(
       elevation: 0,
@@ -1355,7 +1371,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SizedBox(width: 80, child: Text(label, style: TextStyle(fontSize: 13.5, color: theme.colorScheme.outline))),
+        SizedBox(width: 80, child: Text(label, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500, color: theme.colorScheme.onSurfaceVariant))),
         Expanded(
           child: SelectableText(
             value,
@@ -1394,7 +1410,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       child: Row(
         children: [
-          Text(label, style: TextStyle(fontSize: 12, color: theme.colorScheme.outline)),
+          Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: theme.colorScheme.onSurfaceVariant)),
           const Spacer(),
           Text(
             val,
@@ -1414,7 +1430,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
       children: [
         SizedBox(
           width: 90,
-          child: Text(label, style: TextStyle(fontSize: 13, color: theme.colorScheme.outline)),
+          child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: theme.colorScheme.onSurfaceVariant)),
         ),
         Expanded(
           child: SelectableText(

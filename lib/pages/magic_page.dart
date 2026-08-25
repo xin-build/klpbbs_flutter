@@ -321,10 +321,10 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
                       height: 48,
                       padding: const EdgeInsets.all(4),
                       decoration: BoxDecoration(
-                        color: const Color(0xFFF2F3F5),
+                        color: colorScheme.surfaceContainerHighest.withAlpha(80),
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(
-                          color: const Color(0xFFE2E4E8),
+                          color: colorScheme.outlineVariant.withAlpha(60),
                           width: 1,
                         ),
                       ),
@@ -562,10 +562,10 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
                       height: 48,
                       padding: const EdgeInsets.all(4),
                       decoration: BoxDecoration(
-                        color: const Color(0xFFF2F3F5),
+                        color: colorScheme.surfaceContainerHighest.withAlpha(80),
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(
-                          color: const Color(0xFFE2E4E8),
+                          color: colorScheme.outlineVariant.withAlpha(60),
                           width: 1,
                         ),
                       ),

@@ -652,7 +652,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
             style: TextStyle(
               fontSize: 11,
               fontWeight: FontWeight.bold,
-              color: Theme.of(context).colorScheme.outline,
+              color: Theme.of(context).colorScheme.primary,
             ),
           ),
           const SizedBox(height: 6),

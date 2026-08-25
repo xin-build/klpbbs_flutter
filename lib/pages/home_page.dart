@@ -4,6 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api/comiis_parser.dart';
 import '../api/klpbbs_api.dart';
@@ -17,6 +18,7 @@ import '../models/thread_summary.dart';
 import '../widgets/desktop_shortcuts.dart';
 import '../widgets/horn_banner_widget.dart';
 import '../widgets/responsive_layout.dart';
+import '../widgets/retry_image.dart';
 import '../widgets/skeleton_list.dart';
 import '../widgets/thread_card.dart';
 import '../widgets/tuhao_banner_widget.dart';
@@ -68,6 +70,9 @@ class _HomePageState extends State<HomePage> {
   List<ThreadSummary> _more = [];
   int _morePage = 1;
   bool _loadingMore = false;
+  List<ThreadSummary> _memoizedAllThreads = [];
+  List<ThreadSummary>? _lastInitialThreads;
+  int _lastMoreLength = -1;
   ValueChanged<int>? get _onSwitchTab => widget.onSwitchTab;
 
   @override
@@ -75,6 +80,7 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _homeScrollCtrl.addListener(_onHomeScroll);
     PushNotificationService.instance.addListener(_onPushNotificationUpdate);
+    ComiisParser.loadTidForumCache();
     _future = _load();
     _loadFavForums();
     if (AppConfig.autoCheckin && DioClient.isLoggedIn) {
@@ -130,6 +136,43 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<(List<ForumGroup>, List<ThreadSummary>, SiteStats)> _load({bool forceRefresh = false}) async {
+    final cachedGroups = PreloadService.instance.get<List<ForumGroup>>('forum_groups', ignoreExpired: true);
+    final cachedThreads = PreloadService.instance.get<List<ThreadSummary>>('home_threads', ignoreExpired: true);
+    final cachedStats = PreloadService.instance.get<SiteStats>('site_stats', ignoreExpired: true);
+
+    if (!forceRefresh && cachedGroups != null && cachedThreads != null) {
+      // 命中本地缓存直接 0ms 秒开呈现，并在后台静默拉取网络最新数据
+      unawaited(() async {
+        try {
+          final results = await Future.wait([
+            KlpbbsApi.getForumGroups(),
+            KlpbbsApi.getHome(),
+            KlpbbsApi.getSiteStats(forceRefresh: false),
+          ]);
+          _loadUnread();
+          if (mounted) {
+            final freshGroups = results[0] as List<ForumGroup>;
+            final freshThreads = results[1] as List<ThreadSummary>;
+            final freshStats = results[2] as SiteStats;
+            setState(() {
+              _future = Future.value((freshGroups, freshThreads, freshStats));
+            });
+          }
+        } catch (_) {}
+      }());
+      _loadUnread();
+      return (
+        cachedGroups,
+        cachedThreads,
+        cachedStats ?? const SiteStats(
+          todayPosts: 61,
+          yesterdayPosts: 273,
+          totalPosts: 10310794,
+          totalMembers: 2317632,
+        ),
+      );
+    }
+
     try {
       final results = await Future.wait([
         KlpbbsApi.getForumGroups(),
@@ -161,9 +204,6 @@ class _HomePageState extends State<HomePage> {
       }
       return (groups, threads, stats);
     } catch (e) {
-      final cachedGroups = PreloadService.instance.get<List<ForumGroup>>('forum_groups');
-      final cachedThreads = PreloadService.instance.get<List<ThreadSummary>>('home_threads');
-      final cachedStats = PreloadService.instance.get<SiteStats>('site_stats');
       if (cachedGroups != null || cachedThreads != null) {
         return (
           cachedGroups ?? SeedData.forumGroups,
@@ -181,6 +221,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _reload() {
+    PreloadService.instance.remove('home_threads');
+    PreloadService.instance.remove('forum_groups');
+    PreloadService.instance.remove('site_stats');
     setState(() {
       _more = [];
       _morePage = 1;
@@ -217,28 +260,31 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _loadMore() async {
     if (_loadingMore) return;
-    setState(() => _loadingMore = true);
+    _loadingMore = true;
     try {
-      var next = await KlpbbsApi.getGuide('new', page: _morePage + 1);
+      final nextPage = _morePage + 1;
+      var next = await KlpbbsApi.getGuide('newthread', page: nextPage);
       if (next.isEmpty) {
-        next = await KlpbbsApi.getGuide('digest', page: _morePage + 1);
+        next = await KlpbbsApi.getGuide('digest', page: nextPage);
       }
       if (next.isEmpty) {
-        next = await KlpbbsApi.getThreadList(2, page: _morePage + 1);
+        next = await KlpbbsApi.getThreadList(2, page: nextPage);
       }
       if (!mounted) return;
-      setState(() {
-        _morePage += 1;
+      if (next.isNotEmpty) {
+        _morePage = nextPage;
         _more.addAll(next);
-      });
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('加载更多失败，请重试')));
+        _memoizedAllThreads = _dedupeThreads([..._lastInitialThreads ?? const [], ..._more]);
+        _lastMoreLength = _more.length;
+        setState(() {});
       }
+    } catch (_) {
     } finally {
-      if (mounted) setState(() => _loadingMore = false);
+      if (mounted) {
+        setState(() => _loadingMore = false);
+      } else {
+        _loadingMore = false;
+      }
     }
   }
 
@@ -249,11 +295,11 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  /// 滚动到底部自动加载更多
+  /// 提前 600px 后台静默预加载更多，实现完全无感平滑无限流
   void _onHomeScroll() {
     if (!_homeScrollCtrl.hasClients || _loadingMore) return;
     final pos = _homeScrollCtrl.position;
-    if (pos.pixels >= pos.maxScrollExtent - 300) {
+    if (pos.pixels >= pos.maxScrollExtent - 600) {
       _loadMore();
     }
   }
@@ -464,8 +510,12 @@ class _HomePageState extends State<HomePage> {
             }
             final (groups, threads, stats) = snap.data!;
             final messenger = ScaffoldMessenger.of(context);
+            final allThreads = _getDisplayThreads(threads);
+            final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+
             return RefreshIndicator(
               onRefresh: () async {
+                HapticFeedback.lightImpact();
                 _reload();
                 await Future.delayed(const Duration(milliseconds: 400));
                 if (mounted) {
@@ -482,164 +532,176 @@ class _HomePageState extends State<HomePage> {
               child: Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 1280),
-                  child: ListView(
+                  child: CustomScrollView(
                     controller: _homeScrollCtrl,
-                    children: [
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    slivers: [
                       // 社区顶部土豪霸屏与全站数据统计栏（实时动态刷新）
-                      TuhaoBannerWidget(stats: stats),
+                      SliverToBoxAdapter(child: TuhaoBannerWidget(stats: stats)),
                       // 小喇叭广播跑马灯
-                      const HornBannerWidget(),
+                      const SliverToBoxAdapter(child: HornBannerWidget()),
                       if (groups.isNotEmpty)
-                        ForumNav(
-                          groups: groups,
-                          favFids: _favForums,
-                          onToggleFav: _toggleFavForum,
+                        SliverToBoxAdapter(
+                          child: ForumNav(
+                            groups: groups,
+                            favFids: _favForums,
+                            onToggleFav: _toggleFavForum,
+                          ),
                         )
                       else
                         // 空态
-                        Padding(
-                          padding: const EdgeInsets.all(24),
-                          child: Center(
-                            child: Column(
-                              children: [
-                                Icon(
-                                  Icons.forum_outlined,
-                                  size: 40,
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.outlineVariant,
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  '暂无版块',
-                                  style: TextStyle(
-                                    fontSize: 13,
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Center(
+                              child: Column(
+                                children: [
+                                  Icon(
+                                    Icons.forum_outlined,
+                                    size: 40,
                                     color: Theme.of(
                                       context,
-                                    ).colorScheme.outline,
+                                    ).colorScheme.outlineVariant,
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    '暂无版块',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.outline,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
                       // 快捷入口：仅在移动端展示（桌面端已有左侧侧边栏导航）
-                      if (!ResponsiveBreakpoints.isDesktop(context))
-                        _QuickActions(onNavigate: _onNavigateTab),
+                      if (!isDesktop)
+                        SliverToBoxAdapter(
+                          child: _QuickActions(onNavigate: _onNavigateTab),
+                        ),
                       // 推荐分区头
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(14, 14, 14, 6),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 4,
-                              height: 16,
-                              decoration: BoxDecoration(
-                                color: Theme.of(context).colorScheme.primary,
-                                borderRadius: BorderRadius.circular(2),
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(14, 14, 14, 6),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 4,
+                                height: 16,
+                                decoration: BoxDecoration(
+                                  color: Theme.of(context).colorScheme.primary,
+                                  borderRadius: BorderRadius.circular(2),
+                                ),
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                            const Text(
-                              '推荐',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
+                              const SizedBox(width: 8),
+                              const Text(
+                                '推荐',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
                               ),
-                            ),
-                            const Spacer(),
-                            Text(
-                              '下拉刷新',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Theme.of(context).colorScheme.outline,
+                              const Spacer(),
+                              Text(
+                                '下拉刷新',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(180),
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                       // 推荐轮播（前 5 篇，移动端展示）
-                      if (threads.isNotEmpty &&
-                          !ResponsiveBreakpoints.isDesktop(context))
-                        _RecommendCarousel(
-                          threads: threads.take(5).toList(),
-                          onTap: _openThread,
+                      if (threads.isNotEmpty && !isDesktop)
+                        SliverToBoxAdapter(
+                          child: _RecommendCarousel(
+                            threads: threads.take(5).toList(),
+                            onTap: _openThread,
+                          ),
                         ),
-                      const SizedBox(height: 6),
-                      if (ResponsiveBreakpoints.isDesktop(context))
-                        Padding(
+                      const SliverToBoxAdapter(child: SizedBox(height: 6)),
+                      // 帖子列表（LAZY 动态虚拟列表构建，仅在滚动进入视口时实例化，彻底消除卡顿）
+                      if (isDesktop)
+                        SliverPadding(
                           padding: const EdgeInsets.symmetric(horizontal: 12),
-                          child: LayoutBuilder(
-                            builder: (ctx, constraints) {
-                              final allThreads = _dedupeThreads([
-                                ...threads,
-                                ..._more,
-                              ]);
-                              return GridView.builder(
-                                shrinkWrap: true,
-                                physics: const NeverScrollableScrollPhysics(),
-                                gridDelegate:
-                                    const SliverGridDelegateWithMaxCrossAxisExtent(
-                                      maxCrossAxisExtent: 520,
-                                      mainAxisExtent: 130,
-                                      mainAxisSpacing: 12,
-                                      crossAxisSpacing: 12,
-                                    ),
-                                itemCount: allThreads.length,
-                                itemBuilder: (ctx, i) {
-                                  final t = allThreads[i];
-                                  return ThreadCard(
-                                    thread: t,
-                                    isGrid: true,
-                                    onTap: () => _openThread(t.tid),
-                                    onAuthorTap: t.uid == null
-                                        ? null
-                                        : () => Navigator.of(context).push(
-                                            MaterialPageRoute(
-                                              builder: (_) =>
-                                                  UserSpacePage(uid: t.uid!),
-                                            ),
+                          sliver: SliverGrid.builder(
+                            gridDelegate:
+                                const SliverGridDelegateWithMaxCrossAxisExtent(
+                                  maxCrossAxisExtent: 520,
+                                  mainAxisExtent: 138,
+                                  mainAxisSpacing: 12,
+                                  crossAxisSpacing: 12,
+                                ),
+                            itemCount: allThreads.length,
+                            itemBuilder: (ctx, i) {
+                              final t = allThreads[i];
+                              return RepaintBoundary(
+                                child: ThreadCard(
+                                  thread: t,
+                                  isGrid: true,
+                                  onTap: () => _openThread(t.tid),
+                                  onAuthorTap: t.uid == null
+                                      ? null
+                                      : () => Navigator.of(context).push(
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                UserSpacePage(uid: t.uid!),
                                           ),
-                                  );
-                                },
+                                        ),
+                                ),
                               );
                             },
                           ),
                         )
                       else
-                        for (final t in _dedupeThreads([...threads, ..._more]))
-                          ThreadCard(
-                            thread: t,
-                            onTap: () => _openThread(t.tid),
-                            onAuthorTap: t.uid == null
-                                ? null
-                                : () => Navigator.of(context).push(
-                                    MaterialPageRoute(
-                                      builder: (_) =>
-                                          UserSpacePage(uid: t.uid!),
+                        SliverList.builder(
+                          itemCount: allThreads.length,
+                          itemBuilder: (ctx, i) {
+                            final t = allThreads[i];
+                            return RepaintBoundary(
+                              child: ThreadCard(
+                                thread: t,
+                                onTap: () => _openThread(t.tid),
+                                onAuthorTap: t.uid == null
+                                    ? null
+                                    : () => Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                          builder: (_) =>
+                                              UserSpacePage(uid: t.uid!),
+                                        ),
+                                      ),
+                              ),
+                            );
+                          },
+                        ),
+                      // 加载更多
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          child: Center(
+                            child: _loadingMore
+                                ? const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
                                     ),
+                                  )
+                                : FilledButton.tonal(
+                                    onPressed: _loadMore,
+                                    child: const Text('加载更多推荐'),
                                   ),
                           ),
-                      // 加载更多
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        child: Center(
-                          child: _loadingMore
-                              ? const SizedBox(
-                                  width: 22,
-                                  height: 22,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : FilledButton.tonal(
-                                  onPressed: _loadMore,
-                                  child: const Text('加载更多推荐'),
-                                ),
                         ),
                       ),
                       // 给右下角发帖 FAB 预留空间，避免遮挡最后一张卡片
-                      const SizedBox(height: 96),
+                      const SliverToBoxAdapter(child: SizedBox(height: 96)),
                     ],
                   ),
                 ),
@@ -649,6 +711,18 @@ class _HomePageState extends State<HomePage> {
         ),
       ),
     );
+  }
+
+  /// 缓存与防抖首页推荐合并列表，避免在滑动或 rebuild 期间频繁执行重复计算
+  List<ThreadSummary> _getDisplayThreads(List<ThreadSummary> initialThreads) {
+    if (identical(_lastInitialThreads, initialThreads) &&
+        _lastMoreLength == _more.length) {
+      return _memoizedAllThreads;
+    }
+    _lastInitialThreads = initialThreads;
+    _lastMoreLength = _more.length;
+    _memoizedAllThreads = _dedupeThreads([...initialThreads, ..._more]);
+    return _memoizedAllThreads;
   }
 
   /// 按 tid 去重（跨首页推荐与加载更多来源，并保证每个帖子均具备准确版块标识）
@@ -935,13 +1009,14 @@ class _ForumNavState extends State<ForumNav> {
                         _expandAll ? '收起分类' : '展开全部分区',
                         style: TextStyle(
                           fontSize: 12,
-                          color: colorScheme.outline,
+                          fontWeight: FontWeight.w500,
+                          color: colorScheme.onSurfaceVariant,
                         ),
                       ),
                       Icon(
                         _expandAll ? Icons.expand_less : Icons.expand_more,
                         size: 16,
-                        color: colorScheme.outline,
+                        color: colorScheme.onSurfaceVariant,
                       ),
                     ],
                   ),
@@ -959,8 +1034,8 @@ class _ForumNavState extends State<ForumNav> {
                         '收藏 ${widget.favFids.length}',
                         style: TextStyle(
                           fontSize: 11.5,
-                          fontWeight: FontWeight.w500,
-                          color: colorScheme.outline,
+                          fontWeight: FontWeight.w600,
+                          color: colorScheme.onSurfaceVariant,
                         ),
                       ),
                     ],
@@ -1022,20 +1097,27 @@ class _ForumNavState extends State<ForumNav> {
             ),
           ),
           const SizedBox(height: 8),
-          // 当前选中分区的版块网格
+          // 当前选中分区的版块网格（全宽双列自适应网格，彻底消除孤立留白）
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final f in currentGroup.forums)
-                  SizedBox(
-                    width: 160,
-                    height: 50,
-                    child: _boardChip(context, f),
+            child: LayoutBuilder(
+              builder: (ctx, constraints) {
+                final isWide = constraints.maxWidth > 600;
+                final crossCount = isWide ? 4 : 2;
+                return GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  padding: EdgeInsets.zero,
+                  itemCount: currentGroup.forums.length,
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: crossCount,
+                    mainAxisExtent: 52,
+                    crossAxisSpacing: 8,
+                    mainAxisSpacing: 8,
                   ),
-              ],
+                  itemBuilder: (ctx, idx) => _boardChip(context, currentGroup.forums[idx]),
+                );
+              },
             ),
           ),
         ] else ...[
@@ -1072,89 +1154,98 @@ class _ForumNavState extends State<ForumNav> {
     final threadCount = f.threadCount > 0 ? f.threadCount : seed.threadCount;
     final todayCount = f.todayCount >= 0 ? f.todayCount : seed.todayCount;
 
-    return Material(
-      color: theme.colorScheme.surfaceContainerHighest.withAlpha(120),
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withAlpha(120),
         borderRadius: BorderRadius.circular(10),
-        onTap: () {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => ThreadListPage(fid: f.fid, title: f.name),
-            ),
-          );
-        },
-        onLongPress: () {
-          widget.onToggleFav?.call(f);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(fav ? '已取消收藏：${f.name}' : '已收藏版块：${f.name}'),
-            ),
-          );
-        },
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-          child: Row(
-            children: [
-              if (f.iconUrl != null)
-                CachedNetworkImage(
-                  imageUrl: f.iconUrl!,
-                  httpHeaders: AppConfig.imageHeaders,
-                  width: 24,
-                  height: 24,
-                  fit: BoxFit.contain,
-                  errorWidget: (_, __, ___) => Icon(
+        border: Border.all(
+          color: theme.colorScheme.outlineVariant.withAlpha(50),
+          width: 0.8,
+        ),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => ThreadListPage(fid: f.fid, title: f.name),
+              ),
+            );
+          },
+          onLongPress: () {
+            widget.onToggleFav?.call(f);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(fav ? '已取消收藏：${f.name}' : '已收藏版块：${f.name}'),
+              ),
+            );
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Row(
+              children: [
+                if (f.iconUrl != null)
+                  CachedNetworkImage(
+                    imageUrl: f.iconUrl!,
+                    httpHeaders: AppConfig.imageHeaders,
+                    width: 26,
+                    height: 26,
+                    fit: BoxFit.contain,
+                    errorWidget: (_, __, ___) => Icon(
+                      ForumNav.forumIcon(f.name),
+                      size: 22,
+                      color: ForumNav.forumIconColor(f.name),
+                    ),
+                  )
+                else
+                  Icon(
                     ForumNav.forumIcon(f.name),
-                    size: 20,
+                    size: 22,
                     color: ForumNav.forumIconColor(f.name),
                   ),
-                )
-              else
-                Icon(
-                  ForumNav.forumIcon(f.name),
-                  size: 20,
-                  color: ForumNav.forumIconColor(f.name),
-                ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      f.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                        fontSize: 12.5,
-                      ),
-                    ),
-                    if (threadCount > 0 || todayCount > 0)
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       Text(
-                        todayCount > 0
-                            ? (threadCount > 0
-                                ? '今日 $todayCount · 帖数 ${threadCount > 9999 ? "${(threadCount / 10000).toStringAsFixed(1)}w" : threadCount}'
-                                : '今日 $todayCount')
-                            : (threadCount > 9999
-                                ? '帖数 ${(threadCount / 10000).toStringAsFixed(1)}w'
-                                : '帖数 $threadCount'),
+                        f.name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          fontSize: 9.5,
-                          color: todayCount > 0
-                              ? theme.colorScheme.primary
-                              : theme.colorScheme.outline,
-                          fontWeight: todayCount > 0 ? FontWeight.w500 : FontWeight.normal,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12.5,
                         ),
                       ),
-                  ],
+                      if (threadCount > 0 || todayCount > 0)
+                        Text(
+                          todayCount > 0
+                              ? (threadCount > 0
+                                  ? '今日 $todayCount · 帖数 ${threadCount > 9999 ? "${(threadCount / 10000).toStringAsFixed(1)}w" : threadCount}'
+                                  : '今日 $todayCount')
+                              : (threadCount > 9999
+                                  ? '帖数 ${(threadCount / 10000).toStringAsFixed(1)}w'
+                                  : '帖数 $threadCount'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontSize: 9.5,
+                            color: todayCount > 0
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.onSurfaceVariant.withAlpha(200),
+                            fontWeight: todayCount > 0 ? FontWeight.w600 : FontWeight.normal,
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
-              ),
-              if (fav)
-                const Icon(Icons.star, size: 14, color: Color(0xFFFFB300)),
-            ],
+                if (fav)
+                  const Icon(Icons.star, size: 14, color: Color(0xFFFFB300)),
+              ],
+            ),
           ),
         ),
       ),
@@ -1215,7 +1306,7 @@ class _CollapsibleGroupState extends State<_CollapsibleGroup> {
                 Icon(
                   _expanded ? Icons.expand_less : Icons.expand_more,
                   size: 18,
-                  color: theme.colorScheme.outline,
+                  color: theme.colorScheme.onSurfaceVariant,
                 ),
               ],
             ),
@@ -1577,7 +1668,7 @@ class _ErrorView extends StatelessWidget {
               _friendlyMessage(error),
               style: TextStyle(
                 fontSize: 13,
-                color: colorScheme.outline,
+                color: colorScheme.onSurfaceVariant,
               ),
               textAlign: TextAlign.center,
             ),
@@ -1704,25 +1795,28 @@ class _RecommendCarouselState extends State<_RecommendCarousel> {
                             fit: StackFit.expand,
                             children: [
                               // 帖子封面（有图时背景，配深色渐变保证文字可读）
-                              if (t.coverUrl != null && t.coverUrl!.isNotEmpty)
-                                DecoratedBox(
+                              if (t.coverUrl != null && t.coverUrl!.isNotEmpty) ...[
+                                RetryImage(
+                                  imageUrl: t.coverUrl!,
+                                  fit: BoxFit.cover,
+                                  alignment: Alignment.center,
+                                  filterQuality: FilterQuality.medium,
+                                  memCacheWidth: 720,
+                                  errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                                ),
+                                const DecoratedBox(
                                   decoration: BoxDecoration(
                                     gradient: LinearGradient(
                                       begin: Alignment.topCenter,
                                       end: Alignment.bottomCenter,
                                       colors: [
-                                        Colors.black.withAlpha(30),
-                                        Colors.black.withAlpha(150),
+                                        Color(0x20000000),
+                                        Color(0xCC000000),
                                       ],
                                     ),
                                   ),
-                                  child: CachedNetworkImage(
-                                    imageUrl: t.coverUrl!,
-                                    fit: BoxFit.cover,
-                                    errorWidget: (_, __, ___) =>
-                                        const SizedBox.shrink(),
-                                  ),
                                 ),
+                              ],
                               Padding(
                                 padding: const EdgeInsets.all(14),
                                 child: Column(
@@ -1741,6 +1835,7 @@ class _RecommendCarouselState extends State<_RecommendCarousel> {
                                         '推荐',
                                         style: TextStyle(
                                           fontSize: 10,
+                                          fontWeight: FontWeight.bold,
                                           color: scheme.onPrimary,
                                         ),
                                       ),
@@ -1753,11 +1848,9 @@ class _RecommendCarouselState extends State<_RecommendCarousel> {
                                       style: TextStyle(
                                         fontWeight: FontWeight.bold,
                                         fontSize: 15,
-                                        color:
-                                            t.coverUrl != null &&
-                                                t.coverUrl!.isNotEmpty
+                                        color: t.coverUrl != null && t.coverUrl!.isNotEmpty
                                             ? Colors.white
-                                            : null,
+                                            : scheme.onSurface,
                                       ),
                                     ),
                                     const SizedBox(height: 4),
@@ -1770,11 +1863,10 @@ class _RecommendCarouselState extends State<_RecommendCarousel> {
                                           : (t.forumName ?? ''),
                                       style: TextStyle(
                                         fontSize: 12,
-                                        color:
-                                            t.coverUrl != null &&
-                                                t.coverUrl!.isNotEmpty
-                                            ? Colors.white70
-                                            : scheme.outline,
+                                        fontWeight: FontWeight.w500,
+                                        color: t.coverUrl != null && t.coverUrl!.isNotEmpty
+                                            ? Colors.white.withAlpha(220)
+                                            : scheme.onSurfaceVariant,
                                       ),
                                     ),
                                   ],

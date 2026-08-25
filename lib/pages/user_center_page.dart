@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
+import '../core/preload_service.dart';
 import '../models/user_space.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/thread_card.dart';
@@ -60,7 +62,6 @@ class _UserCenterPageState extends State<UserCenterPage> {
   }
 
   Future<void> _loadProfile() async {
-    setState(() => _loading = true);
     final uid = await KlpbbsApi.getMyUid();
     if (!mounted) return;
 
@@ -74,6 +75,23 @@ class _UserCenterPageState extends State<UserCenterPage> {
     }
 
     _myUid = uid;
+    final cached = PreloadService.instance.get<UserSpace>('user_space_$uid', ignoreExpired: true);
+    if (cached != null) {
+      final threadCount = int.tryParse(cached.stats['主题'] ?? '0') ?? 0;
+      final rawIron = cached.creditsDetail['铁粒'] ?? '0';
+      final cleanIron = rawIron.replaceAll('粒', '').replaceAll('铁', '').trim();
+      setState(() {
+        _userSpace = cached;
+        _iron = cleanIron.isNotEmpty ? cleanIron : '0';
+        _credits = cached.credits.isNotEmpty ? cached.credits : (cached.creditsDetail['经验'] ?? '0');
+        _medalsCount = cached.medals.length;
+        _threadsCount = threadCount;
+        _loading = false;
+      });
+    } else {
+      setState(() => _loading = true);
+    }
+
     final space = await KlpbbsApi.getUserSpace(uid);
     if (!mounted) return;
 
@@ -168,7 +186,10 @@ class _UserCenterPageState extends State<UserCenterPage> {
         ],
       ),
       body: RefreshIndicator(
-        onRefresh: _loadProfile,
+        onRefresh: () async {
+          HapticFeedback.lightImpact();
+          await _loadProfile();
+        },
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 880),

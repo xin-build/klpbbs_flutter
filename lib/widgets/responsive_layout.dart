@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../core/app_config.dart';
 
 /// 响应式断点与设备排版辅助类
@@ -102,7 +103,8 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold> {
             Material(
               color: colorScheme.surfaceContainerLow,
               child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
+                duration: const Duration(milliseconds: 240),
+                curve: Curves.easeOutCubic,
                 width: _isRailExtended ? 220 : 80,
                 decoration: BoxDecoration(
                   border: Border(
@@ -311,11 +313,14 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold> {
       floatingActionButton: widget.floatingActionButton,
       bottomNavigationBar: useBottomNav
           ? NavigationBar(
+              height: 66,
+              labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
               selectedIndex: widget.currentIndex.clamp(
                 0,
                 effectiveBottomNav.length - 1,
               ),
               onDestinationSelected: (idx) {
+                HapticFeedback.selectionClick();
                 final item = effectiveBottomNav[idx];
                 if (item.onTap != null) {
                   item.onTap!();

@@ -1,5 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
@@ -32,6 +33,11 @@ class _MedalPageState extends State<MedalPage> with SingleTickerProviderStateMix
       vsync: this,
       initialIndex: widget.initialIndex.clamp(0, 2),
     );
+    _tabController.addListener(() {
+      if (_tabController.indexIsChanging) {
+        HapticFeedback.selectionClick();
+      }
+    });
     _allMedalsFuture = KlpbbsApi.getMedals();
     _loadMyMedals();
   }
@@ -135,36 +141,41 @@ class _MedalPageState extends State<MedalPage> with SingleTickerProviderStateMix
 
     showDialog<void>(
       context: context,
-      builder: (ctx) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        child: Container(
-          width: 320,
-          padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // 顶部右侧关闭图标
-              Align(
-                alignment: Alignment.topRight,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(12),
-                  onTap: () => Navigator.of(ctx).pop(),
-                  child: const Padding(
-                    padding: EdgeInsets.all(4),
-                    child: Icon(Icons.close, size: 20, color: Colors.grey),
+      builder: (ctx) {
+        final theme = Theme.of(ctx);
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          child: Container(
+            width: 320,
+            padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // 顶部右侧关闭图标
+                Align(
+                  alignment: Alignment.topRight,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: () => Navigator.of(ctx).pop(),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(Icons.close, size: 20, color: theme.colorScheme.outline),
+                    ),
                   ),
                 ),
-              ),
 
-              // 勋章图片
-              Container(
-                width: 58,
-                height: 58,
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.grey.shade300, width: 0.8),
-                ),
+                // 勋章图片
+                Container(
+                  width: 58,
+                  height: 58,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest.withAlpha(80),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: theme.colorScheme.outlineVariant.withAlpha(60),
+                      width: 0.8,
+                    ),
+                  ),
                 child: Center(
                   child: CachedNetworkImage(
                     imageUrl: m.img,
@@ -189,7 +200,11 @@ class _MedalPageState extends State<MedalPage> with SingleTickerProviderStateMix
               // 勋章描述
               Text(
                 m.desc.isNotEmpty ? m.desc : '苦力怕论坛特色成就勋章。',
-                style: TextStyle(fontSize: 12.5, color: Colors.grey.shade700, height: 1.3),
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: theme.colorScheme.onSurfaceVariant,
+                  height: 1.3,
+                ),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 16),
@@ -206,7 +221,9 @@ class _MedalPageState extends State<MedalPage> with SingleTickerProviderStateMix
                     style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
-                      color: Colors.orange.shade800,
+                      color: theme.brightness == Brightness.dark
+                          ? Colors.orange.shade300
+                          : Colors.orange.shade800,
                     ),
                     textAlign: TextAlign.center,
                   ),
@@ -257,9 +274,10 @@ class _MedalPageState extends State<MedalPage> with SingleTickerProviderStateMix
             ],
           ),
         ),
-      ),
-    );
-  }
+      );
+    },
+  );
+}
 
   Future<void> _handleMedalAction(MedalItem m) async {
     final isOwned = _isMedalOwned(m);
@@ -393,36 +411,48 @@ class _MedalPageState extends State<MedalPage> with SingleTickerProviderStateMix
                     ),
                   );
                 },
-                child: Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: Colors.amber.shade50.withAlpha(220),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.amber.shade200, width: 0.8),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.monetization_on_outlined, size: 18, color: Colors.amber.shade800),
-                      const SizedBox(width: 8),
-                      Text.rich(
-                        TextSpan(
-                          children: [
-                            TextSpan(text: '目前有 ', style: TextStyle(fontSize: 13, color: Colors.amber.shade900)),
-                            TextSpan(
-                              text: '铁粒 $_myIron 粒',
-                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.amber.shade900),
-                            ),
-                          ],
+                child: Builder(
+                  builder: (ctx) {
+                    final isDark = Theme.of(ctx).brightness == Brightness.dark;
+                    final iconColor = isDark ? Colors.amber.shade400 : Colors.amber.shade800;
+                    final textPrimaryColor = isDark ? Colors.amber.shade300 : Colors.amber.shade900;
+                    final linkColor = isDark ? Colors.amber.shade200 : Colors.amber.shade900;
+
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: isDark ? Colors.amber.withAlpha(20) : Colors.amber.shade50.withAlpha(220),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: isDark ? Colors.amber.withAlpha(60) : Colors.amber.shade200,
+                          width: 0.8,
                         ),
                       ),
-                      const Spacer(),
-                      Text(
-                        '明细/转账 >',
-                        style: TextStyle(fontSize: 12, color: Colors.amber.shade900, fontWeight: FontWeight.w500),
+                      child: Row(
+                        children: [
+                          Icon(Icons.monetization_on_outlined, size: 18, color: iconColor),
+                          const SizedBox(width: 8),
+                          Text.rich(
+                            TextSpan(
+                              children: [
+                                TextSpan(text: '目前有 ', style: TextStyle(fontSize: 13, color: textPrimaryColor)),
+                                TextSpan(
+                                  text: '铁粒 $_myIron 粒',
+                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: textPrimaryColor),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const Spacer(),
+                          Text(
+                            '明细/转账 >',
+                            style: TextStyle(fontSize: 12, color: linkColor, fontWeight: FontWeight.w500),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
+                    );
+                  },
                 ),
               );
             }

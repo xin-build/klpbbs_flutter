@@ -490,7 +490,7 @@ class _GeneralVideoPlayerState extends State<GeneralVideoPlayer> {
                                           child: Text(
                                             '${_rate == 1.0 ? "1.0" : _rate}x',
                                             style: TextStyle(
-                                              color: _rate != 1.0 ? colorScheme.primary : Colors.white70,
+                                              color: _rate != 1.0 ? const Color(0xFF4ADE80) : Colors.white70,
                                               fontSize: 11,
                                               fontWeight: FontWeight.bold,
                                             ),
