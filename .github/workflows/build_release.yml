@@ -42,6 +42,7 @@ jobs:
 
       - name: Build Android APK
         run: |
+          set -o pipefail
           flutter build apk --release 2>&1 | tee android_build.log
 
       - name: Print Android Error Summary
@@ -104,6 +105,7 @@ jobs:
           PreferredToolArchitecture: x64
         run: |
           flutter build windows --release 2>&1 | Tee-Object -FilePath windows_build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Print Windows Error Summary
         if: failure()

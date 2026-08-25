@@ -18,9 +18,9 @@ set(CMAKE_POLICY_DEFAULT_CMP0175 OLD)
 set(CMAKE_POLICY_DEFAULT_CMP0177 OLD)
 
 if(MSVC)
-  add_compile_options(/bigobj /WX- /Zm2000)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /bigobj /WX- /Zm2000")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /bigobj /WX- /Zm2000")
+  add_compile_options(/bigobj /WX-)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /bigobj /WX-")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /bigobj /WX-")
 endif()
 
 # The name of the executable created for the application. Change this to change
