@@ -42,7 +42,15 @@ jobs:
         run: flutter pub get
 
       - name: Build Android APK
-        run: flutter build apk --release
+        run: |
+          flutter build apk --release 2>&1 | tee android_build.log
+
+      - name: Upload Android Log on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-log
+          path: android_build.log
 
       - name: Locate and Package Android APK
         run: |
@@ -89,7 +97,14 @@ jobs:
         env:
           PreferredToolArchitecture: x64
         run: |
-          flutter build windows --release
+          flutter build windows --release 2>&1 | Tee-Object -FilePath windows_build.log
+
+      - name: Upload Windows Log on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-log
+          path: windows_build.log
 
       - name: Package Windows Binary
         shell: pwsh
