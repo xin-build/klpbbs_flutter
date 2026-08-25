@@ -42,7 +42,16 @@ jobs:
         run: flutter pub get
 
       - name: Build Android APK
-        run: flutter build apk --release
+        run: |
+          set -o pipefail
+          flutter build apk --release 2>&1 | tee android.log
+
+      - name: Upload Android Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-android
+          path: android.log
 
       - name: Locate and Package Android APK
         run: |
@@ -89,7 +98,15 @@ jobs:
         env:
           PreferredToolArchitecture: x64
         run: |
-          flutter build windows --release
+          flutter build windows --release 2>&1 | Tee-Object -FilePath windows.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload Windows Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-windows
+          path: windows.log
 
       - name: Package Windows Binary
         shell: pwsh
@@ -129,7 +146,16 @@ jobs:
         run: flutter pub get
 
       - name: Build macOS Release
-        run: flutter build macos --release
+        run: |
+          set -o pipefail
+          flutter build macos --release 2>&1 | tee macos.log
+
+      - name: Upload macOS Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-macos
+          path: macos.log
 
       - name: Package macOS Binary
         run: |
@@ -167,7 +193,16 @@ jobs:
         run: flutter pub get
 
       - name: Build iOS Release (Unsigned)
-        run: flutter build ios --release --no-codesign
+        run: |
+          set -o pipefail
+          flutter build ios --release --no-codesign 2>&1 | tee ios.log
+
+      - name: Upload iOS Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-ios
+          path: ios.log
 
       - name: Package iOS IPA
         run: |
@@ -211,7 +246,16 @@ jobs:
         run: flutter pub get
 
       - name: Build Linux Release
-        run: flutter build linux --release
+        run: |
+          set -o pipefail
+          flutter build linux --release 2>&1 | tee linux.log
+
+      - name: Upload Linux Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-linux
+          path: linux.log
 
       - name: Package Linux Binary
         run: |
@@ -230,7 +274,7 @@ jobs:
   release:
     name: Publish Release Artifacts
     needs: [build-android, build-windows, build-macos, build-ios, build-linux]
-    if: startsWith(github.ref, 'refs/tags/')
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Download Artifacts
@@ -241,15 +285,30 @@ jobs:
       - name: Flatten Artifacts Directory
         run: |
           mkdir -p ./all-releases
-          find ./release-files -type f -exec cp {} ./all-releases/ \;
+          find ./release-files -type f -not -name "*.log" -exec cp {} ./all-releases/ \;
           ls -lh ./all-releases
+
+      - name: Prepare Release Notes with Logs
+        run: |
+          echo "## Release v1.0.4 Diagnostics & Summary" > release_notes.md
+          echo "### Build Artifacts:" >> release_notes.md
+          ls -lh ./all-releases >> release_notes.md || true
+          echo "" >> release_notes.md
+          for logfile in $(find ./release-files -type f -name "*.log"); do
+            echo "### Log: $(basename $logfile)" >> release_notes.md
+            echo '```' >> release_notes.md
+            tail -n 80 "$logfile" >> release_notes.md
+            echo '```' >> release_notes.md
+            echo "" >> release_notes.md
+          done
+          cat release_notes.md
 
       - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.0.4' }}
           files: ./all-releases/*
+          body_path: release_notes.md
           draft: false
           prerelease: false
-          generate_release_notes: true
           make_latest: true
