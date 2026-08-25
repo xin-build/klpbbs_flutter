@@ -47,9 +47,12 @@ jobs:
       - name: Locate and Package Android APK
         run: |
           mkdir -p android-dist
-          APK_FILE=$(find build/app/outputs -name "*.apk" -type f | head -n 1)
-          echo "Found APK: $APK_FILE"
-          cp "$APK_FILE" android-dist/klpbbs-android-release.apk
+          if [ -f "build/app/outputs/flutter-apk/app-release.apk" ]; then
+            cp "build/app/outputs/flutter-apk/app-release.apk" android-dist/klpbbs-android-release.apk
+          else
+            APK_FILE=$(find build -name "*.apk" -type f | head -n 1)
+            cp "$APK_FILE" android-dist/klpbbs-android-release.apk
+          fi
           ls -lh android-dist/
 
       - name: Upload Android APK
@@ -93,10 +96,16 @@ jobs:
       - name: Package Windows Binary
         shell: pwsh
         run: |
-          $releaseDir = Resolve-Path "build\windows\*\runner\Release" | Select-Object -ExpandProperty Path -First 1
-          if (-not $releaseDir) { $releaseDir = Resolve-Path "build\windows\runner\Release" | Select-Object -ExpandProperty Path -First 1 }
-          Write-Host "Found Release Dir: $releaseDir"
-          Get-ChildItem -Path $releaseDir | Compress-Archive -DestinationPath "klpbbs-windows-x64.zip" -Force
+          $exe = Get-ChildItem -Path "build\windows" -Filter "*.exe" -Recurse | Where-Object { $_.DirectoryName -match "Release" } | Select-Object -First 1
+          if ($exe) {
+              $releaseDir = $exe.DirectoryName
+              Write-Host "Found Release Dir: $releaseDir"
+              Compress-Archive -Path "$releaseDir\*" -DestinationPath "klpbbs-windows-x64.zip" -Force
+          } else {
+              $releaseDir = (Get-Item -Path "build\windows\*\runner\Release", "build\windows\runner\Release" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+              Write-Host "Fallback Release Dir: $releaseDir"
+              Compress-Archive -Path "$releaseDir\*" -DestinationPath "klpbbs-windows-x64.zip" -Force
+          }
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
