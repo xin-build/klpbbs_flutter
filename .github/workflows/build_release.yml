@@ -240,7 +240,16 @@ jobs:
         run: flutter pub get
 
       - name: Build Linux Release
-        run: flutter build linux --release
+        run: |
+          set -o pipefail
+          flutter build linux --release 2>&1 | tee linux_build.log
+
+      - name: Upload Linux Log on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build-log
+          path: linux_build.log
 
       - name: Package Linux Binary
         run: |
@@ -270,7 +279,7 @@ jobs:
       - name: Flatten Artifacts Directory
         run: |
           mkdir -p ./all-releases
-          find ./release-files -type f -not -name "*.log" -exec cp {} ./all-releases/ \;
+          find ./release-files -type f -exec cp {} ./all-releases/ \;
           ls -lh ./all-releases
 
       - name: Create or Update GitHub Release
