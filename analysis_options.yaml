@@ -7,6 +7,22 @@
 
 # The following line activates a set of recommended lints for Flutter apps,
 # packages, and plugins designed to encourage good coding practices.
+analyzer:
+  errors:
+    deprecated_member_use: ignore
+    deprecated_member_use_from_same_package: ignore
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
+    - windows/**
+    - macos/**
+    - linux/**
+    - reference_piliplus/**
+    - klpbbs_app/**
+    - local-env/**
+    - mock-server/**
+    - tools/**
 include: package:flutter_lints/flutter.yaml
 
 linter:
