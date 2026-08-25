@@ -43,23 +43,7 @@ jobs:
 
       - name: Build Android APK
         run: |
-          set -o pipefail
-          flutter build apk --release 2>&1 | tee android_build.log
-
-      - name: Print Android Error Summary
-        if: failure()
-        run: |
-          echo "### Android Build Failed" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -n 50 android_build.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload Android Log on Failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-build-log
-          path: android_build.log
+          flutter build apk --release --no-tree-shake-icons --android-skip-build-dependency-validation
 
       - name: Locate and Package Android APK
         run: |
@@ -106,24 +90,7 @@ jobs:
         env:
           PreferredToolArchitecture: x64
         run: |
-          flutter build windows --release 2>&1 | Tee-Object -FilePath windows_build.log
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Print Windows Error Summary
-        if: failure()
-        shell: pwsh
-        run: |
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Windows Build Failed"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
-          Get-Content windows_build.log -Tail 50 | Add-Content -Path $env:GITHUB_STEP_SUMMARY
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
-
-      - name: Upload Windows Log on Failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-build-log
-          path: windows_build.log
+          flutter build windows --release --no-tree-shake-icons
 
       - name: Package Windows Binary
         shell: pwsh
@@ -163,7 +130,7 @@ jobs:
         run: flutter pub get
 
       - name: Build macOS Release
-        run: flutter build macos --release
+        run: flutter build macos --release --no-tree-shake-icons
 
       - name: Package macOS Binary
         run: |
@@ -201,7 +168,7 @@ jobs:
         run: flutter pub get
 
       - name: Build iOS Release (Unsigned)
-        run: flutter build ios --release --no-codesign
+        run: flutter build ios --release --no-codesign --no-tree-shake-icons
 
       - name: Package iOS IPA
         run: |
@@ -245,16 +212,7 @@ jobs:
         run: flutter pub get
 
       - name: Build Linux Release
-        run: |
-          set -o pipefail
-          flutter build linux --release 2>&1 | tee linux_build.log
-
-      - name: Upload Linux Log on Failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-build-log
-          path: linux_build.log
+        run: flutter build linux --release --no-tree-shake-icons
 
       - name: Package Linux Binary
         run: |
