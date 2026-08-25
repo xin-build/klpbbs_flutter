@@ -667,7 +667,7 @@ class _SearchPageState extends State<SearchPage> {
                   _buildFilterRow(
                     label: '排序方式',
                     child: DropdownButtonFormField<String>(
-                      initialValue: _sortOrder,
+                      value: _sortOrder,
                       decoration: _dropdownDeco(),
                       isDense: true,
                       items: const [

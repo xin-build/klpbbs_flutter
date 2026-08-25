@@ -952,7 +952,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 1200),
                       child: ListView(
-                        scrollCacheExtent: ScrollCacheExtent.pixels(800), controller: _scrollCtrl,
+                        cacheExtent: 800.0,
+                        controller: _scrollCtrl,
                         padding: const EdgeInsets.only(bottom: 48),
                         children: [
                           if (title.isNotEmpty)
