@@ -27,9 +27,11 @@ jobs:
           java-version: '17'
 
       - name: Setup Flutter
-        run: |
-          git clone -b 3.32.5 https://github.com/flutter/flutter.git --depth 1 $HOME/flutter
-          echo "$HOME/flutter/bin" >> $GITHUB_PATH
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.5'
+          channel: 'stable'
+          cache: true
 
       - name: Doctor and Licenses
         run: |
@@ -40,34 +42,14 @@ jobs:
         run: flutter pub get
 
       - name: Build Android APK
-        run: |
-          set -o pipefail
-          flutter build apk --release 2>&1 | tee android.log
-
-      - name: Report Android Failure
-        if: failure()
-        run: |
-          echo "### Android Build Error" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -n 60 android.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload Android Failure Log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: klpbbs-android-error
-          path: android.log
+        run: flutter build apk --release
 
       - name: Locate and Package Android APK
         run: |
           mkdir -p android-dist
-          if [ -f "build/app/outputs/flutter-apk/app-release.apk" ]; then
-            cp "build/app/outputs/flutter-apk/app-release.apk" android-dist/klpbbs-android-release.apk
-          else
-            APK_FILE=$(find build -name "*.apk" -type f | head -n 1)
-            cp "$APK_FILE" android-dist/klpbbs-android-release.apk
-          fi
+          APK_FILE=$(find build/app/outputs -name "*.apk" -type f | head -n 1)
+          echo "Found APK: $APK_FILE"
+          cp "$APK_FILE" android-dist/klpbbs-android-release.apk
           ls -lh android-dist/
 
       - name: Upload Android APK
@@ -87,10 +69,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Flutter
-        shell: pwsh
-        run: |
-          git clone -b 3.32.5 https://github.com/flutter/flutter.git --depth 1 $env:USERPROFILE\flutter
-          "$env:USERPROFILE\flutter\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.5'
+          channel: 'stable'
+          cache: true
 
       - name: Doctor Check
         run: flutter doctor -v
@@ -106,35 +89,15 @@ jobs:
         env:
           PreferredToolArchitecture: x64
         run: |
-          flutter build windows --release 2>&1 | Tee-Object -FilePath windows.log
-          if ($LASTEXITCODE -ne 0) {
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Windows Build Error"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
-            Get-Content windows.log -Tail 60 | Add-Content -Path $env:GITHUB_STEP_SUMMARY
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
-            exit $LASTEXITCODE
-          }
-
-      - name: Upload Windows Failure Log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: klpbbs-windows-error
-          path: windows.log
+          flutter build windows --release
 
       - name: Package Windows Binary
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Path "build\windows" -Filter "*.exe" -Recurse | Where-Object { $_.DirectoryName -match "Release" } | Select-Object -First 1
-          if ($exe) {
-              $releaseDir = $exe.DirectoryName
-              Write-Host "Found Release Dir: $releaseDir"
-              Compress-Archive -Path "$releaseDir\*" -DestinationPath "klpbbs-windows-x64.zip" -Force
-          } else {
-              $releaseDir = (Get-Item -Path "build\windows\*\runner\Release", "build\windows\runner\Release" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-              Write-Host "Fallback Release Dir: $releaseDir"
-              Compress-Archive -Path "$releaseDir\*" -DestinationPath "klpbbs-windows-x64.zip" -Force
-          }
+          $releaseDir = Resolve-Path "build\windows\*\runner\Release" | Select-Object -ExpandProperty Path -First 1
+          if (-not $releaseDir) { $releaseDir = Resolve-Path "build\windows\runner\Release" | Select-Object -ExpandProperty Path -First 1 }
+          Write-Host "Found Release Dir: $releaseDir"
+          Get-ChildItem -Path $releaseDir | Compress-Archive -DestinationPath "klpbbs-windows-x64.zip" -Force
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
@@ -153,9 +116,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Flutter
-        run: |
-          git clone -b 3.32.5 https://github.com/flutter/flutter.git --depth 1 $HOME/flutter
-          echo "$HOME/flutter/bin" >> $GITHUB_PATH
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.5'
+          channel: 'stable'
+          cache: true
 
       - name: Enable macOS Desktop Support
         run: flutter config --enable-macos-desktop
@@ -164,32 +129,13 @@ jobs:
         run: flutter pub get
 
       - name: Build macOS Release
-        run: |
-          set -o pipefail
-          flutter build macos --release 2>&1 | tee macos.log
-
-      - name: Report macOS Failure
-        if: failure()
-        run: |
-          echo "### macOS Build Error" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -n 60 macos.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload macOS Failure Log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: klpbbs-macos-error
-          path: macos.log
+        run: flutter build macos --release
 
       - name: Package macOS Binary
         run: |
           APP_PATH=$(find build/macos -name "*.app" -type d | head -n 1)
-          if [ -n "$APP_PATH" ]; then
-            cd "$(dirname "$APP_PATH")"
-            zip -r "$GITHUB_WORKSPACE/klpbbs-macos.zip" "$(basename "$APP_PATH")"
-          fi
+          cd "$(dirname "$APP_PATH")"
+          zip -r "$GITHUB_WORKSPACE/klpbbs-macos.zip" "$(basename "$APP_PATH")"
 
       - name: Upload macOS Artifact
         uses: actions/upload-artifact@v4
@@ -208,9 +154,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Flutter
-        run: |
-          git clone -b 3.32.5 https://github.com/flutter/flutter.git --depth 1 $HOME/flutter
-          echo "$HOME/flutter/bin" >> $GITHUB_PATH
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.5'
+          channel: 'stable'
+          cache: true
 
       - name: Enable iOS Support
         run: flutter config --enable-ios
@@ -219,33 +167,14 @@ jobs:
         run: flutter pub get
 
       - name: Build iOS Release (Unsigned)
-        run: |
-          set -o pipefail
-          flutter build ios --release --no-codesign 2>&1 | tee ios.log
-
-      - name: Report iOS Failure
-        if: failure()
-        run: |
-          echo "### iOS Build Error" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -n 60 ios.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload iOS Failure Log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: klpbbs-ios-error
-          path: ios.log
+        run: flutter build ios --release --no-codesign
 
       - name: Package iOS IPA
         run: |
           mkdir -p Payload
           APP_PATH=$(find build/ios -name "*.app" -type d | head -n 1)
-          if [ -n "$APP_PATH" ]; then
-            cp -r "$APP_PATH" Payload/
-            zip -r klpbbs-ios-unsigned.ipa Payload
-          fi
+          cp -r "$APP_PATH" Payload/
+          zip -r klpbbs-ios-unsigned.ipa Payload
 
       - name: Upload iOS Artifact
         uses: actions/upload-artifact@v4
@@ -269,9 +198,11 @@ jobs:
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libmpv-dev mpv libnotify-dev libayatana-appindicator3-dev libsecret-1-dev libjsoncpp-dev
 
       - name: Setup Flutter
-        run: |
-          git clone -b 3.32.5 https://github.com/flutter/flutter.git --depth 1 $HOME/flutter
-          echo "$HOME/flutter/bin" >> $GITHUB_PATH
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.5'
+          channel: 'stable'
+          cache: true
 
       - name: Enable Linux Desktop Support
         run: flutter config --enable-linux-desktop
@@ -280,31 +211,12 @@ jobs:
         run: flutter pub get
 
       - name: Build Linux Release
-        run: |
-          set -o pipefail
-          flutter build linux --release 2>&1 | tee linux.log
-
-      - name: Report Linux Failure
-        if: failure()
-        run: |
-          echo "### Linux Build Error" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -n 60 linux.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload Linux Failure Log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: klpbbs-linux-error
-          path: linux.log
+        run: flutter build linux --release
 
       - name: Package Linux Binary
         run: |
           RELEASE_DIR=$(find build/linux -name "bundle" -type d | head -n 1)
-          if [ -n "$RELEASE_DIR" ]; then
-            tar -czvf klpbbs-linux-x64.tar.gz -C "$RELEASE_DIR" .
-          fi
+          tar -czvf klpbbs-linux-x64.tar.gz -C "$RELEASE_DIR" .
 
       - name: Upload Linux Artifact
         uses: actions/upload-artifact@v4
@@ -318,7 +230,7 @@ jobs:
   release:
     name: Publish Release Artifacts
     needs: [build-android, build-windows, build-macos, build-ios, build-linux]
-    if: always()
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Download Artifacts
