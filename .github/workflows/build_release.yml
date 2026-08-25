@@ -52,6 +52,13 @@ jobs:
           tail -n 60 android.log >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
+      - name: Upload Android Failure Log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: klpbbs-android-error
+          path: android.log
+
       - name: Locate and Package Android APK
         run: |
           mkdir -p android-dist
@@ -108,6 +115,13 @@ jobs:
             exit $LASTEXITCODE
           }
 
+      - name: Upload Windows Failure Log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: klpbbs-windows-error
+          path: windows.log
+
       - name: Package Windows Binary
         shell: pwsh
         run: |
@@ -162,6 +176,13 @@ jobs:
           tail -n 60 macos.log >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
+      - name: Upload macOS Failure Log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: klpbbs-macos-error
+          path: macos.log
+
       - name: Package macOS Binary
         run: |
           APP_PATH=$(find build/macos -name "*.app" -type d | head -n 1)
@@ -209,6 +230,13 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           tail -n 60 ios.log >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload iOS Failure Log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: klpbbs-ios-error
+          path: ios.log
 
       - name: Package iOS IPA
         run: |
@@ -263,6 +291,13 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           tail -n 60 linux.log >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Linux Failure Log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: klpbbs-linux-error
+          path: linux.log
 
       - name: Package Linux Binary
         run: |
