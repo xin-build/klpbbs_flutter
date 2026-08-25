@@ -1,0 +1,48 @@
+name: Cleanup Failed Workflow Runs
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete Failed & Old Workflow Runs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let page = 1;
+            while (true) {
+              const res = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+                page: page
+              });
+              if (!res.data.workflow_runs || res.data.workflow_runs.length === 0) {
+                break;
+              }
+              for (const run of res.data.workflow_runs) {
+                if (run.id !== context.runId && run.conclusion !== 'success') {
+                  console.log(`Deleting failed run: ${run.id} (${run.name} - ${run.conclusion})`);
+                  try {
+                    await github.rest.actions.deleteWorkflowRun({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      run_id: run.id
+                    });
+                  } catch (err) {
+                    console.error(`Error deleting run ${run.id}: ${err.message}`);
+                  }
+                }
+              }
+              page++;
+              if (page > 10) break;
+            }
