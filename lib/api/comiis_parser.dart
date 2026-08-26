@@ -5290,7 +5290,9 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
   static Set<int> parseSignedDaysFromCalendarHtml(String html) {
     final doc = html_parser.parse(html);
     final days = <int>{};
-    final signedNodes = doc.querySelectorAll('.table_calendar p.signed, .table_calendar td.signed, td p.signed, p.signed');
+    final signedNodes = doc.querySelectorAll(
+      '.table_calendar p.signed, .table_calendar td.signed, td p.signed, p.signed, .table_calendar p[class*="signed"], td[class*="signed"], p.cur, td.cur',
+    );
     for (final node in signedNodes) {
       final day = int.tryParse(RegExp(r'(\d+)').firstMatch(node.text)?.group(1) ?? '');
       if (day != null && day > 0) {
@@ -5539,7 +5541,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         String value = '';
         final clone = el.clone(true);
         clone.querySelector('em, th, span.dt, span.kmtit')?.remove();
-        value = clone.text.replaceAll(':', '').replaceAll('：', '').trim();
+        value = clone.text.replaceFirst(RegExp(r'^[:：\s]+'), '').replaceFirst(RegExp(r'[:：\s]+$'), '').trim();
 
         if (label.isNotEmpty && value.isNotEmpty) {
           if (label.contains('主题') || label == '帖子') {
@@ -5582,7 +5584,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           .replaceAll('：', '')
           .replaceAll(' ', '')
           .trim();
-      final value = m.group(2)!.replaceAll(':', '').replaceAll('：', '').trim();
+      final value = m.group(2)!.replaceFirst(RegExp(r'^[:：\s]+'), '').replaceFirst(RegExp(r'[:：\s]+$'), '').trim();
       if (label.isNotEmpty && value.isNotEmpty) {
         if (label.contains('主题')) stats.putIfAbsent('主题', () => value);
         if (label.contains('回帖')) stats.putIfAbsent('回复', () => value);

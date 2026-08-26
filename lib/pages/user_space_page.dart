@@ -655,123 +655,130 @@ class _UserSpacePageState extends State<UserSpacePage> {
           body: Column(
             children: [
               Expanded(
-                child: CustomScrollView(
-                  slivers: [
-                    // 1. 顶部 Minecraft 森林沉浸式 Hero 顶栏
-                    SliverAppBar(
-                      expandedHeight: 220,
-                      pinned: true,
-                      foregroundColor: Colors.white,
-                      backgroundColor: theme.colorScheme.primary,
-                      title: Text(
-                        _isMe ? '我的空间' : 'Ta 的空间',
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
-                      ),
-                      actions: [
-                        IconButton(
-                          icon: const Icon(Icons.more_horiz),
-                          tooltip: '更多',
-                          onPressed: () => _showMoreActions(user),
+                child: RefreshIndicator(
+                  onRefresh: () async {
+                    _loadData(forceRefresh: true);
+                    await _future;
+                  },
+                  child: CustomScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+                    slivers: [
+                      // 1. 顶部 Minecraft 森林沉浸式 Hero 顶栏
+                      SliverAppBar(
+                        expandedHeight: 220,
+                        pinned: true,
+                        foregroundColor: Colors.white,
+                        backgroundColor: theme.colorScheme.primary,
+                        title: Text(
+                          _isMe ? '我的空间' : 'Ta 的空间',
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
                         ),
-                        const GlobalNavButton(),
-                      ],
-                      flexibleSpace: FlexibleSpaceBar(
-                        background: _buildHeroHeader(user, theme),
+                        actions: [
+                          IconButton(
+                            icon: const Icon(Icons.more_horiz),
+                            tooltip: '更多',
+                            onPressed: () => _showMoreActions(user),
+                          ),
+                          const GlobalNavButton(),
+                        ],
+                        flexibleSpace: FlexibleSpaceBar(
+                          background: _buildHeroHeader(user, theme),
+                        ),
                       ),
-                    ),
 
-              // 2. Tab 切换栏 (资料 / 帖子)
-              SliverToBoxAdapter(
-                child: Container(
-                  color: theme.colorScheme.surface,
-                  child: Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 880),
-                      child: Container(
-                        decoration: BoxDecoration(
-                          border: Border(
-                            bottom: BorderSide(color: theme.colorScheme.outlineVariant.withAlpha(60)),
+                      // 2. Tab 切换栏 (资料 / 帖子)
+                      SliverToBoxAdapter(
+                        child: Container(
+                          color: theme.colorScheme.surface,
+                          child: Center(
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 880),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  border: Border(
+                                    bottom: BorderSide(color: theme.colorScheme.outlineVariant.withAlpha(60)),
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    _buildTabItem(0, '资料', theme),
+                                    _buildTabItem(1, '帖子 (${user.stats['主题'] ?? user.stats['帖子'] ?? '0'})', theme),
+                                  ],
+                                ),
+                              ),
+                            ),
                           ),
                         ),
-                        child: Row(
-                          children: [
-                            _buildTabItem(0, '资料', theme),
-                            _buildTabItem(1, '帖子 (${user.stats['主题'] ?? user.stats['帖子'] ?? '0'})', theme),
-                          ],
-                        ),
                       ),
-                    ),
+
+                      // 3. Tab 内容区 (100% 居中无塌陷渲染)
+                      if (_selectedTab == 0)
+                        SliverToBoxAdapter(
+                          child: Center(
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 880),
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(16, 14, 16, 40),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                                  children: [
+                                    // 1. 用户组卡片 (图二: Lv.4 高级会员  看看我能做什么 >)
+                                    _buildUsergroupCard(user, theme),
+                                    const SizedBox(height: 10),
+
+                                    // 2. 勋章荣誉卡片
+                                    _buildMedalCard(user, theme),
+                                    const SizedBox(height: 10),
+
+                                    // 3. 个人签名与头衔卡片
+                                    _buildSignatureCard(user, theme),
+                                    const SizedBox(height: 10),
+
+                                    // 4. 4 大统计徽章 (🟢 帖子, 🟠 回复, 🔵 好友, 🟡 人气)
+                                    _buildStatsCard(user, theme),
+                                    const SizedBox(height: 10),
+
+                                    // 5. 积分资产明细表格 (图二双列表格，自动消重单位)
+                                    _buildCreditsCard(user, theme),
+                                    const SizedBox(height: 10),
+
+                                    // 6. 基本资料
+                                    _buildBasicInfoCard(user, theme),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        )
+                      else
+                        SliverToBoxAdapter(
+                          child: Center(
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 880),
+                              child: Padding(
+                                padding: const EdgeInsets.only(bottom: 20),
+                                child: UserThreadsPage(
+                                  uid: widget.uid,
+                                  type: 'thread',
+                                  title: '${user.username} 的主题',
+                                  showAppBar: false,
+                                  shrinkWrap: true,
+                                  physics: const NeverScrollableScrollPhysics(),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ),
-
-              // 3. Tab 内容区 (100% 居中无塌陷渲染)
-              if (_selectedTab == 0)
-                SliverToBoxAdapter(
-                  child: Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 880),
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 14, 16, 40),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            // 1. 用户组卡片 (图二: Lv.4 高级会员  看看我能做什么 >)
-                            _buildUsergroupCard(user, theme),
-                            const SizedBox(height: 10),
-
-                            // 2. 勋章荣誉卡片
-                            _buildMedalCard(user, theme),
-                            const SizedBox(height: 10),
-
-                            // 3. 个人签名与头衔卡片
-                            _buildSignatureCard(user, theme),
-                            const SizedBox(height: 10),
-
-                            // 4. 4 大统计徽章 (🟢 帖子, 🟠 回复, 🔵 好友, 🟡 人气)
-                            _buildStatsCard(user, theme),
-                            const SizedBox(height: 10),
-
-                            // 5. 积分资产明细表格 (图二双列表格，自动消重单位)
-                            _buildCreditsCard(user, theme),
-                            const SizedBox(height: 10),
-
-                            // 6. 基本资料
-                            _buildBasicInfoCard(user, theme),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                )
-              else
-                SliverToBoxAdapter(
-                  child: Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 880),
-                      child: Padding(
-                        padding: const EdgeInsets.only(bottom: 20),
-                        child: UserThreadsPage(
-                          uid: widget.uid,
-                          type: 'thread',
-                          title: '${user.username} 的主题',
-                          showAppBar: false,
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-                _buildBottomActions(context, user),
+              _buildBottomActions(context, user),
             ],
           ),
         );
-},
-);
+      },
+    );
   }
 
   Widget _buildTabItem(int index, String title, ThemeData theme) {

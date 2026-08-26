@@ -137,14 +137,15 @@ class _SignRankPageState extends State<SignRankPage>
   Future<void> _loadSignedDays() async {
     final now = DateTime.now();
     try {
-      final serverSignedDays = await KlpbbsApi.getSignedDaysFromServerCalendar();
+      final serverSignedDays = await KlpbbsApi.getSignedDaysFromServerCalendar(
+        month: _calMonth,
+        year: _calYear,
+      );
       if (mounted) {
         setState(() {
           _signedDays = Set<int>.from(serverSignedDays);
-          if (_headerInfo.isSignedToday) {
+          if (_headerInfo.isSignedToday && _calYear == now.year && _calMonth == now.month) {
             _signedDays.add(now.day);
-          } else {
-            _signedDays.remove(now.day);
           }
           _datesLoaded = true;
         });
@@ -523,19 +524,7 @@ class _SignRankPageState extends State<SignRankPage>
 
   bool get _isSignedToday => _headerInfo.isSignedToday;
 
-  int get _streakDays {
-    if (_signedDays.isEmpty) return 0;
-    final now = DateTime.now();
-    var streak = 0;
-    var d = now.day;
-    if (!_signedDays.contains(d)) d -= 1;
-    while (_signedDays.contains(d)) {
-      streak += 1;
-      d -= 1;
-      if (d < 1) break;
-    }
-    return streak;
-  }
+  int get _streakDays => _headerInfo.continuousDays > 0 ? _headerInfo.continuousDays : 0;
 
   Future<void> _signIn() async {
     final confirmed = await confirmWrite(context, '签到');
@@ -1159,15 +1148,9 @@ class _SignRankPageState extends State<SignRankPage>
       }
       _calMonth = m;
       _calYear = y;
+      _datesLoaded = false;
     });
-    _loadMonthSigned();
-  }
-
-  Future<void> _loadMonthSigned() async {
-    final prefs = await SharedPreferences.getInstance();
-    final key = 'sign_dates_$_calYear${_calMonth.toString().padLeft(2, '0')}';
-    final list = prefs.getStringList(key) ?? const [];
-    if (mounted) setState(() => _signedDays = list.map(int.parse).toSet());
+    _loadSignedDays();
   }
 
   Widget _buildModernCalendar() {

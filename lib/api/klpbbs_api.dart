@@ -1234,11 +1234,17 @@ class KlpbbsApi {
   }
 
   /// 获取服务端日历已签到日期（实时从 k_misign 提取）
-  static Future<Set<int>> getSignedDaysFromServerCalendar() async {
+  static Future<Set<int>> getSignedDaysFromServerCalendar({int? month, int? year}) async {
     try {
+      final now = DateTime.now();
+      final m = month ?? now.month;
+      final y = year ?? now.year;
       final html = await _get(
-        'plugin.php?id=k_misign:sign&operation=calendar',
-        headers: {'User-Agent': AppConfig.pcUserAgent},
+        'plugin.php?id=k_misign:sign&operation=calendar&month=$m&year=$y',
+        headers: {
+          'User-Agent': AppConfig.pcUserAgent,
+          'X-Requested-With': 'XMLHttpRequest',
+        },
       );
       return ComiisParser.parseSignedDaysFromCalendarHtml(html);
     } catch (_) {
@@ -1265,10 +1271,12 @@ class KlpbbsApi {
   }
 
   /// 用户空间（个人资料）
-  static Future<UserSpace?> getUserSpace(int uid) async {
+  static Future<UserSpace?> getUserSpace(int uid, {bool forceRefresh = false}) async {
     final cacheKey = 'user_space_$uid';
-    final cached = PreloadService.instance.get<UserSpace>(cacheKey);
-    if (cached != null) return cached;
+    if (!forceRefresh) {
+      final cached = PreloadService.instance.get<UserSpace>(cacheKey);
+      if (cached != null) return cached;
+    }
 
     try {
       final futures = await Future.wait([
