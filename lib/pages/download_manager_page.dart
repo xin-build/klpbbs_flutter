@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../services/download_service.dart';
+import '../widgets/app_back_button.dart';
 
 /// 下载任务管理中心页面（兼容 PC 宽屏与手机端）
 class DownloadManagerPage extends StatelessWidget {
@@ -14,6 +15,7 @@ class DownloadManagerPage extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: const Text('下载管理器'),
         elevation: 0,
         actions: [

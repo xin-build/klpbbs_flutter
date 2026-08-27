@@ -6,6 +6,7 @@ import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/write_confirm.dart';
 import '../models/medal_item.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/global_nav.dart';
 import 'credit_page.dart';
 
@@ -330,6 +331,7 @@ class _MedalPageState extends State<MedalPage> with SingleTickerProviderStateMix
 
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: const Text('勋章中心', style: TextStyle(fontWeight: FontWeight.bold)),
         centerTitle: true,
         actions: [

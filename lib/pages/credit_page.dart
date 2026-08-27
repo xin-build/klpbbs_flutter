@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api/klpbbs_api.dart';
 import '../core/write_confirm.dart';
 import '../models/credit_log.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
@@ -161,6 +162,7 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
 
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: const Text('积分', style: TextStyle(fontWeight: FontWeight.bold)),
         centerTitle: true,
         actions: [

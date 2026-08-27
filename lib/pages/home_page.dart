@@ -25,6 +25,7 @@ import '../widgets/tuhao_banner_widget.dart';
 import '../services/push_notification_service.dart';
 import 'credit_page.dart';
 import 'darkroom_page.dart';
+import 'forums_page.dart';
 import 'guide_page.dart';
 import 'login_page.dart';
 import 'magic_page.dart';
@@ -944,60 +945,6 @@ class _ForumNavState extends State<ForumNav> {
     );
   }
 
-  void _showAllForums(BuildContext context) {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => DraggableScrollableSheet(
-        initialChildSize: 0.75,
-        maxChildSize: 0.95,
-        minChildSize: 0.4,
-        builder: (ctx, scrollCtrl) => Container(
-          decoration: BoxDecoration(
-            color: Theme.of(ctx).colorScheme.surface,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-          ),
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                child: Row(
-                  children: [
-                    Text(
-                      '全部分区与版块（${widget.groups.length} 分区 / ${widget.allForums.length} 版块）',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () => Navigator.of(ctx).pop(),
-                    ),
-                  ],
-                ),
-              ),
-              const Divider(height: 1),
-              Expanded(
-                child: ListView.builder(
-                  controller: scrollCtrl,
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  itemCount: widget.groups.length,
-                  itemBuilder: (c, i) => _CollapsibleGroup(
-                    group: widget.groups[i],
-                    initiallyExpanded: true,
-                    favFids: widget.favFids,
-                    onToggleFav: widget.onToggleFav,
-                    boardChip: _boardChip,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -1005,38 +952,61 @@ class _ForumNavState extends State<ForumNav> {
 
     if (widget.groups.isEmpty) return const SizedBox.shrink();
 
-    final effectiveGroups = <ForumGroup>[];
-    final hasFavGroup = widget.groups.any((g) => g.gid == 0 || g.name == '我关注的');
-    if (!hasFavGroup) {
-      final favList = <Forum>[];
-      if (widget.favFids.isNotEmpty) {
-        for (final fid in widget.favFids) {
-          final f = widget.allForums.firstWhere(
-            (item) => item.fid == fid,
-            orElse: () => Forum(fid: fid, name: '版块 $fid'),
-          );
-          favList.add(f);
-        }
+    final allKnownForums = <int, Forum>{};
+    for (final g in widget.groups) {
+      for (final f in g.forums) {
+        allKnownForums[f.fid] = f;
       }
-      if (favList.isEmpty) {
-        const defaultFids = [41, 43, 52];
-        for (final fid in defaultFids) {
-          final f = widget.allForums.firstWhere(
-            (item) => item.fid == fid,
-            orElse: () => Forum(fid: fid, name: '版块 $fid'),
-          );
-          favList.add(f);
-        }
-      }
-      effectiveGroups.add(
-        ForumGroup(
-          gid: 0,
-          name: '我关注的',
-          forums: favList,
-        ),
-      );
     }
-    effectiveGroups.addAll(widget.groups);
+    for (final f in widget.allForums) {
+      allKnownForums[f.fid] = f;
+    }
+    for (final g in SeedData.forumGroups) {
+      for (final f in g.forums) {
+        allKnownForums.putIfAbsent(f.fid, () => f);
+      }
+    }
+
+    final combinedFavs = <Forum>[];
+    final seenFids = <int>{};
+    for (final fid in widget.favFids) {
+      if (seenFids.add(fid)) {
+        final f = allKnownForums[fid] ?? Forum(fid: fid, name: '版块 $fid');
+        combinedFavs.add(f);
+      }
+    }
+    for (final g in widget.groups) {
+      if (g.gid == 0 || g.name.contains('关注')) {
+        for (final f in g.forums) {
+          if (seenFids.add(f.fid)) {
+            combinedFavs.add(f);
+          }
+        }
+      }
+    }
+    if (combinedFavs.isEmpty) {
+      const defaultFids = [41, 43, 52];
+      for (final fid in defaultFids) {
+        if (seenFids.add(fid)) {
+          final f = allKnownForums[fid] ?? Forum(fid: fid, name: '版块 $fid');
+          combinedFavs.add(f);
+        }
+      }
+    }
+
+    final effectiveGroups = <ForumGroup>[
+      ForumGroup(
+        gid: 0,
+        name: '我关注的',
+        forums: combinedFavs,
+      ),
+    ];
+
+    for (final g in widget.groups) {
+      if (g.gid != 0 && !g.name.contains('关注')) {
+        effectiveGroups.add(g);
+      }
+    }
 
     final currentGroup = effectiveGroups[_selectedGroupIdx.clamp(0, effectiveGroups.length - 1)];
 
@@ -1110,7 +1080,11 @@ class _ForumNavState extends State<ForumNav> {
               ],
               InkWell(
                 borderRadius: BorderRadius.circular(6),
-                onTap: () => _showAllForums(context),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => ForumsPage()),
+                  );
+                },
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                   child: Row(

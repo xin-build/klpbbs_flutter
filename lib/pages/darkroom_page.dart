@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../widgets/app_back_button.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/thread_card.dart';
 
@@ -85,6 +86,7 @@ class _DarkroomPageState extends State<DarkroomPage> {
 
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: _isSearching
             ? TextField(
                 controller: _searchCtrl,

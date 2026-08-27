@@ -50,17 +50,21 @@ class _UserSpacePageState extends State<UserSpacePage> {
     if (widget.initialUser != null) {
       _future = Future.value(widget.initialUser);
       _isMe = widget.isMe ?? false;
+      _loadData();
     } else {
       _loadData();
     }
   }
 
   void _loadData({bool forceRefresh = false}) {
+    if (forceRefresh) {
+      PreloadService.instance.remove('user_space_${widget.uid}');
+    }
     final cached = PreloadService.instance.get<UserSpace>('user_space_${widget.uid}', ignoreExpired: true);
     if (!forceRefresh && cached != null) {
       _future = Future.value(cached);
       unawaited(
-        KlpbbsApi.getUserSpace(widget.uid).then((fresh) {
+        KlpbbsApi.getUserSpace(widget.uid, forceRefresh: true).then((fresh) {
           if (mounted && fresh != null) {
             setState(() => _future = Future.value(fresh));
           }
@@ -68,7 +72,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
       );
     } else {
       setState(() {
-        _future = KlpbbsApi.getUserSpace(widget.uid);
+        _future = KlpbbsApi.getUserSpace(widget.uid, forceRefresh: forceRefresh);
       });
     }
     if (widget.isMe != null) {
@@ -843,26 +847,38 @@ class _UserSpacePageState extends State<UserSpacePage> {
               constraints: const BoxConstraints(maxWidth: 880),
               child: Row(
                 children: [
-                  Container(
-                    padding: const EdgeInsets.all(2.5),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.surface,
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withAlpha(80),
-                          blurRadius: 8,
+                  Builder(
+                    builder: (context) {
+                      final shape = AppConfig.avatarShape;
+                      final isCircle = shape == AvatarShape.circle;
+                      final radius = shape == AvatarShape.roundedRect
+                          ? BorderRadius.circular(64 * 0.25 + 2.5)
+                          : (shape == AvatarShape.hexagon
+                              ? BorderRadius.circular(64 * 0.35 + 2.5)
+                              : BorderRadius.circular(34.5));
+                      return Container(
+                        padding: const EdgeInsets.all(2.5),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.surface,
+                          shape: isCircle ? BoxShape.circle : BoxShape.rectangle,
+                          borderRadius: isCircle ? null : radius,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withAlpha(80),
+                              blurRadius: 8,
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                    child: UserAvatarWidget(
-                      uid: user.uid,
-                      author: user.username,
-                      size: 64,
-                      faceUrl: user.faceUrl.isNotEmpty ? user.faceUrl : null,
-                      isOnline: user.isOnline,
-                      showOnlineBadge: true,
-                    ),
+                        child: UserAvatarWidget(
+                          uid: user.uid,
+                          author: user.username,
+                          size: 64,
+                          faceUrl: user.faceUrl.isNotEmpty ? user.faceUrl : null,
+                          isOnline: user.isOnline,
+                          showOnlineBadge: true,
+                        ),
+                      );
+                    },
                   ),
                   const SizedBox(width: 14),
                   Expanded(
@@ -1206,6 +1222,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
                   builder: (_) => FriendPage(
                     uid: user.uid,
                     username: user.username,
+                    isMe: _isMe,
                   ),
                 ),
               ),
@@ -1433,6 +1450,13 @@ class _UserSpacePageState extends State<UserSpacePage> {
   }
 
   Widget _buildFieldRow(String label, String val, ThemeData theme) {
+    var displayVal = val;
+    if (label.contains('时间') || label.contains('访问')) {
+      displayVal = displayVal.replaceAllMapped(
+        RegExp(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2})(\d{2})\b'),
+        (m) => '${m[1]}:${m[2]}',
+      );
+    }
     return Row(
       children: [
         SizedBox(
@@ -1441,7 +1465,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
         ),
         Expanded(
           child: SelectableText(
-            val,
+            displayVal,
             textAlign: TextAlign.right,
             style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurface),
           ),

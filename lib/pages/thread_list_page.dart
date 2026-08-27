@@ -381,6 +381,13 @@ class _ThreadListPageState extends State<ThreadListPage> {
                 child: ScaffoldMessenger(
                   child: Scaffold(
                     appBar: AppBar(
+                      leading: Navigator.of(context).canPop()
+                          ? IconButton(
+                              icon: const Icon(Icons.arrow_back),
+                              tooltip: '返回',
+                              onPressed: () => Navigator.of(context).maybePop(),
+                            )
+                          : null,
                       title: Text(widget.title),
                       actions: [
                         if (_allForums.isNotEmpty)
@@ -509,6 +516,11 @@ class _ThreadListPageState extends State<ThreadListPage> {
       onRefresh: _reload,
       child: Scaffold(
         appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: '返回',
+            onPressed: () => Navigator.of(context).maybePop(),
+          ),
           title: Text(widget.title),
           actions: [
             IconButton(

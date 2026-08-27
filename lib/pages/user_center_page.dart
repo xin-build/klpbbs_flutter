@@ -5,6 +5,7 @@ import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/preload_service.dart';
 import '../models/user_space.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/thread_card.dart';
 import 'credit_page.dart';
@@ -165,6 +166,7 @@ class _UserCenterPageState extends State<UserCenterPage> {
 
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: const Text('个人中心'),
         centerTitle: false,
         actions: [

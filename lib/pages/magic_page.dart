@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../api/klpbbs_api.dart';
 import '../core/dio_client.dart';
 import '../models/magic_item.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/global_nav.dart';
 import 'credit_page.dart';
@@ -115,6 +116,7 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
 
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: const Text('道具中心'),
         actions: [
           IconButton(

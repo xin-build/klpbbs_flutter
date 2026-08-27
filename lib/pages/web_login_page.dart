@@ -5,6 +5,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/dio_client.dart';
+import '../widgets/app_back_button.dart';
 
 /// 苦力怕论坛 - 内嵌网页登录与授权中心
 ///
@@ -244,6 +245,7 @@ class _WebLoginPageState extends State<WebLoginPage> {
 
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,

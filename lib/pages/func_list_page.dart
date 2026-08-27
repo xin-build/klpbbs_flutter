@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:html/parser.dart' as hp;
 
 import '../core/dio_client.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/global_nav.dart';
 
 /// 通用功能列表页（勋章/道具/任务等 Discuz 用户中心页面）
@@ -49,6 +50,7 @@ class _FuncListPageState extends State<FuncListPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: Text(widget.title),
         actions: const [GlobalNavButton()],
       ),

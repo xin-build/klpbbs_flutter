@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../models/thread_summary.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
@@ -92,6 +93,7 @@ class _GuidePageState extends State<GuidePage>
 
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: const Text('导读'),
         centerTitle: true,
         actions: const [GlobalNavButton()],

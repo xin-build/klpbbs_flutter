@@ -1144,6 +1144,8 @@ class KlpbbsApi {
     if (!forceRefresh) {
       final cached = PreloadService.instance.get<SignHeaderInfo>(cacheKey);
       if (cached != null) return cached;
+    } else {
+      PreloadService.instance.remove(cacheKey);
     }
 
     // 1. 优先请求 PC 页面与静态重写链接
@@ -1156,7 +1158,11 @@ class KlpbbsApi {
 
     for (final (path, headers) in endpoints) {
       try {
-        final html = await _get(path, headers: headers.isNotEmpty ? headers : null);
+        final html = await _get(
+          path,
+          headers: headers.isNotEmpty ? headers : null,
+          forceRefresh: forceRefresh,
+        );
         if (html.isNotEmpty) {
           final parsed = ComiisParser.parseSignPageData(html);
           if (parsed.starUsername.isNotEmpty ||
@@ -1173,6 +1179,69 @@ class KlpbbsApi {
     }
 
     return const SignHeaderInfo();
+  }
+
+  /// 用户搜索（对接 Discuz spacecp&ac=search 原生接口 + 用户名直查 + UID 精确直达）
+  static Future<List<UserSpace>> searchUsers(String keyword, {int page = 1}) async {
+    final trimmed = keyword.trim();
+    if (trimmed.isEmpty) return const [];
+
+    final results = <UserSpace>[];
+    final seenUids = <int>{};
+
+    // 1. 若关键词为纯数字 UID，优先精确查询该 UID
+    final directUid = int.tryParse(trimmed);
+    if (directUid != null && directUid > 0) {
+      try {
+        final directUser = await getUserSpace(directUid, forceRefresh: true);
+        if (directUser != null && directUser.username.isNotEmpty) {
+          results.add(directUser);
+          seenUids.add(directUser.uid);
+        }
+      } catch (_) {}
+    }
+
+    // 2. 发起 Discuz 原生用户搜索接口
+    try {
+      final encoded = Uri.encodeComponent(trimmed);
+      final html = await _get(
+        'home.php?mod=spacecp&ac=search&searchsubmit=yes&username=$encoded&page=$page',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+        forceRefresh: true,
+      );
+      final list = ComiisParser.parseSearchUsers(html);
+      for (final u in list) {
+        if (!seenUids.contains(u.uid)) {
+          seenUids.add(u.uid);
+          results.add(u);
+        }
+      }
+    } catch (_) {}
+
+    // 3. 若搜索结果仍为空，且非纯数字，尝试按精确用户名直接查询其 PC 空间
+    if (results.isEmpty && directUid == null) {
+      try {
+        final encoded = Uri.encodeComponent(trimmed);
+        final directHtml = await _get(
+          'home.php?mod=space&username=$encoded&mobile=no',
+          headers: {'User-Agent': AppConfig.pcUserAgent},
+          forceRefresh: true,
+        );
+        final uidMatch = RegExp(r'space-uid-(\d+)|uid=(\d+)').firstMatch(directHtml);
+        final foundUid = uidMatch != null
+            ? (int.tryParse(uidMatch.group(1) ?? uidMatch.group(2) ?? '') ?? 0)
+            : 0;
+        if (foundUid > 0 && !seenUids.contains(foundUid)) {
+          final exactUser = ComiisParser.parseUserSpace(directHtml, foundUid);
+          if (exactUser != null && exactUser.username.isNotEmpty) {
+            results.add(exactUser);
+            seenUids.add(foundUid);
+          }
+        }
+      } catch (_) {}
+    }
+
+    return results;
   }
 
   /// 签到排行（k_misign 只读；实时获取）
@@ -1210,8 +1279,7 @@ class KlpbbsApi {
         return res;
       }
     } catch (_) {}
-    final cached = PreloadService.instance.get<List<SignEntry>>(cacheKey);
-    return cached ?? const [];
+    return const [];
   }
 
   static void _preloadSignRank(String op, int page) {
@@ -1234,7 +1302,11 @@ class KlpbbsApi {
   }
 
   /// 获取服务端日历已签到日期（实时从 k_misign 提取）
-  static Future<Set<int>> getSignedDaysFromServerCalendar({int? month, int? year}) async {
+  static Future<Set<int>> getSignedDaysFromServerCalendar({
+    int? month,
+    int? year,
+    bool forceRefresh = false,
+  }) async {
     try {
       final now = DateTime.now();
       final m = month ?? now.month;
@@ -1244,7 +1316,9 @@ class KlpbbsApi {
         headers: {
           'User-Agent': AppConfig.pcUserAgent,
           'X-Requested-With': 'XMLHttpRequest',
+          'Referer': 'https://klpbbs.com/k_misign-sign.html',
         },
+        forceRefresh: forceRefresh,
       );
       return ComiisParser.parseSignedDaysFromCalendarHtml(html);
     } catch (_) {
@@ -1276,16 +1350,88 @@ class KlpbbsApi {
     if (!forceRefresh) {
       final cached = PreloadService.instance.get<UserSpace>(cacheKey);
       if (cached != null) return cached;
+    } else {
+      PreloadService.instance.remove(cacheKey);
     }
 
     try {
+      final myUid = await getMyUid();
+      final isMe = (myUid != null && myUid > 0 && myUid == uid) || (uid <= 0);
+
+      if (!isMe && uid > 0) {
+        // 请求 PC 端资料页 + 移动端空间首页（用于提取真实人气值与空间壁纸）
+        final futures = await Future.wait([
+          _get(
+            'home.php?mod=space&uid=$uid&do=profile&mobile=no',
+            headers: {'User-Agent': AppConfig.pcUserAgent},
+            forceRefresh: forceRefresh,
+          ).catchError((_) => ''),
+          _get(
+            'home.php?mod=space&uid=$uid&mobile=2',
+            forceRefresh: forceRefresh,
+          ).catchError((_) => ''),
+        ]);
+
+        final userPc = ComiisParser.parseUserSpace(futures[0], uid);
+        final userMob = ComiisParser.parseUserSpace(futures[1], uid);
+
+        if (userPc == null && userMob == null) return null;
+
+        final res = UserSpace(
+          uid: uid,
+          username: userPc?.username.isNotEmpty == true
+              ? userPc!.username
+              : (userMob?.username ?? ''),
+          credits: userPc?.credits.isNotEmpty == true
+              ? userPc!.credits
+              : (userMob?.credits ?? ''),
+          group: userPc?.group.isNotEmpty == true
+              ? userPc!.group
+              : (userMob?.group ?? ''),
+          regdate: userPc?.regdate.isNotEmpty == true
+              ? userPc!.regdate
+              : (userMob?.regdate ?? ''),
+          lastvisit: userPc?.lastvisit.isNotEmpty == true
+              ? userPc!.lastvisit
+              : (userMob?.lastvisit ?? ''),
+          signature: userPc?.signature ?? '',
+          level: userPc?.level.isNotEmpty == true
+              ? userPc!.level
+              : (userMob?.level ?? ''),
+          levelName: userPc?.levelName.isNotEmpty == true
+              ? userPc!.levelName
+              : (userMob?.levelName ?? ''),
+          medals: userPc?.medals ?? const [],
+          faceUrl: userPc?.faceUrl.isNotEmpty == true ? userPc!.faceUrl : (userMob?.faceUrl ?? ''),
+          bgUrl: userMob?.bgUrl.isNotEmpty == true ? userMob!.bgUrl : (userPc?.bgUrl ?? ''),
+          stats: {
+            ...?userPc?.stats,
+            if (userMob?.stats['人气'] != null && userMob!.stats['人气']!.isNotEmpty)
+              '人气': userMob.stats['人气']!,
+          },
+          creditsDetail: userPc?.creditsDetail ?? const {},
+          gameProfile: userPc?.gameProfile ?? const {},
+          isOnline: userPc?.isOnline ?? userMob?.isOnline ?? false,
+          onlineStatusText: userPc?.onlineStatusText.isNotEmpty == true
+              ? userPc!.onlineStatusText
+              : (userMob?.onlineStatusText ?? ''),
+          profileProgress: userPc?.profileProgress ?? userMob?.profileProgress ?? 0,
+        );
+
+        PreloadService.instance.set(cacheKey, res, ttl: const Duration(minutes: 15));
+        return res;
+      }
+
+      // 本人主页：并发请求移动版与 PC 版并进行完整字段合并
       final futures = await Future.wait([
         _get(
           'home.php?mod=space&uid=$uid&do=profile&mobile=2',
+          forceRefresh: forceRefresh,
         ).catchError((_) => ''),
         _get(
           'home.php?mod=space&uid=$uid&do=profile&mobile=no',
           headers: {'User-Agent': AppConfig.pcUserAgent},
+          forceRefresh: forceRefresh,
         ).catchError((_) => ''),
       ]);
       final userMobile = ComiisParser.parseUserSpace(futures[0], uid);
@@ -1296,10 +1442,10 @@ class KlpbbsApi {
       final res = UserSpace(
         uid: uid,
         username:
-            (userMobile?.username.isNotEmpty == true &&
-                !userMobile!.username.contains('*'))
-            ? userMobile.username
-            : (userPc?.username ?? ''),
+            (userPc?.username.isNotEmpty == true &&
+                !userPc!.username.contains('*'))
+            ? userPc.username
+            : (userMobile?.username ?? ''),
         credits: userPc?.credits.isNotEmpty == true
             ? userPc!.credits
             : (userMobile?.credits ?? ''),
@@ -3462,6 +3608,20 @@ class KlpbbsApi {
     final myUid = await getMyUid();
     final isMe = (myUid != null && myUid > 0 && myUid == uid) || (uid <= 0);
 
+    if (!isMe) {
+      // 查看他人好友：调用 Discuz 原生 PC 好友页面接口
+      try {
+        final pcHtml = await _get(
+          'home.php?mod=space&uid=$uid&do=friend&page=$page&mobile=no',
+          headers: {'User-Agent': AppConfig.pcUserAgent},
+          forceRefresh: true,
+        );
+        final list = ComiisParser.parseFriends(pcHtml, excludeUid: myUid);
+        if (list.isNotEmpty) return list;
+      } catch (_) {}
+      return const [];
+    }
+
     // 根据 view 构造请求路径 (优先移动端手机版结构，对齐网页截图)
     String url;
     switch (view) {
@@ -3472,14 +3632,10 @@ class KlpbbsApi {
         url = 'home.php?mod=space&do=friend&view=fans&page=$page&mobile=2';
         break;
       case 'visitor':
-        url = isMe
-            ? 'home.php?mod=space&do=friend&view=visitor&page=$page&mobile=2'
-            : 'home.php?mod=space&uid=$uid&do=friend&view=visitor&page=$page&mobile=2';
+        url = 'home.php?mod=space&do=friend&view=visitor&page=$page&mobile=2';
         break;
       case 'trace':
-        url = isMe
-            ? 'home.php?mod=space&do=friend&view=trace&page=$page&mobile=2'
-            : 'home.php?mod=space&uid=$uid&do=friend&view=trace&page=$page&mobile=2';
+        url = 'home.php?mod=space&do=friend&view=trace&page=$page&mobile=2';
         break;
       case 'request':
         url = 'home.php?mod=spacecp&ac=friend&op=request&page=$page&mobile=2';
@@ -3489,49 +3645,49 @@ class KlpbbsApi {
         break;
       case 'me':
       default:
-        url = isMe
-            ? 'home.php?mod=space&do=friend&page=$page&mobile=2'
-            : 'home.php?mod=space&uid=$uid&do=friend&page=$page&mobile=2';
+        url = 'home.php?mod=space&do=friend&page=$page&mobile=2';
         break;
     }
 
     try {
       final html = await _get(url);
-      final list = ComiisParser.parseFriends(html, excludeUid: isMe ? uid : null);
+      final list = ComiisParser.parseFriends(html, excludeUid: uid);
       if (list.isNotEmpty) return list;
     } catch (_) {}
 
-    // 移动端/PC 多端回退接口
-    if (view == 'me') {
-      try {
-        final myFriendsHtml = await _get('home.php?mod=space&do=friend&page=$page&mobile=2');
-        final list = ComiisParser.parseFriends(myFriendsHtml, excludeUid: isMe ? uid : null);
-        if (list.isNotEmpty) return list;
-      } catch (_) {}
+    // 移动端/PC 多端回退接口 (仅限本人主页时使用，严禁把本人好友当作他人好友)
+    if (isMe) {
+      if (view == 'me') {
+        try {
+          final myFriendsHtml = await _get('home.php?mod=space&do=friend&page=$page&mobile=2');
+          final list = ComiisParser.parseFriends(myFriendsHtml, excludeUid: isMe ? uid : null);
+          if (list.isNotEmpty) return list;
+        } catch (_) {}
 
-      try {
-        final pcMeHtml = await _get(
-          'home.php?mod=space&uid=$uid&do=friend&view=me&from=space&page=$page&mobile=no',
-          headers: {'User-Agent': AppConfig.pcUserAgent},
-        );
-        final list = ComiisParser.parseFriends(pcMeHtml, excludeUid: isMe ? uid : null);
-        if (list.isNotEmpty) return list;
-      } catch (_) {}
-    } else if (view == 'follow') {
-      try {
-        final fHtml = await _get('home.php?mod=follow&page=$page&mobile=2');
-        final list = ComiisParser.parseFriends(fHtml, excludeUid: isMe ? uid : null);
-        if (list.isNotEmpty) return list;
-      } catch (_) {}
+        try {
+          final pcMeHtml = await _get(
+            'home.php?mod=space&uid=$uid&do=friend&view=me&from=space&page=$page&mobile=no',
+            headers: {'User-Agent': AppConfig.pcUserAgent},
+          );
+          final list = ComiisParser.parseFriends(pcMeHtml, excludeUid: isMe ? uid : null);
+          if (list.isNotEmpty) return list;
+        } catch (_) {}
+      } else if (view == 'follow') {
+        try {
+          final fHtml = await _get('home.php?mod=follow&page=$page&mobile=2');
+          final list = ComiisParser.parseFriends(fHtml, excludeUid: isMe ? uid : null);
+          if (list.isNotEmpty) return list;
+        } catch (_) {}
 
-      try {
-        final pcFollowHtml = await _get(
-          'home.php?mod=space&uid=$uid&do=friend&view=follow&page=$page&mobile=no',
-          headers: {'User-Agent': AppConfig.pcUserAgent},
-        );
-        final list = ComiisParser.parseFriends(pcFollowHtml, excludeUid: isMe ? uid : null);
-        if (list.isNotEmpty) return list;
-      } catch (_) {}
+        try {
+          final pcFollowHtml = await _get(
+            'home.php?mod=space&uid=$uid&do=friend&view=follow&page=$page&mobile=no',
+            headers: {'User-Agent': AppConfig.pcUserAgent},
+          );
+          final list = ComiisParser.parseFriends(pcFollowHtml, excludeUid: isMe ? uid : null);
+          if (list.isNotEmpty) return list;
+        } catch (_) {}
+      }
     } else if (view == 'fans') {
       try {
         final fHtml = await _get('home.php?mod=follow&do=follower&page=$page&mobile=2');
@@ -3868,7 +4024,44 @@ class KlpbbsApi {
     }
   }
 
-  /// 签到（k_misign qiandao，多级端点回退与铁粒/经验/连续天数精准解析）
+  static String? _cachedSignFormhash;
+
+  /// 获取或预热签到 FormHash
+  static Future<String?> getSignFormhash({bool forceRefresh = false}) async {
+    if (!forceRefresh && _cachedSignFormhash != null && _cachedSignFormhash!.isNotEmpty) {
+      return _cachedSignFormhash;
+    }
+    String? formhash;
+    try {
+      final signPageHtml = await _get(
+        'plugin.php?id=k_misign:sign&mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+        forceRefresh: forceRefresh,
+      );
+      formhash = _extractFormhash(signPageHtml);
+    } catch (_) {}
+
+    if (formhash == null) {
+      try {
+        final signPageHtml = await _get('k_misign-sign.html', forceRefresh: forceRefresh);
+        formhash = _extractFormhash(signPageHtml);
+      } catch (_) {}
+    }
+
+    if (formhash == null) {
+      try {
+        final forumHtml = await _get('forum.php?mobile=2', forceRefresh: forceRefresh);
+        formhash = _extractFormhash(forumHtml);
+      } catch (_) {}
+    }
+
+    if (formhash != null && formhash.isNotEmpty) {
+      _cachedSignFormhash = formhash;
+    }
+    return formhash;
+  }
+
+  /// 签到（k_misign qiandao，支持预热 formhash、多级端点极速直达与铁粒/经验/连续天数精准解析）
   static Future<
     ({
       bool success,
@@ -3879,7 +4072,7 @@ class KlpbbsApi {
       int? continuousDays,
     })
   >
-  signIn() async {
+  signIn({String? formhash}) async {
     if (!AppConfig.allowWrite) {
       return (
         success: false,
@@ -3901,32 +4094,13 @@ class KlpbbsApi {
       );
     }
 
-    // 1. 获取 FormHash
-    String? formhash;
-    String signPageHtml = '';
-    try {
-      signPageHtml = await _get(
-        'plugin.php?id=k_misign:sign&mobile=no',
-        headers: {'User-Agent': AppConfig.pcUserAgent},
-      );
-      formhash = _extractFormhash(signPageHtml);
-    } catch (_) {}
-
-    if (formhash == null) {
-      try {
-        signPageHtml = await _get('plugin.php?id=k_misign:sign&mobile=2');
-        formhash = _extractFormhash(signPageHtml);
-      } catch (_) {}
+    // 1. 获取/复用 FormHash
+    String? fh = formhash ?? _cachedSignFormhash;
+    if (fh == null || fh.isEmpty) {
+      fh = await getSignFormhash();
     }
 
-    if (formhash == null) {
-      try {
-        final forumHtml = await _get('forum.php?mobile=2');
-        formhash = _extractFormhash(forumHtml);
-      } catch (_) {}
-    }
-
-    if (formhash == null) {
+    if (fh == null || fh.isEmpty) {
       return (
         success: false,
         message: '未能获取签到 FormHash，请确认登录会话是否有效',
@@ -3937,13 +4111,14 @@ class KlpbbsApi {
       );
     }
 
-    // 2. 依次尝试签到端点（桌面按钮模式、移动端模式、Ajax 弹窗模式）
+    // 2. 依次尝试签到端点（桌面按钮模式、空格式模式、移动端模式、Ajax 弹窗模式）
     String html = '';
     final endpoints = [
-      'plugin.php?id=k_misign:sign&operation=qiandao&format=button&formhash=$formhash',
-      'plugin.php?id=k_misign:sign&operation=qiandao&format=empty&formhash=$formhash',
-      'plugin.php?id=k_misign:sign&operation=qiandao&mobile=2&formhash=$formhash',
-      'plugin.php?id=k_misign:sign&operation=qiandao&infloat=yes&handlekey=qiandao&formhash=$formhash',
+      'plugin.php?id=k_misign:sign&operation=qiandao&format=button&formhash=$fh',
+      'plugin.php?id=k_misign:sign&operation=qiandao&format=empty&formhash=$fh',
+      'plugin.php?id=k_misign:sign&operation=qiandao&formhash=$fh',
+      'plugin.php?id=k_misign:sign&operation=qiandao&infloat=yes&handlekey=qiandao&formhash=$fh',
+      'plugin.php?id=k_misign:sign&operation=qiandao&mobile=2&formhash=$fh',
     ];
 
     for (final ep in endpoints) {
@@ -3952,8 +4127,10 @@ class KlpbbsApi {
           ep,
           headers: {
             'User-Agent': AppConfig.pcUserAgent,
-            'Referer': '${AppConfig.baseUrl}plugin.php?id=k_misign:sign',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
           },
+          forceRefresh: true,
         );
         if (resp.isNotEmpty) {
           html = resp;
@@ -3987,29 +4164,27 @@ class KlpbbsApi {
     int? rank;
     int? continuousDays;
 
-    final allHtml = '$html\n$signPageHtml';
-
     final ironM =
-        RegExp(r'(?:获得|奖励|铁粒\s*[+]?)\s*(\d+)\s*(?:粒)?铁粒').firstMatch(allHtml) ??
-        RegExp(r'(\d+)\s*粒?铁粒').firstMatch(allHtml);
+        RegExp(r'(?:获得|奖励|铁粒\s*[+]?)\s*(\d+)\s*(?:粒)?铁粒').firstMatch(html) ??
+        RegExp(r'(\d+)\s*粒?铁粒').firstMatch(html);
     if (ironM != null) rewardIron = ironM.group(1);
 
     final expM =
         RegExp(
           r'(?:获得|奖励|经验\s*[+]?)\s*(\d+)\s*(?:点|EP)?经验',
-        ).firstMatch(allHtml) ??
-        RegExp(r'(\d+)\s*(?:点|EP)?经验').firstMatch(allHtml);
+        ).firstMatch(html) ??
+        RegExp(r'(\d+)\s*(?:点|EP)?经验').firstMatch(html);
     if (expM != null) rewardExp = expM.group(1);
 
     final rankM =
-        RegExp(r'第\s*(\d+)\s*(?:个|位)?签到').firstMatch(allHtml) ??
-        RegExp('id="qiandaobtnnum"[^>]*>(\\d+)<').firstMatch(allHtml);
+        RegExp(r'第\s*(\d+)\s*(?:个|位)?签到').firstMatch(html) ??
+        RegExp('id="qiandaobtnnum"[^>]*>(\\d+)<').firstMatch(html);
     if (rankM != null) rank = int.tryParse(rankM.group(1)!);
 
     final daysM =
-        RegExp(r'连续签到\s*(\d+)\s*天').firstMatch(allHtml) ??
-        RegExp(r'已连续\s*(\d+)\s*天').firstMatch(allHtml) ??
-        RegExp('id="lxdays"[^>]*>(\\d+)<').firstMatch(allHtml);
+        RegExp(r'连续签到\s*(\d+)\s*天').firstMatch(html) ??
+        RegExp(r'已连续\s*(\d+)\s*天').firstMatch(html) ??
+        RegExp('id="lxdays"[^>]*>(\\d+)<').firstMatch(html);
     if (daysM != null) continuousDays = int.tryParse(daysM.group(1)!);
 
     String message = '签到成功';

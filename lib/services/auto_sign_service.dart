@@ -132,19 +132,9 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
     final now = DateTime.now();
     final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
 
-    // 1. 如果开启了启动自动打卡且今日未签
-    if (_autoSignOnLaunch && _lastSuccessDate != todayStr && !_isRunning) {
+    final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch;
+    if (isAnyAutoEnabled && _lastSuccessDate != todayStr && !_isRunning) {
       checkAndAutoSignIn(triggerSource: '唤醒自动检测');
-      return;
-    }
-
-    // 2. 如果开启了定时打卡，且当前时间已经超过了设定的定时时间，但今日尚未签到（例如手机息屏错过了准点）
-    if (_scheduledSignEnabled && _lastSuccessDate != todayStr && !_isRunning) {
-      final isPastScheduled = (now.hour > _scheduledHour) ||
-          (now.hour == _scheduledHour && now.minute >= _scheduledMinute);
-      if (isPastScheduled) {
-        checkAndAutoSignIn(triggerSource: '唤醒错峰补签');
-      }
     }
   }
 
@@ -246,14 +236,15 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
     final now = DateTime.now();
     final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
 
-    // 1. 零点冲榜模式调度（在 23:59 开启准备、校准与时间区间探测）
+    // 1. 零点冲榜模式调度（在 23:59 开启准备、校准、预热 FormHash 与时间区间探测）
     if (_burstModeEnabled) {
       if (now.hour == 23 && now.minute == 59) {
         if (!_isSnipingActive) {
           _isSnipingActive = true;
-          _statusMessage = '23:59 冲榜就绪状态已激活，正在校准服务器时钟...';
+          _statusMessage = '23:59 冲榜就绪状态已激活，正在校准服务器时钟与预热 FormHash...';
           notifyListeners();
           _calibrateServerTime();
+          KlpbbsApi.getSignFormhash(forceRefresh: true);
         }
 
         // 倒计时进入设定的提前区间（例如 23:59:45），开跑探测/发包，防止服务器时钟比本地快
@@ -273,16 +264,18 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    // 2. 日常定时签到调度（准点执行 + 错峰补签保障）
+    // 2. 日常定时签到调度（准点执行）
     if (_scheduledSignEnabled && _lastSuccessDate != todayStr && !_isRunning) {
-      // 准点容差区间触发
       if (now.hour == _scheduledHour && now.minute == _scheduledMinute && now.second <= _scheduledWindowSec) {
         _executeScheduledSign();
-      } else if ((now.hour > _scheduledHour) || (now.hour == _scheduledHour && now.minute > _scheduledMinute)) {
-        // 超时错峰补签（每隔 10 分钟检测一次，确保全天必签到）
-        if (now.minute % 10 == 0 && now.second == 0) {
-          checkAndAutoSignIn(triggerSource: '定时错峰补签');
-        }
+      }
+    }
+
+    // 3. 全天未签自动保底与错峰补签机制（无论开启了冲刺还是定时，凡是今日未签均每 5 分钟自动补签）
+    final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch;
+    if (isAnyAutoEnabled && _lastSuccessDate != todayStr && !_isRunning) {
+      if (now.minute % 5 == 0 && now.second == 0) {
+        checkAndAutoSignIn(triggerSource: '全天未签自动保底');
       }
     }
   }
@@ -313,29 +306,16 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
     final deadline = DateTime.now().add(totalWindowDuration);
 
     try {
-      if (_burstStrategy == BurstStrategy.statusPolling) {
-        // 策略 A：在时间区间内以高频探测状态刷新，一旦发现服务端放开（未签状态）瞬间发起正式签到
-        while (DateTime.now().isBefore(deadline) && _isRunning) {
-          final isSigned = await KlpbbsApi.checkSigned();
-          if (!isSigned) {
-            final res = await KlpbbsApi.signIn();
-            if (res.success || res.message.contains('已签到') || res.message.contains('签过到')) {
-              _recordSuccess(todayStr, res);
-              break;
-            }
-          }
-          await Future.delayed(Duration(milliseconds: _burstIntervalMs));
+      // 预先获取 FormHash 避免每次请求阻塞
+      final fh = await KlpbbsApi.getSignFormhash();
+
+      while (DateTime.now().isBefore(deadline) && _isRunning) {
+        final res = await KlpbbsApi.signIn(formhash: fh);
+        if (res.success || res.message.contains('已签到') || res.message.contains('签过到') || res.message.contains('今日已签')) {
+          _recordSuccess(todayStr, res);
+          break;
         }
-      } else {
-        // 策略 B：在时间区间内持续极速发包冲刺
-        while (DateTime.now().isBefore(deadline) && _isRunning) {
-          final res = await KlpbbsApi.signIn();
-          if (res.success || res.message.contains('已签到') || res.message.contains('签过到')) {
-            _recordSuccess(todayStr, res);
-            break;
-          }
-          await Future.delayed(Duration(milliseconds: _burstIntervalMs));
-        }
+        await Future.delayed(Duration(milliseconds: _burstIntervalMs));
       }
     } catch (e) {
       _statusMessage = '冲榜异常：$e';
@@ -359,20 +339,13 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
     final deadline = DateTime.now().add(Duration(seconds: _scheduledWindowSec));
 
     try {
+      final fh = await KlpbbsApi.getSignFormhash();
       while (DateTime.now().isBefore(deadline) && _isRunning) {
-        final isSigned = await KlpbbsApi.checkSigned();
-        if (isSigned) {
-          _lastSuccessDate = todayStr;
-          _statusMessage = '今日已完成签到';
-          break;
-        }
-
-        final res = await KlpbbsApi.signIn();
-        if (res.success || res.message.contains('已签到') || res.message.contains('签过到')) {
+        final res = await KlpbbsApi.signIn(formhash: fh);
+        if (res.success || res.message.contains('已签到') || res.message.contains('签过到') || res.message.contains('今日已签')) {
           _recordSuccess(todayStr, res);
           break;
         }
-
         await Future.delayed(Duration(milliseconds: _burstIntervalMs.clamp(200, 1000)));
       }
     } catch (e) {
@@ -448,6 +421,51 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
       title: '苦力怕论坛 · 签到成功 🎉',
       body: '签到奖励：$ironText$expText$daysText',
     );
+  }
+
+  /// 立即运行一次高频冲刺实测与延迟诊断
+  Future<String> runBurstDiagnosticTest() async {
+    if (!DioClient.isLoggedIn) return '请先登录苦力怕论坛账号';
+    if (_isRunning) return '当前已有签到任务正在运行，请稍候';
+
+    _isRunning = true;
+    _runningStartTime = DateTime.now();
+    _statusMessage = '🚀 正在执行高频冲刺实测诊断 (预热 FormHash 并连发 5 包)...';
+    notifyListeners();
+
+    final buffer = StringBuffer();
+    final latencies = <int>[];
+
+    try {
+      final t0 = DateTime.now().millisecondsSinceEpoch;
+      final fh = await KlpbbsApi.getSignFormhash(forceRefresh: true);
+      final fhRtt = DateTime.now().millisecondsSinceEpoch - t0;
+      buffer.writeln('1. FormHash 预热完成: ${(fh != null && fh.isNotEmpty) ? fh : "已获取"} (耗时: ${fhRtt}ms)');
+
+      for (int i = 1; i <= 5; i++) {
+        final start = DateTime.now().millisecondsSinceEpoch;
+        final res = await KlpbbsApi.signIn(formhash: fh);
+        final rtt = DateTime.now().millisecondsSinceEpoch - start;
+        latencies.add(rtt);
+        buffer.writeln('   - 包 #$i: ${rtt}ms 响应 -> ${res.message}');
+        if (i < 5) {
+          await Future.delayed(Duration(milliseconds: _burstIntervalMs));
+        }
+      }
+
+      final avg = (latencies.reduce((a, b) => a + b) / latencies.length).round();
+      final summary = '🚀 冲刺测试完成：连发 5 包全部响应正常，平均单包延迟 ${avg}ms！';
+      _statusMessage = summary;
+      buffer.writeln('2. 总结: $summary');
+      return buffer.toString();
+    } catch (e) {
+      _statusMessage = '冲刺测试异常: $e';
+      return '冲刺测试异常: $e';
+    } finally {
+      _isRunning = false;
+      _runningStartTime = null;
+      notifyListeners();
+    }
   }
 
   @override

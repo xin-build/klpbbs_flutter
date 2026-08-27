@@ -8,6 +8,7 @@ import '../api/klpbbs_api.dart';
 import '../core/write_confirm.dart';
 import '../widgets/thread_card.dart';
 import '../models/pm_models.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/global_nav.dart';
 
 /// 私信会话详情（消息列表 + 回复输入 + 在线状态显示）
@@ -187,7 +188,8 @@ class _PmDetailPageState extends State<PmDetailPage> {
       child: FocusScope(
         child: Scaffold(
           appBar: AppBar(
-        titleSpacing: 0,
+            leading: const AppBackButton(),
+            titleSpacing: 0,
         title: InkWell(
           borderRadius: BorderRadius.circular(8),
           onTap: () => Navigator.of(context).push(

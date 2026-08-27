@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/cache_manager.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/thread_card.dart';
 
@@ -345,6 +346,7 @@ class _HomeStylePageState extends State<HomeStylePage>
 
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: const Text('我的空间'),
         centerTitle: false,
         actions: const [GlobalNavButton()],

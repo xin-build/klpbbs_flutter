@@ -61,6 +61,17 @@ class ComiisParser {
     return _absolute(src.split('##SJ##').first);
   }
 
+  /// 根据 UID 生成 Discuz UCenter 标准头像地址
+  static String discuzAvatarUrl(int uid) {
+    if (uid <= 0) return '';
+    final formattedUid = uid.toString().padLeft(9, '0');
+    final u1 = formattedUid.substring(0, 3);
+    final u2 = formattedUid.substring(3, 5);
+    final u3 = formattedUid.substring(5, 7);
+    final u4 = formattedUid.substring(7, 9);
+    return 'https://user.klpbbs.com/data/avatar/$u1/$u2/$u3/${u4}_avatar_big.jpg';
+  }
+
   /// 头像挂件（sunju_facemall）URL：##SJ## 后缀的 data/attachment/sunju_facemall/fm_{n}.png
   static String? _faceUrlFromAvatar(String? src) {
     if (src == null || src.isEmpty) return null;
@@ -1000,18 +1011,43 @@ class ComiisParser {
 
       final fullText = el.text.replaceAll('\u00a0', ' ').trim();
 
-      // 用户组匹配（如 Lv.5 金牌会员 / 禁止发言 / 注册会员）
-      final groupM = RegExp(
-        r'(Lv\.\d+\s*[^积分\s\n]+|版主|超级版主|管理员|荣誉会员|贵宾会员|金牌会员|元老会员|中级会员|高级会员|注册会员|普通会员|禁止发言|等待验证会员)',
-      ).firstMatch(fullText);
-      if (groupM != null) {
-        group = groupM.group(1)!.trim();
+      // 1. 优先从专门段落提取用户组 (PC 端结构: <p class="maxh">SVIP 积分数: 10130</p> 或移动端子行)
+      final pEl = el.querySelector('p.maxh, p.xg1, p.sub, p.comiis_p, p');
+      if (pEl != null) {
+        final pText = pEl.text.replaceAll('\u00a0', ' ').trim();
+        final mGrp = RegExp(r'^(.*?)(?:\s*积分[数\s:：]|\s*$)').firstMatch(pText);
+        if (mGrp != null && mGrp.group(1)!.trim().isNotEmpty) {
+          final candidate = mGrp.group(1)!.trim();
+          if (!candidate.contains('查看资料') &&
+              !candidate.contains('打招呼') &&
+              !candidate.contains('去串个门') &&
+              !candidate.contains('发送消息')) {
+            group = candidate;
+          }
+        }
+        final mCred = RegExp(r'积分[数\s:：]*(\d+)').firstMatch(pText);
+        if (mCred != null) {
+          credits = mCred.group(1)!;
+        }
       }
 
-      // 积分匹配
-      final credM = RegExp(r'积分[数:：]?\s*(\d+)').firstMatch(fullText);
-      if (credM != null) {
-        credits = credM.group(1)!;
+      // 2. 若未从专用段落提取出用户组，则基于全文本进行智能匹配（涵盖 SVIP、VIP、认证开发者、管理组及各类会员组）
+      if (group.isEmpty) {
+        final groupM = RegExp(
+          r'(SVIP|VIP|Lv\.\d+\s*[^积分\s\n]+|版主|超级版主|荣誉版主|实习版主|管理员|荣誉会员|贵宾会员|金牌会员|元老会员|中级会员|高级会员|注册会员|普通会员|认证开发者|创作者|特别嘉宾|禁止发言|等待验证会员)',
+          caseSensitive: false,
+        ).firstMatch(fullText);
+        if (groupM != null) {
+          group = groupM.group(1)!.trim();
+        }
+      }
+
+      // 3. 积分补充匹配
+      if (credits.isEmpty) {
+        final credM = RegExp(r'积分[数\s:：]*(\d+)').firstMatch(fullText);
+        if (credM != null) {
+          credits = credM.group(1)!;
+        }
       }
 
       // 附注/自定义备注匹配
@@ -5397,20 +5433,25 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
     // 1. 用户名提取（优先目标个人空间标题 #uhd / h2.mbn / meta 标签）
     String username = '';
-    final uhdH2 = cleanDoc.querySelector(
-      '#uhd h2.mt, #uhd .tb_h h2, #uhd h2, h2.mbn, div.pbm h2.xs2',
-    );
-    if (uhdH2 != null) {
-      final clone = uhdH2.clone(true);
-      clone.querySelectorAll('span, em, a').forEach((e) => e.remove());
-      username = clone.text.trim();
+    final descMeta = cleanDoc.querySelector('meta[name="description"]');
+    if (descMeta != null) {
+      final c = descMeta.attributes['content'] ?? '';
+      final m = RegExp(r'^(.+?)的个人资料').firstMatch(c);
+      if (m != null) username = m.group(1)!.trim();
     }
     if (username.isEmpty) {
-      final descMeta = cleanDoc.querySelector('meta[name="description"]');
-      if (descMeta != null) {
-        final c = descMeta.attributes['content'] ?? '';
-        final m = RegExp(r'^(.+?)的个人资料').firstMatch(c);
-        if (m != null) username = m.group(1)!.trim();
+      final title = cleanDoc.querySelector('title')?.text.trim() ?? '';
+      final m = RegExp(r'^(.+?)的个人资料').firstMatch(title) ?? RegExp(r'^(.+?)的个人空间').firstMatch(title);
+      if (m != null) username = m.group(1)!.trim();
+    }
+    if (username.isEmpty) {
+      final uhdH2 = cleanDoc.querySelector(
+        '#uhd h2.mt, #uhd .tb_h h2, #uhd h2, h2.mbn, div.pbm h2.xs2',
+      );
+      if (uhdH2 != null) {
+        final clone = uhdH2.clone(true);
+        clone.querySelectorAll('span, em, a').forEach((e) => e.remove());
+        username = clone.text.trim();
       }
     }
     if (username.isEmpty) {
@@ -5418,11 +5459,6 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         '.comiis_space_tx h2, h2.fyy, span.user_tit, .user_tit',
       );
       if (h2 != null) username = h2.text.trim();
-    }
-    if (username.isEmpty) {
-      final title = cleanDoc.querySelector('title')?.text.trim() ?? '';
-      final m = RegExp(r'^(.+?)的个人空间').firstMatch(title);
-      if (m != null) username = m.group(1)!.trim();
     }
 
     // 从页面文本提取字段
@@ -5567,6 +5603,12 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           } else if (label == '用户组') {
             if (levelName.isEmpty) levelName = value;
           } else {
+            if (label.contains('时间') || label.contains('访问')) {
+              value = value.replaceAllMapped(
+                RegExp(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2})(\d{2})\b'),
+                (m) => '${m[1]}:${m[2]}',
+              );
+            }
             gameProfile[label] = value;
           }
         }
@@ -5584,8 +5626,14 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           .replaceAll('：', '')
           .replaceAll(' ', '')
           .trim();
-      final value = m.group(2)!.replaceFirst(RegExp(r'^[:：\s]+'), '').replaceFirst(RegExp(r'[:：\s]+$'), '').trim();
+      var value = m.group(2)!.replaceFirst(RegExp(r'^[:：\s]+'), '').replaceFirst(RegExp(r'[:：\s]+$'), '').trim();
       if (label.isNotEmpty && value.isNotEmpty) {
+        if (label.contains('时间') || label.contains('访问')) {
+          value = value.replaceAllMapped(
+            RegExp(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2})(\d{2})\b'),
+            (m) => '${m[1]}:${m[2]}',
+          );
+        }
         if (label.contains('主题')) stats.putIfAbsent('主题', () => value);
         if (label.contains('回帖')) stats.putIfAbsent('回复', () => value);
         if (label.contains('好友')) stats.putIfAbsent('好友', () => value);
@@ -5601,10 +5649,10 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
-    final popMatch = RegExp(r'(?:人气|空间访问量|访问量)\s*[:：]?\s*(\d+)|(\d+)\s*(?:人气|次访问)').firstMatch(html);
+    final popMatch = RegExp(r'(\d+)\s*(?:人气|次访问)|(?:人气|空间访问量|访问量)\s*[:：]?\s*(\d+)').firstMatch(html);
     if (popMatch != null) {
       final v = popMatch.group(1) ?? popMatch.group(2);
-      if (v != null && v.isNotEmpty) stats.putIfAbsent('人气', () => v);
+      if (v != null && v.isNotEmpty) stats['人气'] = v;
     }
 
     // 3) 提取用户组全名（如 "Lv.4 Lv.4 高级会员" / "Lv.4 高级会员"）
@@ -5614,9 +5662,8 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     if (groupEl != null && groupEl.text.trim().isNotEmpty) {
       if (levelName.isEmpty) levelName = groupEl.text.trim();
     }
-    if (username.isEmpty) username = '用户$uid';
-    // 头像挂件（sunju_facemall）：.comiis_space_tx img / .user_img img 的 ##SJ## 后缀
-    final faceImg = doc.querySelector('.comiis_space_tx img, .user_img img');
+    // 头像挂件提取（仅当带有 ##SJ## 挂件时提取）
+    final faceImg = cleanDoc.querySelector('.comiis_space_tx img, .user_img img, .avt img, #ct img[src*="avatar"]');
     final faceUrl = _faceUrlFromAvatar(faceImg?.attributes['src']) ?? '';
 
     // 空间背景图提取（Discuz comiis_app_homestyle 空间壁纸）
@@ -5728,6 +5775,60 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       onlineStatusText: onlineStatusText,
       profileProgress: profileProgress,
     );
+  }
+
+  /// 解析用户搜索结果 (home.php?mod=spacecp&ac=search&searchsubmit=yes&username=...)
+  static List<UserSpace> parseSearchUsers(String html) {
+    final doc = html_parser.parse(html);
+    final results = <UserSpace>[];
+    final seenUids = <int>{};
+
+    for (final li in doc.querySelectorAll('ul.buddy li, li.bbda, div.buddy')) {
+      final h4A = li.querySelector('h4 a, a[href*="space-uid-"], a[href*="uid="]');
+      if (h4A == null) continue;
+
+      final href = h4A.attributes['href'] ?? '';
+      final uidMatch = RegExp(r'space-uid-(\d+)|uid=(\d+)').firstMatch(href);
+      final uid = uidMatch != null
+          ? (int.tryParse(uidMatch.group(1) ?? uidMatch.group(2) ?? '') ?? 0)
+          : 0;
+      if (uid <= 0 || seenUids.contains(uid)) continue;
+      seenUids.add(uid);
+
+      final username = (h4A.attributes['title'] ?? h4A.text).trim();
+      final avtImg = li.querySelector('div.avt img, img');
+      final faceUrl = _faceUrlFromAvatar(avtImg?.attributes['src']) ?? '';
+
+      final descEl = li.querySelector('p.maxh, p.xg1, p');
+      final descText = descEl?.text.trim() ?? '';
+
+      // 解析用户组和积分
+      String levelName = '';
+      String credits = '';
+      final credMatch = RegExp(r'积分数?[:：\s]*(\d+)').firstMatch(descText);
+      if (credMatch != null) {
+        credits = credMatch.group(1)!;
+      }
+      final groupMatch = RegExp(
+        r'(SVIP|VIP|Lv\.\d+\s*[^积分\r\n\t]+|[^积分\d\r\n\t]+会员|版主|超级版主|管理员|荣誉版主|实习版主|认证开发者|创作者|特别嘉宾)',
+        caseSensitive: false,
+      ).firstMatch(descText);
+      if (groupMatch != null) {
+        levelName = groupMatch.group(1)!.trim();
+      }
+
+      results.add(
+        UserSpace(
+          uid: uid,
+          username: username.isNotEmpty ? username : 'UID: $uid',
+          faceUrl: faceUrl,
+          levelName: levelName,
+          credits: credits,
+          stats: descText.isNotEmpty ? {'简介': descText} : const {},
+        ),
+      );
+    }
+    return results;
   }
 
   /// 解析 Discuz 个人资料编辑页原生表单字段 (home.php?mod=spacecp&ac=profile&op=...&mobile=2)

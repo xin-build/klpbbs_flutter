@@ -63,3 +63,17 @@ scratch_*.html
 *.html
 test/
 /test/
+.reasonix/
+capture/
+diskao_*
+tmp_*
+jt.png
+klpbbs_app/
+local-env/
+mock-server/
+reference_piliplus/
+refs/
+tools/
+截图/
+资源/
+

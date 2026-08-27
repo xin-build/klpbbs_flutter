@@ -152,8 +152,8 @@ class DioClient {
     d.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) {
-          // 动态同步最新 UA 与 Referer
-          options.headers['User-Agent'] = AppConfig.userAgent;
+          // 动态同步最新 UA 与 Referer（保留显式传入的自定义 UA，如 pcUserAgent）
+          options.headers['User-Agent'] ??= AppConfig.userAgent;
           options.headers['Referer'] ??= AppConfig.baseUrl;
           if (options.path.contains('inajax=1') ||
               options.uri.queryParameters['inajax'] == '1') {

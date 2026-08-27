@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/global_nav.dart';
 
 /// 任务中心（klpbbs home.php?mod=task，需登录）
@@ -24,6 +25,7 @@ class _TaskPageState extends State<TaskPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: const Text('任务中心'),
         actions: const [GlobalNavButton()],
       ),

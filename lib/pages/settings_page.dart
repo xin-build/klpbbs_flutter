@@ -2025,6 +2025,42 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                               : const Icon(Icons.today_rounded, size: 18),
                           label: const Text('测试推送今日签到数据'),
                         ),
+                        FilledButton.tonalIcon(
+                          style: FilledButton.styleFrom(
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          onPressed: sign.isRunning
+                              ? null
+                              : () async {
+                                  final report = await sign.runBurstDiagnosticTest();
+                                  if (context.mounted) {
+                                    showDialog(
+                                      context: context,
+                                      builder: (ctx) => AlertDialog(
+                                        title: const Row(
+                                          children: [
+                                            Icon(Icons.bolt_rounded, color: Colors.amber),
+                                            SizedBox(width: 8),
+                                            Text('高频冲刺实测结果', style: TextStyle(fontSize: 16)),
+                                          ],
+                                        ),
+                                        content: SelectableText(
+                                          report,
+                                          style: const TextStyle(fontSize: 13, height: 1.4),
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () => Navigator.pop(ctx),
+                                            child: const Text('知道了'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  }
+                                },
+                          icon: const Icon(Icons.flash_on_rounded, size: 18, color: Colors.amber),
+                          label: const Text('立即运行高频冲刺实测'),
+                        ),
                         OutlinedButton.icon(
                           style: OutlinedButton.styleFrom(
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),

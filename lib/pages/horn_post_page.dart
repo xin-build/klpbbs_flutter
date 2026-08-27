@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/write_confirm.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/global_nav.dart';
 
 /// 小喇叭发布页（ahome_horn:add）
@@ -103,6 +104,7 @@ class _HornPostPageState extends State<HornPostPage> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: const Text('发布小喇叭'),
         actions: [
           const GlobalNavButton(),

@@ -14,12 +14,14 @@ class FriendPage extends StatefulWidget {
   final int uid;
   final String? username;
   final int initialTabIndex;
+  final bool? isMe;
 
   const FriendPage({
     super.key,
     required this.uid,
     this.username,
     this.initialTabIndex = 0,
+    this.isMe,
   });
 
   @override
@@ -78,12 +80,12 @@ class _FriendPageState extends State<FriendPage>
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isMe = DioClient.isLoggedIn && (_myUid == widget.uid || widget.uid <= 0);
+    final isMe = widget.isMe ?? (DioClient.isLoggedIn && (_myUid == widget.uid || widget.uid <= 0));
     final title = isMe
         ? '我的好友'
         : (widget.username != null && widget.username!.isNotEmpty
             ? '${widget.username} 的好友'
-            : '好友与关注');
+            : '好友列表');
 
     return Scaffold(
       appBar: AppBar(
@@ -92,24 +94,26 @@ class _FriendPageState extends State<FriendPage>
         actions: const [
           GlobalNavButton(),
         ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(48),
-          child: Container(
-            color: theme.colorScheme.surface,
-            child: TabBar(
-              controller: _tabController,
-              isScrollable: true,
-              tabAlignment: TabAlignment.start,
-              labelColor: theme.colorScheme.primary,
-              unselectedLabelColor: theme.colorScheme.onSurfaceVariant,
-              indicatorColor: theme.colorScheme.primary,
-              indicatorWeight: 3,
-              labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-              unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.normal, fontSize: 14),
-              tabs: _tabs.map((t) => Tab(text: t.label)).toList(),
-            ),
-          ),
-        ),
+        bottom: isMe
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(48),
+                child: Container(
+                  color: theme.colorScheme.surface,
+                  child: TabBar(
+                    controller: _tabController,
+                    isScrollable: true,
+                    tabAlignment: TabAlignment.start,
+                    labelColor: theme.colorScheme.primary,
+                    unselectedLabelColor: theme.colorScheme.onSurfaceVariant,
+                    indicatorColor: theme.colorScheme.primary,
+                    indicatorWeight: 3,
+                    labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.normal, fontSize: 14),
+                    tabs: _tabs.map((t) => Tab(text: t.label)).toList(),
+                  ),
+                ),
+              )
+            : null,
       ),
       body: Center(
         child: ConstrainedBox(
@@ -168,20 +172,28 @@ class _FriendPageState extends State<FriendPage>
                 ),
               ),
 
-              // 7 个 Tab 内容视图
+              // 内容视图：他人主页仅显示好友列表，本人主页支持 7 大 Tab
               Expanded(
-                child: TabBarView(
-                  controller: _tabController,
-                  children: _tabs.map((tab) {
-                    return _FriendTabListView(
-                      uid: widget.uid,
-                      view: tab.key,
-                      tabTitle: tab.label,
-                      filterKeyword: _filterKeyword,
-                      isMe: isMe,
-                    );
-                  }).toList(),
-                ),
+                child: isMe
+                    ? TabBarView(
+                        controller: _tabController,
+                        children: _tabs.map((tab) {
+                          return _FriendTabListView(
+                            uid: widget.uid,
+                            view: tab.key,
+                            tabTitle: tab.label,
+                            filterKeyword: _filterKeyword,
+                            isMe: true,
+                          );
+                        }).toList(),
+                      )
+                    : _FriendTabListView(
+                        uid: widget.uid,
+                        view: 'me',
+                        tabTitle: '好友',
+                        filterKeyword: _filterKeyword,
+                        isMe: false,
+                      ),
               ),
             ],
           ),
@@ -213,9 +225,15 @@ class _FriendTabListView extends StatefulWidget {
 
 class _FriendTabListViewState extends State<_FriendTabListView>
     with AutomaticKeepAliveClientMixin {
-  late Future<List<FriendItem>> _future;
+  final List<FriendItem> _items = [];
+  final ScrollController _scrollController = ScrollController();
   final TextEditingController _blacklistAddCtrl = TextEditingController();
   bool _isAddingBlacklist = false;
+  bool _isLoading = false;
+  bool _isFirstLoad = true;
+  bool _hasMore = true;
+  int _currentPage = 1;
+  String? _error;
 
   @override
   bool get wantKeepAlive => true;
@@ -223,19 +241,78 @@ class _FriendTabListViewState extends State<_FriendTabListView>
   @override
   void initState() {
     super.initState();
-    _load();
+    _scrollController.addListener(_onScroll);
+    _load(refresh: true);
   }
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
     _blacklistAddCtrl.dispose();
     super.dispose();
   }
 
-  void _load() {
-    setState(() {
-      _future = KlpbbsApi.getFriends(widget.uid, view: widget.view);
-    });
+  void _onScroll() {
+    if (_scrollController.hasClients &&
+        _scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 300) {
+      if (!_isLoading && _hasMore) {
+        _load(refresh: false);
+      }
+    }
+  }
+
+  Future<void> _load({bool refresh = false}) async {
+    if (_isLoading) return;
+    if (refresh) {
+      _currentPage = 1;
+      _hasMore = true;
+      setState(() {
+        _isLoading = true;
+        _error = null;
+        if (_items.isEmpty) _isFirstLoad = true;
+      });
+    } else {
+      if (!_hasMore) return;
+      setState(() {
+        _isLoading = true;
+        _error = null;
+      });
+    }
+
+    try {
+      final list = await KlpbbsApi.getFriends(
+        widget.uid,
+        view: widget.view,
+        page: _currentPage,
+      );
+      if (!mounted) return;
+      setState(() {
+        if (refresh) {
+          _items.clear();
+        }
+        final seenUids = _items.map((e) => e.uid).toSet();
+        for (final item in list) {
+          if (seenUids.add(item.uid)) {
+            _items.add(item);
+          }
+        }
+        if (list.isEmpty || list.length < 20) {
+          _hasMore = false;
+        } else {
+          _currentPage++;
+        }
+        _isLoading = false;
+        _isFirstLoad = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _isLoading = false;
+        _isFirstLoad = false;
+      });
+    }
   }
 
   Future<void> _addBlacklist() async {
@@ -251,7 +328,7 @@ class _FriendTabListViewState extends State<_FriendTabListView>
         messenger.showSnackBar(
           SnackBar(content: Text('已将「$name」加入黑名单')),
         );
-        _load();
+        _load(refresh: true);
       } else {
         messenger.showSnackBar(
           const SnackBar(content: Text('添加失败，请确认用户名是否存在或网络正常')),
@@ -366,73 +443,79 @@ class _FriendTabListViewState extends State<_FriendTabListView>
         ],
 
         Expanded(
-          child: FutureBuilder<List<FriendItem>>(
-            future: _future,
-            builder: (context, snap) {
-              if (snap.connectionState != ConnectionState.done) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (snap.hasError) {
-                return EmptyView(
-                  icon: Icons.error_outline,
-                  title: '加载${widget.tabTitle}失败',
-                  subtitle: '${snap.error}',
-                  action: FilledButton.tonal(
-                    onPressed: _load,
-                    child: const Text('重试'),
-                  ),
-                );
-              }
-
-              final allList = snap.data ?? [];
-              if (allList.isEmpty) {
-                return EmptyView(
-                  icon: _getTabEmptyIcon(widget.view),
-                  title: widget.view == 'blacklist' ? '没有相关用户列表' : '暂无数据',
-                  subtitle: widget.isMe ? '您目前没有${widget.tabTitle}数据' : '暂无公开${widget.tabTitle}',
-                  action: FilledButton.tonal(
-                    onPressed: _load,
-                    child: const Text('刷新'),
-                  ),
-                );
-              }
-
-              final filteredList = widget.filterKeyword.isEmpty
-                  ? allList
-                  : allList.where((f) {
-                      return f.username.toLowerCase().contains(widget.filterKeyword) ||
-                          f.usergroup.toLowerCase().contains(widget.filterKeyword) ||
-                          f.uid.toString().contains(widget.filterKeyword) ||
-                          f.note.toLowerCase().contains(widget.filterKeyword);
-                    }).toList();
-
-              return RefreshIndicator(
-                onRefresh: () async => _load(),
-                child: filteredList.isEmpty
-                    ? Center(
-                        child: Text(
-                          '未找到匹配「${widget.filterKeyword}」的结果',
-                          style: TextStyle(color: theme.colorScheme.outline),
-                        ),
-                      )
-                    : ListView.builder(
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        itemCount: filteredList.length,
-                        itemBuilder: (context, index) {
-                          final item = filteredList[index];
-                          return _FriendCard(
-                            key: ValueKey('${widget.view}_${item.uid}'),
-                            item: item,
-                            view: widget.view,
-                            isMe: widget.isMe,
-                            onChanged: _load,
-                          );
-                        },
+          child: _isFirstLoad
+              ? const Center(child: CircularProgressIndicator())
+              : _error != null && _items.isEmpty
+                  ? EmptyView(
+                      icon: Icons.error_outline,
+                      title: '加载${widget.tabTitle}失败',
+                      subtitle: '$_error',
+                      action: FilledButton.tonal(
+                        onPressed: () => _load(refresh: true),
+                        child: const Text('重试'),
                       ),
-              );
-            },
-          ),
+                    )
+                  : _items.isEmpty
+                      ? EmptyView(
+                          icon: _getTabEmptyIcon(widget.view),
+                          title: widget.view == 'blacklist' ? '没有相关用户列表' : '暂无数据',
+                          subtitle: widget.isMe ? '您目前没有${widget.tabTitle}数据' : '暂无${widget.tabTitle}数据',
+                          action: FilledButton.tonal(
+                            onPressed: () => _load(refresh: true),
+                            child: const Text('刷新'),
+                          ),
+                        )
+                      : Builder(
+                          builder: (context) {
+                            final filteredList = widget.filterKeyword.isEmpty
+                                ? _items
+                                : _items.where((f) {
+                                    return f.username.toLowerCase().contains(widget.filterKeyword) ||
+                                        f.usergroup.toLowerCase().contains(widget.filterKeyword) ||
+                                        f.uid.toString().contains(widget.filterKeyword) ||
+                                        f.note.toLowerCase().contains(widget.filterKeyword);
+                                  }).toList();
+
+                            return RefreshIndicator(
+                              onRefresh: () => _load(refresh: true),
+                              child: filteredList.isEmpty
+                                  ? Center(
+                                      child: Text(
+                                        '未找到匹配「${widget.filterKeyword}」的结果',
+                                        style: TextStyle(color: theme.colorScheme.outline),
+                                      ),
+                                    )
+                                  : ListView.builder(
+                                      controller: _scrollController,
+                                      physics: const AlwaysScrollableScrollPhysics(),
+                                      padding: const EdgeInsets.symmetric(vertical: 8),
+                                      itemCount: filteredList.length + (_hasMore ? 1 : 0),
+                                      itemBuilder: (context, index) {
+                                        if (index == filteredList.length) {
+                                          return const Padding(
+                                            padding: EdgeInsets.symmetric(vertical: 16),
+                                            child: Center(
+                                              child: SizedBox(
+                                                width: 24,
+                                                height: 24,
+                                                child: CircularProgressIndicator(strokeWidth: 2),
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                        final item = filteredList[index];
+                                        return _FriendCard(
+                                          key: ValueKey('${widget.view}_${item.uid}'),
+                                          item: item,
+                                          view: widget.view,
+                                          isMe: widget.isMe,
+                                          onChanged: () => _load(refresh: true),
+                                        );
+                                      },
+                                    ),
+                            );
+                          },
+                        ),
         ),
       ],
     );

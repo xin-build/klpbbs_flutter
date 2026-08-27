@@ -155,23 +155,20 @@ class _SearchPageState extends State<SearchPage> {
           if (results.isEmpty) _error = page == 1 ? '未找到相关帖子' : '没有更多搜索结果了';
         });
       } else {
-        // 用户搜索
-        final userUid = int.tryParse(kw);
-        final users = <UserSpace>[];
-        if (userUid != null) {
-          final u = await KlpbbsApi.getUserSpace(userUid);
-          if (u != null) users.add(u);
-        } else {
-          final u = await KlpbbsApi.getUserSpaceByName(kw);
-          if (u != null) users.add(u);
-        }
+        // 用户搜索（对接 Discuz 原生搜索接口与 UID 精确直达）
+        final users = await KlpbbsApi.searchUsers(kw, page: page);
         if (!mounted) return;
         _saveHistory(kw);
         setState(() {
           _userResults = users;
           _threadResults = null;
           _loading = false;
-          if (users.isEmpty) _error = '未找到相关用户';
+          if (users.length >= 10) {
+            _totalPages = math.max(_totalPages, page + 1);
+          } else {
+            _totalPages = page;
+          }
+          if (users.isEmpty) _error = page == 1 ? '未找到相关用户' : '没有更多用户了';
         });
       }
     } catch (e) {
@@ -1000,27 +997,45 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   List<Widget> _buildUserResultList() {
+    final theme = Theme.of(context);
     return [
       Padding(
         padding: const EdgeInsets.only(bottom: 8),
         child: Text(
-          '找到 ${_userResults!.length} 个用户',
+          '找到 ${_userResults!.length} 个匹配用户',
           style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
         ),
       ),
       for (final u in _userResults!)
         Card(
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: BorderSide(color: theme.colorScheme.outlineVariant.withAlpha(60)),
+          ),
           margin: const EdgeInsets.only(bottom: 8),
           child: ListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
             leading: UserAvatarWidget(
               uid: u.uid,
               author: u.username,
               size: 44,
               faceUrl: u.faceUrl.isNotEmpty ? u.faceUrl : null,
             ),
-            title: Text(u.username, style: const TextStyle(fontWeight: FontWeight.bold)),
-            subtitle: Text('UID: ${u.uid}  积分: ${u.credits}  ${u.group}'),
-            trailing: const Icon(Icons.chevron_right),
+            title: Text(
+              u.username,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+            ),
+            subtitle: Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Text(
+                'UID: ${u.uid}  ${u.levelName.isNotEmpty ? u.levelName : (u.group.isNotEmpty ? u.group : "")}  ${u.credits.isNotEmpty ? "积分: ${u.credits}" : (u.stats["简介"] ?? "")}',
+                style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            trailing: const Icon(Icons.chevron_right, size: 20),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => UserSpacePage(uid: u.uid)),
             ),

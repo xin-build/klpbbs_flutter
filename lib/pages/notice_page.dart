@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../api/klpbbs_api.dart';
 import '../models/notice_item.dart';
 import '../services/push_notification_service.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
@@ -141,6 +142,7 @@ class _NoticePageState extends State<NoticePage>
 
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: const Text('消息提醒'),
         centerTitle: true,
         actions: [

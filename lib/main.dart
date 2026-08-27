@@ -653,9 +653,16 @@ class _MainShellState extends State<_MainShell> {
       const RepaintBoundary(child: UserCenterPage()),
     ];
 
-    return AdaptiveScaffold(
-      scaffoldKey: _scaffoldKey,
-      currentIndex: _index.clamp(0, pages.length - 1),
+    return PopScope(
+      canPop: _index == 0,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _index != 0) {
+          setState(() => _index = 0);
+        }
+      },
+      child: AdaptiveScaffold(
+        scaffoldKey: _scaffoldKey,
+        currentIndex: _index.clamp(0, pages.length - 1),
       onNavigationChanged: (i) {
         if (i < pages.length) {
           if (_index == i) {
@@ -888,6 +895,7 @@ class _MainShellState extends State<_MainShell> {
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 }

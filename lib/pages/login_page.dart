@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart' as url_launcher;
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/dio_client.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/desktop_shortcuts.dart';
 import 'web_login_page.dart';
 
@@ -415,6 +416,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
       },
       child: Scaffold(
         appBar: AppBar(
+          leading: const AppBackButton(),
           title: const Text('苦力怕论坛 账户认证'),
           actions: [
             IconButton(

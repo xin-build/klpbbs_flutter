@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../api/klpbbs_api.dart';
 import '../core/dio_client.dart';
 import '../models/thread_summary.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/favorite_dialog.dart';
 import '../widgets/global_nav.dart';
@@ -336,6 +337,7 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
 
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: Text(widget.title),
         actions: [
           const GlobalNavButton(),

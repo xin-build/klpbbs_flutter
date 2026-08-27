@@ -9,6 +9,7 @@ import '../core/cache_manager.dart';
 import '../core/preload_service.dart';
 import '../core/seed_data.dart';
 import '../models/forum.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/skeleton_list.dart';
@@ -129,6 +130,7 @@ class _ForumsPageState extends State<ForumsPage> {
 
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: _isSearching
             ? TextField(
                 controller: _searchCtrl,

@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../api/klpbbs_api.dart';
 import '../core/write_confirm.dart';
 import '../models/sign_entry.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
@@ -134,17 +135,20 @@ class _SignRankPageState extends State<SignRankPage>
   }
 
   /// 加载日历签到记录（以服务端官方日历数据为准）
-  Future<void> _loadSignedDays() async {
+  Future<void> _loadSignedDays({bool forceRefresh = false}) async {
     final now = DateTime.now();
+    final y = _calYear > 0 ? _calYear : now.year;
+    final m = _calMonth > 0 ? _calMonth : now.month;
     try {
       final serverSignedDays = await KlpbbsApi.getSignedDaysFromServerCalendar(
-        month: _calMonth,
-        year: _calYear,
+        month: m,
+        year: y,
+        forceRefresh: forceRefresh,
       );
       if (mounted) {
         setState(() {
           _signedDays = Set<int>.from(serverSignedDays);
-          if (_headerInfo.isSignedToday && _calYear == now.year && _calMonth == now.month) {
+          if (_headerInfo.isSignedToday && y == now.year && m == now.month) {
             _signedDays.add(now.day);
           }
           _datesLoaded = true;
@@ -469,14 +473,14 @@ class _SignRankPageState extends State<SignRankPage>
   @override
   void initState() {
     super.initState();
+    final now = DateTime.now();
+    _calYear = now.year;
+    _calMonth = now.month;
     _tabController = TabController(length: _tabs.length, vsync: this)
       ..addListener(_onTabControllerTick);
     _future = _loadRankList(_op, page: _page, forceRefresh: true);
     _loadHeaderRealtime(forceRefresh: true);
     _loadSignedDays();
-    final now = DateTime.now();
-    _calYear = now.year;
-    _calMonth = now.month;
   }
 
   void _onTabControllerTick() {
@@ -569,6 +573,7 @@ class _SignRankPageState extends State<SignRankPage>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: const Text('每日签到', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
         bottom: _loadingHeader
             ? const PreferredSize(
@@ -1148,9 +1153,10 @@ class _SignRankPageState extends State<SignRankPage>
       }
       _calMonth = m;
       _calYear = y;
+      _signedDays = {};
       _datesLoaded = false;
     });
-    _loadSignedDays();
+    _loadSignedDays(forceRefresh: true);
   }
 
   Widget _buildModernCalendar() {

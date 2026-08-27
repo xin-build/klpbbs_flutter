@@ -6,8 +6,10 @@ import '../widgets/global_nav.dart';
 import '../widgets/thread_card.dart';
 import 'facemall_page.dart';
 import 'func_list_page.dart';
+import 'phone_bind_page.dart';
 import 'profile_edit_page.dart';
 import 'user_space_page.dart';
+import 'verify_info_page.dart';
 
 /// 资料设置主页面（1:1 绝对对齐 Discuz 移动端网页 home.php?mod=space&do=profile&set=comiis&mycenter=1&mobile=2）
 class ProfileSettingsPage extends StatefulWidget {
@@ -295,10 +297,7 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
   void _showVerifyInfoDialog() {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => const FuncListPage(
-          title: '认证信息',
-          path: 'home.php?mod=spacecp&ac=profile&op=verify&mobile=2',
-        ),
+        builder: (_) => VerifyInfoPage(userSpace: _user),
       ),
     );
   }
@@ -306,10 +305,7 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
   void _showPhoneBindDialog() {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => const FuncListPage(
-          title: '手机号绑定',
-          path: 'home.php?mod=spacecp&ac=profile&op=contact&mobile=2',
-        ),
+        builder: (_) => PhoneBindPage(userSpace: _user),
       ),
     );
   }
@@ -395,6 +391,13 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
       appBar: AppBar(
         title: const Text('资料设置'),
         centerTitle: true,
+        leading: Navigator.of(context).canPop()
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back),
+                tooltip: '返回',
+                onPressed: () => Navigator.of(context).maybePop(),
+              )
+            : null,
         actions: [
           IconButton(
             icon: const Icon(Icons.person_outline),
@@ -595,7 +598,7 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
                             ),
                             onTap: () async {
                               final ok = await Navigator.of(context).push<bool>(
-                                MaterialPageRoute(builder: (_) => const ProfileEditPage()),
+                                MaterialPageRoute(builder: (_) => ProfileEditPage(initialUser: _user)),
                               );
                               if (ok == true) _loadUser();
                             },

@@ -39,10 +39,21 @@ class UserAvatarWidget extends StatelessWidget {
     this.onTap,
   });
 
-  /// 规范化与清洗挂件 URL（自动处理 ##SJ## 分隔符、相对路径并映射到原站真实附件路径）
+  /// 规范化与清洗挂件 URL（自动处理 ##SJ## 分隔符、相对路径并映射到原站真实附件路径，且严禁将用户头像作为挂件渲染）
   static String? sanitizeFaceUrl(String? rawUrl) {
     if (rawUrl == null || rawUrl.trim().isEmpty) return null;
     var url = rawUrl.trim();
+
+    // 关键安全过滤：用户头像 URL（avatar/noavatar/jpg/jpeg/avatar.php）绝不是挂件！
+    if (url.contains('/avatar/') ||
+        url.contains('noavatar') ||
+        url.contains('_avatar_') ||
+        url.contains('avatar.php') ||
+        url.toLowerCase().endsWith('.jpg') ||
+        url.toLowerCase().endsWith('.jpeg')) {
+      return null;
+    }
+
     if (url.contains('##SJ##')) {
       final parts = url.split('##SJ##');
       if (parts.length > 1 && parts[1].trim().isNotEmpty) {
@@ -52,6 +63,16 @@ class UserAvatarWidget extends StatelessWidget {
       }
     }
     if (url.isEmpty || url == 'none' || url == '0') return null;
+
+    // 再次过滤分片提取后残留的头像路径
+    if (url.contains('/avatar/') ||
+        url.contains('noavatar') ||
+        url.contains('_avatar_') ||
+        url.contains('avatar.php') ||
+        url.toLowerCase().endsWith('.jpg') ||
+        url.toLowerCase().endsWith('.jpeg')) {
+      return null;
+    }
 
     // 智能映射：苦力怕论坛 sunju_facemall 挂件真实存储路径为 data/attachment/sunju_facemall/...
     if (url.contains('keishi_klp_') || url.contains('sunju_facemall/')) {
@@ -68,11 +89,16 @@ class UserAvatarWidget extends StatelessWidget {
       return '${AppConfig.baseUrl}data/attachment/sunju_facemall/fm_$id.png';
     }
 
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      final base = AppConfig.baseUrl.endsWith('/') ? AppConfig.baseUrl : '${AppConfig.baseUrl}/';
-      url = '$base${url.startsWith('/') ? url.substring(1) : url}';
+    // 仅当包含 attachment 或 facemall 且以 .png 结尾时才允许作为自定义挂件
+    if ((url.contains('attachment') || url.contains('facemall')) && url.toLowerCase().endsWith('.png')) {
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        final base = AppConfig.baseUrl.endsWith('/') ? AppConfig.baseUrl : '${AppConfig.baseUrl}/';
+        return '$base${url.startsWith('/') ? url.substring(1) : url}';
+      }
+      return url;
     }
-    return url;
+
+    return null;
   }
 
   @override

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/write_confirm.dart';
+import '../widgets/app_back_button.dart';
 
 /// 注册页（支持 Discuz SecCode 验证码；真实 klpbbs 可能还需短信/邮箱）
 class RegisterPage extends StatefulWidget {
@@ -132,6 +133,7 @@ class _RegisterPageState extends State<RegisterPage> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: const Text('注册'),
         actions: [
           IconButton(
