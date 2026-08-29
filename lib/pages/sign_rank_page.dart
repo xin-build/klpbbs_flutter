@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../api/klpbbs_api.dart';
 import '../core/write_confirm.dart';
 import '../models/sign_entry.dart';
+import '../services/auto_sign_service.dart';
 import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/global_nav.dart';
@@ -40,6 +41,8 @@ class _SignRankPageState extends State<SignRankPage>
   // 实时头部数据
   SignHeaderInfo _headerInfo = const SignHeaderInfo();
   bool _loadingHeader = false;
+  int? _myUid;
+  String? _myUsername;
 
   // 签到日历状态
   Set<int> _signedDays = {};
@@ -82,15 +85,32 @@ class _SignRankPageState extends State<SignRankPage>
     setState(() => _loadingHeader = true);
     try {
       final info = await KlpbbsApi.getSignHeaderInfo(forceRefresh: forceRefresh);
+      int? uid = info.uid ?? _myUid;
+      String? username = info.username.isNotEmpty ? info.username : _myUsername;
+
+      if (uid == null || uid <= 0 || username == null || username.isEmpty) {
+        final cachedUid = await KlpbbsApi.getMyUid();
+        if (cachedUid != null && cachedUid > 0) {
+          uid = cachedUid;
+          final space = await KlpbbsApi.getUserSpace(cachedUid);
+          if (space != null && space.username.isNotEmpty) {
+            username = space.username;
+          }
+        }
+      }
+
       if (mounted) {
         setState(() {
-          _headerInfo = info;
+          _myUid = uid;
+          _myUsername = username;
+          _headerInfo = info.copyWith(
+            uid: uid,
+            username: username,
+          );
           _loadingHeader = false;
           final today = DateTime.now().day;
-          if (info.isSignedToday) {
+          if (info.isSignedToday || AutoSignService.instance.isSignedToday()) {
             _signedDays.add(today);
-          } else {
-            _signedDays.remove(today);
           }
         });
       }
@@ -526,7 +546,10 @@ class _SignRankPageState extends State<SignRankPage>
     _loadSignedDays();
   }
 
-  bool get _isSignedToday => _headerInfo.isSignedToday;
+  bool get _isSignedToday =>
+      _headerInfo.isSignedToday ||
+      _signedDays.contains(DateTime.now().day) ||
+      AutoSignService.instance.isSignedToday();
 
   int get _streakDays => _headerInfo.continuousDays > 0 ? _headerInfo.continuousDays : 0;
 
@@ -539,6 +562,21 @@ class _SignRankPageState extends State<SignRankPage>
       final res = await KlpbbsApi.signIn();
       if (res.success || res.message.contains('已签到') || res.message.contains('签过到')) {
         await _recordSignDay();
+        await AutoSignService.instance.markSignedToday();
+        final today = DateTime.now().day;
+        if (mounted) {
+          setState(() {
+            _signedDays.add(today);
+            _headerInfo = _headerInfo.copyWith(
+              todaySignCount: _headerInfo.todaySignCount > 0 ? _headerInfo.todaySignCount + 1 : 1,
+              mySignRank: res.rank ?? _headerInfo.mySignRank,
+              isSignedToday: true,
+              continuousDays: res.continuousDays ?? (_headerInfo.continuousDays > 0 ? _headerInfo.continuousDays + 1 : 1),
+              rewardIron: res.rewardIron ?? _headerInfo.rewardIron,
+              totalDays: _headerInfo.totalDays > 0 ? _headerInfo.totalDays + 1 : 1,
+            );
+          });
+        }
         // 清空所有本地预加载缓存，确保立即与网页端 100% 实时同步
         final prefs = await SharedPreferences.getInstance();
         for (final t in _tabs) {
@@ -675,8 +713,12 @@ class _SignRankPageState extends State<SignRankPage>
             Row(
               children: [
                 UserAvatarWidget(
-                  uid: _headerInfo.uid,
-                  author: _headerInfo.username.isNotEmpty ? _headerInfo.username : '我的账号',
+                  uid: _headerInfo.uid ?? _myUid,
+                  author: _headerInfo.username.isNotEmpty
+                      ? _headerInfo.username
+                      : (_myUsername != null && _myUsername!.isNotEmpty
+                          ? _myUsername!
+                          : '我的账号'),
                   size: 46,
                 ),
                 const SizedBox(width: 14),
@@ -688,7 +730,11 @@ class _SignRankPageState extends State<SignRankPage>
                         children: [
                           Flexible(
                             child: Text(
-                              _headerInfo.username.isNotEmpty ? _headerInfo.username : '苦力怕论坛坛友',
+                              _headerInfo.username.isNotEmpty
+                                  ? _headerInfo.username
+                                  : (_myUsername != null && _myUsername!.isNotEmpty
+                                      ? _myUsername!
+                                      : '苦力怕论坛坛友'),
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                             ),

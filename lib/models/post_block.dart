@@ -93,6 +93,34 @@ class TableBlock extends PostBlock {
   String toString() => 'TableBlock(headers: $headers, rows: ${rows.length}, align: $align)';
 }
 
+/// 排版修饰卡片/容器区块（支持 Discuz 嵌套单列表格 [table=98%,DarkOrange]、背景颜色、边框、阴影与居中卡片）
+class CardContainerBlock extends PostBlock {
+  final List<PostBlock> children;
+  final String? bgColor;
+  final String? borderColor;
+  final double? widthPercent;
+  final String? align;
+
+  const CardContainerBlock({
+    required this.children,
+    this.bgColor,
+    this.borderColor,
+    this.widthPercent,
+    this.align,
+  });
+
+  @override
+  String toString() => 'CardContainerBlock(children: ${children.length}, bg: $bgColor, align: $align)';
+}
+
+/// 分割线区块（[hr] / <hr>）
+class DividerBlock extends PostBlock {
+  const DividerBlock();
+
+  @override
+  String toString() => 'DividerBlock()';
+}
+
 /// 视频/内嵌视频播放区块（原生视频 / Bilibili / 优酷 / YouTube）
 class VideoBlock extends PostBlock {
   final String src;

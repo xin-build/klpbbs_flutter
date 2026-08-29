@@ -223,7 +223,108 @@ class DiscuzPostRenderer extends StatelessWidget {
       HideBlock(:final reason) => _buildHideBlock(context, theme, reason),
       ShieldBlock(:final title, :final reason, :final iconType) =>
         _buildShieldBlock(context, theme, title, reason, iconType),
+      CardContainerBlock() => _buildCardContainerBlock(context, theme, block),
+      DividerBlock() => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Divider(
+          height: 1,
+          thickness: 0.8,
+          color: theme.colorScheme.outlineVariant.withAlpha(80),
+        ),
+      ),
     };
+  }
+
+  // 0.0 排版修饰卡片（嵌套单列表格 [table=98%,DarkOrange][tr][td][table=95%,White] 等）
+  Widget _buildCardContainerBlock(
+    BuildContext context,
+    ThemeData theme,
+    CardContainerBlock block,
+  ) {
+    final bgColor = block.bgColor != null && block.bgColor!.isNotEmpty
+        ? _parseColor(block.bgColor!, brightness: theme.brightness, isBackground: true)
+        : null;
+
+    Color borderColor;
+    if (block.borderColor != null && block.borderColor!.isNotEmpty) {
+      borderColor = _parseColor(block.borderColor!, brightness: theme.brightness, isBackground: false);
+    } else if (bgColor != null) {
+      borderColor = bgColor.withAlpha(200);
+    } else {
+      borderColor = theme.colorScheme.outlineVariant.withAlpha(100);
+    }
+
+    final effectiveBg = bgColor ?? theme.colorScheme.surfaceContainerLowest;
+    final lum = effectiveBg.computeLuminance();
+    final cardTheme = lum > 0.45
+        ? ThemeData.light().copyWith(
+            colorScheme: theme.colorScheme.copyWith(
+              surface: effectiveBg,
+              onSurface: const Color(0xFF1E293B),
+            ),
+            textTheme: ThemeData.light().textTheme.apply(
+                  bodyColor: const Color(0xFF1E293B),
+                  displayColor: const Color(0xFF1E293B),
+                ),
+          )
+        : ThemeData.dark().copyWith(
+            colorScheme: theme.colorScheme.copyWith(
+              surface: effectiveBg,
+              onSurface: const Color(0xFFE2E8F0),
+            ),
+            textTheme: ThemeData.dark().textTheme.apply(
+                  bodyColor: const Color(0xFFE2E8F0),
+                  displayColor: const Color(0xFFE2E8F0),
+                ),
+          );
+
+    final childWidgets = <Widget>[];
+    for (int i = 0; i < block.children.length; i++) {
+      childWidgets.add(
+        Padding(
+          padding: EdgeInsets.only(bottom: i < block.children.length - 1 ? 6.0 : 0.0),
+          child: _buildBlock(context, cardTheme, block.children[i]),
+        ),
+      );
+    }
+
+    final container = Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: effectiveBg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: borderColor,
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withAlpha(bgColor != null ? 18 : 8),
+            blurRadius: 4,
+            offset: const Offset(0, 1),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: block.align == 'center' ? CrossAxisAlignment.center : CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: childWidgets,
+      ),
+    );
+
+    final themedContainer = Theme(
+      data: cardTheme,
+      child: container,
+    );
+
+    if (block.align == 'center') {
+      return Center(child: themedContainer);
+    } else if (block.align == 'right') {
+      return Align(alignment: Alignment.centerRight, child: themedContainer);
+    }
+    return themedContainer;
   }
 
   // 0.1 处罚/屏蔽/封禁/审核状态提示卡片（Discuz 提示: 作者被禁止或删除 内容自动屏蔽 等）
@@ -1883,11 +1984,26 @@ class DiscuzPostRenderer extends StatelessWidget {
               if (size != null) {
                 final s = double.tryParse(size);
                 if (s != null) {
-                  final cur = style?.fontSize ?? baseStyle?.fontSize ?? 14.5;
+                  const sizeMap = {
+                    1: 11.0,
+                    2: 13.0,
+                    3: 15.5,
+                    4: 18.0,
+                    5: 23.0,
+                    6: 29.0,
+                    7: 38.0,
+                  };
+                  final intSize = s.toInt();
                   style = (style ?? baseStyle)?.copyWith(
-                    fontSize: cur * (0.8 + s * 0.1),
+                    fontSize: sizeMap[intSize] ?? s,
                   );
                 }
+              }
+              final face = n.attributes['face'];
+              if (face != null && face.isNotEmpty) {
+                style = (style ?? baseStyle)?.copyWith(
+                  fontFamily: face,
+                );
               }
           }
 
@@ -2006,6 +2122,23 @@ class DiscuzPostRenderer extends StatelessWidget {
             continue;
           }
 
+          if (tag == 'hr') {
+            spans.add(
+              WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6.0),
+                  child: Divider(
+                    height: 1,
+                    thickness: 0.8,
+                    color: theme.colorScheme.outlineVariant.withAlpha(80),
+                  ),
+                ),
+              ),
+            );
+            continue;
+          }
+
           if (tag == 'br') {
             spans.add(const TextSpan(text: '\n'));
           } else if (tag == 'a') {
@@ -2062,16 +2195,30 @@ class DiscuzPostRenderer extends StatelessWidget {
               }
             }
           } else {
+            final isBlock = tag == 'p' ||
+                tag == 'div' ||
+                tag == 'h1' ||
+                tag == 'h2' ||
+                tag == 'h3' ||
+                tag == 'h4' ||
+                tag == 'h5' ||
+                tag == 'h6' ||
+                tag == 'center' ||
+                tag == 'blockquote' ||
+                tag == 'ul' ||
+                tag == 'ol' ||
+                tag == 'li' ||
+                tag == 'tr';
+
+            if (isBlock && spans.isNotEmpty && !_spansEndWithNewline(spans)) {
+              spans.add(const TextSpan(text: '\n'));
+            }
+
             if (tag == 'li') {
               spans.add(const TextSpan(text: '• ')); // 列表项项目符号
             }
             spans.addAll(walk(n, style ?? baseStyle, insideLink: insideLink, linkHref: linkHref));
-            if (tag == 'br') spans.add(const TextSpan(text: '\n'));
-            if (tag == 'p' ||
-                tag == 'div' ||
-                tag == 'li' ||
-                tag == 'ul' ||
-                tag == 'ol') {
+            if (isBlock && spans.isNotEmpty && !_spansEndWithNewline(spans)) {
               spans.add(const TextSpan(text: '\n'));
             }
           }
@@ -2081,6 +2228,99 @@ class DiscuzPostRenderer extends StatelessWidget {
     }
 
     return walk(doc, baseStyle);
+  }
+
+  bool _spansEndWithNewline(List<InlineSpan> spans) {
+    if (spans.isEmpty) return true;
+    final last = spans.last;
+    if (last is TextSpan) {
+      return last.text?.endsWith('\n') ?? false;
+    }
+    return false;
+  }
+
+  Color _parseColor(
+    String colorStr, {
+    Brightness? brightness,
+    bool isBackground = false,
+  }) {
+    Color baseColor;
+    final trimmed = colorStr.trim().toLowerCase();
+    if (trimmed.startsWith('#')) {
+      final hex = trimmed.replaceFirst('#', '');
+      if (hex.length == 6) {
+        baseColor = Color(int.parse('FF$hex', radix: 16));
+      } else if (hex.length == 3) {
+        final full = hex.split('').map((c) => '$c$c').join();
+        baseColor = Color(int.parse('FF$full', radix: 16));
+      } else if (hex.length == 8) {
+        baseColor = Color(int.parse(hex, radix: 16));
+      } else {
+        baseColor = Colors.grey;
+      }
+    } else {
+      const colorMap = <String, Color>{
+        'red': Colors.red,
+        'blue': Colors.blue,
+        'green': Colors.green,
+        'yellow': Colors.amber,
+        'orange': Colors.orange,
+        'purple': Colors.purple,
+        'gray': Colors.grey,
+        'grey': Colors.grey,
+        'black': Colors.black,
+        'white': Colors.white,
+        'cyan': Colors.cyan,
+        'pink': Colors.pink,
+        'lime': Colors.lime,
+        'indigo': Colors.indigo,
+        'teal': Colors.teal,
+        'brown': Colors.brown,
+        'darkorange': Color(0xFFFF8C00),
+        'gold': Color(0xFFFFD700),
+        'silver': Color(0xFFC0C0C0),
+        'violet': Color(0xFFEE82EE),
+        'magenta': Color(0xFFFF00FF),
+        'fuchsia': Color(0xFFFF00FF),
+        'deeppink': Color(0xFFFF1493),
+        'hotpink': Color(0xFFFF69B4),
+        'lightpink': Color(0xFFFFB6C1),
+        'yellowgreen': Color(0xFF9ACD32),
+        'limegreen': Color(0xFF32CD32),
+        'darkgreen': Color(0xFF006400),
+        'forestgreen': Color(0xFF228B22),
+        'seagreen': Color(0xFF2E8B57),
+        'aqua': Color(0xFF00FFFF),
+        'navy': Color(0xFF000080),
+        'maroon': Color(0xFF800000),
+        'crimson': Color(0xFFDC143C),
+        'coral': Color(0xFFFF7F50),
+        'salmon': Color(0xFFFA8072),
+        'tomato': Color(0xFFFF6347),
+        'olive': Color(0xFF808000),
+        'khaki': Color(0xFFF0E68C),
+        'deepskyblue': Color(0xFF00BFFF),
+        'skyblue': Color(0xFF87CEEB),
+        'royalblue': Color(0xFF4169E1),
+        'dodgerblue': Color(0xFF1E90FF),
+      };
+      baseColor = colorMap[trimmed] ?? Colors.grey;
+    }
+    if (!isBackground) {
+      final lum = baseColor.computeLuminance();
+      if (brightness == Brightness.dark) {
+        // 深色模式下：如果字体太暗（如纯黑 #000000、深灰、深蓝），自动提升为高对比度银白色
+        if (lum < 0.28) {
+          return const Color(0xFFE2E8F0);
+        }
+      } else if (brightness == Brightness.light) {
+        // 浅色模式下：如果字体太亮（如纯白 #FFFFFF、极浅灰、浅黄），自动调整为高对比度深色
+        if (lum > 0.82) {
+          return const Color(0xFF1E293B);
+        }
+      }
+    }
+    return baseColor;
   }
 
   List<TextSpan> _highlightCode(String code) {
@@ -2278,63 +2518,6 @@ class DiscuzPostRenderer extends StatelessWidget {
       return TextAlign.center;
     }
     return null;
-  }
-
-  Color _parseColor(
-    String colorStr, {
-    Brightness? brightness,
-    bool isBackground = false,
-  }) {
-    Color baseColor;
-    final trimmed = colorStr.trim().toLowerCase();
-    if (trimmed.startsWith('#')) {
-      final hex = trimmed.replaceFirst('#', '');
-      if (hex.length == 6) {
-        baseColor = Color(int.parse('FF$hex', radix: 16));
-      } else if (hex.length == 3) {
-        final full = hex.split('').map((c) => '$c$c').join();
-        baseColor = Color(int.parse('FF$full', radix: 16));
-      } else if (hex.length == 8) {
-        baseColor = Color(int.parse(hex, radix: 16));
-      } else {
-        baseColor = Colors.grey;
-      }
-    } else {
-      const colorMap = {
-        'red': Colors.red,
-        'blue': Colors.blue,
-        'green': Colors.green,
-        'yellow': Colors.amber,
-        'orange': Colors.orange,
-        'purple': Colors.purple,
-        'gray': Colors.grey,
-        'grey': Colors.grey,
-        'black': Colors.black,
-        'white': Colors.white,
-        'cyan': Colors.cyan,
-        'pink': Colors.pink,
-        'lime': Colors.lime,
-        'indigo': Colors.indigo,
-        'teal': Colors.teal,
-        'brown': Colors.brown,
-      };
-      baseColor = colorMap[trimmed] ?? Colors.grey;
-    }
-    if (!isBackground) {
-      final lum = baseColor.computeLuminance();
-      if (brightness == Brightness.dark) {
-        // 深色模式下：如果字体太暗（如纯黑 #000000、深灰、深蓝），自动提升为高对比度银白色
-        if (lum < 0.28) {
-          return const Color(0xFFE2E8F0);
-        }
-      } else if (brightness == Brightness.light) {
-        // 浅色模式下：如果字体太亮（如纯白 #FFFFFF、极浅灰、浅黄），自动调整为高对比度深色
-        if (lum > 0.82) {
-          return const Color(0xFF1E293B);
-        }
-      }
-    }
-    return baseColor;
   }
 
   String _cleanContentText(String text) {

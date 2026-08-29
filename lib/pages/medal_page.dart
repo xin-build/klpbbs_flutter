@@ -58,11 +58,11 @@ class _MedalPageState extends State<MedalPage> with SingleTickerProviderStateMix
         (m.img.isNotEmpty && x.img.isNotEmpty && (m.img.endsWith(x.img) || x.img.endsWith(m.img))));
   }
 
-  Future<void> _loadMyMedals() async {
+  Future<void> _loadMyMedals({bool forceRefresh = false}) async {
     try {
       final myUid = await KlpbbsApi.getMyUid();
       if (myUid != null && myUid > 0) {
-        final space = await KlpbbsApi.getUserSpace(myUid);
+        final space = await KlpbbsApi.getUserSpace(myUid, forceRefresh: forceRefresh);
         if (space != null) {
           int? iron;
           final ironStr = space.creditsDetail['铁粒'] ?? space.stats['铁粒'];
@@ -81,7 +81,7 @@ class _MedalPageState extends State<MedalPage> with SingleTickerProviderStateMix
           }
         }
       }
-      final medals = await KlpbbsApi.getMyMedalsList();
+      final medals = await KlpbbsApi.getMyMedalsList(forceRefresh: forceRefresh);
       if (mounted) {
         setState(() {
           _myMedals = medals;

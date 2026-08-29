@@ -9,6 +9,7 @@ import '../core/app_config.dart';
 import '../core/preload_service.dart';
 import '../models/user_space.dart';
 import '../models/usergroup_comparison.dart';
+import '../widgets/app_back_button.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/inline_html_text.dart';
 import '../widgets/thread_card.dart';
@@ -639,7 +640,10 @@ class _UserSpacePageState extends State<UserSpacePage> {
         final user = snap.data;
         if (user == null) {
           return Scaffold(
-            appBar: AppBar(title: Text(_isMe ? '我的空间' : 'Ta 的空间')),
+            appBar: AppBar(
+              leading: const AppBackButton(),
+              title: Text(_isMe ? '我的空间' : 'Ta 的空间'),
+            ),
             body: Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -650,6 +654,78 @@ class _UserSpacePageState extends State<UserSpacePage> {
                   const SizedBox(height: 12),
                   FilledButton(onPressed: _loadData, child: const Text('重新加载')),
                 ],
+              ),
+            ),
+          );
+        }
+
+        if (user.isLocked) {
+          return Scaffold(
+            appBar: AppBar(
+              leading: const AppBackButton(),
+              title: const Text('提示信息'),
+              centerTitle: true,
+            ),
+            body: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 48),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Container(
+                      width: 100,
+                      height: 100,
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest.withAlpha(80),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        Icons.lightbulb_outline_rounded,
+                        size: 56,
+                        color: theme.colorScheme.outlineVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 28),
+                    Text(
+                      user.lockReason.isNotEmpty
+                          ? user.lockReason
+                          : '空间已被锁定无法访问，如有疑问请联系管理员',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.outline,
+                        fontSize: 15,
+                        height: 1.5,
+                      ),
+                    ),
+                    const SizedBox(height: 36),
+                    SizedBox(
+                      width: 260,
+                      height: 44,
+                      child: FilledButton(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFF4FC3F7),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(22),
+                          ),
+                          elevation: 0,
+                        ),
+                        onPressed: () {
+                          if (Navigator.of(context).canPop()) {
+                            Navigator.of(context).pop();
+                          }
+                        },
+                        child: const Text(
+                          '[ 点击这里返回上一页 ]',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           );

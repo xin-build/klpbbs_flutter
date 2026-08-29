@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
+import '../core/app_config.dart';
 import '../core/dio_client.dart';
 import 'push_notification_service.dart';
 
@@ -79,11 +80,28 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
   String get statusMessage => _statusMessage;
   String get lastSuccessDate => _lastSuccessDate;
 
+  /// 判断今日是否已成功签到
+  bool isSignedToday() {
+    final now = DateTime.now();
+    final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    return _lastSuccessDate == todayStr;
+  }
+
+  /// 标记今日签到成功（持久化保存）
+  Future<void> markSignedToday() async {
+    final now = DateTime.now();
+    final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    _lastSuccessDate = todayStr;
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString(_keyLastSuccessDate, todayStr);
+    notifyListeners();
+  }
+
   /// 初始化自动签到引擎
   Future<void> init() async {
     try {
       final sp = await SharedPreferences.getInstance();
-      _autoSignOnLaunch = sp.getBool(_keyAutoLaunch) ?? false;
+      _autoSignOnLaunch = sp.getBool(_keyAutoLaunch) ?? sp.getBool('auto_checkin') ?? false;
       _scheduledSignEnabled = sp.getBool(_keyScheduledEnabled) ?? false;
       _scheduledHour = sp.getInt(_keyScheduledHour) ?? 0;
       _scheduledMinute = sp.getInt(_keyScheduledMinute) ?? 0;
@@ -110,7 +128,7 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
       _startHeartbeat();
 
       // 启动时自动检测签到
-      if (_autoSignOnLaunch) {
+      if (_autoSignOnLaunch || AppConfig.autoCheckin) {
         Future.delayed(const Duration(seconds: 3), () {
           checkAndAutoSignIn(triggerSource: '启动自动检测');
         });
@@ -132,7 +150,7 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
     final now = DateTime.now();
     final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
 
-    final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch;
+    final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch || AppConfig.autoCheckin;
     if (isAnyAutoEnabled && _lastSuccessDate != todayStr && !_isRunning) {
       checkAndAutoSignIn(triggerSource: '唤醒自动检测');
     }
@@ -142,9 +160,11 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> setAutoSignOnLaunch(bool val) async {
     _autoSignOnLaunch = val;
+    AppConfig.autoCheckin = val;
     notifyListeners();
     final sp = await SharedPreferences.getInstance();
     await sp.setBool(_keyAutoLaunch, val);
+    await sp.setBool('auto_checkin', val);
   }
 
   Future<void> setScheduledSignEnabled(bool val) async {
@@ -264,15 +284,19 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    // 2. 日常定时签到调度（准点执行）
+    // 2. 日常定时签到调度（准点执行 + 错峰补签保障）
     if (_scheduledSignEnabled && _lastSuccessDate != todayStr && !_isRunning) {
       if (now.hour == _scheduledHour && now.minute == _scheduledMinute && now.second <= _scheduledWindowSec) {
         _executeScheduledSign();
+      } else if ((now.hour > _scheduledHour) || (now.hour == _scheduledHour && now.minute > _scheduledMinute)) {
+        if (now.minute % 10 == 0 && now.second == 0) {
+          checkAndAutoSignIn(triggerSource: '定时错峰补签');
+        }
       }
     }
 
-    // 3. 全天未签自动保底与错峰补签机制（无论开启了冲刺还是定时，凡是今日未签均每 5 分钟自动补签）
-    final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch;
+    // 3. 全天未签自动保底与错峰补签机制（无论开启了冲刺、定时还是启动打卡，凡是今日未签均每 5 分钟自动补签）
+    final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch || AppConfig.autoCheckin;
     if (isAnyAutoEnabled && _lastSuccessDate != todayStr && !_isRunning) {
       if (now.minute % 5 == 0 && now.second == 0) {
         checkAndAutoSignIn(triggerSource: '全天未签自动保底');
@@ -381,7 +405,7 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       final res = await KlpbbsApi.signIn();
-      if (res.success || res.message.contains('已签到') || res.message.contains('签过到')) {
+      if (res.success || res.message.contains('已签到') || res.message.contains('签过到') || res.message.contains('今日已签')) {
         _recordSuccess(todayStr, res);
       } else {
         _statusMessage = '签到未完成：${res.message}';

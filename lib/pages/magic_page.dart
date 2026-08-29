@@ -73,18 +73,18 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
     _reloadLogs();
   }
 
-  void _reloadShop() {
+  void _reloadShop({bool forceRefresh = true}) {
     setState(() {
-      _shopFuture = KlpbbsApi.getMagicShop().then((res) {
+      _shopFuture = KlpbbsApi.getMagicShop(forceRefresh: forceRefresh).then((res) {
         if (mounted) setState(() => _currentBag = res.bag);
         return res;
       });
     });
   }
 
-  void _reloadMybox() {
+  void _reloadMybox({bool forceRefresh = true}) {
     setState(() {
-      _myboxFuture = KlpbbsApi.getMyMagics().then((res) {
+      _myboxFuture = KlpbbsApi.getMyMagics(forceRefresh: forceRefresh).then((res) {
         var bag = res.bag;
         if (bag.usedCapacity == 0 && res.magics.isNotEmpty) {
           final calculatedUsed = res.magics.fold<int>(

@@ -11,7 +11,9 @@ import 'api/klpbbs_api.dart';
 import 'core/app_config.dart';
 import 'core/dio_client.dart';
 import 'core/main_tab_controller.dart';
+import 'core/preload_service.dart';
 import 'core/write_confirm.dart';
+import 'models/user_space.dart';
 import 'pages/credit_page.dart';
 import 'pages/darkroom_page.dart';
 import 'pages/forums_page.dart';
@@ -515,6 +517,7 @@ class _MainShellState extends State<_MainShell> {
   late int _index;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   int? _myUid;
+  String? _myUsername;
 
   @override
   void initState() {
@@ -538,7 +541,30 @@ class _MainShellState extends State<_MainShell> {
 
   Future<void> _refreshMyUid() async {
     final uid = await KlpbbsApi.getMyUid();
-    if (mounted) setState(() => _myUid = uid);
+    if (!mounted) return;
+    if (uid != null && uid > 0) {
+      String? name;
+      final cachedSpace = PreloadService.instance.get<UserSpace>('user_space_$uid', ignoreExpired: true);
+      if (cachedSpace != null && cachedSpace.username.isNotEmpty) {
+        name = cachedSpace.username;
+      } else {
+        final space = await KlpbbsApi.getUserSpace(uid);
+        if (space != null && space.username.isNotEmpty) {
+          name = space.username;
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _myUid = uid;
+          _myUsername = name;
+        });
+      }
+    } else {
+      setState(() {
+        _myUid = null;
+        _myUsername = null;
+      });
+    }
   }
 
   void _openDrawer() => _scaffoldKey.currentState?.openDrawer();
@@ -712,22 +738,27 @@ class _MainShellState extends State<_MainShell> {
                       if (DioClient.isLoggedIn && _myUid != null)
                         Row(
                           children: [
-                            UserAvatarWidget(uid: _myUid!, author: '我', size: 48),
+                            UserAvatarWidget(
+                              uid: _myUid!,
+                              author: (_myUsername != null && _myUsername!.isNotEmpty) ? _myUsername! : '我的账号',
+                              size: 48,
+                            ),
                             const SizedBox(width: 12),
-                            const Expanded(
+                            Expanded(
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Text(
-                                    '已登录',
-                                    style: TextStyle(
+                                    (_myUsername != null && _myUsername!.isNotEmpty) ? _myUsername! : '我的空间',
+                                    style: const TextStyle(
                                       color: Colors.white,
                                       fontSize: 16,
                                       fontWeight: FontWeight.bold,
                                     ),
+                                    overflow: TextOverflow.ellipsis,
                                   ),
-                                  Text(
+                                  const Text(
                                     '点击进入我的空间 >',
                                     style: TextStyle(
                                       color: Colors.white70,

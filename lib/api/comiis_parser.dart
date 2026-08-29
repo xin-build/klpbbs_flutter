@@ -2491,6 +2491,54 @@ class ComiisParser {
     return s;
   }
 
+  /// 提取附件的全局唯一特征键（优先 aid，其次文件名，兜底 url）
+  static String _attachmentKey(AttachmentBlock b) {
+    final aidM = RegExp(r'[?&]aid=([a-zA-Z0-9%_-]+)').firstMatch(b.url);
+    if (aidM != null) return 'aid_${aidM.group(1)}';
+    if (b.name.isNotEmpty && b.name != '论坛附件.bin') return 'name_${b.name}';
+    return 'url_${b.url}';
+  }
+
+  /// 递归遍历区块树，搜集所有已经存在的附件特征键
+  static void _collectAttachmentKeys(List<PostBlock> blockList, Set<String> keys) {
+    for (final b in blockList) {
+      if (b is AttachmentBlock) {
+        keys.add(_attachmentKey(b));
+        keys.add(b.url);
+        if (b.name.isNotEmpty) keys.add('name_${b.name}');
+      } else if (b is CardContainerBlock) {
+        _collectAttachmentKeys(b.children, keys);
+      }
+    }
+  }
+
+  /// 递归消除区块树中的重复附件
+  static List<PostBlock> _deduplicateBlocks(List<PostBlock> blockList) {
+    final seenKeys = <String>{};
+    final result = <PostBlock>[];
+    for (final b in blockList) {
+      if (b is AttachmentBlock) {
+        final key = _attachmentKey(b);
+        if (seenKeys.add(key) && seenKeys.add(b.url)) {
+          result.add(b);
+        }
+      } else if (b is CardContainerBlock) {
+        final dedupChildren = _deduplicateBlocks(b.children);
+        result.add(
+          CardContainerBlock(
+            children: dedupChildren,
+            bgColor: b.bgColor,
+            borderColor: b.borderColor,
+            align: b.align,
+          ),
+        );
+      } else {
+        result.add(b);
+      }
+    }
+    return result;
+  }
+
   static bool _isValidCoverUrl(String? u) {
     if (u == null || u.isEmpty) return false;
     final lower = u.toLowerCase();
@@ -4374,24 +4422,32 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
 
       final magicItems = _parseMagicItems(post);
-      final blocks = parseStructuredBlocks(coreBody);
+      final rawBlocks = parseStructuredBlocks(coreBody);
 
-      // 全面扫描楼层内所有独立附件容器（防止附件渲染在 coreBody 外部或由插件输出）
+      // 全面扫描楼层内所有独立附件容器（仅提取在 coreBody 外部的附件，防止二次重复解析）
+      final existingAttachKeys = <String>{};
+      _collectAttachmentKeys(rawBlocks, existingAttachKeys);
+
       final attachCandidates = post.querySelectorAll(
         '.comiis_attach, .pattl, .attach_nopermission, dl.tattl, div.attachlist, div[id^="attach_"], div.box_attach, a[href*="attachment"], a[href*="aid="], a[href*="klpbbs_download"], a[href*="download.php"]',
       );
-      final existingAttachUrls = blocks
-          .whereType<AttachmentBlock>()
-          .map((b) => b.url)
-          .toSet();
       for (final el in attachCandidates) {
+        // 关键防御：若该附件节点已经在 coreBody 内部，说明上面 parseStructuredBlocks 已经解析过，坚决跳过避免双重解析
+        if (coreBody.contains(el)) continue;
+
         final parsed = parseStructuredBlocks(el);
         for (final b in parsed) {
-          if (b is AttachmentBlock && existingAttachUrls.add(b.url)) {
-            blocks.add(b);
+          if (b is AttachmentBlock) {
+            final key = _attachmentKey(b);
+            if (existingAttachKeys.add(key) && existingAttachKeys.add(b.url)) {
+              rawBlocks.add(b);
+            }
           }
         }
       }
+
+      // 递归去重，保证整栋楼内同一附件仅渲染一次
+      final blocks = _deduplicateBlocks(rawBlocks);
 
       if (resourceInfo != null && floors.isEmpty) {
         blocks.insert(0, resourceInfo);
@@ -5109,11 +5165,18 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     // 9. 当前用户名与 UID
     String username = defaultUsername ?? '';
     int? uid = defaultUid;
-    final userA = doc.querySelector('h3.mainCon .user a.author, .mainCon a.author, .qdright a.author');
-    if (userA != null && userA.text.trim().isNotEmpty) {
+    final userA = doc.querySelector(
+      'h3.mainCon .user a.author, .mainCon a.author, .qdright a.author, #um .vwmy a, .vwmy a, .comiis_head .user_name, .user_tit, #my_username',
+    );
+    if (userA != null &&
+        userA.text.trim().isNotEmpty &&
+        userA.text.trim() != '登录' &&
+        userA.text.trim() != '注册') {
       username = userA.text.trim();
     }
-    final userAvatarA = doc.querySelector('h3.mainCon .user a[href*="space-uid-"], h3.mainCon .user a[href*="uid="]');
+    final userAvatarA = doc.querySelector(
+      'h3.mainCon .user a[href*="space-uid-"], h3.mainCon .user a[href*="uid="], #um a[href*="space-uid-"], #um a[href*="uid="], .comiis_head a[href*="space&uid="]',
+    );
     if (userAvatarA != null) {
       final parsedUid = _uidFromHref(userAvatarA.attributes['href'] ?? '');
       if (parsedUid != null && parsedUid > 0) uid = parsedUid;
@@ -5422,6 +5485,40 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
   // ---------------------------------------------------------------------
   static UserSpace? parseUserSpace(String html, int uid) {
     final doc = html_parser.parse(html);
+
+    // -1. 锁定、封禁或不存在空间严格检测（如被封禁、注销或锁定）
+    final pageTitle = doc.querySelector('title')?.text.trim() ?? '';
+    final msgBox = doc.querySelector('#messagetext, .jump_c, .comiis_jump, .comiis_tip, .alert_error, .alert_info, .prompt');
+    final msgBoxText = msgBox?.text.replaceAll('&nbsp;', ' ').trim() ?? '';
+    
+    final bool isLocked = html.contains('空间已被锁定无法访问') ||
+        html.contains('空间已被锁定') ||
+        html.contains('抱歉，您指定的用户空间不存在') ||
+        html.contains('抱歉，您访问的用户不存在或已被删除') ||
+        html.contains('抱歉，您尚未登录，没有权限访问该页面') ||
+        html.contains('您无权访问该空间') ||
+        (pageTitle.contains('提示信息') && !html.contains('的个人资料') && !html.contains('的个人空间')) ||
+        msgBoxText.contains('锁定无法访问') ||
+        msgBoxText.contains('已被删除') ||
+        msgBoxText.contains('不存在') ||
+        msgBoxText.contains('没有权限');
+
+    if (isLocked) {
+      String reason = '空间已被锁定无法访问，如有疑问请联系管理员';
+      if (msgBoxText.isNotEmpty) {
+        reason = msgBoxText.split('\n').first.trim();
+      } else if (html.contains('抱歉，您指定的用户空间不存在')) {
+        reason = '抱歉，您指定的用户空间不存在';
+      } else if (html.contains('抱歉，您访问的用户不存在或已被删除')) {
+        reason = '抱歉，您访问的用户不存在或已被删除';
+      }
+      return UserSpace(
+        uid: uid,
+        username: '',
+        isLocked: true,
+        lockReason: reason,
+      );
+    }
 
     // 0. 关键防御：彻底移除顶部导航栏、登录用户身份条、全站页脚，防止抓取到当前登录用户的用户名与积分
     final cleanDoc = doc.clone(true);
@@ -7479,27 +7576,32 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         currentAlign = _detectAlign(child, currentAlign);
         final childTag = (child.localName ?? '').toLowerCase();
         final isWrapper =
-            childTag == 'tbody' ||
-            childTag == 'thead' ||
-            childTag == 'tfoot' ||
-            childTag == 'main' ||
-            childTag == 'mian' ||
             child.classes.contains('comiis_messages') ||
             child.classes.contains('comiis_message_table') ||
             child.classes.contains('comiis_a') ||
             child.classes.contains('view_one') ||
             child.classes.contains('view_all') ||
-            (childTag == 'table' &&
-                !child.classes.contains('t_table') &&
-                child.querySelectorAll('tr').length <= 1 &&
-                child.querySelectorAll('td').length <= 1) ||
-            (childTag == 'tr' &&
-                child.querySelectorAll('td').length <= 1 &&
-                child.querySelectorAll('th').isEmpty) ||
-            (childTag == 'td' &&
-                (child.id.startsWith('postmessage_') ||
-                    child.classes.contains('t_f') ||
-                    targetEl.children.length == 1));
+            child.id.startsWith('postmessage_') ||
+            child.classes.contains('t_f') ||
+            ((childTag == 'table' ||
+                    childTag == 'tbody' ||
+                    childTag == 'thead' ||
+                    childTag == 'tfoot' ||
+                    childTag == 'tr' ||
+                    childTag == 'td' ||
+                    childTag == 'main' ||
+                    childTag == 'mian') &&
+                (targetEl.classes.contains('comiis_message_table') ||
+                    targetEl.classes.contains('comiis_messages') ||
+                    targetEl.classes.contains('view_one') ||
+                    targetEl.classes.contains('view_all') ||
+                    targetEl.id.startsWith('postmessage_') ||
+                    targetEl.classes.contains('t_f') ||
+                    targetEl.classes.contains('message') ||
+                    child.querySelector(
+                          '.comiis_message_table, .comiis_messages, .comiis_a, td.t_f, td[id^="postmessage_"]',
+                        ) !=
+                        null));
 
         if (isWrapper) {
           targetEl = child;
@@ -7528,6 +7630,18 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
             node.id == 'messagetext' ||
             innerText.contains('您确定要删除此收藏吗') ||
             innerText.contains('hideWindow(')) {
+          continue;
+        }
+
+        // 换行标签 <br>（严格保留，防止段落坍塌黏连）
+        if (tag == 'br') {
+          _appendOrMergeTextBlock(blocks, '<br>', align: currentAlign);
+          continue;
+        }
+
+        // 分割线标签 <hr>
+        if (tag == 'hr') {
+          blocks.add(const DividerBlock());
           continue;
         }
 
@@ -7806,23 +7920,58 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
             if (colCount > maxCols) maxCols = colCount;
           }
 
-          // 核心判断：当且仅当所有行都只有 <= 1 列（且无多列 th）时，属于 Discuz 单列排版卡片/嵌套边框，必须展开为自适应正常图文流
+          // 核心判断：当且仅当所有行都只有 <= 1 列（且无多列 th）时，属于 Discuz 单列排版卡片/嵌套边框
           final isLayoutTable = !hasTh && maxCols <= 1;
 
           if (isLayoutTable) {
+            final rawStyle = node.attributes['style'] ?? '';
+            var rawBg = node.attributes['bgcolor'] ??
+                _extractCssProperty(rawStyle, 'background-color') ??
+                _extractCssProperty(rawStyle, 'background');
+            var rawBorderColor = _extractCssProperty(rawStyle, 'border-color') ??
+                _extractCssProperty(rawStyle, 'border');
+
+            final cellBlocks = <PostBlock>[];
             if (directTrs.isNotEmpty) {
               for (final tr in directTrs) {
+                final trStyle = tr.attributes['style'] ?? '';
+                final trBg = tr.attributes['bgcolor'] ??
+                    _extractCssProperty(trStyle, 'background-color') ??
+                    _extractCssProperty(trStyle, 'background');
+                if (rawBg == null || rawBg.isEmpty) rawBg = trBg;
+
                 for (final cell in tr.children.where(
                   (c) => c.localName == 'td' || c.localName == 'th',
                 )) {
-                  blocks.addAll(parseStructuredBlocks(cell, inheritedAlign: nodeAlign));
+                  final cellStyle = cell.attributes['style'] ?? '';
+                  final cellBg = cell.attributes['bgcolor'] ??
+                      _extractCssProperty(cellStyle, 'background-color') ??
+                      _extractCssProperty(cellStyle, 'background');
+                  if (rawBg == null || rawBg.isEmpty) rawBg = cellBg;
+
+                  cellBlocks.addAll(parseStructuredBlocks(cell, inheritedAlign: nodeAlign));
                 }
               }
             } else {
               for (final child in node.children) {
-                blocks.addAll(parseStructuredBlocks(child, inheritedAlign: nodeAlign));
+                cellBlocks.addAll(parseStructuredBlocks(child, inheritedAlign: nodeAlign));
               }
             }
+
+            // 无论移动端是否剥离了 class 或 bgcolor，只要属于单列排版表格，统一封装为自适应排版卡片 CardContainerBlock，确保 100% 渲染出外层与内层边框与框体！
+            blocks.add(
+              CardContainerBlock(
+                children: cellBlocks,
+                bgColor: (rawBg != null &&
+                        rawBg.isNotEmpty &&
+                        rawBg != 'none' &&
+                        rawBg != 'transparent')
+                    ? rawBg
+                    : null,
+                borderColor: rawBorderColor,
+                align: nodeAlign,
+              ),
+            );
             continue;
           }
 
@@ -8293,6 +8442,16 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     return blocks;
   }
 
+  static String? _extractCssProperty(String style, String property) {
+    if (style.isEmpty) return null;
+    final regex = RegExp(
+      '(?:^|;)\\s*${RegExp.escape(property)}\\s*:\\s*([^;]+)',
+      caseSensitive: false,
+    );
+    final match = regex.firstMatch(style);
+    return match?.group(1)?.trim();
+  }
+
   static void _appendOrMergeTextBlock(
     List<PostBlock> blocks,
     String html, {
@@ -8333,8 +8492,8 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
-    // 循环处理可能嵌套的标签（最多循环 3 轮以展开内嵌标签）
-    for (var i = 0; i < 3; i++) {
+    // 循环处理可能嵌套的标签（最多循环 5 轮以展开内嵌表格与样式）
+    for (var i = 0; i < 5; i++) {
       final prev = html;
 
       // 基础文字修饰
@@ -8391,11 +8550,11 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
             const map = {
               1: '11px',
               2: '13px',
-              3: '15px',
-              4: '17px',
-              5: '20px',
-              6: '24px',
-              7: '30px',
+              3: '15.5px',
+              4: '18px',
+              5: '23px',
+              6: '29px',
+              7: '38px',
             };
             sizeVal = map[numVal] ?? '${numVal * 3}px';
           } else if (numVal != null) {
@@ -8425,7 +8584,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       // 对齐与排版
       html = html.replaceAllMapped(
         RegExp(
-          r'\[align=(left|center|right)\]([\s\S]*?)\[/align\]',
+          r'\[align=(left|center|right|justify)\]([\s\S]*?)\[/align\]',
           caseSensitive: false,
         ),
         (m) => '<div align="${m[1]}">${m[2]}</div>',
@@ -8445,6 +8604,32 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         ),
         (m) =>
             '<details><summary>${m[1]?.isNotEmpty == true ? m[1] : '点击展开折叠内容'}</summary>${m[2]}</details>',
+      );
+
+      // 表格嵌套支持（匹配最内层 table 逐层向外展开）
+      html = html.replaceAllMapped(
+        RegExp(
+          r'\[table(?:=([^\]]*))?\]((?:(?!\[table)[\s\S])*?)\[/table\]',
+          caseSensitive: false,
+        ),
+        (m) {
+          final param = m[1] ?? '';
+          String width = '100%';
+          String bgcolor = '';
+          if (param.contains(',')) {
+            final parts = param.split(',');
+            width = parts[0].trim();
+            bgcolor = parts.length > 1 ? parts[1].trim() : '';
+          } else if (param.isNotEmpty) {
+            if (param.endsWith('%') || param.endsWith('px') || int.tryParse(param) != null) {
+              width = param;
+            } else {
+              bgcolor = param;
+            }
+          }
+          final bgAttr = bgcolor.isNotEmpty ? ' bgcolor="$bgcolor"' : '';
+          return '<table width="$width"$bgAttr border="1" cellpadding="4" class="t_table" style="border-collapse:collapse">${m[2]}</table>';
+        },
       );
 
       if (html == prev) break;
@@ -8473,18 +8658,27 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       (m) => '<a class="discuz_media" href="${m[1]}">🎬 查看视频/多媒体</a>',
     );
 
-    // 表格与列表
+    // 行与列转换
     html = html.replaceAllMapped(
-      RegExp(
-        r'\[table(?:=([^\]]*))?\](.*?)\[/table\]',
-        caseSensitive: false,
-        dotAll: true,
-      ),
-      (m) =>
-          '<table width="${m[1] ?? '100%'}" border="1" cellpadding="4" style="border-collapse:collapse">${m[2]}</table>',
+      RegExp(r'\[tr(?:=([^\]]+))?\]', caseSensitive: false),
+      (m) => m[1] != null && m[1]!.isNotEmpty ? '<tr bgcolor="${m[1]}">' : '<tr>',
     );
-    html = html.replaceAll('[tr]', '<tr>').replaceAll('[/tr]', '</tr>');
-    html = html.replaceAll('[td]', '<td>').replaceAll('[/td]', '</td>');
+    html = html.replaceAll('[/tr]', '</tr>');
+    html = html.replaceAllMapped(
+      RegExp(r'\[td(?:=([0-9,]+))?\]', caseSensitive: false),
+      (m) {
+        final p = m[1];
+        if (p != null && p.contains(',')) {
+          final parts = p.split(',');
+          final colspan = parts[0].trim();
+          final rowspan = parts.length > 1 ? parts[1].trim() : '1';
+          final width = parts.length > 2 ? ' width="${parts[2].trim()}"' : '';
+          return '<td colspan="$colspan" rowspan="$rowspan"$width>';
+        }
+        return '<td>';
+      },
+    );
+    html = html.replaceAll('[/td]', '</td>');
     html = html.replaceAll('[hr]', '<hr>');
     html = html.replaceAllMapped(
       RegExp(r'\[\*\]([\s\S]*?)(?=\[\*\]|\[/list\])', caseSensitive: false),

@@ -543,7 +543,6 @@ class _ThreadCardState extends State<ThreadCard> {
                 alignment: Alignment.center,
                 filterQuality: FilterQuality.medium,
                 memCacheWidth: 280,
-                memCacheHeight: 210,
                 placeholder: (_, __) => Container(
                   color: colorScheme.surfaceContainerHighest.withAlpha(60),
                   child: Center(
@@ -597,7 +596,6 @@ class _ThreadCardState extends State<ThreadCard> {
                 alignment: Alignment.center,
                 filterQuality: FilterQuality.medium,
                 memCacheWidth: 340,
-                memCacheHeight: 260,
                 placeholder: (_, __) => Container(
                   color: colorScheme.surfaceContainerHighest.withAlpha(60),
                   child: Center(

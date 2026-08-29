@@ -106,10 +106,13 @@ class _RetryImageState extends State<RetryImage> {
     }
 
     final dpr = MediaQuery.maybeOf(context)?.devicePixelRatio ?? 2.0;
+    // 关键防拉伸机制：仅计算单边最大内存缓存尺寸（保持原图宽高比解码，彻底杜绝强行挤压拉伸变形）
     final int? calculatedMemWidth = widget.memCacheWidth ??
-        (widget.width != null && widget.width! > 0 ? (widget.width! * dpr).clamp(120, 2048).toInt() : null);
-    final int? calculatedMemHeight = widget.memCacheHeight ??
-        (widget.height != null && widget.height! > 0 ? (widget.height! * dpr).clamp(120, 2048).toInt() : null);
+        (widget.width != null && widget.width! > 0
+            ? (widget.width! * dpr).clamp(160, 2048).toInt()
+            : (widget.height != null && widget.height! > 0
+                ? (widget.height! * dpr * 2.0).clamp(160, 2048).toInt()
+                : null));
 
     return CachedNetworkImage(
       key: ValueKey('$effectiveUrl#$_attempt'),
@@ -122,7 +125,6 @@ class _RetryImageState extends State<RetryImage> {
       alignment: widget.alignment,
       filterQuality: widget.filterQuality,
       memCacheWidth: calculatedMemWidth,
-      memCacheHeight: calculatedMemHeight,
       placeholder: widget.placeholder ??
           (_, __) => Container(
                 color: Theme.of(context).colorScheme.surfaceContainerHighest.withAlpha(80),

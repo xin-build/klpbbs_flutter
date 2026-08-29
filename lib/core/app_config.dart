@@ -398,7 +398,7 @@ class AppConfig extends ChangeNotifier {
 
       // 论坛功能
       showFloorSignature = sp.getBool('show_floor_signature') ?? true;
-      autoCheckin = sp.getBool('auto_checkin') ?? false;
+      autoCheckin = sp.getBool('auto_checkin') ?? sp.getBool('auto_sign_on_launch') ?? false;
       fastWriteMode = sp.getBool('fast_write_mode') ?? false;
       defaultStartTab = sp.getInt('default_start_tab') ?? 0;
       blockedKeywords = sp.getStringList('blocked_keywords') ?? [];
@@ -615,6 +615,7 @@ class AppConfig extends ChangeNotifier {
     autoCheckin = auto;
     final sp = await SharedPreferences.getInstance();
     await sp.setBool('auto_checkin', auto);
+    await sp.setBool('auto_sign_on_launch', auto);
     instance.notifyListeners();
   }
 

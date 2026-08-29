@@ -51,6 +51,12 @@ class UserSpace {
   /// 资料完整度百分比（如 88 表示 88%）
   final int profileProgress;
 
+  /// 空间是否被锁定或无法访问（如被封禁或删除）
+  final bool isLocked;
+
+  /// 锁定/禁止访问原因提示
+  final String lockReason;
+
   const UserSpace({
     required this.uid,
     required this.username,
@@ -70,5 +76,53 @@ class UserSpace {
     this.isOnline = false,
     this.onlineStatusText = '',
     this.profileProgress = 0,
+    this.isLocked = false,
+    this.lockReason = '',
   });
+
+  UserSpace copyWith({
+    int? uid,
+    String? username,
+    String? credits,
+    String? group,
+    String? regdate,
+    String? lastvisit,
+    String? signature,
+    String? level,
+    String? levelName,
+    List<({int id, String name, String desc, String img})>? medals,
+    String? faceUrl,
+    String? bgUrl,
+    Map<String, String>? stats,
+    Map<String, String>? creditsDetail,
+    Map<String, String>? gameProfile,
+    bool? isOnline,
+    String? onlineStatusText,
+    int? profileProgress,
+    bool? isLocked,
+    String? lockReason,
+  }) {
+    return UserSpace(
+      uid: uid ?? this.uid,
+      username: username ?? this.username,
+      credits: credits ?? this.credits,
+      group: group ?? this.group,
+      regdate: regdate ?? this.regdate,
+      lastvisit: lastvisit ?? this.lastvisit,
+      signature: signature ?? this.signature,
+      level: level ?? this.level,
+      levelName: levelName ?? this.levelName,
+      medals: medals ?? this.medals,
+      faceUrl: faceUrl ?? this.faceUrl,
+      bgUrl: bgUrl ?? this.bgUrl,
+      stats: stats ?? this.stats,
+      creditsDetail: creditsDetail ?? this.creditsDetail,
+      gameProfile: gameProfile ?? this.gameProfile,
+      isOnline: isOnline ?? this.isOnline,
+      onlineStatusText: onlineStatusText ?? this.onlineStatusText,
+      profileProgress: profileProgress ?? this.profileProgress,
+      isLocked: isLocked ?? this.isLocked,
+      lockReason: lockReason ?? this.lockReason,
+    );
+  }
 }

@@ -27,6 +27,7 @@ import '../models/smiley.dart';
 import '../models/thread_summary.dart';
 import '../models/user_space.dart';
 import '../models/usergroup_comparison.dart';
+import '../services/auto_sign_service.dart';
 import 'comiis_parser.dart';
 
 /// klpbbs 完整 API 封装（浏览 + 写操作 + 内存预加载）
@@ -1138,22 +1139,21 @@ class KlpbbsApi {
     return getThreadList(52, page: page);
   }
 
-  /// 获取签到页面头部统计与个人实时数据（1:1 对齐官方 k_misign 插件；保证实时拉取）
-  static Future<SignHeaderInfo> getSignHeaderInfo({bool forceRefresh = false}) async {
-    const cacheKey = 'sign_header_info_realtime';
-    if (!forceRefresh) {
-      final cached = PreloadService.instance.get<SignHeaderInfo>(cacheKey);
-      if (cached != null) return cached;
-    } else {
-      PreloadService.instance.remove(cacheKey);
-    }
+  /// 获取签到页面头部统计与个人实时数据（1:1 对齐官方 k_misign 插件；100% 全实时直接请求服务端，零缓存）
+  static Future<SignHeaderInfo> getSignHeaderInfo({bool forceRefresh = true}) async {
+    // 签到相关状态严格全实时，不走任何内存或 GET 缓存，防止假状态干扰自动打卡
+    PreloadService.instance.remove('sign_header_info_realtime');
+    clearQuickCache('plugin.php?id=k_misign:sign');
+    clearQuickCache('k_misign-sign.html');
 
-    // 1. 优先请求 PC 页面与静态重写链接
+    SignHeaderInfo bestResult = const SignHeaderInfo();
+
+    // 优先请求移动端与 PC 端多重 endpoints，确保捕获最新登录状态
     final endpoints = [
-      ('plugin.php?id=k_misign:sign&mobile=no', {'User-Agent': AppConfig.pcUserAgent}),
-      ('k_misign-sign.html', {'User-Agent': AppConfig.pcUserAgent}),
       ('plugin.php?id=k_misign:sign&mobile=2', <String, String>{}),
+      ('plugin.php?id=k_misign:sign&mobile=no', {'User-Agent': AppConfig.pcUserAgent}),
       ('plugin.php?id=k_misign:sign', <String, String>{}),
+      ('k_misign-sign.html', {'User-Agent': AppConfig.pcUserAgent}),
     ];
 
     for (final (path, headers) in endpoints) {
@@ -1161,24 +1161,51 @@ class KlpbbsApi {
         final html = await _get(
           path,
           headers: headers.isNotEmpty ? headers : null,
-          forceRefresh: forceRefresh,
+          forceRefresh: true,
+          cacheTtl: Duration.zero,
         );
         if (html.isNotEmpty) {
           final parsed = ComiisParser.parseSignPageData(html);
+          if (parsed.isSignedToday) {
+            // 一旦捕获到确凿的已签到标记，立即作为最高优先级权威数据返回
+            bestResult = parsed;
+            break;
+          }
           if (parsed.starUsername.isNotEmpty ||
               parsed.highestCount > 0 ||
               parsed.todaySignCount > 0 ||
-              parsed.isSignedToday ||
               parsed.continuousDays > 0 ||
               parsed.totalDays > 0) {
-            PreloadService.instance.set(cacheKey, parsed, ttl: const Duration(seconds: 10));
-            return parsed;
+            if (bestResult.starUsername.isEmpty || parsed.todaySignCount > bestResult.todaySignCount) {
+              bestResult = parsed;
+            }
           }
         }
       } catch (_) {}
     }
 
-    return const SignHeaderInfo();
+    // 结合登录用户身份补全 UID 与用户名
+    int? myUid = bestResult.uid;
+    String myUsername = bestResult.username;
+    if (myUid == null || myUid <= 0 || myUsername.isEmpty) {
+      final cachedUid = await getMyUid();
+      if (cachedUid != null && cachedUid > 0) {
+        myUid = cachedUid;
+        final cachedSpace = PreloadService.instance.get<UserSpace>('user_space_$cachedUid', ignoreExpired: true);
+        if (cachedSpace != null && cachedSpace.username.isNotEmpty) {
+          myUsername = cachedSpace.username;
+        }
+      }
+    }
+
+    if (myUid != null || myUsername.isNotEmpty) {
+      bestResult = bestResult.copyWith(
+        uid: myUid ?? bestResult.uid,
+        username: myUsername.isNotEmpty ? myUsername : bestResult.username,
+      );
+    }
+
+    return bestResult;
   }
 
   /// 用户搜索（对接 Discuz spacecp&ac=search 原生接口 + 用户名直查 + UID 精确直达）
@@ -1232,9 +1259,9 @@ class KlpbbsApi {
             ? (int.tryParse(uidMatch.group(1) ?? uidMatch.group(2) ?? '') ?? 0)
             : 0;
         if (foundUid > 0 && !seenUids.contains(foundUid)) {
-          final exactUser = ComiisParser.parseUserSpace(directHtml, foundUid);
-          if (exactUser != null && exactUser.username.isNotEmpty) {
-            results.add(exactUser);
+          final foundUser = await getUserSpace(foundUid, forceRefresh: true);
+          if (foundUser != null && foundUser.username.isNotEmpty) {
+            results.add(foundUser);
             seenUids.add(foundUid);
           }
         }
@@ -1244,12 +1271,15 @@ class KlpbbsApi {
     return results;
   }
 
-  /// 签到排行（k_misign 只读；实时获取）
-  static Future<List<SignEntry>> getSignRank(String op, {int page = 1, bool forceRefresh = false}) async {
+  /// 签到排行（k_misign；实时获取）
+  static Future<List<SignEntry>> getSignRank(String op, {int page = 1, bool forceRefresh = true}) async {
     final cacheKey = 'sign_rank_${op}_$page';
     if (!forceRefresh) {
       final cached = PreloadService.instance.get<List<SignEntry>>(cacheKey);
       if (cached != null) return cached;
+    } else {
+      PreloadService.instance.remove(cacheKey);
+      clearQuickCache('plugin.php?id=k_misign:sign&operation=list&op=$op');
     }
     try {
       final queryOp = (op == 'reward' || op == 'rewardlist')
@@ -1258,11 +1288,15 @@ class KlpbbsApi {
       var html = await _get(
         'plugin.php?id=k_misign:sign&operation=list&op=$queryOp&mobile=no${page > 1 ? '&page=$page&pp=$page' : ''}',
         headers: {'User-Agent': AppConfig.pcUserAgent},
+        forceRefresh: forceRefresh,
+        cacheTtl: forceRefresh ? Duration.zero : const Duration(seconds: 15),
       );
       var res = ComiisParser.parseSignList(html);
       if (res.isEmpty) {
         final mobileHtml = await _get(
           'plugin.php?id=k_misign:sign&operation=list&op=$queryOp&mobile=2${page > 1 ? '&page=$page&pp=$page' : ''}',
+          forceRefresh: forceRefresh,
+          cacheTtl: forceRefresh ? Duration.zero : const Duration(seconds: 15),
         );
         res = ComiisParser.parseSignList(mobileHtml);
       }
@@ -1301,26 +1335,41 @@ class KlpbbsApi {
     });
   }
 
-  /// 获取服务端日历已签到日期（实时从 k_misign 提取）
+  /// 获取服务端日历已签到日期（全实时从 k_misign 提取，兼容 PC 与移动端）
   static Future<Set<int>> getSignedDaysFromServerCalendar({
     int? month,
     int? year,
-    bool forceRefresh = false,
+    bool forceRefresh = true,
   }) async {
     try {
       final now = DateTime.now();
       final m = month ?? now.month;
       final y = year ?? now.year;
-      final html = await _get(
+      clearQuickCache('plugin.php?id=k_misign:sign&operation=calendar');
+      var html = await _get(
         'plugin.php?id=k_misign:sign&operation=calendar&month=$m&year=$y',
         headers: {
           'User-Agent': AppConfig.pcUserAgent,
           'X-Requested-With': 'XMLHttpRequest',
-          'Referer': 'https://klpbbs.com/k_misign-sign.html',
+          'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
         },
-        forceRefresh: forceRefresh,
+        forceRefresh: true,
+        cacheTtl: Duration.zero,
       );
-      return ComiisParser.parseSignedDaysFromCalendarHtml(html);
+      var days = ComiisParser.parseSignedDaysFromCalendarHtml(html);
+      if (days.isEmpty) {
+        final mobileHtml = await _get(
+          'plugin.php?id=k_misign:sign&operation=calendar&month=$m&year=$y&mobile=2',
+          headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': '${AppConfig.baseUrl}plugin.php?id=k_misign:sign&mobile=2',
+          },
+          forceRefresh: true,
+          cacheTtl: Duration.zero,
+        );
+        days = ComiisParser.parseSignedDaysFromCalendarHtml(mobileHtml);
+      }
+      return days;
     } catch (_) {
       return const {};
     }
@@ -1374,6 +1423,22 @@ class KlpbbsApi {
 
         final userPc = ComiisParser.parseUserSpace(futures[0], uid);
         final userMob = ComiisParser.parseUserSpace(futures[1], uid);
+
+        if (userPc?.isLocked == true || userMob?.isLocked == true) {
+          final lockReason = userPc?.lockReason.isNotEmpty == true
+              ? userPc!.lockReason
+              : (userMob?.lockReason.isNotEmpty == true
+                  ? userMob!.lockReason
+                  : '空间已被锁定无法访问，如有疑问请联系管理员');
+          final lockedRes = UserSpace(
+            uid: uid,
+            username: '',
+            isLocked: true,
+            lockReason: lockReason,
+          );
+          PreloadService.instance.set(cacheKey, lockedRes, ttl: const Duration(minutes: 15));
+          return lockedRes;
+        }
 
         if (userPc == null && userMob == null) return null;
 
@@ -2708,6 +2773,7 @@ class KlpbbsApi {
       },
     );
     if (html.contains('alert_error') || html.contains('抱歉，您尚未登录')) return null;
+    _clearCache();
     // 新帖 tid：成功跳转 viewthread 页
     for (final m in RegExp(r'''viewthread&tid=(\d+)''').allMatches(html)) {
       final tid = int.tryParse(m.group(1) ?? '');
@@ -2792,7 +2858,11 @@ class KlpbbsApi {
         if (asMobile == false) 'User-Agent': AppConfig.pcUserAgent,
       },
     );
-    return !html.contains('alert_error') && !html.contains('抱歉，您尚未登录');
+    final ok = !html.contains('alert_error') && !html.contains('抱歉，您尚未登录');
+    if (ok) {
+      _clearCache(tid);
+    }
+    return ok;
   }
 
   /// 楼中楼回复（klpbbs replyfloor 插件：plugin.php?id=replyfloor）
@@ -2835,6 +2905,7 @@ class KlpbbsApi {
     if (html.contains('alert_error') || html.contains('插件不存在')) {
       return replyThread(tid, message, pid: pid, asComment: true);
     }
+    _clearCache(tid);
     return true;
   }
 
@@ -2976,6 +3047,7 @@ class KlpbbsApi {
               );
             } catch (_) {}
           }
+          _clearCache(tid);
           return (success: true, message: '已取消点赞');
         } catch (e) {
           return (success: false, message: '取消点赞失败：$e');
@@ -3012,6 +3084,7 @@ class KlpbbsApi {
             );
           } catch (_) {}
         }
+        _clearCache(tid);
         return (success: true, message: '已取消点赞');
       }
 
@@ -3038,6 +3111,7 @@ class KlpbbsApi {
         html,
         defaultMsg: '点赞成功！',
       );
+      _clearCache(tid);
       return (success: true, message: serverMsg);
     } catch (e) {
       return (success: false, message: '网络请求异常：$e');
@@ -3077,6 +3151,7 @@ class KlpbbsApi {
               'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
             },
           );
+          _clearCache(tid);
           return (success: true, message: '已取消回帖点赞');
         } catch (_) {}
       }
@@ -3099,6 +3174,7 @@ class KlpbbsApi {
             'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
           },
         );
+        _clearCache(tid);
         return (success: true, message: '已取消回帖点赞');
       }
 
@@ -3110,6 +3186,7 @@ class KlpbbsApi {
         html,
         defaultMsg: '点赞成功！',
       );
+      _clearCache(tid);
       return (success: true, message: serverMsg);
     } catch (e) {
       return (success: false, message: '网络请求异常：$e');
@@ -3167,6 +3244,10 @@ class KlpbbsApi {
         defaultMsg: '已成功打赏 $score 铁粒！',
       );
       final isSuccess = !html.contains('alert_error') || html.contains('succeed') || html.contains('感谢');
+      if (isSuccess) {
+        _clearCache(tid);
+        PreloadService.instance.clear('user_space_');
+      }
       return (success: isSuccess, message: serverMsg);
     } catch (e) {
       return (success: false, message: '打赏请求异常：$e');
@@ -3174,13 +3255,17 @@ class KlpbbsApi {
   }
 
   /// 勋章中心（home.php?mod=medal）
-  static Future<List<MedalItem>> getMedals() async {
+  static Future<List<MedalItem>> getMedals({bool forceRefresh = false}) async {
     const cacheKey = 'medals_all';
-    final cached = PreloadService.instance.get<List<MedalItem>>(cacheKey);
-    if (cached != null && cached.isNotEmpty) return cached;
+    if (!forceRefresh) {
+      final cached = PreloadService.instance.get<List<MedalItem>>(cacheKey);
+      if (cached != null && cached.isNotEmpty) return cached;
+    } else {
+      PreloadService.instance.remove(cacheKey);
+    }
 
     // 优先拉取 PC 端页面以获得最全的价格与条件要求（ul.mgcl li）
-    final pcHtml = await _get('home.php?mod=medal&mobile=no');
+    final pcHtml = await _get('home.php?mod=medal&mobile=no', forceRefresh: forceRefresh);
     final pcList = ComiisParser.parseMedals(pcHtml);
     if (pcList.isNotEmpty) {
       PreloadService.instance.set(cacheKey, pcList, ttl: const Duration(hours: 1));
@@ -3188,7 +3273,7 @@ class KlpbbsApi {
     }
 
     // 移动端页面备选
-    final html = await _get('home.php?mod=medal&mobile=2');
+    final html = await _get('home.php?mod=medal&mobile=2', forceRefresh: forceRefresh);
     final res = ComiisParser.parseMedals(html);
     if (res.isNotEmpty) {
       PreloadService.instance.set(cacheKey, res, ttl: const Duration(hours: 1));
@@ -3198,11 +3283,11 @@ class KlpbbsApi {
 
   /// 获取当前登录用户的勋章列表（真实数据）
   static Future<List<({int id, String name, String desc, String img})>>
-  getMyMedalsList() async {
+  getMyMedalsList({bool forceRefresh = false}) async {
     try {
       final myUid = await getMyUid();
       if (myUid != null && myUid > 0) {
-        final space = await getUserSpace(myUid);
+        final space = await getUserSpace(myUid, forceRefresh: forceRefresh);
         if (space != null && space.medals.isNotEmpty) {
           return space.medals;
         }
@@ -3359,10 +3444,16 @@ class KlpbbsApi {
             !msg.contains('不足') &&
             !msg.contains('密码') &&
             !msg.contains('不存在');
+        if (isSuccess) {
+          PreloadService.instance.clear('user_space_');
+          PreloadService.instance.clear('credit_');
+        }
         return (success: isSuccess, message: msg);
       }
 
       if (resHtml.contains('转账成功') || resHtml.contains('succeedhandle')) {
+        PreloadService.instance.clear('user_space_');
+        PreloadService.instance.clear('credit_');
         return (success: true, message: '转账成功！已转给 $toUser $amount 铁粒');
       }
 
@@ -3370,6 +3461,8 @@ class KlpbbsApi {
         return (success: false, message: '转账失败，请检查对方用户名、金额或支付密码是否正确');
       }
 
+      PreloadService.instance.clear('user_space_');
+      PreloadService.instance.clear('credit_');
       return (success: true, message: '转账请求已提交');
     } catch (e) {
       return (success: false, message: '转账异常：$e');
@@ -3377,9 +3470,9 @@ class KlpbbsApi {
   }
 
   /// 道具商店列表与背包状态（home.php?mod=magic&action=shop）
-  static Future<({List<MagicItem> magics, MagicBagInfo bag})> getMagicShop() async {
+  static Future<({List<MagicItem> magics, MagicBagInfo bag})> getMagicShop({bool forceRefresh = false}) async {
     try {
-      final html = await _get('home.php?mod=magic&action=shop&mobile=2');
+      final html = await _get('home.php?mod=magic&action=shop&mobile=2', forceRefresh: forceRefresh);
       final list = ComiisParser.parseMagicShop(html);
       final bag = ComiisParser.parseMagicBagInfo(html);
       return (magics: list, bag: bag);
@@ -3390,9 +3483,9 @@ class KlpbbsApi {
   }
 
   /// 我的道具包列表与背包状态（home.php?mod=magic&action=mybox）
-  static Future<({List<MagicItem> magics, MagicBagInfo bag})> getMyMagics() async {
+  static Future<({List<MagicItem> magics, MagicBagInfo bag})> getMyMagics({bool forceRefresh = false}) async {
     try {
-      final html = await _get('home.php?mod=magic&action=mybox&mobile=2');
+      final html = await _get('home.php?mod=magic&action=mybox&mobile=2', forceRefresh: forceRefresh);
       final list = ComiisParser.parseMyMagics(html);
       final bag = ComiisParser.parseMagicBagInfo(html);
       return (magics: list, bag: bag);
@@ -4026,8 +4119,8 @@ class KlpbbsApi {
 
   static String? _cachedSignFormhash;
 
-  /// 获取或预热签到 FormHash
-  static Future<String?> getSignFormhash({bool forceRefresh = false}) async {
+  /// 获取或预热签到 FormHash（100% 实时拉取最新登录凭据）
+  static Future<String?> getSignFormhash({bool forceRefresh = true}) async {
     if (!forceRefresh && _cachedSignFormhash != null && _cachedSignFormhash!.isNotEmpty) {
       return _cachedSignFormhash;
     }
@@ -4036,21 +4129,30 @@ class KlpbbsApi {
       final signPageHtml = await _get(
         'plugin.php?id=k_misign:sign&mobile=no',
         headers: {'User-Agent': AppConfig.pcUserAgent},
-        forceRefresh: forceRefresh,
+        forceRefresh: true,
+        cacheTtl: Duration.zero,
       );
       formhash = _extractFormhash(signPageHtml);
     } catch (_) {}
 
     if (formhash == null) {
       try {
-        final signPageHtml = await _get('k_misign-sign.html', forceRefresh: forceRefresh);
+        final signPageHtml = await _get(
+          'k_misign-sign.html',
+          forceRefresh: true,
+          cacheTtl: Duration.zero,
+        );
         formhash = _extractFormhash(signPageHtml);
       } catch (_) {}
     }
 
     if (formhash == null) {
       try {
-        final forumHtml = await _get('forum.php?mobile=2', forceRefresh: forceRefresh);
+        final forumHtml = await _get(
+          'forum.php?mobile=2',
+          forceRefresh: true,
+          cacheTtl: Duration.zero,
+        );
         formhash = _extractFormhash(forumHtml);
       } catch (_) {}
     }
@@ -4061,7 +4163,7 @@ class KlpbbsApi {
     return formhash;
   }
 
-  /// 签到（k_misign qiandao，支持预热 formhash、多级端点极速直达与铁粒/经验/连续天数精准解析）
+  /// 签到（k_misign qiandao，100% 全实时端点极速直达与铁粒/经验/连续天数精准解析）
   static Future<
     ({
       bool success,
@@ -4094,10 +4196,10 @@ class KlpbbsApi {
       );
     }
 
-    // 1. 获取/复用 FormHash
+    // 1. 获取/复用 FormHash（全实时拉取最新凭证）
     String? fh = formhash ?? _cachedSignFormhash;
     if (fh == null || fh.isEmpty) {
-      fh = await getSignFormhash();
+      fh = await getSignFormhash(forceRefresh: true);
     }
 
     if (fh == null || fh.isEmpty) {
@@ -4111,26 +4213,46 @@ class KlpbbsApi {
       );
     }
 
-    // 2. 依次尝试签到端点（桌面按钮模式、空格式模式、移动端模式、Ajax 弹窗模式）
+    // 2. 依次尝试签到端点（全实时直接请求，零缓存）
     String html = '';
     final endpoints = [
-      'plugin.php?id=k_misign:sign&operation=qiandao&format=button&formhash=$fh',
-      'plugin.php?id=k_misign:sign&operation=qiandao&format=empty&formhash=$fh',
-      'plugin.php?id=k_misign:sign&operation=qiandao&formhash=$fh',
-      'plugin.php?id=k_misign:sign&operation=qiandao&infloat=yes&handlekey=qiandao&formhash=$fh',
-      'plugin.php?id=k_misign:sign&operation=qiandao&mobile=2&formhash=$fh',
+      ('plugin.php?id=k_misign:sign&operation=qiandao&format=text&formhash=$fh', <String, String>{
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': '${AppConfig.baseUrl}plugin.php?id=k_misign:sign&mobile=2',
+      }),
+      ('plugin.php?id=k_misign:sign&operation=qiandao&format=button&formhash=$fh', <String, String>{
+        'User-Agent': AppConfig.pcUserAgent,
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
+      }),
+      ('plugin.php?id=k_misign:sign&operation=qiandao&format=empty&formhash=$fh', <String, String>{
+        'User-Agent': AppConfig.pcUserAgent,
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
+      }),
+      ('plugin.php?id=k_misign:sign&operation=qiandao&formhash=$fh', <String, String>{
+        'User-Agent': AppConfig.pcUserAgent,
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
+      }),
+      ('plugin.php?id=k_misign:sign&operation=qiandao&mobile=2&formhash=$fh', <String, String>{
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': '${AppConfig.baseUrl}plugin.php?id=k_misign:sign&mobile=2',
+      }),
+      ('plugin.php?id=k_misign:sign&operation=qiandao&infloat=yes&handlekey=qiandao&formhash=$fh', <String, String>{
+        'User-Agent': AppConfig.pcUserAgent,
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
+      }),
     ];
 
-    for (final ep in endpoints) {
+    for (final (ep, headers) in endpoints) {
       try {
         final resp = await _get(
           ep,
-          headers: {
-            'User-Agent': AppConfig.pcUserAgent,
-            'X-Requested-With': 'XMLHttpRequest',
-            'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
-          },
+          headers: headers,
           forceRefresh: true,
+          cacheTtl: Duration.zero,
         );
         if (resp.isNotEmpty) {
           html = resp;
@@ -4141,7 +4263,8 @@ class KlpbbsApi {
               html.contains('您今天已经签过到了') ||
               html.contains('k_misign:tdyq') ||
               html.contains('k_misign:signed') ||
-              html.contains('signsuccess')) {
+              html.contains('signsuccess') ||
+              html.contains('已打卡')) {
             break;
           }
         }
@@ -4208,6 +4331,19 @@ class KlpbbsApi {
       }
     }
 
+    if (success ||
+        html.contains('今日已签') ||
+        html.contains('已签到') ||
+        html.contains('您今天已经签过到了') ||
+        html.contains('k_misign:tdyq') ||
+        html.contains('k_misign:signed') ||
+        html.contains('signsuccess')) {
+      _clearCache();
+      try {
+        AutoSignService.instance.markSignedToday();
+      } catch (_) {}
+    }
+
     return (
       success: success,
       message: message,
@@ -4267,7 +4403,11 @@ class KlpbbsApi {
             '${AppConfig.baseUrl}forum.php?mod=post&action=edit&fid=$fid&tid=$tid&pid=$pid',
       },
     );
-    return !html.contains('alert_error') && !html.contains('抱歉，您尚未登录');
+    final ok = !html.contains('alert_error') && !html.contains('抱歉，您尚未登录');
+    if (ok) {
+      _clearCache(tid);
+    }
+    return ok;
   }
 
   /// 举报帖子/楼层（Discuz 标准 report 提交接口）

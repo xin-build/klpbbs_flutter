@@ -22,6 +22,7 @@ import '../widgets/retry_image.dart';
 import '../widgets/skeleton_list.dart';
 import '../widgets/thread_card.dart';
 import '../widgets/tuhao_banner_widget.dart';
+import '../services/auto_sign_service.dart';
 import '../services/push_notification_service.dart';
 import 'credit_page.dart';
 import 'darkroom_page.dart';
@@ -85,8 +86,8 @@ class _HomePageState extends State<HomePage> {
     ComiisParser.loadTidForumCache();
     _future = _load();
     _loadFavForums();
-    if (AppConfig.autoCheckin && DioClient.isLoggedIn) {
-      _tryAutoCheckin();
+    if ((AppConfig.autoCheckin || AutoSignService.instance.autoSignOnLaunch) && DioClient.isLoggedIn) {
+      AutoSignService.instance.checkAndAutoSignIn(triggerSource: '首页启动自动打卡');
     }
   }
 
@@ -96,17 +97,6 @@ class _HomePageState extends State<HomePage> {
         _unreadNotice = PushNotificationService.instance.unreadCount;
       });
     }
-  }
-
-  Future<void> _tryAutoCheckin() async {
-    try {
-      final res = await KlpbbsApi.signIn();
-      if (mounted && res.success) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('已自动完成今日签到（${res.message}）')));
-      }
-    } catch (_) {}
   }
 
   Future<void> _loadFavForums() async {
