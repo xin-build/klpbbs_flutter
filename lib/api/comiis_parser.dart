@@ -4181,7 +4181,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         for (final sp in post.querySelectorAll(
           '.comiis_postli_time span, .authi em, .pti em',
         )) {
-          final t = sp.text.trim();
+          final t = sp.text.replaceAll(RegExp(r'\s*IP[:：]\s*\S*'), '').trim();
           if (t.isNotEmpty) {
             timeText = t;
             break;
@@ -4718,25 +4718,44 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
-    // 浏览量与回复量（严格对照 Discuz 官方 PC 与克米移动端 DOM 结构）
+    // 浏览量与回复量（全适配：克米移动端顶部 .comiis_view_header1、PC 端 #fj、底部 .bottom_views、左侧 td.pls.ptn.pbn 与全局正则）
     var views = 0, replies = 0;
 
-    // 1. Discuz 官方 #fj 容器（klpbbs PC 与移动端均内嵌：<div id="fj" class="y"><span class="xg1">查看:</span><span class="xi1">183</span><span class="pipe">|</span><span class="xg1">回复:</span><span class="xi1">8</span></div>）
-    final fjEl = doc.querySelector('#fj, .authi #fj, .pi #fj, div[id="fj"]');
-    if (fjEl != null) {
-      final fjHtml = fjEl.outerHtml;
-      final vm = RegExp(r'''查看[:：\s]*</span>\s*<span[^>]*class="[^"]*xi1[^"]*"[^>]*>(\d+)</span>''').firstMatch(fjHtml) ??
-          RegExp(r'''查看[:：\s]*<[^>]*>(\d+)<''').firstMatch(fjHtml) ??
-          RegExp(r'''查看[:：\s]*(\d+)''').firstMatch(fjEl.text);
+    // 1. 克米移动端顶部详情条：<div class="comiis_view_header1"><span class="f_c y">8回复&nbsp;&nbsp;&nbsp;194阅读</span>
+    final headerStatsEl = doc.querySelector('.comiis_view_header1, .comiis_viewtit .comiis_view_header1, .comiis_viewtit span.f_c');
+    if (headerStatsEl != null) {
+      final text = headerStatsEl.text.replaceAll('&nbsp;', ' ');
+      // 匹配 "194阅读" / "194 查看" / "194 浏览" / "阅读: 194" / "查看: 194"
+      final vm = RegExp(r'(\d+)\s*(?:阅读|查看|浏览|次阅读|次查看|次浏览|阅)').firstMatch(text) ??
+          RegExp(r'''(?:阅读|查看|浏览|阅)[:：\s]*(\d+)''').firstMatch(text);
       if (vm != null) views = int.tryParse(vm.group(1)!) ?? 0;
 
-      final rm = RegExp(r'''回复[:：\s]*</span>\s*<span[^>]*class="[^"]*xi1[^"]*"[^>]*>(\d+)</span>''').firstMatch(fjHtml) ??
-          RegExp(r'''回复[:：\s]*<[^>]*>(\d+)<''').firstMatch(fjHtml) ??
-          RegExp(r'''回复[:：\s]*(\d+)''').firstMatch(fjEl.text);
+      // 匹配 "8回复" / "8 回帖" / "8 评论" / "回复: 8"
+      final rm = RegExp(r'(\d+)\s*(?:回复|回帖|评论|回)').firstMatch(text) ??
+          RegExp(r'''(?:回复|回帖|评论|回)[:：\s]*(\d+)''').firstMatch(text);
       if (rm != null) replies = int.tryParse(rm.group(1)!) ?? 0;
     }
 
-    // 2. Discuz 标准 PC 左侧统计栏 td.pls.ptn.pbn (含查看/回复)
+    // 2. Discuz 官方 #fj 容器（klpbbs PC 与移动端：<div id="fj" class="y"><span class="xg1">查看:</span><span class="xi1">183</span><span class="pipe">|</span><span class="xg1">回复:</span><span class="xi1">8</span></div>）
+    if (views <= 0 || replies <= 0) {
+      final fjEl = doc.querySelector('#fj, .authi #fj, .pi #fj, div[id="fj"]');
+      if (fjEl != null) {
+        final fjHtml = fjEl.outerHtml;
+        final vm = RegExp(r'''(?:查看|浏览|阅读)[:：\s]*</span>\s*<span[^>]*class="[^"]*xi1[^"]*"[^>]*>(\d+)</span>''').firstMatch(fjHtml) ??
+            RegExp(r'''(?:查看|浏览|阅读)[:：\s]*<[^>]*>(\d+)<''').firstMatch(fjHtml) ??
+            RegExp(r'(\d+)\s*(?:阅读|查看|浏览)').firstMatch(fjEl.text) ??
+            RegExp(r'''(?:查看|浏览|阅读)[:：\s]*(\d+)''').firstMatch(fjEl.text);
+        if (vm != null && views <= 0) views = int.tryParse(vm.group(1)!) ?? 0;
+
+        final rm = RegExp(r'''(?:回复|评论)[:：\s]*</span>\s*<span[^>]*class="[^"]*xi1[^"]*"[^>]*>(\d+)</span>''').firstMatch(fjHtml) ??
+            RegExp(r'''(?:回复|评论)[:：\s]*<[^>]*>(\d+)<''').firstMatch(fjHtml) ??
+            RegExp(r'(\d+)\s*(?:回复|评论)').firstMatch(fjEl.text) ??
+            RegExp(r'''(?:回复|评论)[:：\s]*(\d+)''').firstMatch(fjEl.text);
+        if (rm != null && replies <= 0) replies = int.tryParse(rm.group(1)!) ?? 0;
+      }
+    }
+
+    // 3. Discuz 标准 PC 左侧统计栏 td.pls.ptn.pbn (含查看/回复)
     if (views <= 0 || replies <= 0) {
       final plsNumEl = doc.querySelector('td.pls.ptn.pbn, .pls.ptn.pbn, td.pls.pbn');
       if (plsNumEl != null) {
@@ -4750,7 +4769,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
-    // 3. 克米移动端底部视口 bottom_views 与 viewtit
+    // 4. 克米移动端底部视口 bottom_views 与 viewtit
     if (views <= 0 || replies <= 0) {
       final detailBv = doc.querySelector('.bottom_views, .forumlist_li_tops .bottom_views, .comiis_viewtit .bottom_views');
       if (detailBv != null) {
@@ -4764,29 +4783,31 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
-    // 4. 回复数徽章
+    // 5. 回复数徽章
     if (replies <= 0) {
-      final kmv = doc.querySelector('.comiis_kmvnum, .comiis_position_key, span[class*="comiis_kmvnum"]');
+      final kmv = doc.querySelector('.comiis_kmvnum, .comiis_position_key, span[class*="comiis_kmvnum"], .comiis_pltit span.f_d, .comiis_pltit h2');
       if (kmv != null) {
         final kmvVal = int.tryParse(RegExp(r'\d+').firstMatch(kmv.text)?.group(0) ?? '') ?? 0;
         if (kmvVal > 0) replies = kmvVal;
       }
     }
 
-    // 5. 通用全局正则匹配
+    // 6. 通用全局正则匹配（支持数字在前与数字在后）
     if (views <= 0) {
-      final vm = RegExp(r'''查看[:：\s]*<[^>]*class="[^"]*xi1[^"]*"[^>]*>(\d+)<''').firstMatch(html) ??
-          RegExp(r'''查看[:：\s]*<[^>]*>(\d+)<''').firstMatch(html) ??
-          RegExp(r'''查看[:：\s]+(\d+)''').firstMatch(html);
+      final vm = RegExp(r'(\d+)\s*(?:阅读|次阅读|次查看|次浏览)').firstMatch(html) ??
+          RegExp(r'''(?:查看|浏览|阅读|阅)[:：\s]*<[^>]*class="[^"]*xi1[^"]*"[^>]*>(\d+)<''').firstMatch(html) ??
+          RegExp(r'''(?:查看|浏览|阅读|阅)[:：\s]*<[^>]*>(\d+)<''').firstMatch(html) ??
+          RegExp(r'''(?:查看|浏览|阅读|阅)[:：\s]+(\d+)''').firstMatch(html);
       if (vm != null) {
         views = int.tryParse(vm.group(1)!) ?? 0;
       }
     }
 
     if (replies <= 0) {
-      final rm = RegExp(r'''回复[:：\s]*<[^>]*class="[^"]*xi1[^"]*"[^>]*>(\d+)<''').firstMatch(html) ??
-          RegExp(r'''回复[:：\s]*<[^>]*>(\d+)<''').firstMatch(html) ??
-          RegExp(r'''回复[:：\s]+(\d+)''').firstMatch(html);
+      final rm = RegExp(r'(\d+)\s*(?:回复|次回复|条回复|条评论)').firstMatch(html) ??
+          RegExp(r'''(?:回复|回帖|评论)[:：\s]*<[^>]*class="[^"]*xi1[^"]*"[^>]*>(\d+)<''').firstMatch(html) ??
+          RegExp(r'''(?:回复|回帖|评论)[:：\s]*<[^>]*>(\d+)<''').firstMatch(html) ??
+          RegExp(r'''(?:回复|回帖|评论)[:：\s]+(\d+)''').firstMatch(html);
       if (rm != null) {
         replies = int.tryParse(rm.group(1)!) ?? 0;
       }
