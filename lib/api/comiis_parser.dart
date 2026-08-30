@@ -6909,22 +6909,55 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       String reason = '';
       String time = '';
 
-      if (tds.length >= 3) {
-        score = tds[1].text.trim();
-        time = tds.last.text.trim();
-        if (tds.length >= 4) {
-          reason = tds[2].text.trim();
+      if (tds.length >= 4) {
+        if (tds[0].contains(userA)) {
+          score = tds[1].text.trim();
+          time = tds[2].text.trim();
+          reason = tds[3].text.trim();
+        } else {
+          score = tds[0].text.trim();
+          time = tds[2].text.trim();
+          reason = tds[3].text.trim();
         }
+      } else if (tds.length == 3) {
+        if (tds[0].contains(userA)) {
+          score = tds[1].text.trim();
+          time = tds[2].text.trim();
+        } else {
+          score = tds[0].text.trim();
+          time = tds[2].text.trim();
+        }
+      } else if (tds.length == 2) {
+        score = tds[0].contains(userA) ? tds[1].text.trim() : tds[0].text.trim();
       } else {
-        score = tr.querySelector('.xi1, .xg1, span.z')?.text.trim() ?? '';
+        score = tr.querySelector('.xi1, .xg1, span.z, span.f_a')?.text.trim() ?? '';
+      }
+
+      // 规范化积分金额展示（如 "铁粒 +1 粒" -> "+1 铁粒"）
+      var cleanedScore = score;
+      final scoreMatch = RegExp(r'([+\-]?\s*\d+)').firstMatch(score);
+      if (scoreMatch != null) {
+        var val = scoreMatch.group(1)!.replaceAll(' ', '');
+        if (!val.startsWith('+') && !val.startsWith('-')) {
+          val = '+$val';
+        }
+        var unit = '铁粒';
+        if (score.contains('金粒')) {
+          unit = '金粒';
+        } else if (score.contains('贡献')) {
+          unit = '贡献';
+        } else if (score.contains('人气')) {
+          unit = '人气';
+        }
+        cleanedScore = '$val $unit';
       }
 
       results.add(
         FloorReward(
           username: username,
           uid: uid,
-          amount: score.isNotEmpty ? score : '+10 铁粒',
-          reason: reason.isNotEmpty ? reason : '打赏评分支持',
+          amount: cleanedScore.isNotEmpty ? cleanedScore : '+10 铁粒',
+          reason: reason.isNotEmpty ? reason : '评分支持',
           dateline: time,
         ),
       );

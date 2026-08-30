@@ -3672,6 +3672,7 @@ class _RewardSectionState extends State<_RewardSection> {
                                         amount: r.amount,
                                         reason: r.reason,
                                       ),
+                                      dateline: r.dateline,
                                     );
                                   },
                                 ),
@@ -3688,8 +3689,9 @@ class _RewardSectionState extends State<_RewardSection> {
 
   Widget _buildRewardItem(
     BuildContext ctx,
-    ({String user, int? uid, String avatar, String amount, String reason}) r,
-  ) {
+    ({String user, int? uid, String avatar, String amount, String reason}) r, {
+    String dateline = '',
+  }) {
     final theme = Theme.of(ctx);
     final negative = r.amount.contains('-');
     return InkWell(
@@ -3702,12 +3704,12 @@ class _RewardSectionState extends State<_RewardSection> {
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
         child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             UserAvatarWidget(
               uid: r.uid,
               author: r.user,
-              size: 30,
+              size: 32,
               // 不打赏头像图，避免与 UserAvatarWidget 内部 uid 头像重叠
               faceUrl: null,
             ),
@@ -3716,14 +3718,30 @@ class _RewardSectionState extends State<_RewardSection> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    r.user,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: theme.colorScheme.primary,
-                    ),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          r.user,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: theme.colorScheme.primary,
+                          ),
+                        ),
+                      ),
+                      if (dateline.isNotEmpty) ...[
+                        const SizedBox(width: 8),
+                        Text(
+                          dateline,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.outline.withAlpha(150),
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                   if (r.reason.isNotEmpty)
                     Padding(
@@ -3731,7 +3749,7 @@ class _RewardSectionState extends State<_RewardSection> {
                       child: Text(
                         r.reason,
                         style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.outline,
+                          color: theme.colorScheme.onSurfaceVariant,
                           fontSize: 12,
                         ),
                       ),
