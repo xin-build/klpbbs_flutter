@@ -4303,7 +4303,9 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         }
         break;
       }
-      final rc = RegExp(r'(\d+)\s*人打赏').firstMatch(post.text);
+      final rc = RegExp(r'(\d+)\s*人打赏').firstMatch(post.text) ??
+          RegExp(r'已有\s*(\d+)\s*人').firstMatch(post.text) ??
+          RegExp(r'''<span[^>]*class="[^"]*f_a[^"]*"[^>]*>(\d+)</span>\s*人打赏''').firstMatch(post.outerHtml);
       if (rc != null) rewardCount = rc.group(1)!;
 
       // IP 归属地（楼层时间行 "IP:xx省"）
@@ -5067,6 +5069,11 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
   static int _parseFloorLikes(html_dom.Element post) {
     for (final sel in [
+      'span[id^="comiis_recommend"]',
+      'span[id^="post_support_"]',
+      'span[id^="support_"]',
+      'a[id^="support_"] span',
+      'a[id^="support_"]',
       'span[id^="review_support_"]',
       '.postreview a.support',
       'a[id^="postreview_"] span',
@@ -5080,6 +5087,8 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       'a[id^="reply_like_"]',
       '.comiis_recommend_num',
       '.comiis_recommend_nums',
+      'a[href*="action=support"] span',
+      'a[href*="action=support"]',
     ]) {
       final el = post.querySelector(sel);
       if (el != null) {
@@ -5090,6 +5099,23 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         }
       }
     }
+
+    final postHtml = post.outerHtml;
+    final idMatch = RegExp(
+      r'''id=["'](?:comiis_recommend|post_support_|support_)(\d+)["'][^>]*>(\d+)<''',
+    ).firstMatch(postHtml);
+    if (idMatch != null) {
+      final count = int.tryParse(idMatch.group(2)!);
+      if (count != null && count > 0) return count;
+    }
+
+    final sm = RegExp(r'''(?:支持|赞)[:：\s]*<[^>]*>(\d+)<''').firstMatch(postHtml) ??
+        RegExp(r'''(?:支持|赞)\s+(\d+)''').firstMatch(post.text);
+    if (sm != null) {
+      final count = int.tryParse(sm.group(1)!);
+      if (count != null && count > 0) return count;
+    }
+
     return 0;
   }
 

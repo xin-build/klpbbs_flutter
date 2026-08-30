@@ -3796,7 +3796,7 @@ class _RewardSectionState extends State<_RewardSection> {
                 child: Text(
                   floor.rewardCount.isNotEmpty
                       ? '已有 ${floor.rewardCount} 人打赏'
-                      : '打赏',
+                      : (floor.floorNumber == '楼主' || floor.floorNumber == '1#' || floor.floorNumber.isEmpty ? '打赏 / 评分' : '楼层评分'),
                   style: theme.textTheme.bodySmall?.copyWith(
                     fontWeight: FontWeight.w700,
                     color: isDark ? Colors.orange.shade300 : Colors.orange.shade900,
@@ -3817,8 +3817,8 @@ class _RewardSectionState extends State<_RewardSection> {
               icon: const Icon(Icons.open_in_new, size: 14),
               label: Text(
                 floor.rewardCount.isNotEmpty
-                    ? '查看全部 ${floor.rewardCount} 条打赏/评分记录'
-                    : '查看全部 ${rewards.length} 条打赏记录',
+                    ? '查看全部 ${floor.rewardCount} 条评分/打赏记录'
+                    : '查看全部评分',
                 style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
               ),
             ),
