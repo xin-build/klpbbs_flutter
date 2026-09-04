@@ -2078,16 +2078,13 @@ class DiscuzPostRenderer extends StatelessWidget {
                 }
               }
             }
-            final hasTh = n.querySelector('th') != null;
-            final isLayoutTable = !hasTh &&
-                (directTrs.isEmpty ||
-                    directTrs.every(
-                      (tr) =>
-                          tr.children
-                              .where((c) => c.localName == 'td')
-                              .length <=
-                          1,
-                    ));
+            final hasTh = directTrs.any((tr) => tr.children.any((c) => c.localName == 'th'));
+            int maxDirectCols = 0;
+            for (final tr in directTrs) {
+              final cols = tr.children.where((c) => c.localName == 'td' || c.localName == 'th').length;
+              if (cols > maxDirectCols) maxDirectCols = cols;
+            }
+            final isLayoutTable = !hasTh && maxDirectCols <= 1;
             // 布局表格（无 th 且每行最多 1 个 td）：扁平化展开子节点
             if (isLayoutTable) {
               spans.addAll(walk(n, style ?? baseStyle, insideLink: insideLink, linkHref: linkHref));
@@ -2215,7 +2212,13 @@ class DiscuzPostRenderer extends StatelessWidget {
             }
 
             if (tag == 'li') {
-              spans.add(const TextSpan(text: '• ')); // 列表项项目符号
+              var prefix = '• ';
+              if (n.parent?.localName == 'ol') {
+                final liSiblings = n.parent!.children.where((c) => c.localName == 'li').toList();
+                final idx = liSiblings.indexOf(n);
+                prefix = '${idx >= 0 ? idx + 1 : 1}. ';
+              }
+              spans.add(TextSpan(text: prefix, style: (style ?? baseStyle)?.copyWith(fontWeight: FontWeight.bold)));
             }
             spans.addAll(walk(n, style ?? baseStyle, insideLink: insideLink, linkHref: linkHref));
             if (isBlock && spans.isNotEmpty && !_spansEndWithNewline(spans)) {

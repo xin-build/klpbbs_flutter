@@ -8032,25 +8032,31 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
               }
             }
           }
-          final hasTh = directTrs.any((tr) => tr.querySelector('th') != null);
-          int maxCols = 0;
+          // 仅检测直接挂在 directTrs 下的 th，严禁深度搜索子嵌套表格的 th
+          final hasDirectTh = directTrs.any((tr) => tr.children.any((c) => c.localName == 'th'));
+          int maxDirectCols = 0;
           for (final tr in directTrs) {
             final colCount = tr.children
                 .where((c) => c.localName == 'td' || c.localName == 'th')
                 .length;
-            if (colCount > maxCols) maxCols = colCount;
+            if (colCount > maxDirectCols) maxDirectCols = colCount;
           }
 
-          // 核心判断：当且仅当所有行都只有 <= 1 列（且无多列 th）时，属于 Discuz 单列排版卡片/嵌套边框
-          final isLayoutTable = !hasTh && maxCols <= 1;
+          // 核心判断：当且仅当所有直接行都只有 <= 1 列且无直接 th 时，属于 Discuz 单列排版卡片/嵌套包装表格
+          final isLayoutTable = !hasDirectTh && maxDirectCols <= 1;
 
           if (isLayoutTable) {
             final rawStyle = node.attributes['style'] ?? '';
             var rawBg = node.attributes['bgcolor'] ??
                 _extractCssProperty(rawStyle, 'background-color') ??
                 _extractCssProperty(rawStyle, 'background');
-            var rawBorderColor = _extractCssProperty(rawStyle, 'border-color') ??
+            var rawBorderColor = node.attributes['bordercolor'] ??
+                _extractCssProperty(rawStyle, 'border-color') ??
                 _extractCssProperty(rawStyle, 'border');
+            final hasBorderAttr = (node.attributes['border'] != null && node.attributes['border'] != '0');
+            if (rawBorderColor == null && hasBorderAttr) {
+              rawBorderColor = '#e0e0e0';
+            }
 
             final cellBlocks = <PostBlock>[];
             if (directTrs.isNotEmpty) {
@@ -8079,29 +8085,38 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
               }
             }
 
-            // 无论移动端是否剥离了 class 或 bgcolor，只要属于单列排版表格，统一封装为自适应排版卡片 CardContainerBlock，确保 100% 渲染出外层与内层边框与框体！
-            blocks.add(
-              CardContainerBlock(
-                children: cellBlocks,
-                bgColor: (rawBg != null &&
-                        rawBg.isNotEmpty &&
-                        rawBg != 'none' &&
-                        rawBg != 'transparent')
-                    ? rawBg
-                    : null,
-                borderColor: rawBorderColor,
-                align: nodeAlign,
-              ),
-            );
+            final isFrameworkWrapper = node.querySelector('main.comiis_a, .comiis_message_table, .comiis_vrx, .comiis_message, #postlist') != null;
+            final hasExplicitStyling = !isFrameworkWrapper &&
+                ((rawBg != null &&
+                    rawBg.isNotEmpty &&
+                    rawBg != 'none' &&
+                    rawBg != 'transparent') ||
+                (rawBorderColor != null && rawBorderColor.isNotEmpty) ||
+                hasBorderAttr);
+
+            if (hasExplicitStyling) {
+              blocks.add(
+                CardContainerBlock(
+                  children: cellBlocks,
+                  bgColor: rawBg,
+                  borderColor: rawBorderColor,
+                  align: nodeAlign,
+                ),
+              );
+            } else {
+              // 普通无修饰布局包装表格（如移动端框架 table wrapper），直接解包子区块，避免添加多余外框
+              blocks.addAll(cellBlocks);
+            }
             continue;
           }
 
-          if (maxCols >= 2 || hasTh) {
+          if (maxDirectCols >= 2 || hasDirectTh) {
             final headers = <String>[];
             final rows = <List<String>>[];
             for (final tr in directTrs) {
               final ths = tr.children.where((c) => c.localName == 'th');
-              if (ths.isNotEmpty) {
+              final tds = tr.children.where((c) => c.localName == 'td');
+              if (ths.isNotEmpty && tds.isEmpty) {
                 for (final th in ths) {
                   headers.add(
                     th.innerHtml.trim().isNotEmpty
@@ -8109,15 +8124,13 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
                         : th.text.trim(),
                   );
                 }
-              }
-              final tds = tr.children.where((c) => c.localName == 'td');
-              if (tds.isNotEmpty) {
+              } else {
                 final cells = <String>[];
-                for (final td in tds) {
+                for (final cell in tr.children.where((c) => c.localName == 'td' || c.localName == 'th')) {
                   cells.add(
-                    td.innerHtml.trim().isNotEmpty
-                        ? td.innerHtml.trim()
-                        : td.text.trim(),
+                    cell.innerHtml.trim().isNotEmpty
+                        ? cell.innerHtml.trim()
+                        : cell.text.trim(),
                   );
                 }
                 if (cells.isNotEmpty) rows.add(cells);
@@ -8803,18 +8816,24 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     html = html.replaceAll('[hr]', '<hr>');
     html = html.replaceAllMapped(
       RegExp(r'\[\*\]([\s\S]*?)(?=\[\*\]|\[/list\])', caseSensitive: false),
-      (m) => '<li>${m[1]}</li>',
+      (m) => '<li>${m[1]?.trim() ?? ''}</li>',
     );
     html = html.replaceAllMapped(
-      RegExp(r'\[list(?:=[^\]]*)?\]([\s\S]*?)\[/list\]', caseSensitive: false),
+      RegExp(r'\[list=([^\]]+)\]([\s\S]*?)\[/list\]', caseSensitive: false),
+      (m) => '<ol type="${m[1]}">${m[2]}</ol>',
+    );
+    html = html.replaceAllMapped(
+      RegExp(r'\[list\]([\s\S]*?)\[/list\]', caseSensitive: false),
       (m) => '<ul>${m[1]}</ul>',
     );
 
     // 换行转换
     html = html.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
     html = html.replaceAll('\n', '<br>');
-    html = html.replaceAll('<ul><br>', '<ul>');
+    html = html.replaceAllMapped(RegExp(r'(<ul[^>]*>)\s*<br>'), (m) => m[1]!);
+    html = html.replaceAllMapped(RegExp(r'(<ol[^>]*>)\s*<br>'), (m) => m[1]!);
     html = html.replaceAll('<br></li>', '</li>');
+    html = html.replaceAll('</li><br>', '</li>');
     html = html.replaceAll('</tr><br><tr>', '</tr><tr>');
     html = html.replaceAll('<br></tr>', '</tr>');
     html = html.replaceAll('<br></table>', '</table>');

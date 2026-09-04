@@ -167,13 +167,17 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
     (m) => '<div style="float:${m[1]};margin:4px 8px;">${m[2]}</div>',
   );
 
-  // [list] / [*] → <ul><li>
+  // [list=1] / [list] / [*] → <ol><li> / <ul><li>
   s = s.replaceAllMapped(
     RegExp(r'\[\*\]([\s\S]*?)(?=\[\*\]|\[/list\])'),
-    (m) => '<li>${m[1]}</li>',
+    (m) => '<li>${m[1]?.trim() ?? ''}</li>',
   );
   s = s.replaceAllMapped(
-    RegExp(r'\[list(?:=[^\]]*)?\]([\s\S]*?)\[/list\]'),
+    RegExp(r'\[list=([^\]]+)\]([\s\S]*?)\[/list\]'),
+    (m) => '<ol type="${m[1]}">${m[2]}</ol>',
+  );
+  s = s.replaceAllMapped(
+    RegExp(r'\[list\]([\s\S]*?)\[/list\]'),
     (m) => '<ul>${m[1]}</ul>',
   );
 
@@ -228,9 +232,10 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
   s = s.replaceAll('\n', '<br>');
 
   // 4. 清理列表/表格块内换行，避免预览出现空行
-  s = s.replaceAll('<ul><br>', '<ul>');
-  s = s.replaceAll('<ol><br>', '<ol>');
+  s = s.replaceAllMapped(RegExp(r'(<ul[^>]*>)\s*<br>'), (m) => m[1]!);
+  s = s.replaceAllMapped(RegExp(r'(<ol[^>]*>)\s*<br>'), (m) => m[1]!);
   s = s.replaceAll('<br></li>', '</li>');
+  s = s.replaceAll('</li><br>', '</li>');
   s = s.replaceAll('</tr><br><tr>', '</tr><tr>');
   s = s.replaceAll('</tr><br>', '</tr>');
   s = s.replaceAll('<br></tr>', '</tr>');
