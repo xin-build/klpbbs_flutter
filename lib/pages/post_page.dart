@@ -2798,56 +2798,90 @@ class _PostPageState extends State<PostPage> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                                     margin: const EdgeInsets.only(bottom: 12),
                                     decoration: BoxDecoration(
-                                      color: theme.colorScheme.primaryContainer.withAlpha(30),
-                                      borderRadius: BorderRadius.circular(6),
-                                      border: Border.all(color: theme.colorScheme.primary.withAlpha(50)),
+                                      color: theme.colorScheme.primaryContainer.withAlpha(35),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(color: theme.colorScheme.primary.withAlpha(60)),
                                     ),
                                     child: Row(
                                       children: [
-                                        Icon(Icons.visibility, size: 15, color: theme.colorScheme.primary),
-                                        const SizedBox(width: 6),
+                                        Icon(Icons.visibility_rounded, size: 16, color: theme.colorScheme.primary),
+                                        const SizedBox(width: 8),
                                         Text(
-                                          'Discuz BBCode 实时渲染预览',
+                                          'Discuz BBCode 实时全排版预览',
                                           style: TextStyle(
-                                            fontSize: 12,
+                                            fontSize: 12.5,
                                             fontWeight: FontWeight.bold,
                                             color: theme.colorScheme.primary,
                                           ),
                                         ),
                                         const Spacer(),
-                                        InkWell(
-                                          onTap: () => setState(() => _preview = false),
-                                          child: Text(
-                                            '返回编辑',
-                                            style: TextStyle(
-                                              fontSize: 12,
-                                              color: theme.colorScheme.primary,
-                                              decoration: TextDecoration.underline,
-                                            ),
+                                        TextButton.icon(
+                                          onPressed: () => setState(() => _preview = false),
+                                          style: TextButton.styleFrom(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                            minimumSize: Size.zero,
+                                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                           ),
+                                          icon: const Icon(Icons.edit_outlined, size: 14),
+                                          label: const Text('返回编辑', style: TextStyle(fontSize: 12)),
                                         ),
                                       ],
                                     ),
                                   ),
-                                  DiscuzPostRenderer(
-                                    floor: PostFloor(
-                                      author: '',
-                                      contentHtml: bbcodeToHtml(
-                                        _contentCtrl.text,
-                                        customSmileys: _smileyCats,
+                                  if (_contentCtrl.text.trim().isEmpty)
+                                    Container(
+                                      width: double.infinity,
+                                      padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 20),
+                                      alignment: Alignment.center,
+                                      child: Column(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          Icon(
+                                            Icons.description_outlined,
+                                            size: 44,
+                                            color: theme.colorScheme.outlineVariant,
+                                          ),
+                                          const SizedBox(height: 12),
+                                          Text(
+                                            '编辑区尚无内容',
+                                            style: TextStyle(
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.bold,
+                                              color: theme.colorScheme.onSurfaceVariant,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 6),
+                                          Text(
+                                            '在编辑区输入 BBCode 或文字后即可在此处查看实时排版',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: theme.colorScheme.outline,
+                                            ),
+                                            textAlign: TextAlign.center,
+                                          ),
+                                        ],
                                       ),
-                                      blocks: ComiisParser.parseStructuredBlocksFromHtml(
-                                        bbcodeToHtml(
+                                    )
+                                  else
+                                    DiscuzPostRenderer(
+                                      floor: PostFloor(
+                                        author: '我（预览）',
+                                        contentHtml: bbcodeToHtml(
                                           _contentCtrl.text,
                                           customSmileys: _smileyCats,
                                         ),
+                                        blocks: ComiisParser.parseStructuredBlocksFromHtml(
+                                          bbcodeToHtml(
+                                            _contentCtrl.text,
+                                            customSmileys: _smileyCats,
+                                          ),
+                                        ),
                                       ),
+                                      tid: 0,
                                     ),
-                                    tid: 0,
-                                  ),
                                 ],
                               ),
                             )

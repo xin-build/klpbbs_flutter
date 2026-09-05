@@ -121,6 +121,16 @@ class DividerBlock extends PostBlock {
   String toString() => 'DividerBlock()';
 }
 
+/// Discuz 飞行动画文字区块（`[fly]` / `<marquee>`）
+class FlyBlock extends PostBlock {
+  final String html;
+  final String? align;
+  const FlyBlock(this.html, {this.align});
+
+  @override
+  String toString() => 'FlyBlock(html: $html, align: $align)';
+}
+
 /// 视频/内嵌视频播放区块（原生视频 / Bilibili / 优酷 / YouTube）
 class VideoBlock extends PostBlock {
   final String src;

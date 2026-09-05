@@ -139,6 +139,13 @@ class DiscuzPostRenderer extends StatelessWidget {
           contentHtml,
           align: align,
         ),
+      FlyBlock(:final html, :final align) =>
+        _buildFlyBlock(
+          context,
+          theme,
+          html,
+          align: align,
+        ),
       CodeBlock(:final code, :final language, :final align) =>
         _buildCodeBlock(
           context,
@@ -888,6 +895,28 @@ class DiscuzPostRenderer extends StatelessWidget {
       return Align(alignment: Alignment.centerRight, child: quoteWidget);
     }
     return quoteWidget;
+  }
+
+  // 3.5 Discuz 飞行动画走马灯区块 ([fly] / <marquee>)
+  Widget _buildFlyBlock(
+    BuildContext context,
+    ThemeData theme,
+    String html, {
+    String? align,
+  }) {
+    final flyWidget = _DiscuzFlyWidget(
+      html: html,
+      align: align,
+      theme: theme,
+      htmlToSpans: (h) => _htmlToSpans(h, theme, context: context),
+    );
+
+    if (align == 'center') {
+      return Center(child: flyWidget);
+    } else if (align == 'right') {
+      return Align(alignment: Alignment.centerRight, child: flyWidget);
+    }
+    return flyWidget;
   }
 
   // 4. 代码块（带行号与一键复制按钮）
@@ -1970,6 +1999,24 @@ class DiscuzPostRenderer extends StatelessWidget {
               style = (style ?? baseStyle)?.copyWith(
                 decoration: TextDecoration.lineThrough,
               );
+            case 'sub':
+              style = (style ?? baseStyle)?.copyWith(
+                fontSize: ((style ?? baseStyle)?.fontSize ?? 14.5) * 0.8,
+              );
+            case 'sup':
+              style = (style ?? baseStyle)?.copyWith(
+                fontSize: ((style ?? baseStyle)?.fontSize ?? 14.5) * 0.8,
+              );
+            case 'mark':
+            case 'highlight':
+              style = (style ?? baseStyle)?.copyWith(
+                backgroundColor: theme.colorScheme.primary.withAlpha(45),
+              );
+            case 'code':
+              style = (style ?? baseStyle)?.copyWith(
+                fontFamily: 'monospace',
+                backgroundColor: theme.colorScheme.surfaceContainerHighest.withAlpha(120),
+              );
             case 'font':
               final color = n.attributes['color'];
               if (color != null && color.isNotEmpty) {
@@ -2099,8 +2146,123 @@ class DiscuzPostRenderer extends StatelessWidget {
             continue;
           }
 
+          // Discuz 汉字注音标签 [ruby]
+          if (tag == 'ruby') {
+            final rtEls = n.querySelectorAll('rt');
+            final rtText = rtEls.map((e) => e.text.trim()).join(' ');
+            final cloned = n.clone(true);
+            cloned.querySelectorAll('rt').forEach((e) => e.remove());
+            final baseText = cloned.text.trim();
+            if (baseText.isNotEmpty) {
+              spans.add(
+                WidgetSpan(
+                  alignment: PlaceholderAlignment.middle,
+                  child: _DiscuzRubyWidget(
+                    baseText: baseText,
+                    rtText: rtText,
+                    baseStyle: style ?? baseStyle,
+                    rtStyle: (style ?? baseStyle)?.copyWith(
+                      fontSize: 10,
+                      color: theme.colorScheme.primary.withAlpha(200),
+                      height: 1.1,
+                    ),
+                  ),
+                ),
+              );
+              continue;
+            }
+          }
+
+          // Discuz 走马灯飞行文字标签 [fly] / <marquee>
+          if (tag == 'marquee') {
+            spans.add(
+              WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: _DiscuzFlyWidget(
+                  html: n.innerHtml.isNotEmpty ? n.innerHtml : n.text,
+                  theme: theme,
+                  htmlToSpans: (h) => _htmlToSpans(h, theme, context: context),
+                ),
+              ),
+            );
+            continue;
+          }
+
+          // Discuz 缩进引用标签 [indent] / <blockquote>
+          if (tag == 'blockquote') {
+            spans.add(
+              WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.symmetric(vertical: 4),
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest.withAlpha(50),
+                    borderRadius: const BorderRadius.horizontal(right: Radius.circular(6)),
+                    border: Border(
+                      left: BorderSide(color: theme.colorScheme.primary.withAlpha(160), width: 3),
+                    ),
+                  ),
+                  child: Text.rich(
+                    TextSpan(
+                      children: walk(n, style ?? baseStyle, insideLink: insideLink, linkHref: linkHref),
+                      style: (style ?? baseStyle)?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+            continue;
+          }
+
+          // Discuz 官方段落标签 [p=行高, 缩进, 对齐] 与普通 <p>
+          if (tag == 'p') {
+            final pAlign = _parseTextAlign(n) ?? defaultAlign;
+            final indentM = RegExp(r'text-indent\s*:\s*(\d+)em', caseSensitive: false).firstMatch(styleAttr);
+            final lhM = RegExp(r'line-height\s*:\s*(\d+)px', caseSensitive: false).firstMatch(styleAttr);
+            var pStyle = style ?? baseStyle;
+            if (lhM != null) {
+              final lh = double.tryParse(lhM.group(1)!);
+              if (lh != null && lh > 0) {
+                final fs = pStyle?.fontSize ?? 14.5;
+                pStyle = pStyle?.copyWith(height: lh / fs);
+              }
+            }
+            final childSpans = walk(n, pStyle, insideLink: insideLink, linkHref: linkHref);
+            if (indentM != null) {
+              final em = int.tryParse(indentM.group(1)!) ?? 2;
+              childSpans.insert(0, TextSpan(text: '\u3000' * em, style: pStyle));
+            }
+            if (pAlign != null) {
+              spans.add(
+                WidgetSpan(
+                  alignment: PlaceholderAlignment.middle,
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: Text.rich(
+                      TextSpan(children: childSpans, style: pStyle),
+                      textAlign: pAlign,
+                    ),
+                  ),
+                ),
+              );
+            } else {
+              if (spans.isNotEmpty && !_spansEndWithNewline(spans)) {
+                spans.add(const TextSpan(text: '\n'));
+              }
+              spans.addAll(childSpans);
+              if (!_spansEndWithNewline(spans)) {
+                spans.add(const TextSpan(text: '\n'));
+              }
+            }
+            continue;
+          }
+
           final align = _parseTextAlign(n) ?? defaultAlign;
-          if (align != null && (tag == 'div' || tag == 'p' || tag == 'center')) {
+          if (align != null && (tag == 'div' || tag == 'center')) {
             spans.add(
               WidgetSpan(
                 alignment: PlaceholderAlignment.middle,
@@ -3244,4 +3406,200 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
     );
   }
 }
+
+/// Discuz 飞行动画文字组件（`[fly]` / `<marquee class="discuz_fly">`）
+/// 平滑水平走马灯滚动，触摸或悬停可暂停
+class _DiscuzFlyWidget extends StatefulWidget {
+  final String html;
+  final String? align;
+  final ThemeData theme;
+  final List<InlineSpan> Function(String) htmlToSpans;
+
+  const _DiscuzFlyWidget({
+    required this.html,
+    this.align,
+    required this.theme,
+    required this.htmlToSpans,
+  });
+
+  @override
+  State<_DiscuzFlyWidget> createState() => _DiscuzFlyWidgetState();
+}
+
+class _DiscuzFlyWidgetState extends State<_DiscuzFlyWidget>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  bool _isPaused = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 14),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _pause() {
+    if (!_isPaused && mounted) {
+      _controller.stop();
+      setState(() => _isPaused = true);
+    }
+  }
+
+  void _resume() {
+    if (_isPaused && mounted) {
+      _controller.repeat();
+      setState(() => _isPaused = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spans = widget.htmlToSpans(widget.html);
+    final theme = widget.theme;
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.primaryContainer.withAlpha(25),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: theme.colorScheme.primary.withAlpha(60),
+          width: 1,
+        ),
+      ),
+      child: MouseRegion(
+        onEnter: (_) => _pause(),
+        onExit: (_) => _resume(),
+        child: GestureDetector(
+          onTapDown: (_) => _pause(),
+          onTapUp: (_) => _resume(),
+          onTapCancel: () => _resume(),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.flight_takeoff_rounded,
+                  size: 16,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final containerWidth = constraints.maxWidth;
+                      final textPainter = TextPainter(
+                        text: TextSpan(
+                          children: spans,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        textDirection: TextDirection.ltr,
+                        maxLines: 1,
+                      )..layout();
+                      final textWidth = textPainter.width;
+                      final totalDistance = containerWidth + textWidth;
+
+                      return ClipRect(
+                        child: AnimatedBuilder(
+                          animation: _controller,
+                          builder: (context, child) {
+                            final dx = containerWidth - _controller.value * totalDistance;
+                            return Transform.translate(
+                              offset: Offset(dx, 0),
+                              child: child,
+                            );
+                          },
+                          child: Text.rich(
+                            TextSpan(
+                              children: spans,
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            maxLines: 1,
+                            softWrap: false,
+                            overflow: TextOverflow.visible,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                if (_isPaused) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHighest.withAlpha(120),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      '已暂停',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Discuz 汉字拼音/注音标注组件（`[ruby]` / `<ruby>汉字<rt>拼音</rt></ruby>`）
+class _DiscuzRubyWidget extends StatelessWidget {
+  final String baseText;
+  final String rtText;
+  final TextStyle? baseStyle;
+  final TextStyle? rtStyle;
+
+  const _DiscuzRubyWidget({
+    required this.baseText,
+    required this.rtText,
+    this.baseStyle,
+    this.rtStyle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Text(
+          rtText,
+          style: rtStyle ??
+              const TextStyle(
+                fontSize: 10,
+                color: Color(0xFF888888),
+                height: 1.1,
+              ),
+        ),
+        Text(
+          baseText,
+          style: baseStyle,
+        ),
+      ],
+    );
+  }
+}
+
 

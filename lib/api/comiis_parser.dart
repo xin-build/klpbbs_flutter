@@ -5,6 +5,7 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/app_config.dart';
+import '../core/bbcode.dart' as bbcode_lib;
 import '../models/credit_log.dart';
 import '../models/darkroom_entry.dart';
 import '../models/forum.dart';
@@ -7971,6 +7972,20 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           continue;
         }
 
+        // 1.5 飞行动画文字区块 (Discuz [fly] / <marquee class="discuz_fly">)
+        if (tag == 'marquee' ||
+            tag == 'fly' ||
+            node.classes.contains('discuz_fly') ||
+            node.classes.contains('fly')) {
+          blocks.add(
+            FlyBlock(
+              node.innerHtml.isNotEmpty ? node.innerHtml : innerText,
+              align: nodeAlign,
+            ),
+          );
+          continue;
+        }
+
         // 2. 代码块
         if (tag == 'pre' ||
             tag == 'code' ||
@@ -8605,240 +8620,8 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
   }
 
   /// 将 Discuz BBCode 转换为 HTML 以便富文本与个性签名 100% 精准渲染
-  static String bbcodeToHtml(String text) {
-    if (text.isEmpty) return '';
-    var html = text;
-
-    // 预清理并处理 HTML 特殊转义（避免属性中的双引号被截断）
-    html = html
-        .replaceAll('&amp;', '&')
-        .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>');
-
-    // 表情短码与 Discuz 标准表情代码转换 (如 [贴吧_滑稽], [哔哩_doge], {:12_292:}, {:6_178:} 等)
-    final smileyMap = getSmileyCodeMap();
-    for (final entry in smileyMap.entries) {
-      if (html.contains(entry.key)) {
-        html = html.replaceAll(
-          entry.key,
-          '<img src="${entry.value}" class="vm" smilieid="1" alt="${entry.key}" />',
-        );
-      }
-    }
-
-    // 循环处理可能嵌套的标签（最多循环 5 轮以展开内嵌表格与样式）
-    for (var i = 0; i < 5; i++) {
-      final prev = html;
-
-      // 基础文字修饰
-      html = html.replaceAllMapped(
-        RegExp(r'\[b\]([\s\S]*?)\[/b\]', caseSensitive: false),
-        (m) => '<b>${m[1]}</b>',
-      );
-      html = html.replaceAllMapped(
-        RegExp(r'\[i\]([\s\S]*?)\[/i\]', caseSensitive: false),
-        (m) => '<i>${m[1]}</i>',
-      );
-      html = html.replaceAllMapped(
-        RegExp(r'\[u\]([\s\S]*?)\[/u\]', caseSensitive: false),
-        (m) => '<u>${m[1]}</u>',
-      );
-      html = html.replaceAllMapped(
-        RegExp(r'\[s\]([\s\S]*?)\[/s\]', caseSensitive: false),
-        (m) => '<s>${m[1]}</s>',
-      );
-
-      // 颜色与背景色（支持带引号与不带引号）
-      html = html.replaceAllMapped(
-        RegExp(
-          r'\[color=["\x27]?([#a-zA-Z0-9]+)["\x27]?\]([\s\S]*?)\[/color\]',
-          caseSensitive: false,
-        ),
-        (m) => '<font color="${m[1]}">${m[2]}</font>',
-      );
-      html = html.replaceAllMapped(
-        RegExp(
-          r'\[backcolor=["\x27]?([#a-zA-Z0-9]+)["\x27]?\]([\s\S]*?)\[/backcolor\]',
-          caseSensitive: false,
-        ),
-        (m) => '<span style="background-color: ${m[1]}">${m[2]}</span>',
-      );
-
-      // 字体与字号
-      html = html.replaceAllMapped(
-        RegExp(
-          r'\[font=["\x27]?([^\]"\x27]+)["\x27]?\]([\s\S]*?)\[/font\]',
-          caseSensitive: false,
-        ),
-        (m) => '<font face="${m[1]}">${m[2]}</font>',
-      );
-      html = html.replaceAllMapped(
-        RegExp(
-          r'\[size=["\x27]?([0-9]+(?:px|pt)?)["\x27]?\]([\s\S]*?)\[/size\]',
-          caseSensitive: false,
-        ),
-        (m) {
-          var sizeVal = m[1]!;
-          final numVal = int.tryParse(sizeVal);
-          if (numVal != null && numVal <= 7) {
-            const map = {
-              1: '11px',
-              2: '13px',
-              3: '15.5px',
-              4: '18px',
-              5: '23px',
-              6: '29px',
-              7: '38px',
-            };
-            sizeVal = map[numVal] ?? '${numVal * 3}px';
-          } else if (numVal != null) {
-            sizeVal = '${numVal}px';
-          }
-          return '<span style="font-size: $sizeVal">${m[2]}</span>';
-        },
-      );
-
-      // 链接与图片
-      html = html.replaceAllMapped(
-        RegExp(
-          r'\[url=["\x27]?([^\]"\x27]+)["\x27]?\]([\s\S]*?)\[/url\]',
-          caseSensitive: false,
-        ),
-        (m) => '<a href="${m[1]}">${m[2]}</a>',
-      );
-      html = html.replaceAllMapped(
-        RegExp(r'\[url\]([\s\S]*?)\[/url\]', caseSensitive: false),
-        (m) => '<a href="${m[1]}">${m[1]}</a>',
-      );
-      html = html.replaceAllMapped(
-        RegExp(r'\[img(?:=[^\]]*)?\]([\s\S]*?)\[/img\]', caseSensitive: false),
-        (m) => '<img src="${(m[1] ?? '').trim()}" />',
-      );
-
-      // 对齐与排版
-      html = html.replaceAllMapped(
-        RegExp(
-          r'\[align=(left|center|right|justify)\]([\s\S]*?)\[/align\]',
-          caseSensitive: false,
-        ),
-        (m) => '<div align="${m[1]}">${m[2]}</div>',
-      );
-      html = html.replaceAllMapped(
-        RegExp(r'\[quote\]([\s\S]*?)\[/quote\]', caseSensitive: false),
-        (m) => '<blockquote>${m[1]}</blockquote>',
-      );
-      html = html.replaceAllMapped(
-        RegExp(r'\[code\]([\s\S]*?)\[/code\]', caseSensitive: false),
-        (m) => '<code>${m[1]}</code>',
-      );
-      html = html.replaceAllMapped(
-        RegExp(
-          r'\[spoiler(?:=([^\]]*))?\]([\s\S]*?)\[/spoiler\]',
-          caseSensitive: false,
-        ),
-        (m) =>
-            '<details><summary>${m[1]?.isNotEmpty == true ? m[1] : '点击展开折叠内容'}</summary>${m[2]}</details>',
-      );
-
-      // 表格嵌套支持（匹配最内层 table 逐层向外展开）
-      html = html.replaceAllMapped(
-        RegExp(
-          r'\[table(?:=([^\]]*))?\]((?:(?!\[table)[\s\S])*?)\[/table\]',
-          caseSensitive: false,
-        ),
-        (m) {
-          final param = m[1] ?? '';
-          String width = '100%';
-          String bgcolor = '';
-          if (param.contains(',')) {
-            final parts = param.split(',');
-            width = parts[0].trim();
-            bgcolor = parts.length > 1 ? parts[1].trim() : '';
-          } else if (param.isNotEmpty) {
-            if (param.endsWith('%') || param.endsWith('px') || int.tryParse(param) != null) {
-              width = param;
-            } else {
-              bgcolor = param;
-            }
-          }
-          final bgAttr = bgcolor.isNotEmpty ? ' bgcolor="$bgcolor"' : '';
-          return '<table width="$width"$bgAttr border="1" cellpadding="4" class="t_table" style="border-collapse:collapse">${m[2]}</table>';
-        },
-      );
-
-      if (html == prev) break;
-    }
-
-    // 音频与多媒体
-    html = html.replaceAllMapped(
-      RegExp(
-        r'\[audio(?:=[^\]]*)?\](.*?)\[/audio\]',
-        caseSensitive: false,
-        dotAll: true,
-      ),
-      (m) => '<a class="discuz_audio" href="${m[1]}">🎵 播放音频</a>',
-    );
-    html = html.replaceAllMapped(
-      RegExp(r'\[music\](.*?)\[/music\]', caseSensitive: false, dotAll: true),
-      (m) =>
-          '<a class="discuz_music" href="https://music.163.com/#/song?id=${m[1]}">🎵 网易云音乐: ${m[1]}</a>',
-    );
-    html = html.replaceAllMapped(
-      RegExp(
-        r'\[(?:media|flash)(?:=[^\]]*)?\](.*?)\[/(?:media|flash)\]',
-        caseSensitive: false,
-        dotAll: true,
-      ),
-      (m) => '<a class="discuz_media" href="${m[1]}">🎬 查看视频/多媒体</a>',
-    );
-
-    // 行与列转换
-    html = html.replaceAllMapped(
-      RegExp(r'\[tr(?:=([^\]]+))?\]', caseSensitive: false),
-      (m) => m[1] != null && m[1]!.isNotEmpty ? '<tr bgcolor="${m[1]}">' : '<tr>',
-    );
-    html = html.replaceAll('[/tr]', '</tr>');
-    html = html.replaceAllMapped(
-      RegExp(r'\[td(?:=([0-9,]+))?\]', caseSensitive: false),
-      (m) {
-        final p = m[1];
-        if (p != null && p.contains(',')) {
-          final parts = p.split(',');
-          final colspan = parts[0].trim();
-          final rowspan = parts.length > 1 ? parts[1].trim() : '1';
-          final width = parts.length > 2 ? ' width="${parts[2].trim()}"' : '';
-          return '<td colspan="$colspan" rowspan="$rowspan"$width>';
-        }
-        return '<td>';
-      },
-    );
-    html = html.replaceAll('[/td]', '</td>');
-    html = html.replaceAll('[hr]', '<hr>');
-    html = html.replaceAllMapped(
-      RegExp(r'\[\*\]([\s\S]*?)(?=\[\*\]|\[/list\])', caseSensitive: false),
-      (m) => '<li>${m[1]?.trim() ?? ''}</li>',
-    );
-    html = html.replaceAllMapped(
-      RegExp(r'\[list=([^\]]+)\]([\s\S]*?)\[/list\]', caseSensitive: false),
-      (m) => '<ol type="${m[1]}">${m[2]}</ol>',
-    );
-    html = html.replaceAllMapped(
-      RegExp(r'\[list\]([\s\S]*?)\[/list\]', caseSensitive: false),
-      (m) => '<ul>${m[1]}</ul>',
-    );
-
-    // 换行转换
-    html = html.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
-    html = html.replaceAll('\n', '<br>');
-    html = html.replaceAllMapped(RegExp(r'(<ul[^>]*>)\s*<br>'), (m) => m[1]!);
-    html = html.replaceAllMapped(RegExp(r'(<ol[^>]*>)\s*<br>'), (m) => m[1]!);
-    html = html.replaceAll('<br></li>', '</li>');
-    html = html.replaceAll('</li><br>', '</li>');
-    html = html.replaceAll('</tr><br><tr>', '</tr><tr>');
-    html = html.replaceAll('<br></tr>', '</tr>');
-    html = html.replaceAll('<br></table>', '</table>');
-
-    return html;
+  static String bbcodeToHtml(String text, {List<SmileyCategory>? customSmileys}) {
+    return bbcode_lib.bbcodeToHtml(text, customSmileys: customSmileys);
   }
 
   /// 解析 Discuz 用户组权限与晋级对照页（home.php?mod=spacecp&ac=usergroup 网页真实数据）
