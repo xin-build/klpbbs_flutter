@@ -58,6 +58,8 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
   bool _isSnipingActive = false; // 是否处于 23:59 准备/冲刺阶段
   String _statusMessage = '服务未开启（等待配置）';
   Timer? _heartbeatTimer;
+  DateTime? _lastFallbackCheckTime;
+  DateTime? _lastCheckTime;
 
   // Getters
   bool get autoSignOnLaunch => _autoSignOnLaunch;
@@ -175,6 +177,7 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> setScheduledSignEnabled(bool val) async {
     _scheduledSignEnabled = val;
+    _scheduleNextHeartbeat();
     notifyListeners();
     final sp = await SharedPreferences.getInstance();
     await sp.setBool(_keyScheduledEnabled, val);
@@ -183,6 +186,7 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> setScheduledTime(int hour, int minute) async {
     _scheduledHour = hour;
     _scheduledMinute = minute;
+    _scheduleNextHeartbeat();
     notifyListeners();
     final sp = await SharedPreferences.getInstance();
     await sp.setInt(_keyScheduledHour, hour);
@@ -198,6 +202,7 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> setBurstModeEnabled(bool val) async {
     _burstModeEnabled = val;
+    _scheduleNextHeartbeat();
     notifyListeners();
     final sp = await SharedPreferences.getInstance();
     await sp.setBool(_keyBurstEnabled, val);
@@ -241,10 +246,42 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
   // ================= 核心调度引擎 =================
 
   void _startHeartbeat() {
+    _scheduleNextHeartbeat(immediate: false);
+  }
+
+  void _scheduleNextHeartbeat({bool immediate = false}) {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+    if (immediate) {
       _onHeartbeatTick();
+    }
+    final delay = _resolveNextHeartbeatDuration();
+    _heartbeatTimer = Timer(delay, () {
+      _onHeartbeatTick();
+      _scheduleNextHeartbeat();
     });
+  }
+
+  /// 计算下一次心跳周期：处于冲刺临界或定时签到临界期保持 1 秒高精度，平时 30 秒休眠省电
+  Duration _resolveNextHeartbeatDuration() {
+    if (_isRunning) {
+      return const Duration(seconds: 1);
+    }
+    final now = DateTime.now();
+    // 零点冲榜临界期：23:58 ~ 次日 00:02
+    if (_burstModeEnabled) {
+      if ((now.hour == 23 && now.minute >= 58) || (now.hour == 0 && now.minute <= 2)) {
+        return const Duration(seconds: 1);
+      }
+    }
+    // 定时签到临界期：目标小时内且距离目标分钟 <= 1 分钟
+    if (_scheduledSignEnabled) {
+      if (now.hour == _scheduledHour) {
+        if (now.minute == _scheduledMinute || (now.minute == _scheduledMinute - 1 && now.second >= 45)) {
+          return const Duration(seconds: 1);
+        }
+      }
+    }
+    return const Duration(seconds: 30);
   }
 
   void _onHeartbeatTick() {
@@ -301,16 +338,17 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
       if (now.hour == _scheduledHour && now.minute == _scheduledMinute && now.second <= _scheduledWindowSec) {
         _executeScheduledSign();
       } else if ((now.hour > _scheduledHour) || (now.hour == _scheduledHour && now.minute > _scheduledMinute)) {
-        if (now.minute % 10 == 0 && now.second == 0) {
+        if (now.minute % 10 == 0) {
           checkAndAutoSignIn(triggerSource: '定时错峰补签');
         }
       }
     }
 
-    // 3. 全天未签自动保底与错峰补签机制（无论开启了冲刺、定时还是启动打卡，凡是今日未签均每 5 分钟自动补签）
+    // 3. 全天未签自动保底与错峰补签机制（15 分钟频率防抖，杜绝频繁唤醒）
     final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch || AppConfig.autoCheckin;
     if (isAnyAutoEnabled && _lastSuccessDate != todayStr && _lastNotifiedDate != todayStr && !_isRunning) {
-      if (now.minute % 5 == 0 && now.second == 0) {
+      if (_lastFallbackCheckTime == null || now.difference(_lastFallbackCheckTime!).inMinutes >= 15) {
+        _lastFallbackCheckTime = now;
         checkAndAutoSignIn(triggerSource: '全天未签自动保底');
       }
     }
@@ -328,7 +366,7 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  /// 零点极速冲榜循环（核心）
+  /// 零点极速冲榜循环（核心：支持 50ms 流水线非阻塞并发发包，确保 100% 抢占第 1 名）
   Future<void> _startMidnightSnipeLoop(String targetDateStr) async {
     if (_isRunning) return;
     _isRunning = true;
@@ -341,15 +379,124 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
 
     try {
       // 预先获取 FormHash 避免每次请求阻塞
-      final fh = await KlpbbsApi.getSignFormhash();
+      var fh = await KlpbbsApi.getSignFormhash();
+      bool refreshedAtMidnight = false;
+      bool isFinished = false;
+      int inFlight = 0;
+      const maxInFlight = 4; // 管道并发度，防止网络拥塞同时保持极高发包密度
 
-      while (DateTime.now().isBefore(deadline) && _isRunning) {
-        final res = await KlpbbsApi.signIn(formhash: fh);
-        if (res.success || res.message.contains('已签到') || res.message.contains('签过到') || res.message.contains('今日已签')) {
-          await _recordSuccess(targetDateStr, res);
-          break;
+      while (DateTime.now().isBefore(deadline) && _isRunning && !isFinished) {
+        final now = DateTime.now();
+
+        // 刚跨入 00:00 时在后台静默异步刷新一次 FormHash
+        if (now.hour == 0 && !refreshedAtMidnight) {
+          refreshedAtMidnight = true;
+          KlpbbsApi.getSignFormhash(forceRefresh: true).then((newFh) {
+            if (newFh != null && newFh.isNotEmpty) fh = newFh;
+          }).catchError((_) {});
         }
-        await Future.delayed(Duration(milliseconds: _burstIntervalMs));
+
+        // 核心临界期判定：23:59:58 ~ 00:00:03（这是抢第一名的核心黄金秒数）
+        final isCriticalWindow = (now.hour == 23 && now.minute == 59 && now.second >= 58) ||
+            (now.hour == 0 && now.minute == 0 && now.second <= 3);
+
+        if (isCriticalWindow) {
+          // 黄金 5 秒：启用非阻塞流水线发包 (Pipelined Burst)
+          // 按照 _burstIntervalMs (如 50ms) 持续投递发包，不被网络 RTT 延迟阻塞
+          final completer = Completer<void>();
+          Timer? burstTimer;
+
+          void triggerFire() {
+            if (isFinished || !_isRunning || DateTime.now().isAfter(deadline)) {
+              burstTimer?.cancel();
+              if (!completer.isCompleted) completer.complete();
+              return;
+            }
+
+            if (inFlight >= maxInFlight) return;
+            inFlight++;
+
+            KlpbbsApi.signIn(formhash: fh).then((res) async {
+              inFlight--;
+              if (isFinished) return;
+
+              final currentNow = DateTime.now();
+              if (res.success || (res.rank != null && res.rank! > 0)) {
+                isFinished = true;
+                burstTimer?.cancel();
+                await _recordSuccess(targetDateStr, res);
+                if (!completer.isCompleted) completer.complete();
+                return;
+              }
+
+              final isAlreadySignedMsg = res.message.contains('已签到') ||
+                  res.message.contains('签过到') ||
+                  res.message.contains('今日已签');
+
+              if (isAlreadySignedMsg) {
+                if (currentNow.hour == 0) {
+                  // 已经跨入 00:00:xx 收到已签到，说明抢榜请求已成功录入系统
+                  isFinished = true;
+                  burstTimer?.cancel();
+                  await _recordSuccess(targetDateStr, res);
+                  if (!completer.isCompleted) completer.complete();
+                } else {
+                  // 仍在 23:59:xx 提前发包区间，此时的“今日已签”属于当天白天的旧记录，绝不能退出抢榜！
+                  _statusMessage = '零点冲刺预热中 (${currentNow.hour.toString().padLeft(2, '0')}:${currentNow.minute.toString().padLeft(2, '0')}:${currentNow.second.toString().padLeft(2, '0')}，等待 00:00 跨天生效)...';
+                  notifyListeners();
+                }
+              }
+            }).catchError((err) {
+              inFlight--;
+            });
+          }
+
+          final intervalMs = _burstIntervalMs.clamp(50, 500);
+          burstTimer = Timer.periodic(Duration(milliseconds: intervalMs), (_) => triggerFire());
+          triggerFire(); // 立即发射第 1 发
+
+          await Future.any([
+            completer.future,
+            Future.delayed(const Duration(seconds: 5)),
+          ]);
+          burstTimer.cancel();
+
+          if (isFinished) break;
+        } else {
+          // 临界期之外（23:59:45 ~ 23:59:58 或 00:00:04 之后）：平稳探测
+          if (_burstStrategy == BurstStrategy.statusPolling && now.hour == 23) {
+            final isSigned = await KlpbbsApi.checkSigned();
+            if (!isSigned) {
+              final res = await KlpbbsApi.signIn(formhash: fh);
+              if (res.success || (res.rank != null && res.rank! > 0) || (now.hour == 0 && (res.message.contains('已签到') || res.message.contains('今日已签')))) {
+                await _recordSuccess(targetDateStr, res);
+                break;
+              }
+            }
+          } else {
+            final res = await KlpbbsApi.signIn(formhash: fh);
+            if (res.success || (res.rank != null && res.rank! > 0)) {
+              await _recordSuccess(targetDateStr, res);
+              break;
+            }
+
+            final isAlreadySignedMsg = res.message.contains('已签到') ||
+                res.message.contains('签过到') ||
+                res.message.contains('今日已签');
+
+            if (isAlreadySignedMsg) {
+              if (now.hour == 0) {
+                await _recordSuccess(targetDateStr, res);
+                break;
+              } else {
+                _statusMessage = '零点冲刺预热中 (${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}，等待 00:00 跨天生效)...';
+                notifyListeners();
+              }
+            }
+          }
+
+          await Future.delayed(Duration(milliseconds: _burstIntervalMs));
+        }
       }
     } catch (e) {
       _statusMessage = '冲榜异常：$e';
@@ -392,10 +539,16 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 检查并执行自动签到（启动/手动触发）
-  Future<void> checkAndAutoSignIn({String triggerSource = '自动签到'}) async {
+  Future<void> checkAndAutoSignIn({String triggerSource = '自动签到', bool force = false}) async {
     if (!DioClient.isLoggedIn || _isRunning) return;
 
     final now = DateTime.now();
+    // 5 分钟频控防抖（非强制触发时）
+    if (!force && _lastCheckTime != null && now.difference(_lastCheckTime!).inMinutes < 5) {
+      return;
+    }
+    _lastCheckTime = now;
+
     final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
 
     _isRunning = true;
@@ -480,7 +633,12 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    _statusMessage = '🎉 签到成功！奖励: $rewardSummary';
+    final rank = res.rank;
+    final hasRank = rank != null && rank > 0;
+    final isFirst = rank == 1;
+
+    final rankStatusText = hasRank ? (isFirst ? ' (🥇 今日第 1 名！)' : ' (今日第 $rank 名)') : '';
+    _statusMessage = '🎉 签到成功！$rewardSummary$rankStatusText';
     notifyListeners();
 
     if (_notifyOnResult) {
@@ -488,15 +646,26 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// 签到结果全平台消息推送（不包含排名，展示奖励、经验与连续天数）
+  /// 签到结果全平台消息推送（展示排名、奖励、经验与连续天数）
   void _pushSignResultNotification(dynamic res, String rewardSummary) {
+    final rank = res.rank;
+    final hasRank = rank != null && rank > 0;
+    final isFirst = rank == 1;
+
+    final title = isFirst
+        ? '🥇 苦力怕论坛 · 恭喜拿下今日签到第 1 名！'
+        : hasRank
+            ? '苦力怕论坛 · 签到成功 (今日第 $rank 名) 🎉'
+            : '苦力怕论坛 · 签到成功 🎉';
+
+    final rankBodyText = hasRank ? '🏆 今日排名：第 $rank 名\n' : '';
     final daysText = (res.continuousDays != null && res.continuousDays > 0)
         ? ' | 已连续 ${res.continuousDays} 天'
         : '';
 
     PushNotificationService.instance.pushCustomNotification(
-      title: '苦力怕论坛 · 签到成功 🎉',
-      body: '签到奖励：$rewardSummary$daysText',
+      title: title,
+      body: '$rankBodyText签到奖励：$rewardSummary$daysText',
     );
   }
 

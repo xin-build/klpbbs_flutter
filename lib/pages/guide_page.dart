@@ -1,9 +1,9 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../models/thread_summary.dart';
-import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
 import '../widgets/skeleton_list.dart';
@@ -92,11 +92,11 @@ class _GuidePageState extends State<GuidePage>
     final theme = Theme.of(context);
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const AppBackButton(),
+        leading: const GlobalNavLeading(),
         title: const Text('导读'),
         centerTitle: true,
-        actions: const [GlobalNavButton()],
         bottom: TabBar(
           controller: _tabController,
           labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5),

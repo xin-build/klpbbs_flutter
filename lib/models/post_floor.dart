@@ -205,6 +205,9 @@ class PostFloor {
   /// 发帖者是否当前在线
   final bool isOnline;
 
+  /// 服务端 HTML 是否明确授权本楼层编辑权限（管理员/版主/作者本人）
+  final bool canEdit;
+
   const PostFloor({
     this.pid,
     this.uid,
@@ -247,6 +250,7 @@ class PostFloor {
     this.isUnderReview = false,
     this.isLocked = false,
     this.isOnline = false,
+    this.canEdit = false,
   });
 
   PostFloor copyWith({
@@ -291,6 +295,7 @@ class PostFloor {
     bool? isUnderReview,
     bool? isLocked,
     bool? isOnline,
+    bool? canEdit,
   }) {
     return PostFloor(
       pid: pid ?? this.pid,
@@ -334,6 +339,7 @@ class PostFloor {
       isUnderReview: isUnderReview ?? this.isUnderReview,
       isLocked: isLocked ?? this.isLocked,
       isOnline: isOnline ?? this.isOnline,
+      canEdit: canEdit ?? this.canEdit,
     );
   }
 }

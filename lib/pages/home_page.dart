@@ -10,8 +10,8 @@ import '../api/comiis_parser.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/dio_client.dart';
+import '../core/forum_events.dart';
 import '../core/preload_service.dart';
-import '../core/seed_data.dart';
 import '../models/forum.dart';
 import '../models/site_stats.dart';
 import '../models/thread_summary.dart';
@@ -83,6 +83,7 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _homeScrollCtrl.addListener(_onHomeScroll);
     PushNotificationService.instance.addListener(_onPushNotificationUpdate);
+    ForumFavoriteNotifier.instance.addListener(_loadFavForums);
     ComiisParser.loadTidForumCache();
     _future = _load();
     _loadFavForums();
@@ -104,7 +105,8 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     setState(
       () => _favForums = (prefs.getStringList('fav_forums') ?? const [])
-          .map(int.parse)
+          .map(int.tryParse)
+          .whereType<int>()
           .toSet(),
     );
   }
@@ -137,9 +139,9 @@ class _HomePageState extends State<HomePage> {
       unawaited(() async {
         try {
           final results = await Future.wait([
-            KlpbbsApi.getForumGroups(),
-            KlpbbsApi.getHome(),
-            KlpbbsApi.getSiteStats(forceRefresh: false),
+            KlpbbsApi.getForumGroups(forceRefresh: true),
+            KlpbbsApi.getHome(forceRefresh: true),
+            KlpbbsApi.getSiteStats(forceRefresh: true),
           ]);
           _loadUnread();
           if (mounted) {
@@ -167,8 +169,8 @@ class _HomePageState extends State<HomePage> {
 
     try {
       final results = await Future.wait([
-        KlpbbsApi.getForumGroups(),
-        KlpbbsApi.getHome(),
+        KlpbbsApi.getForumGroups(forceRefresh: forceRefresh),
+        KlpbbsApi.getHome(forceRefresh: forceRefresh),
         KlpbbsApi.getSiteStats(forceRefresh: forceRefresh),
       ]);
       _loadUnread();
@@ -198,14 +200,9 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       if (cachedGroups != null || cachedThreads != null) {
         return (
-          cachedGroups ?? SeedData.forumGroups,
-          cachedThreads ?? SeedData.homeThreads,
-          cachedStats ?? const SiteStats(
-            todayPosts: 61,
-            yesterdayPosts: 273,
-            totalPosts: 10310794,
-            totalMembers: 2317632,
-          ),
+          cachedGroups ?? const <ForumGroup>[],
+          cachedThreads ?? const <ThreadSummary>[],
+          cachedStats ?? const SiteStats(),
         );
       }
       rethrow;
@@ -244,9 +241,9 @@ class _HomePageState extends State<HomePage> {
           .length;
       if (mounted) setState(() => _unreadPm = unread);
 
-      // 通知未读：严格遵循 Discuz 服务端真实未读数与角标
-      final summary = await KlpbbsApi.getUnreadSummary();
-      if (mounted) setState(() => _unreadNotice = summary.unreadNotices);
+      // 通知未读：优先从 PushNotificationService 状态复用，避免全量重复抓取解析
+      final notices = PushNotificationService.instance.unreadNotices;
+      if (mounted) setState(() => _unreadNotice = notices);
     } catch (_) {}
   }
 
@@ -284,6 +281,7 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _homeScrollCtrl.dispose();
     PushNotificationService.instance.removeListener(_onPushNotificationUpdate);
+    ForumFavoriteNotifier.instance.removeListener(_loadFavForums);
     super.dispose();
   }
 
@@ -458,10 +456,20 @@ class _HomePageState extends State<HomePage> {
           ),
           automaticallyImplyLeading: !isDesktop,
           leading: (!isDesktop && widget.showDrawerButton)
-              ? IconButton(
-                  icon: const Icon(Icons.menu),
-                  tooltip: '打开导航菜单',
-                  onPressed: widget.onOpenDrawer,
+              ? ListenableBuilder(
+                  listenable: PushNotificationService.instance,
+                  builder: (context, _) {
+                    final unread = PushNotificationService.instance.unreadCount;
+                    return IconButton(
+                      icon: Badge(
+                        isLabelVisible: unread > 0,
+                        label: Text(unread > 99 ? '99+' : '$unread'),
+                        child: const Icon(Icons.menu_rounded),
+                      ),
+                      tooltip: '打开导航菜单',
+                      onPressed: widget.onOpenDrawer,
+                    );
+                  },
                 )
               : null,
           actions: [
@@ -951,11 +959,6 @@ class _ForumNavState extends State<ForumNav> {
     for (final f in widget.allForums) {
       allKnownForums[f.fid] = f;
     }
-    for (final g in SeedData.forumGroups) {
-      for (final f in g.forums) {
-        allKnownForums.putIfAbsent(f.fid, () => f);
-      }
-    }
 
     final combinedFavs = <Forum>[];
     final seenFids = <int>{};
@@ -1177,11 +1180,8 @@ class _ForumNavState extends State<ForumNav> {
   Widget _boardChip(BuildContext context, Forum f) {
     final theme = Theme.of(context);
     final fav = widget.favFids.contains(f.fid);
-    final seed = SeedData.forumGroups
-        .expand((g) => g.forums)
-        .firstWhere((s) => s.fid == f.fid, orElse: () => f);
-    final threadCount = f.threadCount > 0 ? f.threadCount : seed.threadCount;
-    final todayCount = f.todayCount >= 0 ? f.todayCount : seed.todayCount;
+    final threadCount = f.threadCount > 0 ? f.threadCount : 0;
+    final todayCount = f.todayCount >= 0 ? f.todayCount : -1;
 
     return Container(
       decoration: BoxDecoration(
@@ -1769,7 +1769,7 @@ class _RecommendCarouselState extends State<_RecommendCarousel> {
   void initState() {
     super.initState();
     _timer = Timer.periodic(const Duration(seconds: 4), (_) {
-      if (!mounted || widget.threads.length <= 1) return;
+      if (!mounted || widget.threads.length <= 1 || !_ctrl.hasClients) return;
       final next = (_index + 1) % widget.threads.length;
       _ctrl.animateToPage(
         next,
@@ -1787,7 +1787,7 @@ class _RecommendCarouselState extends State<_RecommendCarousel> {
   void _resumeAuto() {
     if (_timer != null) return;
     _timer = Timer.periodic(const Duration(seconds: 4), (_) {
-      if (!mounted || widget.threads.length <= 1) return;
+      if (!mounted || widget.threads.length <= 1 || !_ctrl.hasClients) return;
       final next = (_index + 1) % widget.threads.length;
       _ctrl.animateToPage(
         next,

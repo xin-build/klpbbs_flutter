@@ -1,6 +1,6 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 
-import '../widgets/app_back_button.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/thread_card.dart';
 
@@ -85,8 +85,9 @@ class _DarkroomPageState extends State<DarkroomPage> {
             .toList();
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const AppBackButton(),
+        leading: const GlobalNavLeading(),
         title: _isSearching
             ? TextField(
                 controller: _searchCtrl,
@@ -120,7 +121,6 @@ class _DarkroomPageState extends State<DarkroomPage> {
             tooltip: '刷新当前页',
             onPressed: _loading ? null : _reload,
           ),
-          const GlobalNavButton(),
         ],
       ),
       bottomNavigationBar: SafeArea(

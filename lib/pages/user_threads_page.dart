@@ -1,12 +1,12 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/dio_client.dart';
 import '../models/thread_summary.dart';
-import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/favorite_dialog.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
 import '../widgets/thread_card.dart';
@@ -72,13 +72,16 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
         page: _page,
         tag: _selectedTag == '全部' ? null : _selectedTag,
       ).then((threads) {
-        SharedPreferences.getInstance().then((prefs) {
-          final list = (prefs.getStringList('fav_tids') ?? []).toSet();
-          bool changed = false;
-          for (final t in threads) {
-            if (list.add('${t.tid}')) changed = true;
+        KlpbbsApi.getMyUid().then((myUid) async {
+          if (myUid != null && myUid == widget.uid) {
+            final prefs = await SharedPreferences.getInstance();
+            final list = (prefs.getStringList('fav_tids') ?? []).toSet();
+            bool changed = false;
+            for (final t in threads) {
+              if (list.add('${t.tid}')) changed = true;
+            }
+            if (changed) await prefs.setStringList('fav_tids', list.toList());
           }
-          if (changed) prefs.setStringList('fav_tids', list.toList());
         }).catchError((_) {});
         return threads;
       });
@@ -286,6 +289,12 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
                         favid: filledThread.favid,
                       );
                       if (res == false && mounted) {
+                        try {
+                          final prefs = await SharedPreferences.getInstance();
+                          final list = (prefs.getStringList('fav_tids') ?? []).toSet();
+                          list.remove('${filledThread.tid}');
+                          await prefs.setStringList('fav_tids', list.toList());
+                        } catch (_) {}
                         setState(() => _fetch());
                       }
                     }
@@ -336,11 +345,11 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
     }
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const AppBackButton(),
+        leading: const GlobalNavLeading(),
         title: Text(widget.title),
         actions: [
-          const GlobalNavButton(),
           if (widget.type == 'favorite')
             IconButton(
               icon: Icon(_sortByName ? Icons.sort_by_alpha : Icons.access_time),

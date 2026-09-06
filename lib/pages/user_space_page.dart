@@ -9,7 +9,7 @@ import '../core/app_config.dart';
 import '../core/preload_service.dart';
 import '../models/user_space.dart';
 import '../models/usergroup_comparison.dart';
-import '../widgets/app_back_button.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/inline_html_text.dart';
 import '../widgets/thread_card.dart';
@@ -623,6 +623,231 @@ class _UserSpacePageState extends State<UserSpacePage> {
     );
   }
 
+  Widget _buildSpaceSkeleton(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
+    final placeholderColor = isDark
+        ? colorScheme.surfaceContainerHighest.withAlpha(90)
+        : Colors.grey.shade200;
+
+    return Scaffold(
+      drawer: const GlobalAppDrawer(),
+      appBar: AppBar(
+        leading: const GlobalNavLeading(),
+        title: Text(_isMe ? '我的空间' : '个人空间'),
+      ),
+      body: SingleChildScrollView(
+        physics: const NeverScrollableScrollPhysics(),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 空间顶部横幅背景与头像骨架
+            Container(
+              height: 180,
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: placeholderColor,
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    placeholderColor.withAlpha(140),
+                    placeholderColor,
+                  ],
+                ),
+              ),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Positioned(
+                    bottom: 16,
+                    child: Container(
+                      width: 80,
+                      height: 80,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: colorScheme.surface,
+                        border: Border.all(color: colorScheme.surface, width: 3),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withAlpha(25),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Center(
+                        child: Container(
+                          width: 74,
+                          height: 74,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: placeholderColor.withAlpha(180),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            // 用户名与等级徽章骨架
+            Center(
+              child: Column(
+                children: [
+                  Container(
+                    width: 140,
+                    height: 22,
+                    decoration: BoxDecoration(
+                      color: placeholderColor,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Container(
+                        width: 55,
+                        height: 18,
+                        decoration: BoxDecoration(
+                          color: placeholderColor.withAlpha(160),
+                          borderRadius: BorderRadius.circular(9),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Container(
+                        width: 75,
+                        height: 18,
+                        decoration: BoxDecoration(
+                          color: placeholderColor.withAlpha(160),
+                          borderRadius: BorderRadius.circular(9),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            // 4 列数据卡片骨架 (主题 / 回复 / 积分 / 人气)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerLow,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: colorScheme.outlineVariant.withAlpha(40)),
+                ),
+                child: Row(
+                  children: List.generate(4, (i) => Expanded(
+                    child: Column(
+                      children: [
+                        Container(
+                          width: 32,
+                          height: 16,
+                          decoration: BoxDecoration(
+                            color: placeholderColor,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Container(
+                          width: 24,
+                          height: 12,
+                          decoration: BoxDecoration(
+                            color: placeholderColor.withAlpha(140),
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                      ],
+                    ),
+                  )),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            // 标签栏骨架
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  Container(
+                    width: 60,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: colorScheme.primary.withAlpha(60),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    width: 60,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: placeholderColor,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    width: 60,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: placeholderColor,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            // 帖子卡片骨架列表
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Column(
+                children: List.generate(3, (i) => Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: colorScheme.surface,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: colorScheme.outlineVariant.withAlpha(35)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: double.infinity,
+                        height: 16,
+                        decoration: BoxDecoration(
+                          color: placeholderColor,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        width: 180,
+                        height: 12,
+                        decoration: BoxDecoration(
+                          color: placeholderColor.withAlpha(120),
+                          borderRadius: BorderRadius.circular(3),
+                        ),
+                      ),
+                    ],
+                  ),
+                )),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -632,16 +857,14 @@ class _UserSpacePageState extends State<UserSpacePage> {
       future: _future,
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done && snap.data == null) {
-          return Scaffold(
-            appBar: AppBar(title: Text(_isMe ? '我的空间' : 'Ta 的空间')),
-            body: const Center(child: CircularProgressIndicator()),
-          );
+          return _buildSpaceSkeleton(context);
         }
         final user = snap.data;
         if (user == null) {
           return Scaffold(
+            drawer: const GlobalAppDrawer(),
             appBar: AppBar(
-              leading: const AppBackButton(),
+              leading: const GlobalNavLeading(),
               title: Text(_isMe ? '我的空间' : 'Ta 的空间'),
             ),
             body: Center(
@@ -661,8 +884,9 @@ class _UserSpacePageState extends State<UserSpacePage> {
 
         if (user.isLocked) {
           return Scaffold(
+            drawer: const GlobalAppDrawer(),
             appBar: AppBar(
-              leading: const AppBackButton(),
+              leading: const GlobalNavLeading(),
               title: const Text('提示信息'),
               centerTitle: true,
             ),
@@ -732,6 +956,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
         }
 
         return Scaffold(
+          drawer: const GlobalAppDrawer(),
           body: Column(
             children: [
               Expanded(
@@ -749,6 +974,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
                         pinned: true,
                         foregroundColor: Colors.white,
                         backgroundColor: theme.colorScheme.primary,
+                        leading: const GlobalNavLeading(),
                         title: Text(
                           _isMe ? '我的空间' : 'Ta 的空间',
                           style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
@@ -759,7 +985,6 @@ class _UserSpacePageState extends State<UserSpacePage> {
                             tooltip: '更多',
                             onPressed: () => _showMoreActions(user),
                           ),
-                          const GlobalNavButton(),
                         ],
                         flexibleSpace: FlexibleSpaceBar(
                           background: _buildHeroHeader(user, theme),
@@ -1713,16 +1938,18 @@ class _MySpacePageState extends State<MySpacePage> {
 
     if (_loading) {
       return const Scaffold(
+        drawer: GlobalAppDrawer(),
         body: Center(child: CircularProgressIndicator()),
       );
     }
 
     if (_uid == null || _uid == 0) {
       return Scaffold(
+        drawer: const GlobalAppDrawer(),
         appBar: AppBar(
+          leading: const GlobalNavLeading(),
           title: const Text('我的空间'),
           centerTitle: true,
-          actions: const [GlobalNavButton()],
         ),
         body: Center(
           child: Padding(

@@ -1,10 +1,10 @@
-import 'package:cached_network_image/cached_network_image.dart';
+﻿import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/cache_manager.dart';
-import '../widgets/app_back_button.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/thread_card.dart';
 
@@ -345,11 +345,11 @@ class _HomeStylePageState extends State<HomeStylePage>
     final colorScheme = theme.colorScheme;
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const AppBackButton(),
+        leading: const GlobalNavLeading(),
         title: const Text('我的空间'),
         centerTitle: false,
-        actions: const [GlobalNavButton()],
       ),
       body: Center(
         child: ConstrainedBox(

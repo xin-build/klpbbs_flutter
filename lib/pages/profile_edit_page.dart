@@ -1,8 +1,9 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/write_confirm.dart';
 import '../models/user_space.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import 'user_space_page.dart';
 
@@ -396,6 +397,7 @@ class _ProfileEditPageState extends State<ProfileEditPage>
 
     return Scaffold(
       backgroundColor: colorScheme.surface,
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
         title: const Text(
           '资料设置',
@@ -404,13 +406,7 @@ class _ProfileEditPageState extends State<ProfileEditPage>
         centerTitle: true,
         elevation: 0,
         scrolledUnderElevation: 1,
-        leading: Navigator.of(context).canPop()
-            ? IconButton(
-                icon: const Icon(Icons.arrow_back),
-                tooltip: '返回',
-                onPressed: () => Navigator.of(context).maybePop(),
-              )
-            : null,
+        leading: const GlobalNavLeading(),
         actions: [
           IconButton(
             icon: const Icon(Icons.person_outline_rounded),
@@ -424,7 +420,6 @@ class _ProfileEditPageState extends State<ProfileEditPage>
               }
             },
           ),
-          const GlobalNavButton(),
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(48),

@@ -14,7 +14,7 @@ class _CacheEntry {
 }
 
 /// 高性能内存与 SWR（Stale-While-Revalidate）预加载缓存服务
-/// 为首页、版块树、帖子列表、用户主页等提供毫秒级秒开和静默更新
+/// 为首页、版块树、帖子列表、用户主页等提供毫秒级秒开和静默更新（兼顾长期离线缓存与主动刷新实时性）
 class PreloadService {
   PreloadService._();
   static final PreloadService instance = PreloadService._();

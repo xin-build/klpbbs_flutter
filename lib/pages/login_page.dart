@@ -1,10 +1,12 @@
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart' as url_launcher;
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/dio_client.dart';
+import '../core/preload_service.dart';
+import '../main.dart' show appWebViewEnvironment;
 import '../widgets/app_back_button.dart';
 import '../widgets/desktop_shortcuts.dart';
 import 'web_login_page.dart';
@@ -99,15 +101,15 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
     super.dispose();
   }
 
-  Future<void> _refreshSecCode() async {
+  Future<void> _refreshSecCode({bool force = false}) async {
     setState(() => _loadingSecCode = true);
     try {
       final info = await KlpbbsApi.getSecCodeInfo();
       _formHash = info.formhash;
       _loginHash = info.loginhash;
-      _seccodeHash = info.seccodehash;
-      _seccodeModid = info.seccodemodid;
-      if (_seccodeHash != null && _seccodeHash!.isNotEmpty) {
+      if (info.hasSecCode || force) {
+        _seccodeHash = info.seccodehash.isNotEmpty ? info.seccodehash : 'cS0';
+        _seccodeModid = info.seccodemodid;
         final bytes = await KlpbbsApi.getSecCodeImageBytes(
           _seccodeHash!,
           seccodemodid: _seccodeModid,
@@ -115,6 +117,13 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
         if (mounted) {
           setState(() {
             _seccodeBytes = bytes;
+          });
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _seccodeHash = '';
+            _seccodeBytes = null;
           });
         }
       }
@@ -129,18 +138,17 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
     try {
       final info = await KlpbbsApi.getRegisterSecCodeInfo();
       _regFormHash = info.formhash;
-      _regSecCodeHash = info.seccodehash;
+      _regSecCodeHash = info.seccodehash.isNotEmpty ? info.seccodehash : 'cS0';
       _regSecCodeModid = info.seccodemodid;
-      if (_regSecCodeHash != null && _regSecCodeHash!.isNotEmpty) {
-        final bytes = await KlpbbsApi.getSecCodeImageBytes(
-          _regSecCodeHash!,
-          seccodemodid: _regSecCodeModid,
-        );
-        if (mounted) {
-          setState(() {
-            _regSecCodeBytes = bytes;
-          });
-        }
+      final bytes = await KlpbbsApi.getSecCodeImageBytes(
+        _regSecCodeHash!,
+        seccodemodid: _regSecCodeModid,
+        referer: '${AppConfig.baseUrl}member.php?mod=register&mobile=2',
+      );
+      if (mounted) {
+        setState(() {
+          _regSecCodeBytes = bytes;
+        });
       }
     } catch (_) {
     } finally {
@@ -180,6 +188,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
         password,
         seccodeverify: seccode,
         seccodehash: _seccodeHash,
+        seccodemodid: _seccodeModid,
         formhash: _formHash,
         loginhash: _loginHash,
         questionid: _questionId,
@@ -191,12 +200,19 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
         setState(() => _loading = false);
         if (res.success) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('登录成功！欢迎回来')),
+            SnackBar(
+              content: Text(res.message.isNotEmpty ? res.message : '登录成功！欢迎回来'),
+              backgroundColor: const Color(0xFF2E7D32),
+              behavior: SnackBarBehavior.floating,
+            ),
           );
           Navigator.of(context).pop(true);
         } else {
           setState(() => _errorMessage = res.message);
-          _refreshSecCode();
+          _seccodeCtrl.clear();
+          if (res.needsSecCode) {
+            _refreshSecCode(force: true);
+          }
         }
       }
     } catch (e) {
@@ -205,7 +221,8 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
           _loading = false;
           _errorMessage = '登录异常：$e';
         });
-        _refreshSecCode();
+        _seccodeCtrl.clear();
+        _refreshSecCode(force: true);
       }
     }
   }
@@ -290,10 +307,18 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
     }
   }
 
-  Future<void> _openEmbeddedWebLogin({bool pcMode = false}) async {
+  Future<void> _openEmbeddedWebLogin({
+    bool pcMode = false,
+    String? customUrl,
+    String? customTitle,
+  }) async {
     final ok = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
-        builder: (_) => WebLoginPage(initialPcMode: pcMode),
+        builder: (_) => WebLoginPage(
+          initialPcMode: pcMode,
+          initialUrl: customUrl,
+          customTitle: customTitle,
+        ),
       ),
     );
     if (ok == true && mounted) {
@@ -302,10 +327,14 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
   }
 
   Future<void> _openLostPassword() async {
-    final uri = Uri.parse('${AppConfig.baseUrl}member.php?mod=logging&action=login&viewlostpw=1');
-    if (await url_launcher.canLaunchUrl(uri)) {
-      await url_launcher.launchUrl(uri, mode: url_launcher.LaunchMode.externalApplication);
-    }
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => WebLoginPage(
+          initialUrl: '${AppConfig.baseUrl}member.php?mod=logging&action=login&viewlostpw=1',
+          customTitle: '苦力怕论坛 - 找回密码',
+        ),
+      ),
+    );
   }
 
   void _showManualCookieDialog() {
@@ -380,16 +409,53 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
       _errorMessage = null;
     });
     try {
-      final status = await KlpbbsApi.checkLoginStatus();
+      // 1. 尝试从 WebView2 / 系统内嵌 CookieManager 同步最新论坛凭证
+      final cookieManager = (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows && appWebViewEnvironment != null)
+          ? CookieManager.instance(webViewEnvironment: appWebViewEnvironment)
+          : CookieManager.instance();
+
+      final urlsToQuery = <WebUri>[
+        WebUri(AppConfig.baseUrl),
+        WebUri('https://klpbbs.com/'),
+        WebUri('https://klpbbs.com'),
+      ];
+
+      final cookieMap = <String, String>{};
+      for (final u in urlsToQuery) {
+        try {
+          final cookies = await cookieManager.getCookies(url: u);
+          for (final c in cookies) {
+            if (c.name.isNotEmpty && c.value.isNotEmpty && c.value != 'deleted') {
+              cookieMap[c.name] = c.value;
+            }
+          }
+        } catch (_) {}
+      }
+
+      if (cookieMap.isNotEmpty) {
+        await DioClient.importCookies(cookieMap);
+        PreloadService.instance.clear();
+        KlpbbsApi.clearQuickCache();
+      }
+
+      // 2. 强制刷新实时检测登录态
+      final status = await KlpbbsApi.checkLoginStatus(forceRefresh: true);
       if (mounted) {
         setState(() => _checkingWebAuth = false);
         if (status.isLoggedIn || DioClient.isLoggedIn) {
+          final uname = (status.username != null && status.username!.isNotEmpty)
+              ? status.username!
+              : '坛友';
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('网页登录凭证同步成功！已成功登录')),
+            SnackBar(
+              content: Text('网页登录凭证同步成功！欢迎回来，$uname'),
+              backgroundColor: const Color(0xFF2E7D32),
+              behavior: SnackBarBehavior.floating,
+            ),
           );
           Navigator.of(context).pop(true);
         } else {
-          setState(() => _errorMessage = '尚未检测到网页端登录会话，请先通过内嵌网页登录成功后再同步');
+          setState(() => _errorMessage = '尚未检测到网页端有效登录会话，请先通过内嵌网页登录成功后再同步');
         }
       }
     } catch (e) {
@@ -708,6 +774,21 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
         ),
         const SizedBox(height: 10),
 
+        // QQ 快捷登录（严格对接论坛网页第三方登录通道）
+        SizedBox(
+          width: double.infinity,
+          height: 40,
+          child: OutlinedButton.icon(
+            onPressed: () => _openEmbeddedWebLogin(
+              customUrl: 'https://klpbbs.com/connect.php?mod=login&op=init&referer=https%3A%2F%2Fklpbbs.com%2F.%2F&statfrom=login',
+              customTitle: '苦力怕论坛 - QQ 快捷登录',
+            ),
+            icon: const Icon(Icons.account_circle_outlined, size: 18),
+            label: const Text('QQ 账号快捷登录 (实时授权对接)'),
+          ),
+        ),
+        const SizedBox(height: 10),
+
         // 底部注册入口
         Center(
           child: TextButton(
@@ -919,6 +1000,21 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
             onPressed: () => _openEmbeddedWebLogin(pcMode: true),
             icon: const Icon(Icons.desktop_windows_rounded),
             label: const Text('打开电脑版内嵌网页登录 (适合扫码)'),
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        // QQ 互联快捷登录（直连论坛网页第三方授权通道）
+        SizedBox(
+          width: double.infinity,
+          height: 44,
+          child: OutlinedButton.icon(
+            onPressed: () => _openEmbeddedWebLogin(
+              customUrl: 'https://klpbbs.com/connect.php?mod=login&op=init&referer=https%3A%2F%2Fklpbbs.com%2F.%2F&statfrom=login',
+              customTitle: '苦力怕论坛 - QQ 快捷登录',
+            ),
+            icon: const Icon(Icons.account_circle_outlined, size: 20),
+            label: const Text('QQ 账号快捷登录 (网页实时授权对接)', style: TextStyle(fontWeight: FontWeight.w600)),
           ),
         ),
         const SizedBox(height: 12),

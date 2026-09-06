@@ -11,39 +11,59 @@ import 'api/klpbbs_api.dart';
 import 'core/app_config.dart';
 import 'core/dio_client.dart';
 import 'core/main_tab_controller.dart';
-import 'core/preload_service.dart';
 import 'core/write_confirm.dart';
-import 'models/user_space.dart';
-import 'pages/credit_page.dart';
 import 'pages/darkroom_page.dart';
 import 'pages/forums_page.dart';
 import 'pages/guide_page.dart';
 import 'pages/home_page.dart';
-import 'pages/login_page.dart';
-import 'pages/magic_page.dart';
 import 'pages/medal_page.dart';
 import 'pages/post_page.dart';
-import 'pages/profile_settings_page.dart';
 import 'pages/ranklist_page.dart';
 import 'pages/search_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/notice_page.dart';
 import 'pages/sign_rank_page.dart';
 import 'pages/user_center_page.dart';
-import 'pages/user_space_page.dart';
 import 'services/auto_sign_service.dart';
 import 'services/download_service.dart';
 import 'services/push_notification_service.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:path_provider/path_provider.dart';
+
 import 'services/rgb_theme_service.dart';
 import 'services/tray_service.dart';
+import 'widgets/fade_indexed_stack.dart';
+import 'widgets/global_app_drawer.dart';
 import 'widgets/in_app_notification_overlay.dart';
 import 'widgets/responsive_layout.dart';
-import 'widgets/thread_card.dart';
 
 final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
+WebViewEnvironment? appWebViewEnvironment;
+bool isWebView2Available = false;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 初始化 Windows 平台 WebView2 环境（设定独立可写用户数据目录，避免黑屏与权限异常）
+  if (!kIsWeb && Platform.isWindows) {
+    try {
+      final availableVersion = await WebViewEnvironment.getAvailableVersion();
+      if (availableVersion != null && availableVersion.isNotEmpty) {
+        isWebView2Available = true;
+        final appSupport = await getApplicationSupportDirectory();
+        final userDataFolder = '${appSupport.path}\\webview2_userdata';
+        final dir = Directory(userDataFolder);
+        if (!dir.existsSync()) {
+          dir.createSync(recursive: true);
+        }
+        appWebViewEnvironment = await WebViewEnvironment.create(
+          settings: WebViewEnvironmentSettings(userDataFolder: userDataFolder),
+        );
+      }
+    } catch (e) {
+      debugPrint('WebView2 初始化失败: $e');
+    }
+  }
 
   // 开启全平台 GPU 显卡硬件纹理与光栅化缓存加速（Desktop 512MB / Mobile 256MB VRAM 材质池）
   final isDesktop = !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
@@ -56,6 +76,18 @@ void main() async {
   MediaKit.ensureInitialized();
   await AppConfig.loadAll();
   await DioClient.loadCookies();
+  DioClient.onSessionCleared = () async {
+    await KlpbbsApi.clearUserProfileCache();
+    try {
+      final cookieManager = (!kIsWeb && Platform.isWindows && appWebViewEnvironment != null)
+          ? CookieManager.instance(webViewEnvironment: appWebViewEnvironment)
+          : CookieManager.instance();
+      await cookieManager.deleteAllCookies();
+    } catch (e) {
+      debugPrint('清理 WebView Cookies 失败: $e');
+    }
+  };
+  await KlpbbsApi.initUserProfileCache();
   await DownloadManager.instance.init();
   await RgbThemeService.instance.init();
   await PushNotificationService.instance.init();
@@ -307,16 +339,21 @@ class _AppThemeDataCache {
     return ThemeData(
       useMaterial3: true,
       colorScheme: colorScheme,
+      fontFamily: (!kIsWeb && Platform.isWindows) ? 'Microsoft YaHei UI' : null,
       fontFamilyFallback: const [
-        'PingFang SC',
+        'Microsoft YaHei UI',
         'Microsoft YaHei',
+        'PingFang SC',
+        'Noto Sans CJK SC',
+        'WenQuanYi Micro Hei',
+        'Segoe UI Emoji',
         'Noto Color Emoji',
         'Apple Color Emoji',
-        'Segoe UI Emoji',
       ],
       visualDensity: density,
       scaffoldBackgroundColor: const Color(0xFFF6F8F7),
       appBarTheme: AppBarTheme(
+        leadingWidth: (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) ? 96.0 : null,
         elevation: 1,
         centerTitle: false,
         scrolledUnderElevation: 2,
@@ -326,7 +363,8 @@ class _AppThemeDataCache {
         actionsIconTheme: const IconThemeData(color: Colors.white),
         titleTextStyle: const TextStyle(
           fontSize: 17.5,
-          fontWeight: FontWeight.bold,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.3,
           color: Colors.white,
         ),
       ),
@@ -379,17 +417,22 @@ class _AppThemeDataCache {
     return ThemeData(
       useMaterial3: true,
       brightness: Brightness.dark,
+      fontFamily: (!kIsWeb && Platform.isWindows) ? 'Microsoft YaHei UI' : null,
       fontFamilyFallback: const [
-        'PingFang SC',
+        'Microsoft YaHei UI',
         'Microsoft YaHei',
+        'PingFang SC',
+        'Noto Sans CJK SC',
+        'WenQuanYi Micro Hei',
+        'Segoe UI Emoji',
         'Noto Color Emoji',
         'Apple Color Emoji',
-        'Segoe UI Emoji',
       ],
       colorScheme: colorScheme,
       scaffoldBackgroundColor: isOled ? Colors.black : const Color(0xFF111413),
       visualDensity: density,
       appBarTheme: AppBarTheme(
+        leadingWidth: (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) ? 96.0 : null,
         elevation: 0,
         centerTitle: false,
         scrolledUnderElevation: 1.5,
@@ -399,9 +442,9 @@ class _AppThemeDataCache {
         actionsIconTheme: const IconThemeData(color: Colors.white),
         titleTextStyle: const TextStyle(
           fontSize: 17.5,
-          fontWeight: FontWeight.bold,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.3,
           color: Colors.white,
-          letterSpacing: 0.15,
         ),
       ),
       navigationBarTheme: NavigationBarThemeData(
@@ -516,14 +559,12 @@ class _MainShell extends StatefulWidget {
 class _MainShellState extends State<_MainShell> {
   late int _index;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
-  int? _myUid;
-  String? _myUsername;
 
   @override
   void initState() {
     super.initState();
     _index = AppConfig.defaultStartTab.clamp(0, 4);
-    _refreshMyUid();
+    mainTabIndex.value = _index;
     mainTabIndex.addListener(_onGlobalTabChanged);
   }
 
@@ -537,34 +578,6 @@ class _MainShellState extends State<_MainShell> {
   void dispose() {
     mainTabIndex.removeListener(_onGlobalTabChanged);
     super.dispose();
-  }
-
-  Future<void> _refreshMyUid() async {
-    final uid = await KlpbbsApi.getMyUid();
-    if (!mounted) return;
-    if (uid != null && uid > 0) {
-      String? name;
-      final cachedSpace = PreloadService.instance.get<UserSpace>('user_space_$uid', ignoreExpired: true);
-      if (cachedSpace != null && cachedSpace.username.isNotEmpty) {
-        name = cachedSpace.username;
-      } else {
-        final space = await KlpbbsApi.getUserSpace(uid);
-        if (space != null && space.username.isNotEmpty) {
-          name = space.username;
-        }
-      }
-      if (mounted) {
-        setState(() {
-          _myUid = uid;
-          _myUsername = name;
-        });
-      }
-    } else {
-      setState(() {
-        _myUid = null;
-        _myUsername = null;
-      });
-    }
   }
 
   void _openDrawer() => _scaffoldKey.currentState?.openDrawer();
@@ -684,6 +697,7 @@ class _MainShellState extends State<_MainShell> {
       onPopInvokedWithResult: (didPop, result) {
         if (!didPop && _index != 0) {
           setState(() => _index = 0);
+          mainTabIndex.value = 0;
         }
       },
       child: AdaptiveScaffold(
@@ -696,210 +710,12 @@ class _MainShellState extends State<_MainShell> {
           } else {
             HapticFeedback.selectionClick();
             setState(() => _index = i);
+            mainTabIndex.value = i;
           }
         }
       },
       navItems: navItems,
-      drawer: Drawer(
-        child: SafeArea(
-          child: ListView(
-            padding: EdgeInsets.zero,
-            children: [
-              InkWell(
-                onTap: () async {
-                  final nav = Navigator.of(context);
-                  nav.pop();
-                  final uid = _myUid ?? await KlpbbsApi.getMyUid();
-                  if (uid != null && uid > 0) {
-                    nav.push(
-                      MaterialPageRoute(builder: (_) => UserSpacePage(uid: uid, isMe: true)),
-                    ).then((_) => _refreshMyUid());
-                  } else {
-                    nav.push(
-                      MaterialPageRoute(builder: (_) => const LoginPage()),
-                    ).then((_) => _refreshMyUid());
-                  }
-                },
-                child: DrawerHeader(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        Theme.of(context).colorScheme.primary,
-                        Theme.of(context).colorScheme.secondary,
-                      ],
-                    ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      if (DioClient.isLoggedIn && _myUid != null)
-                        Row(
-                          children: [
-                            UserAvatarWidget(
-                              uid: _myUid!,
-                              author: (_myUsername != null && _myUsername!.isNotEmpty) ? _myUsername! : '我的账号',
-                              size: 48,
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    (_myUsername != null && _myUsername!.isNotEmpty) ? _myUsername! : '我的空间',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  const Text(
-                                    '点击进入我的空间 >',
-                                    style: TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 11.5,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        )
-                      else
-                        const Text(
-                          '点击登录',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      const SizedBox(height: 4),
-                      const Text(
-                        '苦力怕论坛 · KLPBBS',
-                        style: TextStyle(color: Colors.white70, fontSize: 12),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              for (int i = 0; i < navItems.length; i++)
-                ListTile(
-                  leading: Icon(
-                    _index == i ? navItems[i].selectedIcon : navItems[i].icon,
-                  ),
-                  title: Text(navItems[i].label),
-                  selected: _index == i,
-                  onTap: () {
-                    Navigator.of(context).pop();
-                    if (navItems[i].onTap != null) {
-                      navItems[i].onTap!();
-                    } else if (i < pages.length) {
-                      setState(() => _index = i);
-                    }
-                  },
-                ),
-              const Divider(),
-              if (DioClient.isLoggedIn) ...[
-                ListTile(
-                  leading: const Icon(Icons.account_circle_outlined),
-                  title: const Text('我的空间'),
-                  onTap: () async {
-                    final nav = Navigator.of(context);
-                    nav.pop();
-                    final uid = _myUid ?? await KlpbbsApi.getMyUid();
-                    if (uid != null && uid > 0) {
-                      nav.push(
-                        MaterialPageRoute(builder: (_) => UserSpacePage(uid: uid, isMe: true)),
-                      ).then((_) => _refreshMyUid());
-                    }
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.manage_accounts_outlined),
-                  title: const Text('资料设置'),
-                  onTap: () {
-                    Navigator.of(context).pop();
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => ProfileSettingsPage(uid: _myUid)),
-                    ).then((_) => _refreshMyUid());
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.account_balance_wallet_outlined),
-                  title: const Text('积分中心'),
-                  onTap: () {
-                    Navigator.of(context).pop();
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const CreditPage(initialTabIndex: 0)),
-                    );
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.military_tech_outlined),
-                  title: const Text('勋章中心'),
-                  onTap: () {
-                    Navigator.of(context).pop();
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const MedalPage()),
-                    );
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.auto_fix_high_outlined),
-                  title: const Text('道具中心'),
-                  onTap: () {
-                    Navigator.of(context).pop();
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const MagicPage()),
-                    );
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.logout_outlined),
-                  title: const Text('退出登录'),
-                  onTap: () {
-                    Navigator.of(context).pop();
-                    KlpbbsApi.logout().then((_) {
-                      if (mounted) setState(() => _myUid = null);
-                    });
-                  },
-                ),
-              ] else
-                ListTile(
-                  leading: const Icon(Icons.login_outlined),
-                  title: const Text('登录'),
-                  onTap: () {
-                    Navigator.of(context).pop();
-                    Navigator.of(context)
-                        .push(
-                          MaterialPageRoute(builder: (_) => const LoginPage()),
-                        )
-                        .then((_) => _refreshMyUid());
-                  },
-                ),
-              const SizedBox(height: 12),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: Text(
-                  '苦力怕论坛客户端 v1.0.4',
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.outline,
-                    fontSize: 11.5,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        ),
-      ),
+      drawer: GlobalAppDrawer(currentTabIndex: _index),
       floatingActionButton: _index == 0
           ? FloatingActionButton.extended(
               onPressed: _openPost,
@@ -908,23 +724,11 @@ class _MainShellState extends State<_MainShell> {
               label: const Text('发帖'),
             )
           : null,
-      body: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 200),
-        switchInCurve: Curves.easeOutCubic,
-        switchOutCurve: Curves.easeInCubic,
-        transitionBuilder: (child, animation) {
-          return FadeTransition(
-            opacity: animation,
-            child: child,
-          );
-        },
-        child: KeyedSubtree(
-          key: ValueKey<int>(_index.clamp(0, pages.length - 1)),
-          child: IndexedStack(
-            index: _index.clamp(0, pages.length - 1),
-            children: pages,
-          ),
-        ),
+      body: FadeIndexedStack(
+        index: _index.clamp(0, pages.length - 1),
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        children: pages,
       ),
     ),
   );

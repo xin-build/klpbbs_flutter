@@ -1,12 +1,12 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/write_confirm.dart';
 import '../models/sign_entry.dart';
 import '../services/auto_sign_service.dart';
-import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
 import '../widgets/thread_card.dart';
@@ -610,8 +610,9 @@ class _SignRankPageState extends State<SignRankPage>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const AppBackButton(),
+        leading: const GlobalNavLeading(),
         title: const Text('每日签到', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
         bottom: _loadingHeader
             ? const PreferredSize(
@@ -650,7 +651,6 @@ class _SignRankPageState extends State<SignRankPage>
               );
             },
           ),
-          const GlobalNavButton(),
           const SizedBox(width: 6),
         ],
       ),

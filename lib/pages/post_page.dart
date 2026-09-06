@@ -15,46 +15,23 @@ import '../services/draft_service.dart';
 import '../core/app_config.dart';
 import '../core/bbcode.dart';
 import '../core/cache_manager.dart';
+import '../core/forum_events.dart';
 import '../models/forum.dart';
 import '../models/post_floor.dart';
+import '../models/post_edit_info.dart';
 import '../models/smiley.dart';
 import '../widgets/discuz_post_renderer.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/responsive_layout.dart';
 import 'thread_detail_page.dart';
-
-/// 发帖已上传附件模型
-class PostAttachmentItem {
-  final int aid;
-  final String filename;
-  final int filesize;
-  final bool isImage;
-  final String? localPath;
-  bool isInserted;
-
-  PostAttachmentItem({
-    required this.aid,
-    required this.filename,
-    required this.filesize,
-    this.isImage = false,
-    this.localPath,
-    this.isInserted = false,
-  });
-
-  String get sizeText {
-    if (filesize < 1024) return '$filesize B';
-    if (filesize < 1024 * 1024) {
-      return '${(filesize / 1024).toStringAsFixed(1)} KB';
-    }
-    return '${(filesize / (1024 * 1024)).toStringAsFixed(1)} MB';
-  }
-}
 
 /// 发帖/回复页（完美复刻 Discuz PC 版发帖与回复富媒体编辑器）
 class PostPage extends StatefulWidget {
   final int? fid; // 发帖版块
   final int? tid; // 回复帖子 ID
   final int? pid; // 编辑楼层 pid
+  final bool isEdit; // 是否为编辑模式
   final int? reppost; // 回复指定楼层 pid
   final int? repquote; // 引用指定楼层 pid
   final String? noticeauthor; // 被回复/引用用户
@@ -74,6 +51,7 @@ class PostPage extends StatefulWidget {
     this.fid,
     this.tid,
     this.pid,
+    this.isEdit = false,
     this.reppost,
     this.repquote,
     this.noticeauthor,
@@ -128,9 +106,50 @@ class _PostPageState extends State<PostPage> {
 
   // 高级选项 Tab (0 附加选项, 1 阅读权限, 2 回帖奖励, 3 主题标签, 4 定时发布)
   int _activeOptionTab = 3;
+  // 网页端实时属性与权限解析结果
+  PostEditorAttributes _editorAttributes = const PostEditorAttributes();
+
+  // 基本属性 (Discuz Web)
+  bool _useSig = true;
+  bool _isAnonymous = false;
+  bool _hiddenReplies = false;
+  bool _orderType = false;
+  bool _allowNoticeAuthor = true;
+
+  // 文本特性 (Discuz Web)
+  bool _htmlOn = false;
+  bool _allowImgCode = true;
+  bool _allowImgUrl = true;
+  bool _parseUrlOff = false;
+  bool _smileyOff = false;
+  bool _bbcodeOff = false;
+  bool _imgContent = false;
   bool _remoteImgLocalize = false;
   bool _replyEmailNotice = false;
   DateTime? _scheduledPublishTime;
+
+  // 投票扩展设置 (Discuz Web)
+  bool _pollVisibility = false;
+  bool _pollOvert = false;
+
+  // Discuz 用户组阅读权限预设（动态来自网页端时优先使用网页数据）
+  List<({String label, int value})> _dynamicUserGroupPermissions = const [];
+  static const _userGroupPermissions = [
+    (label: '不限 (所有用户可见)', value: 0),
+    (label: 'Lv.1 伐木工 (10)', value: 10),
+    (label: 'Lv.2 采矿工 (20)', value: 20),
+    (label: 'Lv.3 探索者 (30)', value: 30),
+    (label: 'Lv.4 冒险家 (50)', value: 50),
+    (label: 'Lv.5 领主 (70)', value: 70),
+    (label: 'Lv.6 创世神 (100)', value: 100),
+    (label: 'VIP 会员 (150)', value: 150),
+    (label: 'SVIP 会员 (180)', value: 180),
+    (label: '实习版主 / 荣誉版主 (200)', value: 200),
+    (label: '超级版主 / 管理员 (255)', value: 255),
+  ];
+
+  // 未使用的附件列表
+  List<PostAttachmentItem> _unusedAttachments = const [];
 
   // 快捷回复预设
   String? _selectedQuickReply;
@@ -144,14 +163,14 @@ class _PostPageState extends State<PostPage> {
   ];
 
   // 常用标签预设
-  static const _presetTags = ['Minecraft', 'Java版', 'BE附加包', '资源', '教程', '灵感', 'NOFOLLOW'];
+  static const _presetTags = ['Minecraft', 'Java版', '基岩版', 'BE附加包', '资源', '教程', '灵感', 'NOFOLLOW'];
 
   // 撤销/重做历史记录
   final List<String> _undoStack = [];
   final List<String> _redoStack = [];
   bool _isUndoingOrRedoing = false;
 
-  /// 当前版块允许的特殊主题类型（0 普通 / 1 投票 / 5 辩论 ...）
+  /// 当前版块允许的特殊主题类型（0 普通 / 1 投票 / 3 悬赏 / 5 辩论 ...）
   Set<int> _allowedSpecials = {0};
   List<({int value, String name})> _typeOptions = const [];
   int? _typeid;
@@ -172,8 +191,10 @@ class _PostPageState extends State<PostPage> {
   int _draftCount = 0;
   List<PostDraft> _draftList = const [];
 
-  bool get _isReply => widget.tid != null;
-  bool get _isEdit => widget.pid != null;
+  bool get _isReply => widget.tid != null && !widget.isEdit;
+  bool get _isEdit => widget.isEdit;
+  bool _loadingEditData = false;
+  bool _isFirstFloorEdit = true;
 
   @override
   void initState() {
@@ -194,8 +215,19 @@ class _PostPageState extends State<PostPage> {
 
     _refreshDrafts();
 
-    if (!_isEdit && !_isReply && widget.initialMessage == null) {
+    if (_isEdit) {
+      if (widget.editMessage != null && widget.editMessage!.isNotEmpty) {
+        _contentCtrl.text = widget.editMessage!;
+        if (widget.editSubject != null) _subjectCtrl.text = widget.editSubject!;
+      } else {
+        _loadingEditData = true;
+        _loadPostEditInfo();
+      }
+    } else if (!_isReply && widget.initialMessage == null) {
       _restoreAutoSavedDraft();
+    }
+    if (_isReply) {
+      _activeOptionTab = 0;
     }
 
     // 定时保存草稿（每 20 秒）
@@ -205,10 +237,12 @@ class _PostPageState extends State<PostPage> {
       }
     });
 
-    if (!_isReply && !_isEdit && _forums.isEmpty && widget.initialSmileys == null) {
+    ForumFavoriteNotifier.instance.addListener(_onForumFavChanged);
+
+    if (!_isReply && !_isEdit && widget.initialSmileys == null) {
       _loadForums();
     }
-    if (!_isReply && !_isEdit && _fid != null && widget.initialSmileys == null) {
+    if (!_isEdit && widget.initialSmileys == null && (_fid != null || _isReply)) {
       _loadNewThreadInfo();
     }
     _updateForumName();
@@ -219,6 +253,53 @@ class _PostPageState extends State<PostPage> {
     } else {
       _loadSmileys();
     }
+  }
+
+  /// 异步加载 Discuz 真实编辑数据（首楼/回复正文、标题、分类、权限、标签、已有附件等）
+  Future<void> _loadPostEditInfo() async {
+    final tid = widget.tid;
+    final pid = widget.pid;
+    final fid = _fid ?? 2;
+    if (tid == null || pid == null) {
+      if (mounted) setState(() => _loadingEditData = false);
+      return;
+    }
+    final info = await KlpbbsApi.getPostEditInfo(fid, tid, pid);
+    if (!mounted) return;
+    if (info.errorMessage != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('加载原帖失败：${info.errorMessage}'),
+          backgroundColor: Colors.redAccent,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+    setState(() {
+      _loadingEditData = false;
+      if (info.subject.isNotEmpty) {
+        _subjectCtrl.text = info.subject;
+      } else if (widget.editSubject != null && widget.editSubject!.isNotEmpty) {
+        _subjectCtrl.text = widget.editSubject!;
+      }
+      if (info.message.isNotEmpty) {
+        _contentCtrl.text = info.message;
+      }
+      if (info.typeid != null && info.typeid! > 0) {
+        _typeid = info.typeid;
+      }
+      if (info.readperm != null && info.readperm! > 0) {
+        _readPermCtrl.text = '${info.readperm}';
+      }
+      if (info.tags.isNotEmpty) {
+        _tagCtrl.text = info.tags.join(' ');
+      }
+      if (info.attachments.isNotEmpty) {
+        _uploadedAttachments.clear();
+        _uploadedAttachments.addAll(info.attachments);
+      }
+      _isFirstFloorEdit = info.isFirstFloor;
+    });
   }
 
   void _onFieldChanged() {
@@ -271,13 +352,24 @@ class _PostPageState extends State<PostPage> {
     }
   }
 
+  void _onForumFavChanged() {
+    if (mounted) {
+      _loadForums();
+    }
+  }
+
   Future<void> _loadForums() async {
     try {
       final groups = await KlpbbsApi.getForumGroups();
       if (mounted) {
         final allForums = <Forum>[];
+        final seenFids = <int>{};
         for (final g in groups) {
-          allForums.addAll(g.forums);
+          for (final f in g.forums) {
+            if (seenFids.add(f.fid)) {
+              allForums.add(f);
+            }
+          }
         }
         setState(() {
           _forumGroups = groups;
@@ -438,6 +530,30 @@ class _PostPageState extends State<PostPage> {
   }
 
   Future<void> _loadNewThreadInfo() async {
+    if (_isReply && widget.tid != null) {
+      try {
+        final info = await KlpbbsApi.getReplyInfo(widget.tid!, fid: _fid, asMobile: _asMobile);
+        if (!mounted) return;
+        setState(() {
+          _forumPermissionError = info.errorMessage;
+          _unusedAttachments = info.unusedAttachments;
+          _editorAttributes = info.editorAttributes;
+          _useSig = info.editorAttributes.useSig.checked;
+          _isAnonymous = info.editorAttributes.isAnonymous.checked;
+          _hiddenReplies = info.editorAttributes.hiddenReplies.checked;
+          _orderType = info.editorAttributes.orderType.checked;
+          _allowNoticeAuthor = info.editorAttributes.allowNoticeAuthor.checked;
+          _htmlOn = info.editorAttributes.htmlOn.checked;
+          _allowImgCode = info.editorAttributes.allowImgCode.checked;
+          _allowImgUrl = info.editorAttributes.allowImgUrl.checked;
+          _parseUrlOff = info.editorAttributes.parseUrlOff.checked;
+          _smileyOff = info.editorAttributes.smileyOff.checked;
+          _bbcodeOff = info.editorAttributes.bbcodeOff.checked;
+          _imgContent = info.editorAttributes.imgContent.checked;
+        });
+      } catch (_) {}
+      return;
+    }
     final fid = _fid;
     if (fid == null || _isReply || _isEdit) return;
     try {
@@ -450,6 +566,27 @@ class _PostPageState extends State<PostPage> {
         _typeOptions = info.typeOptions;
         _typeid = _typeOptions.any((t) => t.value == _typeid) ? _typeid : null;
         _forumPermissionError = info.errorMessage.isEmpty ? null : info.errorMessage;
+        _unusedAttachments = info.unusedAttachments;
+        _editorAttributes = info.editorAttributes;
+        _useSig = info.editorAttributes.useSig.checked;
+        _isAnonymous = info.editorAttributes.isAnonymous.checked;
+        _hiddenReplies = info.editorAttributes.hiddenReplies.checked;
+        _orderType = info.editorAttributes.orderType.checked;
+        _allowNoticeAuthor = info.editorAttributes.allowNoticeAuthor.checked;
+        _htmlOn = info.editorAttributes.htmlOn.checked;
+        _allowImgCode = info.editorAttributes.allowImgCode.checked;
+        _allowImgUrl = info.editorAttributes.allowImgUrl.checked;
+        _parseUrlOff = info.editorAttributes.parseUrlOff.checked;
+        _smileyOff = info.editorAttributes.smileyOff.checked;
+        _bbcodeOff = info.editorAttributes.bbcodeOff.checked;
+        _imgContent = info.editorAttributes.imgContent.checked;
+        if (info.editorAttributes.readPermOptions.isNotEmpty) {
+          _dynamicUserGroupPermissions = [
+            (label: '不限 (所有用户可见)', value: 0),
+            for (final p in info.editorAttributes.readPermOptions)
+              (label: '${p.name} (${p.value})', value: p.value),
+          ];
+        }
         if (!_allowedSpecials.contains(_special)) {
           _special = 0;
           _isPoll = false;
@@ -518,6 +655,7 @@ class _PostPageState extends State<PostPage> {
 
   @override
   void dispose() {
+    ForumFavoriteNotifier.instance.removeListener(_onForumFavChanged);
     _draftTimer?.cancel();
     DraftService.instance.cancelAutoSave();
     _contentCtrl.removeListener(_onContentChanged);
@@ -913,6 +1051,12 @@ class _PostPageState extends State<PostPage> {
         return;
       }
     }
+    if ((!_isReply && !_isEdit) || (_isEdit && _isFirstFloorEdit)) {
+      if (_subjectCtrl.text.trim().isEmpty) {
+        setState(() => _result = '请输入帖子标题');
+        return;
+      }
+    }
     if (_forumPermissionError != null && _forumPermissionError!.isNotEmpty) {
       setState(() => _result = '当前版块发帖受限：$_forumPermissionError');
       return;
@@ -941,19 +1085,36 @@ class _PostPageState extends State<PostPage> {
               widget.pid!,
               subject: _subjectCtrl.text.trim(),
               message: finalContent,
+              typeid: _typeid,
+              readPerm: int.tryParse(_readPermCtrl.text.trim()),
+              tags: _tagCtrl.text
+                  .split(RegExp(r'[,，\s]+'))
+                  .where((s) => s.isNotEmpty)
+                  .toList(),
               attachAids: attachAids,
             )
           : _isReply
           ? await KlpbbsApi.replyThread(
               widget.tid!,
               finalContent,
+              fid: _fid ?? widget.fid,
               pid: widget.reppost ?? widget.repquote,
               reppost: widget.reppost,
               repquote: widget.repquote,
               noticeauthor: widget.noticeauthor,
+              noticeauthormsg: widget.noticetrimstr,
               noticetrimstr: widget.noticetrimstr,
               attachAids: attachAids,
               asMobile: _asMobile,
+              isAnonymous: _isAnonymous,
+              hiddenReplies: _hiddenReplies,
+              allowNoticeAuthor: _allowNoticeAuthor,
+              useSig: _useSig,
+              htmlOn: _htmlOn,
+              parseUrlOff: _parseUrlOff,
+              smileyOff: _smileyOff,
+              bbcodeOff: _bbcodeOff,
+              replyEmailNotice: _replyEmailNotice,
             )
           : await KlpbbsApi.postThread(
               _fid!,
@@ -968,6 +1129,8 @@ class _PostPageState extends State<PostPage> {
               pollMaxChoices: _special == 1
                   ? int.tryParse(_pollMaxCtrl.text.trim())
                   : null,
+              pollVisibility: _special == 1 ? _pollVisibility : null,
+              pollOvert: _special == 1 ? _pollOvert : null,
               affirmPoint: _special == 5 ? _affirmCtrl.text.trim() : null,
               negaPoint: _special == 5 ? _negaCtrl.text.trim() : null,
               endTime: _special == 5 ? _endTimeCtrl.text.trim() : null,
@@ -976,6 +1139,16 @@ class _PostPageState extends State<PostPage> {
               rewardCredit: int.tryParse(_rewardCreditCtrl.text.trim()),
               rewardTimes: int.tryParse(_rewardTimesCtrl.text.trim()),
               tags: _tagCtrl.text.split(RegExp(r'[,，\s]+')).where((s) => s.isNotEmpty).toList(),
+              isAnonymous: _isAnonymous,
+              hiddenReplies: _hiddenReplies,
+              orderType: _orderType,
+              allowNoticeAuthor: _allowNoticeAuthor,
+              useSig: _useSig,
+              htmlOn: _htmlOn,
+              parseUrlOff: _parseUrlOff,
+              smileyOff: _smileyOff,
+              bbcodeOff: _bbcodeOff,
+              replyEmailNotice: _replyEmailNotice,
               asMobile: _asMobile,
             );
 
@@ -1917,10 +2090,12 @@ class _PostPageState extends State<PostPage> {
               child: Row(
                 children: [
                   _optionTab('附加选项', 0),
-                  _optionTab('阅读权限', 1),
-                  _optionTab('回帖奖励', 2),
-                  _optionTab('主题标签', 3, isHighlighted: true),
-                  _optionTab('定时发布', 4),
+                  if (!_isReply) ...[
+                    _optionTab('阅读权限', 1),
+                    _optionTab('回帖奖励', 2),
+                    _optionTab('主题标签', 3, isHighlighted: true),
+                    _optionTab('定时发布', 4),
+                  ],
                 ],
               ),
             ),
@@ -1981,76 +2156,300 @@ class _PostPageState extends State<PostPage> {
     );
   }
 
+  Widget _checkboxTile(
+    String label,
+    bool value,
+    ValueChanged<bool> onChanged, {
+    bool enabled = true,
+  }) {
+    final theme = Theme.of(context);
+    final color = enabled
+        ? theme.colorScheme.onSurface
+        : theme.colorScheme.onSurface.withAlpha(120);
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: enabled ? () => onChanged(!value) : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 24,
+              height: 24,
+              child: Checkbox(
+                value: value,
+                visualDensity: VisualDensity.compact,
+                onChanged: enabled ? (v) => onChanged(v ?? false) : null,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12.5,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildActiveTabContent(ThemeData theme) {
     switch (_activeOptionTab) {
       case 0:
-        return Row(
+        final attr = _editorAttributes;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Checkbox(
-              value: _remoteImgLocalize,
-              visualDensity: VisualDensity.compact,
-              onChanged: (v) => setState(() => _remoteImgLocalize = v ?? false),
+            Text(
+              '基本属性',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: theme.colorScheme.primary,
+              ),
             ),
-            const Text('远程图片本地化', style: TextStyle(fontSize: 12)),
-            const SizedBox(width: 16),
-            Checkbox(
-              value: _replyEmailNotice,
-              visualDensity: VisualDensity.compact,
-              onChanged: (v) => setState(() => _replyEmailNotice = v ?? false),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 12,
+              runSpacing: 4,
+              children: [
+                _checkboxTile(
+                  '使用匿名发帖',
+                  _isAnonymous,
+                  (v) => setState(() => _isAnonymous = v),
+                  enabled: !attr.isAnonymous.disabled,
+                ),
+                _checkboxTile(
+                  '使用个人签名',
+                  _useSig,
+                  (v) => setState(() => _useSig = v),
+                  enabled: !attr.useSig.disabled,
+                ),
+                if (!_isReply) ...[
+                  _checkboxTile(
+                    '回帖仅作者可见',
+                    _hiddenReplies,
+                    (v) => setState(() => _hiddenReplies = v),
+                    enabled: !attr.hiddenReplies.disabled,
+                  ),
+                  _checkboxTile(
+                    '回帖倒序排列',
+                    _orderType,
+                    (v) => setState(() => _orderType = v),
+                    enabled: !attr.orderType.disabled,
+                  ),
+                  _checkboxTile(
+                    '接收回复通知',
+                    _allowNoticeAuthor,
+                    (v) => setState(() => _allowNoticeAuthor = v),
+                    enabled: !attr.allowNoticeAuthor.disabled,
+                  ),
+                ],
+              ],
             ),
-            const Text('回帖邮件提醒', style: TextStyle(fontSize: 12)),
+            const SizedBox(height: 12),
+            Text(
+              '文本特性',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: theme.colorScheme.primary,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 12,
+              runSpacing: 4,
+              children: [
+                _checkboxTile(
+                  'HTML 代码',
+                  _htmlOn,
+                  (v) => setState(() => _htmlOn = v),
+                  enabled: !attr.htmlOn.disabled,
+                ),
+                _checkboxTile(
+                  '[img] 代码',
+                  _allowImgCode,
+                  (v) => setState(() => _allowImgCode = v),
+                  enabled: !attr.allowImgCode.disabled,
+                ),
+                _checkboxTile(
+                  '解析图片链接',
+                  _allowImgUrl,
+                  (v) => setState(() => _allowImgUrl = v),
+                  enabled: !attr.allowImgUrl.disabled,
+                ),
+                _checkboxTile(
+                  '禁用链接识别',
+                  _parseUrlOff,
+                  (v) => setState(() => _parseUrlOff = v),
+                  enabled: !attr.parseUrlOff.disabled,
+                ),
+                _checkboxTile(
+                  '禁用表情',
+                  _smileyOff,
+                  (v) => setState(() => _smileyOff = v),
+                  enabled: !attr.smileyOff.disabled,
+                ),
+                _checkboxTile(
+                  '禁用编辑器代码',
+                  _bbcodeOff,
+                  (v) => setState(() => _bbcodeOff = v),
+                  enabled: !attr.bbcodeOff.disabled,
+                ),
+                _checkboxTile(
+                  '内容生成图片',
+                  _imgContent,
+                  (v) => setState(() => _imgContent = v),
+                  enabled: !attr.imgContent.disabled,
+                ),
+                _checkboxTile(
+                  '远程图片本地化',
+                  _remoteImgLocalize,
+                  (v) => setState(() => _remoteImgLocalize = v),
+                ),
+                _checkboxTile(
+                  '回帖邮件提醒',
+                  _replyEmailNotice,
+                  (v) => setState(() => _replyEmailNotice = v),
+                ),
+              ],
+            ),
           ],
         );
       case 1:
-        return Row(
+        final permOptions = _dynamicUserGroupPermissions.isNotEmpty
+            ? _dynamicUserGroupPermissions
+            : _userGroupPermissions;
+        final curPerm = int.tryParse(_readPermCtrl.text.trim()) ?? 0;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('阅读权限门槛：', style: TextStyle(fontSize: 12)),
-            SizedBox(
-              width: 80,
-              child: TextField(
-                controller: _readPermCtrl,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  hintText: '0-255',
-                  isDense: true,
-                  border: OutlineInputBorder(),
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                const Text('快捷用户组门槛：', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                Container(
+                  height: 36,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: theme.colorScheme.outlineVariant),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<int>(
+                      value: permOptions.any((p) => p.value == curPerm) ? curPerm : null,
+                      hint: Text(curPerm > 0 ? '自定义门槛 ($curPerm)' : '选择用户组', style: const TextStyle(fontSize: 12)),
+                      items: [
+                        for (final p in permOptions)
+                          DropdownMenuItem(
+                            value: p.value,
+                            child: Text(p.label, style: const TextStyle(fontSize: 12)),
+                          ),
+                      ],
+                      onChanged: (v) {
+                        if (v != null) {
+                          setState(() => _readPermCtrl.text = v > 0 ? '$v' : '');
+                        }
+                      },
+                    ),
+                  ),
                 ),
-              ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('精确门槛数值：', style: TextStyle(fontSize: 12)),
+                    SizedBox(
+                      width: 75,
+                      height: 36,
+                      child: TextField(
+                        controller: _readPermCtrl,
+                        keyboardType: TextInputType.number,
+                        onChanged: (_) => setState(() {}),
+                        decoration: const InputDecoration(
+                          hintText: '0-255',
+                          isDense: true,
+                          contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
-            const SizedBox(width: 8),
-            Text('（大于等于此权限的用户才可查看本帖）',
-                style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
+            const SizedBox(height: 8),
+            Text(
+              '说明：只有阅读权限大于或等于此数值的用户才能查看本帖内容。0 或留空为不设阅读门槛。',
+              style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
+            ),
           ],
         );
       case 2:
-        return Row(
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('每次奖励：', style: TextStyle(fontSize: 12)),
-            SizedBox(
-              width: 80,
-              child: TextField(
-                controller: _rewardCreditCtrl,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  hintText: '铁粒',
-                  isDense: true,
-                  border: OutlineInputBorder(),
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('每次奖励：', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    SizedBox(
+                      width: 80,
+                      height: 36,
+                      child: TextField(
+                        controller: _rewardCreditCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          hintText: '铁粒',
+                          isDense: true,
+                          contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    const Text('铁粒', style: TextStyle(fontSize: 12)),
+                  ],
                 ),
-              ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('奖励次数：', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    SizedBox(
+                      width: 60,
+                      height: 36,
+                      child: TextField(
+                        controller: _rewardTimesCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          hintText: '次',
+                          isDense: true,
+                          contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    const Text('次', style: TextStyle(fontSize: 12)),
+                  ],
+                ),
+              ],
             ),
-            const SizedBox(width: 12),
-            const Text('奖励次数：', style: TextStyle(fontSize: 12)),
-            SizedBox(
-              width: 60,
-              child: TextField(
-                controller: _rewardTimesCtrl,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  hintText: '次',
-                  isDense: true,
-                  border: OutlineInputBorder(),
-                ),
-              ),
+            const SizedBox(height: 8),
+            Text(
+              '💡 发放回帖奖励将在发布帖子时扣除相应的铁粒，回复帖子的会员将按设置获得奖励。',
+              style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
             ),
           ],
         );
@@ -2080,7 +2479,7 @@ class _PostPageState extends State<PostPage> {
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
-                  Text('常用标签：',
+                  Text('常用预设标签：',
                       style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
                   for (final tag in _presetTags)
                     Padding(
@@ -2106,27 +2505,63 @@ class _PostPageState extends State<PostPage> {
           ],
         );
       case 4:
-        return Row(
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('定时发布时间：', style: TextStyle(fontSize: 12)),
-            FilledButton.tonal(
-              onPressed: () async {
-                final date = await showDatePicker(
-                  context: context,
-                  initialDate: DateTime.now().add(const Duration(days: 1)),
-                  firstDate: DateTime.now(),
-                  lastDate: DateTime.now().add(const Duration(days: 30)),
-                );
-                if (date != null && mounted) {
-                  setState(() => _scheduledPublishTime = date);
-                }
-              },
-              child: Text(
-                _scheduledPublishTime == null
-                    ? '选择定时日期'
-                    : '${_scheduledPublishTime!.year}-${_scheduledPublishTime!.month}-${_scheduledPublishTime!.day}',
-                style: const TextStyle(fontSize: 12),
-              ),
+            Row(
+              children: [
+                const Text('定时发布时间：', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                const SizedBox(width: 8),
+                FilledButton.tonalIcon(
+                  onPressed: () async {
+                    final date = await showDatePicker(
+                      context: context,
+                      initialDate: _scheduledPublishTime ?? DateTime.now().add(const Duration(days: 1)),
+                      firstDate: DateTime.now(),
+                      lastDate: DateTime.now().add(const Duration(days: 30)),
+                    );
+                    if (date != null && mounted) {
+                      final time = await showTimePicker(
+                        context: context,
+                        initialTime: _scheduledPublishTime != null
+                            ? TimeOfDay.fromDateTime(_scheduledPublishTime!)
+                            : const TimeOfDay(hour: 12, minute: 0),
+                      );
+                      if (mounted) {
+                        setState(() {
+                          _scheduledPublishTime = DateTime(
+                            date.year,
+                            date.month,
+                            date.day,
+                            time?.hour ?? 12,
+                            time?.minute ?? 0,
+                          );
+                        });
+                      }
+                    }
+                  },
+                  icon: const Icon(Icons.schedule, size: 16),
+                  label: Text(
+                    _scheduledPublishTime == null
+                        ? '选择定时日期与时间'
+                        : '${_scheduledPublishTime!.year}-${_scheduledPublishTime!.month.toString().padLeft(2, '0')}-${_scheduledPublishTime!.day.toString().padLeft(2, '0')} ${_scheduledPublishTime!.hour.toString().padLeft(2, '0')}:${_scheduledPublishTime!.minute.toString().padLeft(2, '0')}',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+                if (_scheduledPublishTime != null) ...[
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.clear, size: 16),
+                    tooltip: '取消定时',
+                    onPressed: () => setState(() => _scheduledPublishTime = null),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '说明：设定未来时间后，帖子将在到达指定时间时自动对所有用户公开显示。',
+              style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
             ),
           ],
         );
@@ -2342,6 +2777,123 @@ class _PostPageState extends State<PostPage> {
     );
   }
 
+  Widget _buildUnusedAttachmentsBanner(ThemeData theme) {
+    if (_unusedAttachments.isEmpty) return const SizedBox.shrink();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.amber.withAlpha(20),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.amber.withAlpha(90)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.info_outline, size: 18, color: Colors.amber),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '💡 您有 ${_unusedAttachments.length} 个未使用的附件（可直接插入正文）',
+                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                ),
+              ),
+              FilledButton.tonal(
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                ),
+                onPressed: () {
+                  final buf = StringBuffer();
+                  for (final a in _unusedAttachments) {
+                    final tag = a.isImage ? '[attachimg]${a.aid}[/attachimg]' : '[attach]${a.aid}[/attach]';
+                    if (!_contentCtrl.text.contains(tag)) {
+                      buf.writeln(tag);
+                    }
+                  }
+                  if (buf.isNotEmpty) {
+                    _insertText('\n${buf.toString()}');
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('已将 ${_unusedAttachments.length} 个未使用附件插入正文')),
+                    );
+                  }
+                },
+                child: const Text('全部插入正文', style: TextStyle(fontSize: 11.5)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final att in _unusedAttachments)
+                ActionChip(
+                  avatar: Icon(att.isImage ? Icons.image_outlined : Icons.insert_drive_file_outlined, size: 14),
+                  label: Text('${att.filename} (${att.sizeText})', style: const TextStyle(fontSize: 11)),
+                  onPressed: () {
+                    final tag = att.isImage ? '[attachimg]${att.aid}[/attachimg]' : '[attach]${att.aid}[/attach]';
+                    _insertText('\n$tag\n');
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('已在光标处插入附件标签：$tag')),
+                    );
+                  },
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSpecialTypeTabs(ThemeData theme) {
+    final types = <({int special, String name, IconData icon})>[
+      (special: 0, name: '发表帖子', icon: Icons.article_outlined),
+      if (_allowedSpecials.contains(1) || _allowedSpecials.length <= 1)
+        (special: 1, name: '发起投票', icon: Icons.poll_outlined),
+      if (_allowedSpecials.contains(3))
+        (special: 3, name: '发布悬赏', icon: Icons.monetization_on_outlined),
+      if (_allowedSpecials.contains(5))
+        (special: 5, name: '发起辩论', icon: Icons.compare_arrows_outlined),
+    ];
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (final t in types) ...[
+            ChoiceChip(
+              showCheckmark: false,
+              avatar: Icon(t.icon, size: 14),
+              label: Text(t.name),
+              selected: _special == t.special,
+              onSelected: (_) => _selectSpecial(t.special),
+            ),
+            const SizedBox(width: 8),
+          ],
+          const SizedBox(width: 4),
+          ChoiceChip(
+            showCheckmark: false,
+            avatar: Icon(_asMobile ? Icons.phone_android : Icons.computer, size: 14),
+            label: Text(_asMobile ? '手机' : '电脑', style: const TextStyle(fontSize: 11)),
+            selected: true,
+            onSelected: (_) {
+              setState(() => _asMobile = !_asMobile);
+            },
+          ),
+          const SizedBox(width: 6),
+          TextButton.icon(
+            onPressed: () => _showDraftsModal(context),
+            icon: const Icon(Icons.drafts_outlined, size: 16),
+            label: Text('草稿箱($_draftCount)'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -2364,15 +2916,14 @@ class _PostPageState extends State<PostPage> {
       bindings: shortcuts,
       child: FocusScope(
         child: Scaffold(
+          drawer: const GlobalAppDrawer(),
           appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          tooltip: '返回',
-          onPressed: () => Navigator.of(context).maybePop(),
-        ),
-        title: Text(
+            leading: const GlobalNavLeading(),
+            title: Text(
           widget.replyToFloorText ??
-              (_isEdit ? '编辑帖子' : (_isReply ? '回复主题' : '发表帖子')),
+              (_isEdit
+                  ? (_isFirstFloorEdit ? '编辑帖子' : '编辑回复')
+                  : (_isReply ? '回复主题' : '发表帖子')),
         ),
         actions: [
           IconButton(
@@ -2407,10 +2958,26 @@ class _PostPageState extends State<PostPage> {
             ),
             onPressed: () => _showDraftsModal(context),
           ),
-          const GlobalNavButton(),
         ],
       ),
-      body: Center(
+      body: _loadingEditData
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 16),
+                  Text(
+                    '正在获取帖子原有数据与 BBCode...',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            )
+          : Center(
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: isDesktop ? 1200 : double.infinity),
           child: ListView(
@@ -2478,46 +3045,39 @@ class _PostPageState extends State<PostPage> {
               ),
               const SizedBox(height: 10),
 
-              // 主题类型 Tab（发表帖子 / 发起投票 / 发起辩论 | 发帖设备 | 草稿箱）
+              // 主题类型 Tab（发表帖子 / 发起投票 / 发布悬赏 / 发起辩论 | 发帖设备 | 草稿箱）
               if (!_isReply && !_isEdit)
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
+                _buildSpecialTypeTabs(theme),
+
+              // 版块发帖权限异常提示
+              if (_forumPermissionError != null && _forumPermissionError!.isNotEmpty)
+                Container(
+                  margin: const EdgeInsets.only(top: 8, bottom: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withAlpha(20),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.redAccent.withAlpha(80), width: 0.8),
+                  ),
                   child: Row(
                     children: [
-                      ChoiceChip(
-                        label: const Text('发表帖子'),
-                        selected: _special == 0,
-                        onSelected: (_) => _selectSpecial(0),
-                      ),
+                      const Icon(Icons.error_outline, color: Colors.redAccent, size: 18),
                       const SizedBox(width: 8),
-                      ChoiceChip(
-                        label: const Text('发起投票'),
-                        selected: _special == 1,
-                        onSelected: (_) => _selectSpecial(1),
-                      ),
-                      const SizedBox(width: 8),
-                      ChoiceChip(
-                        label: const Text('发起辩论'),
-                        selected: _special == 5,
-                        onSelected: (_) => _selectSpecial(5),
-                      ),
-                      const SizedBox(width: 12),
-                      ChoiceChip(
-                        avatar: Icon(_asMobile ? Icons.phone_android : Icons.computer, size: 14),
-                        label: Text(_asMobile ? '手机' : '电脑', style: const TextStyle(fontSize: 11)),
-                        selected: true,
-                        onSelected: (_) {
-                          setState(() => _asMobile = !_asMobile);
-                        },
-                      ),
-                      const SizedBox(width: 6),
-                      TextButton.icon(
-                        onPressed: () => _showDraftsModal(context),
-                        icon: const Icon(Icons.drafts_outlined, size: 16),
-                        label: Text('草稿箱($_draftCount)'),
+                      Expanded(
+                        child: Text(
+                          '版块发帖限制：$_forumPermissionError',
+                          style: const TextStyle(fontSize: 12, color: Colors.redAccent, fontWeight: FontWeight.w500),
+                        ),
                       ),
                     ],
                   ),
+                ),
+
+              // 未使用附件提示 Banner
+              if (!_isEdit)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: _buildUnusedAttachmentsBanner(theme),
                 ),
 
               // 回复模式：原帖标题前缀提示（图三）
@@ -2535,8 +3095,8 @@ class _PostPageState extends State<PostPage> {
                       Expanded(
                         child: Text(
                           widget.threadTitle != null && widget.threadTitle!.isNotEmpty
-                              ? 'RE: ${widget.threadTitle} (需审核)'
-                              : 'RE: 回复当前主题 (需审核)',
+                              ? 'RE: ${widget.threadTitle}'
+                              : 'RE: 回复当前主题',
                           style: TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
@@ -2551,8 +3111,8 @@ class _PostPageState extends State<PostPage> {
 
               const SizedBox(height: 8),
 
-              // 发帖模式：主题分类下拉 + 标题输入框 + 剩余字数统计（图二）
-              if (!_isReply) ...[
+              // 发帖/编辑主楼模式：主题分类下拉 + 标题输入框 + 剩余字数统计（图二）
+              if ((!_isReply && !_isEdit) || (_isEdit && _isFirstFloorEdit)) ...[
                 if (isDesktop)
                   Row(
                     children: [
@@ -2608,8 +3168,6 @@ class _PostPageState extends State<PostPage> {
                           fontWeight: FontWeight.w500,
                         ),
                       ),
-                      const SizedBox(width: 4),
-                      Text('(需审核)', style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
                     ],
                   )
                 else
@@ -2674,7 +3232,6 @@ class _PostPageState extends State<PostPage> {
                                     : theme.colorScheme.outline,
                               ),
                             ),
-                            Text('(需审核)', style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
                           ],
                         ),
                       ),
@@ -2683,7 +3240,7 @@ class _PostPageState extends State<PostPage> {
                 const SizedBox(height: 10),
               ],
 
-              // 投票专用输入卡片
+              // 投票专用输入卡片 (special=1)
               if (_isPoll && !_isReply)
                 Container(
                   margin: const EdgeInsets.only(bottom: 10),
@@ -2694,7 +3251,16 @@ class _PostPageState extends State<PostPage> {
                     border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(70)),
                   ),
                   child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      Row(
+                        children: [
+                          Icon(Icons.poll_outlined, size: 16, color: theme.colorScheme.primary),
+                          const SizedBox(width: 6),
+                          Text('投票设置', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: theme.colorScheme.primary)),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
                       for (var i = 0; i < _pollCtrls.length; i++)
                         Padding(
                           padding: const EdgeInsets.only(bottom: 6),
@@ -2727,9 +3293,21 @@ class _PostPageState extends State<PostPage> {
                             onPressed: () => setState(() => _pollCtrls.add(TextEditingController())),
                           ),
                           const Spacer(),
-                          const Text('投票天数：', style: TextStyle(fontSize: 12)),
+                          const Text('最多可选：', style: TextStyle(fontSize: 12)),
                           SizedBox(
                             width: 50,
+                            height: 34,
+                            child: TextField(
+                              controller: _pollMaxCtrl,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          const Text('有效天数：', style: TextStyle(fontSize: 12)),
+                          SizedBox(
+                            width: 50,
+                            height: 34,
                             child: TextField(
                               controller: _pollDaysCtrl,
                               keyboardType: TextInputType.number,
@@ -2738,11 +3316,60 @@ class _PostPageState extends State<PostPage> {
                           ),
                         ],
                       ),
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 12,
+                        runSpacing: 4,
+                        children: [
+                          _checkboxTile('投票后结果可见', _pollVisibility, (v) => setState(() => _pollVisibility = v)),
+                          _checkboxTile('公开投票参与人', _pollOvert, (v) => setState(() => _pollOvert = v)),
+                        ],
+                      ),
                     ],
                   ),
                 ),
 
-              // 辩论专用输入卡片
+              // 悬赏专用输入卡片 (special=3)
+              if (_special == 3 && !_isReply)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest.withAlpha(40),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(70)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.monetization_on_outlined, color: Colors.amber, size: 20),
+                      const SizedBox(width: 8),
+                      const Text('悬赏铁粒数：', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                      SizedBox(
+                        width: 90,
+                        height: 36,
+                        child: TextField(
+                          controller: _rewardCreditCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            hintText: '如 50',
+                            isDense: true,
+                            contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      const Text('铁粒', style: TextStyle(fontSize: 12)),
+                      const Spacer(),
+                      Text(
+                        '结帖后可将悬赏派发给最佳回复者',
+                        style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
+                      ),
+                    ],
+                  ),
+                ),
+
+              // 辩论专用输入卡片 (special=5)
               if (_special == 5 && !_isReply)
                 Container(
                   margin: const EdgeInsets.only(bottom: 10),
@@ -2767,6 +3394,15 @@ class _PostPageState extends State<PostPage> {
                         controller: _negaCtrl,
                         decoration: const InputDecoration(
                           labelText: '反方观点（必填）',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: _endTimeCtrl,
+                        decoration: const InputDecoration(
+                          labelText: '结束时间（可选，格式如 2026-10-01 12:00）',
                           isDense: true,
                           border: OutlineInputBorder(),
                         ),
@@ -3054,9 +3690,8 @@ class _PostPageState extends State<PostPage> {
                   ),
                 ),
 
-              // 高级选项（附加选项 / 阅读权限 / 回帖奖励 / 主题标签 / 定时发布）- 仅在发帖模式展示，回复模式隐藏！
-              if (!_isReply && !_isEdit)
-                _buildAdvancedOptionsCard(theme),
+              // 高级选项（附加选项 / 阅读权限 / 回帖奖励 / 主题标签 / 定时发布）
+              _buildAdvancedOptionsCard(theme),
 
               const SizedBox(height: 16),
 
@@ -3082,7 +3717,7 @@ class _PostPageState extends State<PostPage> {
                             )
                           : const Icon(Icons.send_rounded, size: 18),
                       label: Text(
-                        _isReply ? '发表回复' : '立即发布帖子',
+                        _isEdit ? '保存修改' : (_isReply ? '发表回复' : '立即发布帖子'),
                         style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                       ),
                     ),

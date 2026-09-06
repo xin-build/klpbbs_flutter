@@ -1,7 +1,8 @@
-import 'package:file_picker/file_picker.dart';
+﻿import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../api/klpbbs_api.dart';
 import '../models/user_space.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/thread_card.dart';
 import 'facemall_page.dart';
@@ -388,16 +389,11 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
     final colorScheme = theme.colorScheme;
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
+        leading: const GlobalNavLeading(),
         title: const Text('资料设置'),
         centerTitle: true,
-        leading: Navigator.of(context).canPop()
-            ? IconButton(
-                icon: const Icon(Icons.arrow_back),
-                tooltip: '返回',
-                onPressed: () => Navigator.of(context).maybePop(),
-              )
-            : null,
         actions: [
           IconButton(
             icon: const Icon(Icons.person_outline),
@@ -410,7 +406,6 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
               }
             },
           ),
-          const GlobalNavButton(),
         ],
       ),
       body: _loading

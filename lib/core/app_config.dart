@@ -93,6 +93,11 @@ class AppConfig extends ChangeNotifier {
   static final AppConfig instance = AppConfig._();
   AppConfig._();
 
+  // ================= 应用版本信息 =================
+  static const String appVersion = '1.0.8';
+  static const String buildNumber = '9';
+  static const String versionDisplay = 'v$appVersion (Build $buildNumber)';
+
   // ================= 论坛环境与网络 =================
   /// 本地测试论坛（真实 Discuz X3.4 + 克米插件）
   static const String localBaseUrl = 'http://127.0.0.1:8000/';
@@ -271,6 +276,8 @@ class AppConfig extends ChangeNotifier {
   static ImageQuality imageQuality = ImageQuality.original;
   static int imageCacheMaxMb = 250;
   static bool smoothScrollPhysics = true;
+  static bool enableMultiThreadParsing = true;
+  static bool enableGpuAcceleratedRendering = true;
 
   // 论坛与阅读偏好
   static bool showFloorSignature = true;
@@ -394,7 +401,10 @@ class AppConfig extends ChangeNotifier {
         );
       }
       imageCacheMaxMb = sp.getInt('image_cache_max_mb') ?? 250;
+      PaintingBinding.instance.imageCache.maximumSizeBytes = imageCacheMaxMb << 20;
       smoothScrollPhysics = sp.getBool('smooth_scroll_physics') ?? true;
+      enableMultiThreadParsing = sp.getBool('enable_multithread_parsing') ?? true;
+      enableGpuAcceleratedRendering = sp.getBool('enable_gpu_rendering') ?? true;
 
       // 论坛功能
       showFloorSignature = sp.getBool('show_floor_signature') ?? true;
@@ -592,6 +602,7 @@ class AppConfig extends ChangeNotifier {
 
   static Future<void> setImageCacheMaxMb(int mb) async {
     imageCacheMaxMb = mb;
+    PaintingBinding.instance.imageCache.maximumSizeBytes = mb << 20;
     final sp = await SharedPreferences.getInstance();
     await sp.setInt('image_cache_max_mb', mb);
     instance.notifyListeners();
@@ -601,6 +612,20 @@ class AppConfig extends ChangeNotifier {
     smoothScrollPhysics = enable;
     final sp = await SharedPreferences.getInstance();
     await sp.setBool('smooth_scroll_physics', enable);
+    instance.notifyListeners();
+  }
+
+  static Future<void> setMultiThreadParsing(bool enable) async {
+    enableMultiThreadParsing = enable;
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool('enable_multithread_parsing', enable);
+    instance.notifyListeners();
+  }
+
+  static Future<void> setGpuAcceleratedRendering(bool enable) async {
+    enableGpuAcceleratedRendering = enable;
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool('enable_gpu_rendering', enable);
     instance.notifyListeners();
   }
 

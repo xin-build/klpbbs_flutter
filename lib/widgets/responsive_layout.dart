@@ -56,6 +56,32 @@ class NavItem {
 
 /// 自适应主框架：桌面宽屏侧边导航 + 移动端底部/抽屉导航
 class AdaptiveScaffold extends StatefulWidget {
+  static GlobalKey<ScaffoldState>? activeScaffoldKey;
+  static _AdaptiveScaffoldState? _activeState;
+
+  /// 供全局任意子页面打开主壳侧边栏抽屉
+  static void openMainDrawer() {
+    if (_activeState != null && _activeState!.mounted && _activeState!._isDesktop) {
+      _activeState!.openDesktopDrawer();
+      return;
+    }
+    activeScaffoldKey?.currentState?.openDrawer();
+  }
+
+  static void closeMainDrawer() {
+    if (_activeState != null && _activeState!.mounted && _activeState!._isDesktop) {
+      _activeState!.closeDesktopDrawer();
+      return;
+    }
+    activeScaffoldKey?.currentState?.closeDrawer();
+  }
+
+  static bool get isDesktopDrawerOpen =>
+      _activeState != null && _activeState!.mounted && _activeState!._isDesktopDrawerOpen;
+
+  static bool get isDesktopActive =>
+      _activeState != null && _activeState!.mounted && _activeState!._isDesktop;
+
   final int currentIndex;
   final ValueChanged<int> onNavigationChanged;
   final List<NavItem> navItems;
@@ -85,17 +111,72 @@ class AdaptiveScaffold extends StatefulWidget {
   State<AdaptiveScaffold> createState() => _AdaptiveScaffoldState();
 }
 
-class _AdaptiveScaffoldState extends State<AdaptiveScaffold> {
+class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
+    with SingleTickerProviderStateMixin {
   bool _isRailExtended = false;
+  bool _isDesktop = false;
+  bool _isDesktopDrawerOpen = false;
+  late AnimationController _desktopDrawerCtrl;
+  late Animation<double> _desktopDrawerAnim;
+
+  @override
+  void initState() {
+    super.initState();
+    AdaptiveScaffold._activeState = this;
+    _desktopDrawerCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 240),
+      reverseDuration: const Duration(milliseconds: 180),
+    );
+    _desktopDrawerAnim = CurvedAnimation(
+      parent: _desktopDrawerCtrl,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+  }
+
+  @override
+  void dispose() {
+    if (AdaptiveScaffold._activeState == this) {
+      AdaptiveScaffold._activeState = null;
+    }
+    _desktopDrawerCtrl.dispose();
+    super.dispose();
+  }
+
+  void openDesktopDrawer() {
+    if (!_isDesktopDrawerOpen) {
+      setState(() => _isDesktopDrawerOpen = true);
+      _desktopDrawerCtrl.forward(from: 0.0);
+    }
+  }
+
+  void closeDesktopDrawer() {
+    if (_isDesktopDrawerOpen) {
+      _desktopDrawerCtrl.reverse().then((_) {
+        if (mounted) setState(() => _isDesktopDrawerOpen = false);
+      });
+    }
+  }
+
+  void toggleDesktopDrawer() {
+    if (_isDesktopDrawerOpen) {
+      closeDesktopDrawer();
+    } else {
+      openDesktopDrawer();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    AdaptiveScaffold.activeScaffoldKey = widget.scaffoldKey;
     final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+    _isDesktop = isDesktop;
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
     if (isDesktop) {
-      // 桌面 PC 宽屏排版：左侧 NavigationRail + 右侧主体
+      // 桌面 PC 宽屏排版：左侧 NavigationRail + 右侧主体（抽屉挂载于右侧主体，从侧栏右缘滑入，不再横穿左侧栏）
       return Scaffold(
         body: Row(
           children: [
@@ -146,35 +227,42 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold> {
                                 size: 26,
                               ),
                             ),
-                            if (_isRailExtended) ...[
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(
-                                      '苦力怕论坛',
-                                      style:
-                                          theme.textTheme.titleMedium?.copyWith(
-                                        fontWeight: FontWeight.bold,
-                                        letterSpacing: 0.5,
+                            ClipRect(
+                              child: AnimatedCrossFade(
+                                duration: const Duration(milliseconds: 220),
+                                crossFadeState: _isRailExtended
+                                    ? CrossFadeState.showSecond
+                                    : CrossFadeState.showFirst,
+                                firstChild: const SizedBox.shrink(),
+                                secondChild: Padding(
+                                  padding: const EdgeInsets.only(left: 12),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        '苦力怕论坛',
+                                        style:
+                                            theme.textTheme.titleMedium?.copyWith(
+                                          fontWeight: FontWeight.bold,
+                                          letterSpacing: 0.5,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
                                       ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    Text(
-                                      'KLPBBS Desktop',
-                                      style:
-                                          theme.textTheme.bodySmall?.copyWith(
-                                        color: colorScheme.outline,
-                                        fontSize: 11,
+                                      Text(
+                                        'KLPBBS Desktop',
+                                        style:
+                                            theme.textTheme.bodySmall?.copyWith(
+                                          color: colorScheme.outline,
+                                          fontSize: 11,
+                                        ),
                                       ),
-                                    ),
-                                  ],
+                                    ],
+                                  ),
                                 ),
                               ),
-                            ],
+                            ),
                           ],
                         ),
                       ),
@@ -235,26 +323,33 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold> {
                                             size: 24,
                                           ),
                                         ),
-                                        if (_isRailExtended) ...[
-                                          const SizedBox(width: 14),
-                                          Expanded(
-                                            child: Text(
-                                              item.label,
-                                              style: TextStyle(
-                                                fontSize: 14,
-                                                fontWeight: isSelected
-                                                    ? FontWeight.bold
-                                                    : FontWeight.normal,
-                                                color: isSelected
-                                                    ? colorScheme
-                                                        .onSecondaryContainer
-                                                    : colorScheme.onSurface,
+                                        ClipRect(
+                                          child: AnimatedCrossFade(
+                                            duration: const Duration(milliseconds: 220),
+                                            crossFadeState: _isRailExtended
+                                                ? CrossFadeState.showSecond
+                                                : CrossFadeState.showFirst,
+                                            firstChild: const SizedBox.shrink(),
+                                            secondChild: Padding(
+                                              padding: const EdgeInsets.only(left: 14),
+                                              child: Text(
+                                                item.label,
+                                                style: TextStyle(
+                                                  fontSize: 14,
+                                                  fontWeight: isSelected
+                                                      ? FontWeight.bold
+                                                      : FontWeight.normal,
+                                                  color: isSelected
+                                                      ? colorScheme
+                                                          .onSecondaryContainer
+                                                      : colorScheme.onSurface,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
                                               ),
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
                                             ),
                                           ),
-                                        ],
+                                        ),
                                       ],
                                     ),
                                   ),
@@ -287,12 +382,66 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold> {
                 ),
               ),
             ),
-            // 右侧主体
+            // 右侧主体：严格 ClipRect 边界守护 + Stack 桌面卡片动效层，杜绝跨越左侧栏
             Expanded(
-              child: Scaffold(
-                appBar: widget.appBar,
-                body: widget.body,
-                floatingActionButton: widget.floatingActionButton,
+              child: ClipRect(
+                child: Stack(
+                  children: [
+                    Scaffold(
+                      key: widget.scaffoldKey,
+                      appBar: widget.appBar,
+                      body: widget.body,
+                      floatingActionButton: widget.floatingActionButton,
+                    ),
+                    if (_isDesktopDrawerOpen && widget.drawer != null)
+                      Positioned.fill(
+                        child: AnimatedBuilder(
+                          animation: _desktopDrawerAnim,
+                          builder: (context, child) {
+                            final t = _desktopDrawerAnim.value;
+                            return Stack(
+                              children: [
+                                // 1. 半透明背景柔和遮罩（点击收起）
+                                Positioned.fill(
+                                  child: GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onTap: closeDesktopDrawer,
+                                    child: Container(
+                                      color: Colors.black.withOpacity(0.32 * t),
+                                    ),
+                                  ),
+                                ),
+                                // 2. 抽屉面板：平滑淡入 + 35px 优雅微滑出，严禁越界横跨左侧栏
+                                Positioned(
+                                  top: 0,
+                                  bottom: 0,
+                                  left: 0,
+                                  child: Transform.translate(
+                                    offset: Offset(-35.0 * (1.0 - t), 0),
+                                    child: Opacity(
+                                      opacity: t.clamp(0.0, 1.0),
+                                      child: Material(
+                                        elevation: 16,
+                                        shadowColor: Colors.black38,
+                                        borderRadius: const BorderRadius.horizontal(
+                                          right: Radius.circular(16),
+                                        ),
+                                        clipBehavior: Clip.antiAlias,
+                                        child: SizedBox(
+                                          width: 320,
+                                          child: widget.drawer,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
           ],
@@ -315,17 +464,22 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold> {
           ? NavigationBar(
               height: 66,
               labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-              selectedIndex: widget.currentIndex.clamp(
-                0,
-                effectiveBottomNav.length - 1,
-              ),
+              selectedIndex: (() {
+                final curItem = widget.currentIndex < widget.navItems.length
+                    ? widget.navItems[widget.currentIndex]
+                    : null;
+                final effIdx = curItem != null ? effectiveBottomNav.indexOf(curItem) : -1;
+                return (effIdx >= 0 ? effIdx : widget.currentIndex)
+                    .clamp(0, effectiveBottomNav.length - 1);
+              })(),
               onDestinationSelected: (idx) {
                 HapticFeedback.selectionClick();
                 final item = effectiveBottomNav[idx];
                 if (item.onTap != null) {
                   item.onTap!();
                 } else {
-                  widget.onNavigationChanged(idx);
+                  final origIdx = widget.navItems.indexOf(item);
+                  widget.onNavigationChanged(origIdx >= 0 ? origIdx : idx);
                 }
               },
               destinations: effectiveBottomNav.map((item) {

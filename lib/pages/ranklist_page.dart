@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -7,6 +7,7 @@ import 'package:html/parser.dart' as hp;
 import '../core/app_config.dart';
 import '../core/dio_client.dart';
 import '../widgets/empty_view.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/thread_card.dart';
 import 'thread_detail_page.dart';
@@ -119,12 +120,6 @@ class _RanklistPageState extends State<RanklistPage>
         items.addAll(_parseThreadRank(viewHtml));
       }
     }
-
-    // 策略 4：回退兜底（依据 SeedData 真实热帖）
-    if (items.isEmpty) {
-      items.addAll(_getFallbackThreadRank(type));
-    }
-
     return items;
   }
 
@@ -219,30 +214,6 @@ class _RanklistPageState extends State<RanklistPage>
     return items;
   }
 
-  List<RankEntry> _getFallbackThreadRank(String type) {
-    final sampleTitles = [
-      '[1.21-26.3+]【汉化】连物体扩展&附加包 (Curios API & Add-on)',
-      '[MCBE][1.21-26.10+]【汉化】奇异信息显示与实用工具合集',
-      '[1.21.X]【汉化】「更好的植物动态与美丽生态」真实世界模组',
-      '[1.21/中文] 精品模组大成者「史诗装备扩展 V3.4」基岩版',
-      '[1.21 V264]【中文】告别低帧率！基岩版光影优化与粒子引擎',
-      '[BE 1.21+] 双化·沉浸式世界扩展生成 V5.0',
-      '[1.21.X]【基岩版】极品高性能动态小地图与航点指示',
-      '[1.21.X]【中文】战斗革命 V2.1.1——Java 动作移植版',
-      '[基岩1.21.X·汉化] 生存必备极速：Ray 光影与资源包集成',
-    ];
-
-    return [
-      for (var i = 0; i < sampleTitles.length; i++)
-        RankEntry(
-          rank: i + 1,
-          title: sampleTitles[i],
-          subtitle: '作者: 苦力怕极客 · ${2450 - i * 180} 次查看',
-          tid: 280000 + i * 13,
-        ),
-    ];
-  }
-
   @override
   void dispose() {
     _tabController.dispose();
@@ -255,10 +226,11 @@ class _RanklistPageState extends State<RanklistPage>
     final colorScheme = theme.colorScheme;
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
+        leading: const GlobalNavLeading(),
         title: const Text('论坛排行榜'),
         centerTitle: true,
-        actions: const [GlobalNavButton()],
         bottom: TabBar(
           controller: _tabController,
           labelColor: colorScheme.primary,

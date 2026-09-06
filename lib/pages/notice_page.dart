@@ -1,11 +1,11 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
 import '../models/notice_item.dart';
 import '../services/push_notification_service.dart';
-import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
 import '../widgets/thread_card.dart';
@@ -141,8 +141,9 @@ class _NoticePageState extends State<NoticePage>
     final subTabs = _currentSubTabs;
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const AppBackButton(),
+        leading: const GlobalNavLeading(),
         title: const Text('消息提醒'),
         centerTitle: true,
         actions: [
@@ -158,7 +159,6 @@ class _NoticePageState extends State<NoticePage>
               MaterialPageRoute(builder: (_) => const PmInboxPage()),
             ),
           ),
-          const GlobalNavButton(),
         ],
         bottom: TabBar(
           controller: _tabController,

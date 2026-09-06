@@ -7,19 +7,21 @@ import '../api/comiis_parser.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/dio_client.dart';
+import '../core/url_helper.dart';
 import '../core/write_confirm.dart';
 import '../models/post_floor.dart';
 import '../models/smiley.dart';
-import '../widgets/desktop_shortcuts.dart';
 import '../widgets/bili_video_player.dart';
 import '../widgets/general_audio_player.dart';
 import '../widgets/general_video_player.dart';
 import '../widgets/discuz_post_renderer.dart';
 import '../widgets/netease_music_player.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/inline_html_text.dart';
 import '../widgets/favorite_dialog.dart';
 import '../widgets/report_dialog.dart';
+import '../widgets/skeleton_list.dart';
 import '../widgets/thread_card.dart';
 import 'login_page.dart';
 import 'post_page.dart';
@@ -32,11 +34,13 @@ import 'user_space_page.dart';
 /// 正文以纯文本 + 图片网格展示（扩展点：可替换为富文本/WebView 渲染）。
 class ThreadDetailPage extends StatefulWidget {
   final int tid;
+  final int? fid;
   final bool showBackButton;
 
   const ThreadDetailPage({
     super.key,
     required this.tid,
+    this.fid,
     this.showBackButton = true,
   });
 
@@ -83,6 +87,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   int? _favid;
   int? _myUid;
   int? _firstAuthorUid;
+  bool _canModerate = false;
   int _likes = 0;
   int _favorites = 0;
   int _views = 0;
@@ -98,6 +103,16 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     KlpbbsApi.getMyUid()
         .then((uid) {
           if (mounted) setState(() => _myUid = uid);
+        })
+        .catchError((_) {});
+    KlpbbsApi.getMyRole(fid: widget.fid)
+        .then((role) {
+          if (mounted) {
+            final canMod = role.isAdmin || role.isSuperMod || role.isModerator;
+            if (canMod != _canModerate) {
+              setState(() => _canModerate = canMod);
+            }
+          }
         })
         .catchError((_) {});
     // AppBar 标题滚动折叠：滚动超过 120px 显示帖子标题
@@ -132,21 +147,37 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       _firstAuthorUid = r.floors.first.uid;
     }
 
+    if (r.fid != null && r.fid > 0) {
+      KlpbbsApi.getMyRole(fid: r.fid).then((role) {
+        if (mounted) {
+          final canMod = role.isAdmin || role.isSuperMod || role.isModerator;
+          if (canMod != _canModerate) setState(() => _canModerate = canMod);
+        }
+      }).catchError((_) {});
+    }
+
     final likedList = prefs.getStringList('liked_tids') ?? const [];
     final isLocalLiked = likedList.contains('${widget.tid}');
     final isServerLiked = (r.isLiked == true) || (r.floors.isNotEmpty && r.floors.first.isLiked && _page == 1);
     if (_page == 1) {
-      _liked = isServerLiked || isLocalLiked;
+      if (DioClient.isLoggedIn) {
+        _liked = isServerLiked;
+        if (isServerLiked != isLocalLiked) {
+          _saveState('liked_tids', '${widget.tid}', isServerLiked);
+        }
+      } else {
+        _liked = isLocalLiked;
+      }
       _likes = r.likes;
     }
 
     final favList = prefs.getStringList('fav_tids') ?? const [];
     final isLocalFav = favList.contains('${widget.tid}');
     if (DioClient.isLoggedIn) {
-      _favored = r.isFavorited || isLocalFav;
+      _favored = r.isFavorited;
       _favid = r.favid;
-      if (r.isFavorited) {
-        _saveState('fav_tids', '${widget.tid}', true);
+      if (r.isFavorited != isLocalFav) {
+        _saveState('fav_tids', '${widget.tid}', r.isFavorited);
       }
     } else {
       _favored = isLocalFav;
@@ -750,7 +781,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
         final navigator = Navigator.of(context);
         final confirmed = await confirmWrite(context, '编辑帖子');
         if (!confirmed || !mounted) return;
-        // 预填当前标题/内容（简化：用帖子首楼）
+        // 预填当前标题/内容（传递真实 fid、tid、pid 与标题，正文由 PostPage 自动拉取）
         final snap = await _future;
         if (!mounted) return;
         final floors = snap.floors;
@@ -758,11 +789,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
         final ok = await navigator.push<bool>(
           MaterialPageRoute(
             builder: (_) => PostPage(
-              fid: 2,
+              isEdit: true,
+              fid: snap.fid ?? 2,
               tid: widget.tid,
-              pid: first?.pid ?? 1,
-              editSubject: '',
-              editMessage: '',
+              pid: first?.pid,
+              editSubject: _title.isNotEmpty ? _title : snap.title,
             ),
           ),
         );
@@ -793,94 +824,117 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
           floorIndex: 0,
         );
         break;
+      case 'copy_link':
+        final url = '${AppConfig.baseUrl}thread-${widget.tid}-1-1.html';
+        await Clipboard.setData(ClipboardData(text: url));
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('帖子链接已复制')),
+          );
+        }
+        break;
+      case 'open_browser':
+        final url = '${AppConfig.baseUrl}thread-${widget.tid}-1-1.html';
+        UrlHelper.openLink(context, url);
+        break;
     }
+  }
+
+  bool get _canEditPost {
+    final myUid = _myUid;
+    if (myUid == null || myUid <= 0) return false;
+    if (_canModerate) return true;
+    if (_firstAuthorUid != null && _firstAuthorUid == myUid) return true;
+    if (_floors.isNotEmpty && _floors.first.canEdit) return true;
+    return false;
   }
 
   @override
   Widget build(BuildContext context) {
-    return DesktopShortcutsWrapper(
-      onRefresh: _reload,
+    return FocusTraversalGroup(
+      policy: ReadingOrderTraversalPolicy(),
       child: Scaffold(
+        drawer: widget.showBackButton ? const GlobalAppDrawer() : null,
         appBar: AppBar(
           automaticallyImplyLeading: widget.showBackButton,
           leading: widget.showBackButton
-              ? IconButton(
-                  icon: const Icon(Icons.arrow_back),
-                  tooltip: '返回',
-                  onPressed: () => Navigator.of(context).maybePop(),
-                )
+              ? GlobalNavLeading(showBackButton: widget.showBackButton)
               : null,
+          leadingWidth: widget.showBackButton ? null : 0,
           title: Text(
             _scrolled && _title.isNotEmpty ? _title : '帖子详情',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
           actions: [
-            if (widget.showBackButton) const GlobalNavButton(),
             IconButton(
               icon: const Icon(Icons.refresh_rounded),
               tooltip: '刷新帖子 (F5)',
               onPressed: _reload,
             ),
-            IconButton(
-              icon: Icon(
-                _liked ? Icons.thumb_up : Icons.thumb_up_outlined,
-                color: _liked ? Theme.of(context).colorScheme.primary : null,
-              ),
-              tooltip: _likes > 0 ? '已有点赞: $_likes' : '点赞帖子',
-              onPressed: _onLike,
-            ),
-            IconButton(
-              icon: Icon(
-                _favored ? Icons.star : Icons.star_outline,
-                color: _favored ? Colors.amber.shade700 : null,
-              ),
-              tooltip: _favored ? '已收藏 (点击取消/长按管理)' : '收藏帖子',
-              onPressed: () => _onFavorite(openDialog: false),
-            ),
-            IconButton(
-              icon: const Icon(Icons.reply),
-              tooltip: '回复',
-              onPressed: () async {
-                if (!context.mounted) return;
-                final confirmed = await confirmWrite(context, '回复');
-                if (!confirmed || !context.mounted) return;
-                final ok = await Navigator.of(context).push<bool>(
-                  MaterialPageRoute(builder: (_) => PostPage(tid: widget.tid)),
-                );
-                if (ok == true && mounted) _reload();
-              },
-            ),
-            IconButton(
-              icon: const Icon(Icons.share_outlined),
-              tooltip: '分享',
-              onPressed: () async {
-                final url = '${AppConfig.baseUrl}thread-${widget.tid}-1-1.html';
-                final shareText = _title.isNotEmpty ? '$_title $url' : url;
-                await Clipboard.setData(ClipboardData(text: shareText));
-                if (context.mounted) {
-                  ScaffoldMessenger.of(
-                    context,
-                  ).showSnackBar(SnackBar(content: Text('标题+链接已复制')));
-                }
-              },
-            ),
             PopupMenuButton<String>(
-              tooltip: '更多',
+              tooltip: '更多选项',
               onSelected: (v) => _onMenuAction(v),
               itemBuilder: (_) => [
-                if (_myUid != null &&
-                    _firstAuthorUid != null &&
-                    _myUid == _firstAuthorUid) ...[
-                  const PopupMenuItem(value: 'edit', child: Text('编辑帖子')),
-                  const PopupMenuItem(value: 'delete', child: Text('删除帖子')),
+                const PopupMenuItem(
+                  value: 'copy_link',
+                  child: Row(
+                    children: [
+                      Icon(Icons.link_rounded, size: 18),
+                      SizedBox(width: 8),
+                      Text('复制链接'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'open_browser',
+                  child: Row(
+                    children: [
+                      Icon(Icons.open_in_browser_rounded, size: 18),
+                      SizedBox(width: 8),
+                      Text('浏览器打开'),
+                    ],
+                  ),
+                ),
+                if (_canEditPost) ...[
+                  const PopupMenuItem(
+                    value: 'edit',
+                    child: Row(
+                      children: [
+                        Icon(Icons.edit_outlined, size: 18),
+                        SizedBox(width: 8),
+                        Text('编辑帖子'),
+                      ],
+                    ),
+                  ),
+                  if ((_firstAuthorUid != null && _myUid == _firstAuthorUid) || _canModerate)
+                    const PopupMenuItem(
+                      value: 'delete',
+                      child: Row(
+                        children: [
+                          Icon(Icons.delete_outline, size: 18),
+                          SizedBox(width: 8),
+                          Text('删除帖子'),
+                        ],
+                      ),
+                    ),
                 ],
-                const PopupMenuItem(value: 'report', child: Text('举报')),
+                const PopupMenuItem(
+                  value: 'report',
+                  child: Row(
+                    children: [
+                      Icon(Icons.report_problem_outlined, size: 18),
+                      SizedBox(width: 8),
+                      Text('举报'),
+                    ],
+                  ),
+                ),
               ],
             ),
           ],
         ),
         body: Stack(
+          fit: StackFit.expand,
           children: [
             FutureBuilder<
               ({
@@ -911,7 +965,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
               future: _future,
               builder: (context, snap) {
                 if (snap.connectionState != ConnectionState.done) {
-                  return const Center(child: CircularProgressIndicator());
+                  return const ThreadDetailSkeleton();
                 }
                 if (snap.hasError) {
                   return Center(
@@ -1117,54 +1171,54 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                                 ],
                               ),
                             ),
-                          // 发布日期 + 最近回复日期 + 浏览/回复量
+                          // 发布日期 + 最近回复日期 (左侧) + 浏览/回复/点赞量 (右侧)
                           Padding(
                             padding: const EdgeInsets.fromLTRB(14, 0, 14, 6),
-                            child: Wrap(
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              spacing: 12,
-                              runSpacing: 4,
-                              children: [
-                                if ((data?.publishDate ?? '').isNotEmpty)
-                                  Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(
-                                        Icons.schedule,
-                                        size: 13,
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.onSurfaceVariant.withAlpha(190),
-                                      ),
-                                      const SizedBox(width: 4),
-                                      Text(
-                                        '发布 ${data!.publishDate}',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall
-                                            ?.copyWith(
-                                              color: Theme.of(
-                                                context,
-                                              ).colorScheme.onSurfaceVariant.withAlpha(200),
-                                              fontSize: 11.5,
-                                            ),
-                                      ),
-                                    ],
-                                  ),
-                                if ((data?.lastReplyDate ?? '').isNotEmpty)
-                                  Text(
-                                    '最近回复 ${data!.lastReplyDate}',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall
-                                        ?.copyWith(
+                            child: LayoutBuilder(
+                              builder: (context, constraints) {
+                                final dateItems = <Widget>[
+                                  if ((data?.publishDate ?? '').isNotEmpty)
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.schedule,
+                                          size: 13,
                                           color: Theme.of(
                                             context,
-                                          ).colorScheme.onSurfaceVariant.withAlpha(200),
-                                          fontSize: 11.5,
+                                          ).colorScheme.onSurfaceVariant.withAlpha(190),
                                         ),
-                                  ),
-                                Row(
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          '发布 ${data!.publishDate}',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall
+                                              ?.copyWith(
+                                                color: Theme.of(
+                                                  context,
+                                                ).colorScheme.onSurfaceVariant.withAlpha(200),
+                                                fontSize: 11.5,
+                                              ),
+                                        ),
+                                      ],
+                                    ),
+                                  if ((data?.lastReplyDate ?? '').isNotEmpty)
+                                    Text(
+                                      '最近回复 ${data!.lastReplyDate}',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.onSurfaceVariant.withAlpha(200),
+                                            fontSize: 11.5,
+                                          ),
+                                    ),
+                                ];
+
+                                final statsWidget = Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     Icon(
@@ -1186,8 +1240,39 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                                           ),
                                     ),
                                   ],
-                                ),
-                              ],
+                                );
+
+                                if (constraints.maxWidth > 520) {
+                                  return Row(
+                                    children: [
+                                      Wrap(
+                                        crossAxisAlignment: WrapCrossAlignment.center,
+                                        spacing: 12,
+                                        runSpacing: 4,
+                                        children: dateItems,
+                                      ),
+                                      const Spacer(),
+                                      statsWidget,
+                                    ],
+                                  );
+                                } else {
+                                  return Wrap(
+                                    alignment: WrapAlignment.spaceBetween,
+                                    crossAxisAlignment: WrapCrossAlignment.center,
+                                    spacing: 12,
+                                    runSpacing: 4,
+                                    children: [
+                                      Wrap(
+                                        crossAxisAlignment: WrapCrossAlignment.center,
+                                        spacing: 12,
+                                        runSpacing: 4,
+                                        children: dateItems,
+                                      ),
+                                      statsWidget,
+                                    ],
+                                  );
+                                }
+                              },
                             ),
                           ),
                           for (var i = 0; i < floors.length; i++) ...[
@@ -1201,6 +1286,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                                 page: _page,
                                 tid: widget.tid,
                                 fid: data?.fid,
+                                threadTitle: (data?.title ?? _title).isNotEmpty ? (data?.title ?? _title) : null,
                                 isFirstFloor: isFirstFloor,
                                 isThreadAuthor: isThreadAuthor,
                                 stamp: isFirstFloor ? (data?.stamp ?? _stamp) : null,
@@ -1209,6 +1295,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                                 likesCount: isFirstFloor ? _likes : null,
                                 onLikeToggle: isFirstFloor ? _onLike : null,
                                 onReload: _reload,
+                                myUid: _myUid,
+                                canModerate: _canModerate,
                               );
                             }(),
                             // 首楼下方展示主题标签（仅第1页首楼且有标签时展示）
@@ -1504,10 +1592,13 @@ class _FloorView extends StatefulWidget {
   final bool isThreadAuthor;
   final String? stamp;
   final String? stampUrl;
+  final String? threadTitle;
   final bool? isLiked;
   final int? likesCount;
   final VoidCallback? onLikeToggle;
   final VoidCallback? onReload;
+  final int? myUid;
+  final bool canModerate;
 
   const _FloorView({
     required this.floor,
@@ -1515,6 +1606,7 @@ class _FloorView extends StatefulWidget {
     this.page = 1,
     required this.tid,
     this.fid,
+    this.threadTitle,
     this.isFirstFloor = false,
     this.isThreadAuthor = false,
     this.stamp,
@@ -1523,6 +1615,8 @@ class _FloorView extends StatefulWidget {
     this.likesCount,
     this.onLikeToggle,
     this.onReload,
+    this.myUid,
+    this.canModerate = false,
   });
 
   @override
@@ -1537,6 +1631,45 @@ class _FloorViewState extends State<_FloorView> {
   late bool _isLiked;
   late int _likesCount;
 
+  bool get _canEdit {
+    final myUid = widget.myUid;
+    if (myUid == null || myUid <= 0 || floor.pid == null) return false;
+    // 1. 管理员 / 超级版主 / 本版版主拥有编辑特权
+    if (widget.canModerate) return true;
+    // 2. 服务端 HTML 明确返回了编辑操作（已授权）
+    if (floor.canEdit) return true;
+    // 3. 当前用户是该楼层作者
+    return floor.uid != null && floor.uid! > 0 && floor.uid == myUid;
+  }
+
+  Future<void> _onEditFloor(BuildContext context) async {
+    final navigator = Navigator.of(context);
+    final detailState =
+        context.findAncestorStateOfType<_ThreadDetailPageState>();
+    final currentTitle = detailState?._title ?? '';
+
+    final confirmed = await confirmWrite(
+      context,
+      widget.isFirstFloor ? '编辑帖子' : '编辑回复',
+    );
+    if (!confirmed || !mounted) return;
+
+    final ok = await navigator.push<bool>(
+      MaterialPageRoute(
+        builder: (_) => PostPage(
+          isEdit: true,
+          fid: fid ?? 2,
+          tid: tid,
+          pid: floor.pid,
+          editSubject: widget.isFirstFloor ? currentTitle : null,
+        ),
+      ),
+    );
+    if (ok == true && mounted) {
+      widget.onReload?.call();
+    }
+  }
+
   String get _displayFloorNumber {
     // 1. 如果是第1页第1楼，为楼主
     if (widget.isFirstFloor) {
@@ -1546,7 +1679,7 @@ class _FloorViewState extends State<_FloorView> {
     final fn = floor.floorNumber.trim();
     if (fn.isNotEmpty && fn != '楼主') {
       if (fn.endsWith('#')) {
-        return '#${fn.replaceAll('#', '')} 楼';
+        return '${fn.replaceAll('#', '')} 楼';
       }
       return fn;
     }
@@ -1555,10 +1688,10 @@ class _FloorViewState extends State<_FloorView> {
       if (index == 1) return '沙发';
       if (index == 2) return '板凳';
       if (index == 3) return '地板';
-      return '#${index + 1} 楼';
+      return '${index + 1} 楼';
     } else {
       final globalFloor = (widget.page - 1) * 10 + index + 1;
-      return '#$globalFloor 楼';
+      return '$globalFloor 楼';
     }
   }
 
@@ -1673,7 +1806,10 @@ class _FloorViewState extends State<_FloorView> {
   Widget _buildSignature(ThemeData theme) {
     final rawSig = floor.signature.trim();
     if (rawSig.isEmpty) return const SizedBox.shrink();
-    final sigHtml = rawSig.contains('<') ? rawSig : ComiisParser.bbcodeToHtml(rawSig);
+    var sigHtml = rawSig;
+    if (sigHtml.contains('[') && sigHtml.contains(']')) {
+      sigHtml = ComiisParser.bbcodeToHtml(sigHtml);
+    }
 
     return Container(
       margin: const EdgeInsets.only(top: 12, bottom: 4),
@@ -1780,6 +1916,18 @@ class _FloorViewState extends State<_FloorView> {
             floor.replyFloors.isNotEmpty ? '楼中楼(${floor.replyFloors.length})' : '发起楼中楼',
             style: theme.textTheme.bodySmall,
           ),
+        ),
+      // 编辑（如果是自己的楼层或楼主）
+      if (_canEdit)
+        TextButton.icon(
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          onPressed: () => _onEditFloor(context),
+          icon: const Icon(Icons.edit_outlined, size: 14),
+          label: Text(widget.isFirstFloor ? '编辑帖子' : '编辑回复', style: theme.textTheme.bodySmall),
         ),
       // 引用
       TextButton.icon(
@@ -2199,13 +2347,17 @@ class _FloorViewState extends State<_FloorView> {
               _ReplyFloorSection(
                 floor: floor,
                 tid: tid,
-                onReplyToAuthor: (author) => _onReplyFloorWrite(initialAuthor: author),
+                onReplyToAuthor: (author, msgid) =>
+                    _onReplyFloorWrite(initialAuthor: author, msgid: msgid),
                 onWriteReply: () => _onReplyFloorWrite(),
                 onReportComment: _onReportFloorComment,
               ),
             // 点评
             if (floor.comments.isNotEmpty)
-              _CommentsSection(comments: floor.comments),
+              _CommentsSection(
+                comments: floor.comments,
+                onReply: (author) => _onReplyFloorWrite(initialAuthor: author),
+              ),
             // 普通楼层签名档（仅限非 1 楼回复）
             if (!widget.isFirstFloor)
               ListenableBuilder(
@@ -2486,6 +2638,18 @@ class _FloorViewState extends State<_FloorView> {
               dense: true,
             ),
             const Divider(height: 1),
+            if (_canEdit) ...[
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: Text(widget.isFirstFloor ? '编辑帖子' : '编辑回复'),
+                subtitle: Text(widget.isFirstFloor ? '修改本帖标题与正文内容' : '修改该楼层回复内容'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _onEditFloor(context);
+                },
+              ),
+              const Divider(height: 1),
+            ],
             ListTile(
               leading: const Icon(Icons.forum_outlined),
               title: Text((index == 0 || floor.floorNumber == '1' || floor.floorNumber == '楼主' || floor.floorNumber == '1#') ? '回复主题' : '楼中楼回复'),
@@ -2598,7 +2762,7 @@ class _FloorViewState extends State<_FloorView> {
   }
 
   // 发起/回复楼中楼（支持表情库面板、快捷表情插入与实时反馈）
-  void _onReplyFloorWrite({String? initialAuthor}) {
+  void _onReplyFloorWrite({String? initialAuthor, int? msgid}) {
     final hasAuthor = initialAuthor != null && initialAuthor.trim().isNotEmpty;
     final ctrl = TextEditingController(
       text: hasAuthor ? '回复 @$initialAuthor : ' : '',
@@ -2805,6 +2969,7 @@ class _FloorViewState extends State<_FloorView> {
                               tid,
                               floor.pid ?? 0,
                               msg,
+                              msgid: msgid ?? 0,
                             );
                             if (ctx.mounted) Navigator.pop(ctx);
                             messenger.showSnackBar(
@@ -3049,12 +3214,13 @@ class _FloorViewState extends State<_FloorView> {
           ? '[quote][size=2][url=forum.php?mod=redirect&goto=findpost&pid=${floor.pid}&ptid=$tid][color=#999999]${floor.author}${floor.timeText.isNotEmpty ? " 发表于 ${floor.timeText}" : ""}[/color][/url][/size]\n$snippet[/quote]\n\n'
           : '[quote]${floor.author}:\n$snippet[/quote]\n\n';
 
+      final tTitle = widget.threadTitle;
       Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => PostPage(
             tid: tid,
             fid: fid,
-            pid: floor.pid,
+            threadTitle: tTitle,
             repquote: floor.pid,
             noticeauthor: floor.author,
             noticetrimstr: snippet,
@@ -3065,12 +3231,14 @@ class _FloorViewState extends State<_FloorView> {
       );
     } else {
       // 普通回复：若回复非楼主楼层，对齐 Discuz 传递 reppost 并预填 @用户，触发系统站内信提醒
+      final tTitle = widget.threadTitle;
       if (isFirst) {
         Navigator.of(context).push(
           MaterialPageRoute(
             builder: (_) => PostPage(
               tid: tid,
               fid: fid,
+              threadTitle: tTitle,
               replyToFloorText: '回复楼主 (${floor.author})',
             ),
           ),
@@ -3081,7 +3249,7 @@ class _FloorViewState extends State<_FloorView> {
             builder: (_) => PostPage(
               tid: tid,
               fid: fid,
-              pid: floor.pid,
+              threadTitle: tTitle,
               reppost: floor.pid,
               noticeauthor: floor.author,
               replyToFloorText: '回复 $_displayFloorNumber (${floor.author})',
@@ -3202,7 +3370,7 @@ class _FloorViewState extends State<_FloorView> {
 class _ReplyFloorSection extends StatelessWidget {
   final PostFloor floor;
   final int tid;
-  final void Function(String author)? onReplyToAuthor;
+  final void Function(String author, int msgid)? onReplyToAuthor;
   final VoidCallback? onWriteReply;
   final void Function(ReplyFloorComment comment)? onReportComment;
 
@@ -3282,7 +3450,7 @@ class _ReplyFloorSection extends StatelessWidget {
 
 class _ReplyFloorItem extends StatelessWidget {
   final ReplyFloorComment comment;
-  final void Function(String author)? onReply;
+  final void Function(String author, int msgid)? onReply;
   final void Function(ReplyFloorComment comment)? onReport;
 
   const _ReplyFloorItem({
@@ -3328,7 +3496,7 @@ class _ReplyFloorItem extends StatelessWidget {
               title: Text('回复 @${comment.author}'),
               onTap: () {
                 Navigator.pop(ctx);
-                onReply?.call(comment.author);
+                onReply?.call(comment.author, comment.msgid);
               },
             ),
             ListTile(
@@ -3444,8 +3612,8 @@ class _ReplyFloorItem extends StatelessWidget {
                               fontSize: 9,
                               fontWeight: FontWeight.bold,
                               color: theme.brightness == Brightness.dark
-                                  ? const Color(0xFFFFB74D)
-                                  : const Color(0xFFE65100),
+                                    ? const Color(0xFFFFB74D)
+                                    : const Color(0xFFE65100),
                             ),
                           ),
                         ),
@@ -3485,7 +3653,7 @@ class _ReplyFloorItem extends StatelessWidget {
                       const SizedBox(width: 4),
                       // 回复按钮
                       InkWell(
-                        onTap: () => onReply?.call(comment.author),
+                        onTap: () => onReply?.call(comment.author, comment.msgid),
                         borderRadius: BorderRadius.circular(4),
                         child: Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
@@ -3529,7 +3697,8 @@ class _ReplyFloorItem extends StatelessWidget {
 /// Discuz 点评（postcomment / 楼中楼点评）
 class _CommentsSection extends StatelessWidget {
   final List<({String author, String content})> comments;
-  const _CommentsSection({required this.comments});
+  final void Function(String author)? onReply;
+  const _CommentsSection({required this.comments, this.onReply});
 
   @override
   Widget build(BuildContext context) {
@@ -3545,32 +3714,51 @@ class _CommentsSection extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            '点评',
-            style: theme.textTheme.bodySmall?.copyWith(
-              fontWeight: FontWeight.w600,
-              color: theme.colorScheme.outline,
-            ),
+          Row(
+            children: [
+              Text(
+                '点评',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: theme.colorScheme.outline,
+                ),
+              ),
+              const Spacer(),
+              if (onReply != null)
+                Text(
+                  '点击单条可回复',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    fontSize: 10,
+                    color: theme.colorScheme.outline.withAlpha(140),
+                  ),
+                ),
+            ],
           ),
           const SizedBox(height: 4),
           for (final c in comments)
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Text.rich(
-                TextSpan(
-                  children: [
-                    TextSpan(
-                      text: c.author.isNotEmpty ? '${c.author}：' : '',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.primary,
-                        fontWeight: FontWeight.w600,
+            InkWell(
+              onTap: onReply != null && c.author.isNotEmpty
+                  ? () => onReply!(c.author)
+                  : null,
+              borderRadius: BorderRadius.circular(4),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 2),
+                child: Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(
+                        text: c.author.isNotEmpty ? '${c.author}：' : '',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                    ),
-                    TextSpan(
-                      text: c.content,
-                      style: theme.textTheme.bodySmall?.copyWith(fontSize: 13),
-                    ),
-                  ],
+                      TextSpan(
+                        text: c.content,
+                        style: theme.textTheme.bodySmall?.copyWith(fontSize: 13),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),

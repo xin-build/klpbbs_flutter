@@ -125,4 +125,71 @@ class UserSpace {
       lockReason: lockReason ?? this.lockReason,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+    'uid': uid,
+    'username': username,
+    'credits': credits,
+    'group': group,
+    'regdate': regdate,
+    'lastvisit': lastvisit,
+    'signature': signature,
+    'level': level,
+    'levelName': levelName,
+    'medals': medals
+        .map((m) => {
+              'id': m.id,
+              'name': m.name,
+              'desc': m.desc,
+              'img': m.img,
+            })
+        .toList(),
+    'faceUrl': faceUrl,
+    'bgUrl': bgUrl,
+    'stats': stats,
+    'creditsDetail': creditsDetail,
+    'gameProfile': gameProfile,
+    'isOnline': isOnline,
+    'onlineStatusText': onlineStatusText,
+    'profileProgress': profileProgress,
+    'isLocked': isLocked,
+    'lockReason': lockReason,
+  };
+
+  factory UserSpace.fromJson(Map<String, dynamic> json) {
+    final rawMedals = json['medals'] as List<dynamic>? ?? const [];
+    final medalsList = <({int id, String name, String desc, String img})>[];
+    for (final m in rawMedals) {
+      if (m is Map) {
+        medalsList.add((
+          id: (m['id'] as num?)?.toInt() ?? 0,
+          name: m['name']?.toString() ?? '',
+          desc: m['desc']?.toString() ?? '',
+          img: m['img']?.toString() ?? '',
+        ));
+      }
+    }
+    return UserSpace(
+      uid: (json['uid'] as num?)?.toInt() ?? 0,
+      username: json['username']?.toString() ?? '',
+      credits: json['credits']?.toString() ?? '',
+      group: json['group']?.toString() ?? '',
+      regdate: json['regdate']?.toString() ?? '',
+      lastvisit: json['lastvisit']?.toString() ?? '',
+      signature: json['signature']?.toString() ?? '',
+      level: json['level']?.toString() ?? '',
+      levelName: json['levelName']?.toString() ?? '',
+      medals: medalsList,
+      faceUrl: json['faceUrl']?.toString() ?? '',
+      bgUrl: json['bgUrl']?.toString() ?? '',
+      stats: (json['stats'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const {},
+      creditsDetail: (json['creditsDetail'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const {},
+      gameProfile: (json['gameProfile'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const {},
+      isOnline: json['isOnline'] as bool? ?? false,
+      onlineStatusText: json['onlineStatusText']?.toString() ?? '',
+      profileProgress: (json['profileProgress'] as num?)?.toInt() ?? 0,
+      isLocked: json['isLocked'] as bool? ?? false,
+      lockReason: json['lockReason']?.toString() ?? '',
+    );
+  }
 }

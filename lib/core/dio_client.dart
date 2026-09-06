@@ -80,12 +80,18 @@ class DioClient {
     await saveCookies();
   }
 
+  /// 登出/清理会话时的附加回调（如清除用户资料持久化缓存）
+  static Future<void> Function()? onSessionCleared;
+
   /// 清空会话（登出/测试隔离），并移除本地持久化
   static Future<void> clearCookies() async {
     _cookies.clear();
     try {
       final sp = await SharedPreferences.getInstance();
       await sp.remove(_cookiePrefsKey);
+    } catch (_) {}
+    try {
+      await onSessionCleared?.call();
     } catch (_) {}
   }
 

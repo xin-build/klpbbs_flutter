@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 
 import 'user_space_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -8,7 +8,7 @@ import '../api/klpbbs_api.dart';
 import '../core/write_confirm.dart';
 import '../widgets/thread_card.dart';
 import '../models/pm_models.dart';
-import '../widgets/app_back_button.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 
 /// 私信会话详情（消息列表 + 回复输入 + 在线状态显示）
@@ -187,8 +187,9 @@ class _PmDetailPageState extends State<PmDetailPage> {
       bindings: shortcuts,
       child: FocusScope(
         child: Scaffold(
+          drawer: const GlobalAppDrawer(),
           appBar: AppBar(
-            leading: const AppBackButton(),
+            leading: const GlobalNavLeading(),
             titleSpacing: 0,
         title: InkWell(
           borderRadius: BorderRadius.circular(8),
@@ -258,7 +259,6 @@ class _PmDetailPageState extends State<PmDetailPage> {
             ),
           ),
         ),
-        actions: const [GlobalNavButton()],
       ),
       body: FutureBuilder<List<PmMessage>>(
         future: _future,

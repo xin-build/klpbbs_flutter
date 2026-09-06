@@ -1,7 +1,8 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../api/klpbbs_api.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 
 /// 推广中心（klpbbs home.php?mod=spacecp&ac=promotion，需登录）
@@ -24,9 +25,10 @@ class _PromotionPageState extends State<PromotionPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
+        leading: const GlobalNavLeading(),
         title: const Text('推广中心'),
-        actions: const [GlobalNavButton()],
       ),
       body: FutureBuilder<List<({String label, String url})>>(
         future: _future,

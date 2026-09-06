@@ -54,6 +54,7 @@ class _GeneralVideoPlayerState extends State<GeneralVideoPlayer> {
   double _rate = 1.0;
 
   StreamSubscription? _subPlaying;
+  StreamSubscription? _subCompleted;
   StreamSubscription? _subPos;
   StreamSubscription? _subDur;
   StreamSubscription? _subBuf;
@@ -91,6 +92,7 @@ class _GeneralVideoPlayerState extends State<GeneralVideoPlayer> {
 
   void _attachSubscriptions(Player p) {
     _subPlaying?.cancel();
+    _subCompleted?.cancel();
     _subPos?.cancel();
     _subDur?.cancel();
     _subBuf?.cancel();
@@ -99,8 +101,16 @@ class _GeneralVideoPlayerState extends State<GeneralVideoPlayer> {
     _subPlaying = p.stream.playing.listen((playing) {
       if (mounted) setState(() => _playing = playing);
     });
+    _subCompleted = p.stream.completed.listen((completed) {
+      if (mounted && completed) {
+        setState(() {
+          _playing = false;
+          _controlsVisible = true;
+        });
+      }
+    });
     _subPos = p.stream.position.listen((pos) {
-      if (mounted) setState(() => _position = pos);
+      if (mounted && !_isDragging) setState(() => _position = pos);
     });
     _subDur = p.stream.duration.listen((dur) {
       if (mounted) setState(() => _duration = dur);
@@ -122,6 +132,7 @@ class _GeneralVideoPlayerState extends State<GeneralVideoPlayer> {
   void dispose() {
     _hideTimer?.cancel();
     _subPlaying?.cancel();
+    _subCompleted?.cancel();
     _subPos?.cancel();
     _subDur?.cancel();
     _subBuf?.cancel();
@@ -319,31 +330,36 @@ class _GeneralVideoPlayerState extends State<GeneralVideoPlayer> {
                   ),
                 ),
 
-              // 4. 未开始时的中央播放大按钮
-              if (!_started && !_loading)
+              // 4. 未开始或暂停时的中央播放指示按钮
+              if ((!_started && !_loading) || (_started && !_playing && _controlsVisible))
                 Center(
-                  child: IconButton(
-                    iconSize: 56,
-                    icon: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: colorScheme.primary.withAlpha(220),
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withAlpha(80),
-                            blurRadius: 10,
-                            offset: const Offset(0, 4),
-                          ),
-                        ],
+                  child: AnimatedScale(
+                    scale: (_started && !_playing) ? 1.0 : 0.95,
+                    duration: const Duration(milliseconds: 200),
+                    curve: Curves.easeOutBack,
+                    child: IconButton(
+                      iconSize: 56,
+                      icon: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: colorScheme.primary.withAlpha(220),
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withAlpha(90),
+                              blurRadius: 12,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: const Icon(
+                          Icons.play_arrow_rounded,
+                          color: Colors.white,
+                          size: 36,
+                        ),
                       ),
-                      child: const Icon(
-                        Icons.play_arrow_rounded,
-                        color: Colors.white,
-                        size: 36,
-                      ),
+                      onPressed: _started ? _togglePlay : _startPlayback,
                     ),
-                    onPressed: _startPlayback,
                   ),
                 ),
 
@@ -351,7 +367,8 @@ class _GeneralVideoPlayerState extends State<GeneralVideoPlayer> {
               Positioned.fill(
                 child: AnimatedOpacity(
                   opacity: (_started && _controlsVisible) ? 1 : 0,
-                  duration: const Duration(milliseconds: 200),
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeInOutCubic,
                   child: IgnorePointer(
                     ignoring: !_started || !_controlsVisible,
                     child: MouseRegion(
@@ -460,9 +477,13 @@ class _GeneralVideoPlayerState extends State<GeneralVideoPlayer> {
                                       IconButton(
                                         iconSize: 22,
                                         padding: EdgeInsets.zero,
-                                        icon: Icon(
-                                          _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                                          color: Colors.white,
+                                        icon: AnimatedSwitcher(
+                                          duration: const Duration(milliseconds: 200),
+                                          child: Icon(
+                                            _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                                            key: ValueKey<bool>(_playing),
+                                            color: Colors.white,
+                                          ),
                                         ),
                                         onPressed: _togglePlay,
                                       ),

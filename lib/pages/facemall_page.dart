@@ -1,7 +1,8 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/thread_card.dart';
 import 'profile_settings_page.dart';
@@ -582,10 +583,11 @@ class _FacemallPageState extends State<FacemallPage>
     final colorScheme = theme.colorScheme;
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
+        leading: const GlobalNavLeading(),
         title: const Text('头像挂件'),
         centerTitle: true,
-        actions: const [GlobalNavButton()],
       ),
       body: Center(
         child: ConstrainedBox(

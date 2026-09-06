@@ -6,11 +6,11 @@ import 'package:flutter/services.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/cache_manager.dart';
+import '../core/forum_events.dart';
 import '../core/preload_service.dart';
-import '../core/seed_data.dart';
 import '../models/forum.dart';
-import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/skeleton_list.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -35,14 +35,22 @@ class _ForumsPageState extends State<ForumsPage> {
   @override
   void initState() {
     super.initState();
+    ForumFavoriteNotifier.instance.addListener(_onFavChanged);
     _loadFavs();
     _load();
   }
 
   @override
   void dispose() {
+    ForumFavoriteNotifier.instance.removeListener(_onFavChanged);
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  void _onFavChanged() {
+    if (!mounted) return;
+    _loadFavs();
+    _load(forceRefresh: true);
   }
 
   Future<void> _loadFavs() async {
@@ -102,9 +110,9 @@ class _ForumsPageState extends State<ForumsPage> {
     final cached = PreloadService.instance.get<List<ForumGroup>>('forum_groups', ignoreExpired: true);
     if (!forceRefresh && cached != null && cached.isNotEmpty) {
       _future = Future.value(cached);
-      // 后台静默刷新
+      // 后台静默刷新（强制拉取网页最新实时数据）
       unawaited(
-        KlpbbsApi.getForumGroups().then((fresh) {
+        KlpbbsApi.getForumGroups(forceRefresh: true).then((fresh) {
           if (mounted && fresh.isNotEmpty) {
             setState(() {
               _future = Future.value(fresh);
@@ -113,7 +121,7 @@ class _ForumsPageState extends State<ForumsPage> {
         }).catchError((_) {}),
       );
     } else {
-      _future = KlpbbsApi.getForumGroups();
+      _future = KlpbbsApi.getForumGroups(forceRefresh: forceRefresh);
     }
   }
 
@@ -129,16 +137,17 @@ class _ForumsPageState extends State<ForumsPage> {
     final colorScheme = theme.colorScheme;
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const AppBackButton(),
+        leading: const GlobalNavLeading(),
         title: _isSearching
             ? TextField(
                 controller: _searchCtrl,
                 autofocus: true,
-                style: const TextStyle(color: Colors.white, fontSize: 16),
-                decoration: const InputDecoration(
+                style: TextStyle(color: colorScheme.onSurface, fontSize: 16),
+                decoration: InputDecoration(
                   hintText: '搜索版块名称或别名...',
-                  hintStyle: TextStyle(color: Colors.white70),
+                  hintStyle: TextStyle(color: colorScheme.onSurfaceVariant.withAlpha(180)),
                   border: InputBorder.none,
                   enabledBorder: InputBorder.none,
                   focusedBorder: InputBorder.none,
@@ -171,7 +180,6 @@ class _ForumsPageState extends State<ForumsPage> {
             tooltip: '刷新',
             onPressed: _reload,
           ),
-          const GlobalNavButton(),
         ],
       ),
       body: FutureBuilder<List<ForumGroup>>(
@@ -198,11 +206,31 @@ class _ForumsPageState extends State<ForumsPage> {
                 ),
               );
             }
-            return const SkeletonList(itemCount: 8);
+            return const ForumSkeleton();
           }
 
           final rawGroups = snapshot.data!;
-          final baseGroups = rawGroups.isNotEmpty ? rawGroups : SeedData.forumGroups;
+          if (rawGroups.isEmpty) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.inbox_outlined, size: 48, color: colorScheme.outline),
+                    const SizedBox(height: 12),
+                    Text('暂无版块数据', style: theme.textTheme.titleMedium),
+                    const SizedBox(height: 12),
+                    FilledButton(
+                      onPressed: _reload,
+                      child: const Text('重新加载'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+          final baseGroups = rawGroups;
 
           // 自动同步服务端「我关注的」版块至 _favFids 与本地缓存
           bool hasNewFavs = false;

@@ -1,11 +1,11 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/preload_service.dart';
 import '../models/user_space.dart';
-import '../widgets/app_back_button.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/thread_card.dart';
 import 'credit_page.dart';
@@ -62,8 +62,8 @@ class _UserCenterPageState extends State<UserCenterPage> {
         .trim();
   }
 
-  Future<void> _loadProfile() async {
-    final uid = await KlpbbsApi.getMyUid();
+  Future<void> _loadProfile({bool forceRefresh = false}) async {
+    final uid = await KlpbbsApi.getMyUid(forceRefresh: forceRefresh);
     if (!mounted) return;
 
     if (uid == null || uid <= 0) {
@@ -76,24 +76,28 @@ class _UserCenterPageState extends State<UserCenterPage> {
     }
 
     _myUid = uid;
-    final cached = PreloadService.instance.get<UserSpace>('user_space_$uid', ignoreExpired: true);
-    if (cached != null) {
-      final threadCount = int.tryParse(cached.stats['主题'] ?? '0') ?? 0;
-      final rawIron = cached.creditsDetail['铁粒'] ?? '0';
-      final cleanIron = rawIron.replaceAll('粒', '').replaceAll('铁', '').trim();
-      setState(() {
-        _userSpace = cached;
-        _iron = cleanIron.isNotEmpty ? cleanIron : '0';
-        _credits = cached.credits.isNotEmpty ? cached.credits : (cached.creditsDetail['经验'] ?? '0');
-        _medalsCount = cached.medals.length;
-        _threadsCount = threadCount;
-        _loading = false;
-      });
+    if (!forceRefresh) {
+      final cached = PreloadService.instance.get<UserSpace>('user_space_$uid', ignoreExpired: true);
+      if (cached != null) {
+        final threadCount = int.tryParse(cached.stats['主题'] ?? '0') ?? 0;
+        final rawIron = cached.creditsDetail['铁粒'] ?? '0';
+        final cleanIron = rawIron.replaceAll('粒', '').replaceAll('铁', '').trim();
+        setState(() {
+          _userSpace = cached;
+          _iron = cleanIron.isNotEmpty ? cleanIron : '0';
+          _credits = cached.credits.isNotEmpty ? cached.credits : (cached.creditsDetail['经验'] ?? '0');
+          _medalsCount = cached.medals.length;
+          _threadsCount = threadCount;
+          _loading = false;
+        });
+      } else {
+        setState(() => _loading = true);
+      }
     } else {
       setState(() => _loading = true);
     }
 
-    final space = await KlpbbsApi.getUserSpace(uid);
+    final space = await KlpbbsApi.getUserSpace(uid, forceRefresh: forceRefresh);
     if (!mounted) return;
 
     if (space != null) {
@@ -119,7 +123,7 @@ class _UserCenterPageState extends State<UserCenterPage> {
         MaterialPageRoute(
           builder: (_) => UserSpacePage(uid: _myUid!, isMe: true, initialUser: _userSpace),
         ),
-      ).then((_) => _loadProfile());
+      ).then((_) => _loadProfile(forceRefresh: true));
     } else {
       _openLogin();
     }
@@ -128,7 +132,7 @@ class _UserCenterPageState extends State<UserCenterPage> {
   void _openLogin() {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const LoginPage()),
-    ).then((_) => _loadProfile());
+    ).then((_) => _loadProfile(forceRefresh: true));
   }
 
   Future<void> _handleLogout() async {
@@ -155,7 +159,7 @@ class _UserCenterPageState extends State<UserCenterPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('已退出登录'), behavior: SnackBarBehavior.floating),
       );
-      _loadProfile();
+      _loadProfile(forceRefresh: true);
     }
   }
 
@@ -165,8 +169,9 @@ class _UserCenterPageState extends State<UserCenterPage> {
     final colorScheme = theme.colorScheme;
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const AppBackButton(),
+        leading: const GlobalNavLeading(),
         title: const Text('个人中心'),
         centerTitle: false,
         actions: [
@@ -184,13 +189,12 @@ class _UserCenterPageState extends State<UserCenterPage> {
               );
             },
           ),
-          const GlobalNavButton(),
         ],
       ),
       body: RefreshIndicator(
         onRefresh: () async {
           HapticFeedback.lightImpact();
-          await _loadProfile();
+          await _loadProfile(forceRefresh: true);
         },
         child: Center(
           child: ConstrainedBox(

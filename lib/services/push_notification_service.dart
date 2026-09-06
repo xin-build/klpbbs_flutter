@@ -170,10 +170,13 @@ class PushNotificationService extends ChangeNotifier {
 
     try {
       final summary = await KlpbbsApi.getUnreadSummary();
+      final hasChanged = _unreadNotices != summary.unreadNotices || _unreadPm != summary.unreadPm;
       _unreadNotices = summary.unreadNotices;
       _unreadPm = summary.unreadPm;
       final currentTotal = _unreadNotices + _unreadPm;
-      notifyListeners();
+      if (hasChanged) {
+        notifyListeners();
+      }
 
       // 如果有新的未读消息且多于上次记录，触发全平台多级推送通知
       if (currentTotal > _lastUnreadCount && currentTotal > 0) {

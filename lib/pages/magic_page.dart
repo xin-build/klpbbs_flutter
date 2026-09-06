@@ -1,11 +1,11 @@
-import 'package:cached_network_image/cached_network_image.dart';
+﻿import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/dio_client.dart';
 import '../models/magic_item.dart';
-import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import 'credit_page.dart';
 import 'login_page.dart';
@@ -115,8 +115,9 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
     final colorScheme = theme.colorScheme;
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const AppBackButton(),
+        leading: const GlobalNavLeading(),
         title: const Text('道具中心'),
         actions: [
           IconButton(
@@ -132,7 +133,6 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
               }
             },
           ),
-          const GlobalNavButton(),
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(46),

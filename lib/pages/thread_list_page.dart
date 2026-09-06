@@ -1,16 +1,22 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
+import '../core/forum_events.dart';
+import '../core/preload_service.dart';
 import '../models/forum.dart';
 import '../models/forum_header_info.dart';
 import '../models/thread_summary.dart';
 import '../widgets/desktop_shortcuts.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/forum_header_widget.dart';
+import '../widgets/global_app_drawer.dart';
+import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
 import '../widgets/responsive_layout.dart';
+import '../widgets/skeleton_list.dart';
 import '../widgets/thread_card.dart';
 import 'post_page.dart';
 import 'search_page.dart';
@@ -43,11 +49,29 @@ class _ThreadListPageState extends State<ThreadListPage> {
   @override
   void initState() {
     super.initState();
+    ForumFavoriteNotifier.instance.addListener(_onFavEvent);
     _loadFavStatus();
     _future = _fetchData();
     _loadTypes();
     _loadAllForums();
     _loadSubForums();
+  }
+
+  @override
+  void dispose() {
+    ForumFavoriteNotifier.instance.removeListener(_onFavEvent);
+    super.dispose();
+  }
+
+  void _onFavEvent() {
+    if (!mounted) return;
+    final lastFid = ForumFavoriteNotifier.instance.lastChangedFid;
+    if (lastFid == widget.fid) {
+      final isFav = ForumFavoriteNotifier.instance.lastIsFav ?? false;
+      if (_isFav != isFav) {
+        setState(() => _isFav = isFav);
+      }
+    }
   }
 
   Future<void> _loadFavStatus() async {
@@ -103,6 +127,38 @@ class _ThreadListPageState extends State<ThreadListPage> {
     int page = 1,
     bool forceRefresh = false,
   }) async {
+    // SWR 策略：如果缓存中已有该版块数据包，瞬间直出展示，并在后台静默更新
+    final cacheKey = 'forum_bundle_${widget.fid}_${page}_${_selectedType ?? 0}_${_orderby ?? ""}';
+    final cached = PreloadService.instance.get<
+      ({
+        List<ThreadSummary> threads,
+        ForumHeaderInfo header,
+        List<({int typeid, String name})> types,
+        List<Forum> subForums,
+      })
+    >(cacheKey);
+
+    if (!forceRefresh && cached != null) {
+      if (mounted) {
+        if (cached.types.isNotEmpty) _types = cached.types;
+        if (cached.subForums.isNotEmpty) _subForums = cached.subForums;
+      }
+      // 在后台静默发起网络拉取（SWR）无感更新
+      unawaited(
+        _fetchData(page: page, forceRefresh: true).then((fresh) {
+          if (mounted && fresh.threads.isNotEmpty) {
+            setState(() {
+              _future = Future.value(fresh);
+            });
+          }
+        }).catchError((_) {}),
+      );
+      return (
+        threads: cached.threads,
+        header: cached.header,
+      );
+    }
+
     final bundle = await KlpbbsApi.getForumBundle(
       widget.fid,
       page: page,
@@ -273,7 +329,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
       future: _future,
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done) {
-          return const Center(child: CircularProgressIndicator());
+          return const SkeletonList(itemCount: 8);
         }
         if (snap.hasError) {
           return Center(
@@ -335,33 +391,35 @@ class _ThreadListPageState extends State<ThreadListPage> {
                 )
               else
                 for (final t in normalThreads)
-                  Container(
-                    margin: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 3,
-                    ),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
-                      border: (_selectedTid == t.tid &&
-                              isDesktop &&
-                              AppConfig.isMasterDetailEnabled)
-                          ? Border.all(
-                              color: colorScheme.primary,
-                              width: 1.8,
-                            )
-                          : null,
-                    ),
-                    child: ThreadCard(
-                      thread: t,
-                      onTap: () => _openThread(t.tid),
-                      onAuthorTap: t.uid == null
-                          ? null
-                          : () => Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) =>
-                                      UserSpacePage(uid: t.uid!),
+                  RepaintBoundary(
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        border: (_selectedTid == t.tid &&
+                                isDesktop &&
+                                AppConfig.isMasterDetailEnabled)
+                            ? Border.all(
+                                color: colorScheme.primary,
+                                width: 1.8,
+                              )
+                            : null,
+                      ),
+                      child: ThreadCard(
+                        thread: t,
+                        onTap: () => _openThread(t.tid),
+                        onAuthorTap: t.uid == null
+                            ? null
+                            : () => Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) =>
+                                        UserSpacePage(uid: t.uid!),
+                                  ),
                                 ),
-                              ),
+                      ),
                     ),
                   ),
 
@@ -515,12 +573,9 @@ class _ThreadListPageState extends State<ThreadListPage> {
     return DesktopShortcutsWrapper(
       onRefresh: _reload,
       child: Scaffold(
+        drawer: const GlobalAppDrawer(),
         appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            tooltip: '返回',
-            onPressed: () => Navigator.of(context).maybePop(),
-          ),
+          leading: const GlobalNavLeading(),
           title: Text(widget.title),
           actions: [
             IconButton(

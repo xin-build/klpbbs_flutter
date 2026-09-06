@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
+import '../core/forum_events.dart';
 import '../widgets/empty_view.dart';
 import '../models/forum.dart';
 import 'thread_list_page.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 
 /// 收藏版块列表
@@ -23,15 +25,30 @@ class _FavoriteForumsPageState extends State<FavoriteForumsPage> {
   @override
   void initState() {
     super.initState();
+    ForumFavoriteNotifier.instance.addListener(_onFavChanged);
     _future = KlpbbsApi.getFavoriteForums(widget.uid);
+  }
+
+  @override
+  void dispose() {
+    ForumFavoriteNotifier.instance.removeListener(_onFavChanged);
+    super.dispose();
+  }
+
+  void _onFavChanged() {
+    if (!mounted) return;
+    setState(() {
+      _future = KlpbbsApi.getFavoriteForums(widget.uid, forceRefresh: true);
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
+        leading: const GlobalNavLeading(),
         title: const Text('收藏版块'),
-        actions: const [GlobalNavButton()],
       ),
       body: FutureBuilder<List<Forum>>(
         future: _future,

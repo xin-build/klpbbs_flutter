@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 
 import 'package:html/dom.dart' as html_dom;
 import 'package:html/parser.dart' as html_parser;
@@ -17,6 +18,7 @@ import '../models/medal_item.dart';
 import '../models/notice_item.dart';
 import '../models/pm_models.dart';
 import '../models/post_block.dart';
+import '../models/post_edit_info.dart';
 import '../models/post_floor.dart';
 import '../models/sign_entry.dart';
 import '../models/site_stats.dart';
@@ -24,6 +26,31 @@ import '../models/smiley.dart';
 import '../models/thread_summary.dart';
 import '../models/user_space.dart';
 import '../models/usergroup_comparison.dart';
+
+typedef ThreadDetailParsed = ({
+  String title,
+  List<PostFloor> floors,
+  int totalPages,
+  int firstAuthorCredits,
+  String publishDate,
+  String lastReplyDate,
+  String forumName,
+  int? fid,
+  List<String> breadcrumbs,
+  String? typeName,
+  int? typeid,
+  int likes,
+  int favorites,
+  int views,
+  int replies,
+  List<String> tags,
+  String? stamp,
+  String? stampUrl,
+  String? coverUrl,
+  bool isFavorited,
+  bool isLiked,
+  int? favid,
+});
 
 /// comiis_app（克米设计）手机模板 HTML 解析器
 ///
@@ -1455,9 +1482,19 @@ class ComiisParser {
         .trim();
     if (s.contains('<table') || s.contains('<tbody') || s.contains('<tr') || s.contains('<td')) {
       try {
-        final frag = html_parser.parseFragment(s);
-        frag.querySelectorAll('script, style').forEach((e) => e.remove());
-        s = (frag.text ?? s).trim();
+        final body = html_parser.parse(s).body;
+        if (body != null) {
+          body.querySelectorAll('script, style').forEach((e) => e.remove());
+          final tds = body.querySelectorAll('td');
+          if (tds.isNotEmpty) {
+            s = tds.map((td) => td.innerHtml.trim()).where((html) => html.isNotEmpty).join('<br>');
+          } else {
+            for (final t in body.querySelectorAll('table, tbody, thead, tfoot, tr')) {
+              t.replaceWith(html_dom.Element.html('<div>${t.innerHtml}</div>'));
+            }
+            s = body.innerHtml.trim();
+          }
+        }
       } catch (_) {}
     }
     return s;
@@ -3909,31 +3946,16 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
   // ---------------------------------------------------------------------
   // 帖子详情（楼层）
   // ---------------------------------------------------------------------
-  static ({
-    String title,
-    List<PostFloor> floors,
-    int totalPages,
-    int firstAuthorCredits,
-    String publishDate,
-    String lastReplyDate,
-    String forumName,
-    int? fid,
-    List<String> breadcrumbs,
-    String? typeName,
-    int? typeid,
-    int likes,
-    int favorites,
-    int views,
-    int replies,
-    List<String> tags,
-    String? stamp,
-    String? stampUrl,
-    String? coverUrl,
-    bool isFavorited,
-    bool isLiked,
-    int? favid,
-  })
-  parseThreadDetail(String html) {
+  /// 异步多线程解析帖子详情页 HTML（优先在后台 Isolate 运行）
+  static Future<ThreadDetailParsed> parseThreadDetailAsync(String html) async {
+    if (!AppConfig.enableMultiThreadParsing) {
+      return parseThreadDetail(html);
+    }
+    return compute(_parseThreadDetailCompute, html);
+  }
+
+  /// 解析帖子详情页 HTML（同时支持 mobile=2 克米手机版与 mobile=no Discuz 官方电脑版）。
+  static ThreadDetailParsed parseThreadDetail(String html) {
     final doc = html_parser.parse(html);
     final floors = <PostFloor>[];
 
@@ -4425,7 +4447,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
 
       final magicItems = _parseMagicItems(post);
-      final rawBlocks = parseStructuredBlocks(coreBody);
+      final rawBlocks = parseStructuredBlocks(coreBody, isFirstFloor: floors.isEmpty);
 
       // 全面扫描楼层内所有独立附件容器（仅提取在 coreBody 外部的附件，防止二次重复解析）
       final existingAttachKeys = <String>{};
@@ -4438,7 +4460,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         // 关键防御：若该附件节点已经在 coreBody 内部，说明上面 parseStructuredBlocks 已经解析过，坚决跳过避免双重解析
         if (coreBody.contains(el)) continue;
 
-        final parsed = parseStructuredBlocks(el);
+        final parsed = parseStructuredBlocks(el, isFirstFloor: floors.isEmpty);
         for (final b in parsed) {
           if (b is AttachmentBlock) {
             final key = _attachmentKey(b);
@@ -4458,7 +4480,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
       final floorLikes = _parseFloorLikes(post);
       final likeBtn = post.querySelector(
-        '.reply_liked, .supported, .comiis_yizan, a.voted, a.on, a.cur, .km_recommend_on, a[class*="voted"], a[class*="liked"], a[id^="recommend"][class*="on"]',
+        '.reply_liked, .supported, .comiis_yizan, a.voted, .km_recommend_on, a[class*="voted"], a[class*="liked"], a[id^="recommend"][class*="on"], a[id^="recommend"][class*="cur"], a[id^="reply_like_"][class*="on"], a[id^="reply_like_"][class*="cur"]',
       );
       final floorIsLiked = likeBtn != null ||
           (post.querySelector('a.reply_like, a.support, a[id^="reply_like_"]')?.text.contains('已赞') ?? false);
@@ -4520,6 +4542,14 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       final bool isFloorOnline = (hasOnlineMark && !hasOfflineMark) ||
           (!hasOfflineMark && _isRecentActivity(timeText));
 
+      final bool hasCanEdit = post.querySelector(
+            'a[href*="action=edit"], a.editp, .comiis_post_edit, a[href*="mod=post&action=edit"]',
+          ) !=
+          null ||
+          post.querySelectorAll('a').any((a) =>
+              (a.attributes['href']?.contains('action=edit') ?? false) ||
+              (a.text.trim() == '编辑' && (a.attributes['href']?.contains('mod=post') ?? false)));
+
       floors.add(
         PostFloor(
           pid: pid,
@@ -4569,6 +4599,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           isUnderReview: isUnderReview,
           isLocked: isLocked,
           isOnline: isFloorOnline,
+          canEdit: hasCanEdit,
         ),
       );
     }
@@ -4923,9 +4954,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       final isFavEl = el.classes.contains('on') ||
           el.classes.contains('cur') ||
           el.classes.contains('fav_on') ||
-          el.classes.contains('f_a') ||
-          el.classes.contains('active') ||
-          (icon != null && (icon.classes.contains('f_a') || icon.classes.contains('on') || icon.classes.contains('cur') || icon.classes.contains('active'))) ||
+          (icon != null && (icon.classes.contains('on') || icon.classes.contains('cur'))) ||
           href.contains('op=delete') ||
           href.contains('delfav') ||
           text.contains('已收藏') ||
@@ -4941,14 +4970,14 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
     if (!isFavorited) {
       isFavorited = doc.querySelector(
-            '#k_favorite.on, #k_favorite.cur, #k_favorite.fav_on, #comiis_favorite_a.on, #comiis_favorite_a.f_a, a[href*="ac=favorite"][class*="on"], a[href*="ac=favorite"][class*="cur"], a[href*="ac=favorite"][class*="fav_on"], a[href*="op=delete"][href*="favorite"], a[href*="delfav"], a.fav_on, a.k_fav.on',
+            '#k_favorite.on, #k_favorite.cur, #k_favorite.fav_on, #comiis_favorite_a.on, a[href*="ac=favorite"][class*="on"], a[href*="ac=favorite"][class*="cur"], a[href*="ac=favorite"][class*="fav_on"], a[href*="op=delete"][href*="favorite"], a[href*="delfav"], a.fav_on, a.k_fav.on',
           ) !=
           null;
     }
 
     final isLiked = (floors.isNotEmpty && floors.first.isLiked) ||
         doc.querySelector(
-          '#recommendv_add.on, #recommend_add.on, .reply_liked, .supported, .comiis_yizan, a.voted, a.km_recommend_on, a[class*="voted"], a[class*="liked"], a[id^="recommend"][class*="on"], #comiis_foot_memu .comiis_recommend_color.f_a',
+          '#recommendv_add.on, #recommend_add.on, .reply_liked, .supported, .comiis_yizan, a.voted, a.km_recommend_on, a[class*="voted"], a[class*="liked"], a[id^="recommend"][class*="on"], a[id^="recommend"][class*="cur"]',
         ) !=
         null;
 
@@ -5647,15 +5676,15 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       if (h2 != null) username = h2.text.trim();
     }
 
-    // 从页面文本提取字段
+    // 从页面文本提取字段（严格限定在被访问用户的资料区域，绝不全局抓取导致串号）
     String credits = '', regdate = '', lastvisit = '', signature = '';
-    String level = '', levelName = '';
+    String level = '', levelName = '', group = '';
     final levEl = cleanDoc.querySelector(
-      'span.kmlevs.kmlv, span.kmlevs.bg_0, span.user_lev, #g_up',
+      '.comiis_space_tx span.kmlevs.kmlv, .comiis_space_tx span.kmlevs.bg_0, .comiis_space_tx span.user_lev, .comiis_space_tx span.kmlevs, .comiis_space_tx span.kmlv, .comiis_space_tx [class*="level"], #uhd #g_up',
     );
     if (levEl != null) level = levEl.text.trim();
     final levNameEl = cleanDoc.querySelector(
-      'span.kmlev, a[href*="usergroup"]',
+      '.comiis_space_tx span.kmlev, .comiis_space_tx a[href*="usergroup"], .comiis_space_tx [class*="level"], #uhd a[href*="usergroup"], #psts a[href*="usergroup"]',
     );
     if (levNameEl != null) levelName = levNameEl.text.trim();
 
@@ -5787,6 +5816,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           } else if (label == '钻石') {
             creditsDetail['钻石'] = value;
           } else if (label == '用户组') {
+            group = value;
             if (levelName.isEmpty) levelName = value;
           } else {
             if (label.contains('时间') || label.contains('访问')) {
@@ -5830,7 +5860,10 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         if (label.contains('铁锭')) creditsDetail.putIfAbsent('铁锭', () => value);
         if (label == '贡献') creditsDetail.putIfAbsent('贡献', () => value);
         if (label == '钻石') creditsDetail.putIfAbsent('钻石', () => value);
-        if (label == '用户组' && levelName.isEmpty) levelName = value;
+        if (label == '用户组') {
+          group = value;
+          if (levelName.isEmpty) levelName = value;
+        }
         gameProfile.putIfAbsent(label, () => value);
       }
     }
@@ -5841,12 +5874,35 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       if (v != null && v.isNotEmpty) stats['人气'] = v;
     }
 
-    // 3) 提取用户组全名（如 "Lv.4 Lv.4 高级会员" / "Lv.4 高级会员"）
-    final groupEl = doc.querySelector(
-      'a[href*="usergroup"], .kmlev, .user_lev, #g_up',
-    );
-    if (groupEl != null && groupEl.text.trim().isNotEmpty) {
-      if (levelName.isEmpty) levelName = groupEl.text.trim();
+    // 3) 提取用户组全名（仅在目标用户资料区域内提取，绝不穿透全局）
+    if (levelName.isEmpty) {
+      final groupEl = cleanDoc.querySelector(
+        '.comiis_space_tx .kmlev, .comiis_space_tx a[href*="usergroup"], .comiis_space_tx [class*="level"], #uhd a[href*="usergroup"], #psts a[href*="usergroup"]',
+      );
+      if (groupEl != null && groupEl.text.trim().isNotEmpty) {
+        levelName = groupEl.text.trim();
+      }
+    }
+    if (level.isNotEmpty) {
+      final lm = RegExp(r'(Lv\.\d+)').firstMatch(level);
+      if (lm != null) {
+        final pureLvl = lm.group(1)!;
+        if (levelName.isEmpty) {
+          levelName = level.replaceFirst(pureLvl, '').trim();
+        }
+        level = pureLvl;
+      }
+    } else if (levelName.isNotEmpty) {
+      final lm = RegExp(r'(Lv\.\d+)').firstMatch(levelName);
+      if (lm != null) {
+        level = lm.group(1)!;
+      }
+    }
+    if (level.isNotEmpty && levelName.startsWith(level)) {
+      levelName = levelName.replaceFirst(level, '').trim();
+    }
+    if (group.isEmpty) {
+      group = levelName.isNotEmpty ? levelName : level;
     }
     // 头像挂件提取（仅当带有 ##SJ## 挂件时提取）
     final faceImg = cleanDoc.querySelector('.comiis_space_tx img, .user_img img, .avt img, #ct img[src*="avatar"]');
@@ -5946,6 +6002,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       uid: uid,
       username: _cleanTitle(username),
       credits: credits,
+      group: _cleanTitle(group),
       regdate: regdate,
       lastvisit: lastvisit,
       signature: cleanSig,
@@ -7352,6 +7409,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     String loginhash,
     String seccodehash,
     String seccodemodid,
+    bool hasSecCode,
   })
   parseSecCodeInfo(String html) {
     var formhash = '';
@@ -7377,7 +7435,8 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         RegExp(r'''seccode_([a-zA-Z0-9]+)''').firstMatch(html) ??
         RegExp(
           r'''name=["']seccodehash["']\s+value=["']([a-zA-Z0-9]+)["']''',
-        ).firstMatch(html);
+        ).firstMatch(html) ??
+        RegExp(r'''seccheck_tpl\[['"]([a-zA-Z0-9]+)['"]\]''').firstMatch(html);
     if (scM != null) seccodehash = scM.group(1)!;
 
     // seccodemodid：updateseccode('hash', 'html', 'modid') 第三参数
@@ -7386,11 +7445,25 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     ).firstMatch(html);
     if (modM != null) seccodemodid = modM.group(1)!;
 
+    // 严谨检测页面是否确实渲染了验证码输入或刷新控件
+    final hasRealSecCode = html.contains('updateseccode(') ||
+        html.contains('name="seccodeverify"') ||
+        html.contains("name='seccodeverify'") ||
+        html.contains('id="vseccode_') ||
+        html.contains('id="seccode_') ||
+        html.contains('seccheck_tpl');
+
+    // 只有在明确检测到需要验证码时才激活 seccodehash
+    if (hasRealSecCode && seccodehash.isEmpty) {
+      seccodehash = 'cS0';
+    }
+
     return (
       formhash: formhash,
       loginhash: loginhash,
       seccodehash: seccodehash,
       seccodemodid: seccodemodid,
+      hasSecCode: hasRealSecCode,
     );
   }
 
@@ -7478,11 +7551,14 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     String formhash,
     Set<int> allowedSpecials,
     List<({int value, String name})> typeOptions,
+    List<PostAttachmentItem> unusedAttachments,
     String errorMessage,
+    PostEditorAttributes editorAttributes,
   })
   parseNewThreadInfo(String html) {
     final allowed = <int>{0};
     final typeOptions = <({int value, String name})>[];
+    final unusedAttachments = <PostAttachmentItem>[];
     String error = '';
 
     final fmM =
@@ -7507,14 +7583,51 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
-    // switchpost('forum.php?mod=post&action=newthread&special=1')
+    // 1. 特殊主题识别：switchpost('forum.php?mod=post&action=newthread&special=X')
     for (final m in RegExp(
       r'''switchpost\(['"][^'"]*?(?:&|\?[?&])special=(\d+)['"]''',
     ).allMatches(html)) {
-      allowed.add(int.tryParse(m.group(1)!) ?? 0);
+      final s = int.tryParse(m.group(1)!) ?? 0;
+      if (s > 0) allowed.add(s);
+    }
+    // Discuz 特殊主题标签与链接：id="extra_poll_c" / id="special_1" / special=1 等
+    if (html.contains('special=1') || html.contains('extra_poll_c') || html.contains('发投票') || html.contains('发起投票')) {
+      allowed.add(1);
+    }
+    if (html.contains('special=2') || html.contains('extra_trade_c') || html.contains('发商品') || html.contains('发布商品')) {
+      allowed.add(2);
+    }
+    if (html.contains('special=3') || html.contains('extra_reward_c') || html.contains('发悬赏') || html.contains('发布悬赏')) {
+      allowed.add(3);
+    }
+    if (html.contains('special=4') || html.contains('extra_activity_c') || html.contains('发活动') || html.contains('发起活动')) {
+      allowed.add(4);
+    }
+    if (html.contains('special=5') || html.contains('extra_debate_c') || html.contains('发辩论') || html.contains('发起辩论')) {
+      allowed.add(5);
     }
 
-    // 权限与提示信息：DOM 解析 .alert_error 或 #messagetext
+    // 2. 未使用的附件解析（未插入正文的上传附件）
+    for (final el in doc.querySelectorAll('tr[id^="unused_"], div[id^="unused_"], #unusedlist tr, #unusedattachlist tr')) {
+      final input = el.querySelector('input[name="unused[]"], input[name^="attachnew"]');
+      final aid = int.tryParse(input?.attributes['value'] ?? '') ?? 0;
+      if (aid > 0) {
+        final name = el.querySelector('a, span.filename, .xw1')?.text.trim() ?? '附件 $aid';
+        final isImage = name.toLowerCase().endsWith('.png') ||
+            name.toLowerCase().endsWith('.jpg') ||
+            name.toLowerCase().endsWith('.jpeg') ||
+            name.toLowerCase().endsWith('.gif') ||
+            name.toLowerCase().endsWith('.webp');
+        unusedAttachments.add(PostAttachmentItem(
+          aid: aid,
+          filename: name,
+          filesize: 0,
+          isImage: isImage,
+        ));
+      }
+    }
+
+    // 3. 权限与提示信息：DOM 解析 .alert_error 或 #messagetext
     final alertErrEl = doc.querySelector('.alert_error') ?? doc.querySelector('#messagetext') ?? doc.querySelector('.alert_info');
     if (alertErrEl != null) {
       error = alertErrEl.text.trim();
@@ -7545,11 +7658,83 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
+    // 4. 解析发帖/回复附加选项与权限特性（100% 实时对齐 Web 端 post_editor_attribute.htm）
+    PostOptionAttribute parseCheckbox(
+      String selector, {
+      bool defaultChecked = false,
+      bool defaultDisabled = false,
+    }) {
+      final el = doc.querySelector(selector);
+      if (el == null) {
+        return PostOptionAttribute(
+          available: false,
+          checked: defaultChecked,
+          disabled: defaultDisabled,
+        );
+      }
+      final isChecked = el.attributes.containsKey('checked') ||
+          el.attributes['checked'] == 'checked' ||
+          el.attributes['checked'] == 'true';
+      final isDisabled = el.attributes.containsKey('disabled') ||
+          el.attributes['disabled'] == 'disabled' ||
+          el.attributes['disabled'] == 'true';
+      return PostOptionAttribute(
+        available: true,
+        checked: isChecked,
+        disabled: isDisabled,
+      );
+    }
+
+    final usesig = parseCheckbox('input[name="usesig"], input#usesig', defaultChecked: true);
+    final isanonymous = parseCheckbox('input[name="isanonymous"], input#isanonymous', defaultChecked: false);
+    final hiddenreplies = parseCheckbox('input[name="hiddenreplies"], input#hiddenreplies', defaultChecked: false);
+    final ordertype = parseCheckbox('input[name="ordertype"], input#ordertype', defaultChecked: false);
+    final allownoticeauthor = parseCheckbox('input[name="allownoticeauthor"], input#allownoticeauthor', defaultChecked: true);
+
+    final htmlon = parseCheckbox('input[name="htmlon"], input#htmlon', defaultChecked: false, defaultDisabled: true);
+    final allowimgcode = parseCheckbox('input[name="allowimgcode"], input#allowimgcode', defaultChecked: true, defaultDisabled: true);
+    final allowimgurl = parseCheckbox('input[name="allowimgurl"], input#allowimgurl', defaultChecked: true);
+    final parseurloff = parseCheckbox('input[name="parseurloff"], input#parseurloff', defaultChecked: false);
+    final smileyoff = parseCheckbox('input[name="smileyoff"], input#smileyoff', defaultChecked: false);
+    final bbcodeoff = parseCheckbox('input[name="bbcodeoff"], input#bbcodeoff', defaultChecked: false);
+    final imgcontent = parseCheckbox('input[name="imgcontent"], input#imgcontent', defaultChecked: false, defaultDisabled: true);
+
+    // 解析用户组阅读权限选项 select[name="readperm"]
+    final readPermOptions = <({int value, String name})>[];
+    final readPermSel = doc.querySelector('select[name="readperm"], select#readperm');
+    if (readPermSel != null) {
+      for (final opt in readPermSel.querySelectorAll('option')) {
+        final v = int.tryParse(opt.attributes['value'] ?? '') ?? 0;
+        final name = opt.text.trim();
+        if (v > 0 && name.isNotEmpty) {
+          readPermOptions.add((value: v, name: name));
+        }
+      }
+    }
+
+    final editorAttributes = PostEditorAttributes(
+      useSig: usesig,
+      isAnonymous: isanonymous,
+      hiddenReplies: hiddenreplies,
+      orderType: ordertype,
+      allowNoticeAuthor: allownoticeauthor,
+      htmlOn: htmlon,
+      allowImgCode: allowimgcode,
+      allowImgUrl: allowimgurl,
+      parseUrlOff: parseurloff,
+      smileyOff: smileyoff,
+      bbcodeOff: bbcodeoff,
+      imgContent: imgcontent,
+      readPermOptions: readPermOptions,
+    );
+
     return (
       formhash: formhash,
       allowedSpecials: allowed,
       typeOptions: typeOptions,
+      unusedAttachments: unusedAttachments,
       errorMessage: error,
+      editorAttributes: editorAttributes,
     );
   }
 
@@ -7673,6 +7858,14 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     return s.trim();
   }
 
+  /// 异步多线程将 HTML 字符串解析为结构化区块
+  static Future<List<PostBlock>> parseStructuredBlocksFromHtmlAsync(String html) async {
+    if (!AppConfig.enableMultiThreadParsing) {
+      return parseStructuredBlocksFromHtml(html);
+    }
+    return compute(_parseStructuredBlocksCompute, html);
+  }
+
   /// 将 HTML 字符串解析为结构化区块（编辑器 BBCode 预览、折叠块等场景）
   static List<PostBlock> parseStructuredBlocksFromHtml(String html) {
     final doc = html_parser.parseFragment(html);
@@ -7684,6 +7877,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
   static List<PostBlock> parseStructuredBlocks(
     html_dom.Element messageEl, {
     String? inheritedAlign,
+    bool isFirstFloor = true,
   }) {
     final blocks = <PostBlock>[];
     if (messageEl.nodes.isEmpty) return blocks;
@@ -7929,11 +8123,59 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           continue;
         }
 
-        // 0. 悬赏问答专属卡片 (.comiis_xstop, .rwd, .reward, .comiis_reward)
-        if (node.classes.contains('comiis_xstop') ||
-            node.classes.contains('comiis_reward') ||
-            node.classes.contains('rwd') ||
-            (node.classes.contains('bg_h') && innerText.contains('悬赏'))) {
+        // 1. 引用块优先匹配 (.comiis_quote, blockquote, .quote, .flw_quote)
+        final isQuoteNode = tag == 'blockquote' ||
+            node.classes.contains('quote') ||
+            node.classes.contains('comiis_quote') ||
+            node.classes.contains('flw_quote') ||
+            node.querySelector('blockquote') != null;
+
+        if (isQuoteNode) {
+          var author = '引用';
+          final bq = tag == 'blockquote' ? node : (node.querySelector('blockquote') ?? node);
+          var quoteContent = bq.innerHtml;
+
+          // 尝试从引用头中提取发言人和时间：
+          // Discuz 典型格式 1: <font color="#999999">username 发表于 2024-4-15 11:21</font>
+          // Discuz 典型格式 2: <a ...><font color="#999999">username 发表于 2024-4-15 11:21</font></a>
+          final metaFont = bq.querySelector('font[color*="999999"], font[color*="grey"], font[color*="gray"]');
+          if (metaFont != null && metaFont.text.contains('发表于')) {
+            author = metaFont.text.trim().replaceAll(RegExp(r'\s+'), ' ');
+            final parent = metaFont.parent;
+            if (parent != null && parent.localName == 'a') {
+              parent.remove();
+            } else {
+              metaFont.remove();
+            }
+            quoteContent = bq.innerHtml;
+          } else {
+            final textHeader = bq.text.trim();
+            final headerM = RegExp(r'^([^\n\r]+?\s*发表于\s*[^\n\r<]+)').firstMatch(textHeader);
+            if (headerM != null) {
+              author = headerM.group(1)!.trim();
+            } else {
+              final quoteM = RegExp(
+                r'\[quote\](?:([^:]+):)?([\s\S]*?)\[/quote\]',
+              ).firstMatch(innerText);
+              if (quoteM != null && quoteM.group(1) != null) {
+                author = quoteM.group(1)!.trim();
+              }
+            }
+          }
+          quoteContent = quoteContent.replaceFirst(RegExp(r'^(?:\s*<br\s*/?>\s*)+', caseSensitive: false), '');
+          blocks.add(QuoteBlock(author: author, contentHtml: quoteContent, align: nodeAlign));
+          continue;
+        }
+
+        // 0. 悬赏问答专属卡片 (.comiis_xstop, .comiis_xsda, .comiis_reward, .rwd)
+        // 严格遵循：仅在首楼 (isFirstFloor) 且存在真实 Discuz 悬赏结构容器时解析；非首楼回复严禁生成悬赏卡片！
+        final isBountyCard = isFirstFloor &&
+            (node.classes.contains('comiis_xstop') ||
+                node.classes.contains('comiis_xsda') ||
+                node.classes.contains('comiis_reward') ||
+                (tag == 'div' && node.classes.contains('rwd') && !node.classes.contains('quote')));
+
+        if (isBountyCard) {
           final priceM = RegExp(r'悬赏\s*(\d+)').firstMatch(innerText);
           final price = priceM != null
               ? int.tryParse(priceM.group(1)!) ?? 0
@@ -7955,20 +8197,6 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
               isSolved: isSolved,
             ),
           );
-          continue;
-        }
-
-        // 1. 引用块
-        if (tag == 'blockquote' || node.classes.contains('quote')) {
-          var author = '引用';
-          var quoteContent = node.innerHtml;
-          final quoteM = RegExp(
-            r'\[quote\](?:([^:]+):)?([\s\S]*?)\[/quote\]',
-          ).firstMatch(innerText);
-          if (quoteM != null) {
-            author = quoteM.group(1)?.trim() ?? author;
-          }
-          blocks.add(QuoteBlock(author: author, contentHtml: quoteContent, align: nodeAlign));
           continue;
         }
 
@@ -10035,4 +10263,14 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       permissions: items,
     );
   }
+}
+
+/// 后台 Isolate 并发解析帖子详情顶级函数
+ThreadDetailParsed _parseThreadDetailCompute(String html) {
+  return ComiisParser.parseThreadDetail(html);
+}
+
+/// 后台 Isolate 并发解析结构化区块顶级函数
+List<PostBlock> _parseStructuredBlocksCompute(String html) {
+  return ComiisParser.parseStructuredBlocksFromHtml(html);
 }

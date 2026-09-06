@@ -1,10 +1,10 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/write_confirm.dart';
 import '../models/credit_log.dart';
-import '../widgets/app_back_button.dart';
 import '../widgets/empty_view.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
 import 'magic_page.dart';
@@ -161,8 +161,9 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
     final colorScheme = theme.colorScheme;
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const AppBackButton(),
+        leading: const GlobalNavLeading(),
         title: const Text('积分', style: TextStyle(fontWeight: FontWeight.bold)),
         centerTitle: true,
         actions: [
@@ -174,7 +175,6 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
               _reloadBase();
             },
           ),
-          const GlobalNavButton(),
         ],
         bottom: TabBar(
           controller: _tabController,

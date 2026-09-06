@@ -1,7 +1,7 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import '../api/klpbbs_api.dart';
 import '../models/user_space.dart';
-import '../widgets/app_back_button.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 
 /// 认证项目模型
@@ -204,11 +204,11 @@ class _VerifyInfoPageState extends State<VerifyInfoPage> {
 
     return Scaffold(
       backgroundColor: colorScheme.surface,
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
         title: const Text('认证信息', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18)),
         centerTitle: true,
-        leading: const AppBackButton(),
-        actions: const [GlobalNavButton()],
+        leading: const GlobalNavLeading(),
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())

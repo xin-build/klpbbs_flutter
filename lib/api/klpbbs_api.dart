@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
 import 'dart:typed_data';
@@ -8,8 +9,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/app_config.dart';
 import '../core/dio_client.dart';
+import '../core/forum_events.dart';
 import '../core/preload_service.dart';
-import '../core/seed_data.dart';
 import '../models/credit_log.dart';
 import '../models/darkroom_entry.dart';
 import '../models/forum.dart';
@@ -20,6 +21,7 @@ import '../models/magic_item.dart';
 import '../models/medal_item.dart';
 import '../models/notice_item.dart';
 import '../models/pm_models.dart';
+import '../models/post_edit_info.dart';
 import '../models/post_floor.dart';
 import '../models/sign_entry.dart';
 import '../models/site_stats.dart';
@@ -27,7 +29,6 @@ import '../models/smiley.dart';
 import '../models/thread_summary.dart';
 import '../models/user_space.dart';
 import '../models/usergroup_comparison.dart';
-import '../services/auto_sign_service.dart';
 import 'comiis_parser.dart';
 
 /// klpbbs 完整 API 封装（浏览 + 写操作 + 内存预加载）
@@ -224,24 +225,32 @@ class KlpbbsApi {
   static int? getCachedAuthorUid(String author) => _authorUidCache[author];
 
   /// 首页推荐流：聚合移动端门户大图推荐、图文导读、官方热帖与最新发布内容，以及人才市场、悬赏问答等全站版块数据
-  static Future<List<ThreadSummary>> getHome() async {
-    final cached = PreloadService.instance.get<List<ThreadSummary>>(
-      'home_threads',
-    );
+  static Future<List<ThreadSummary>> getHome({bool forceRefresh = false}) async {
+    if (!forceRefresh) {
+      final cached = PreloadService.instance.get<List<ThreadSummary>>(
+        'home_threads',
+      );
+      if (cached != null && cached.isNotEmpty) {
+        return cached;
+      }
+    } else {
+      PreloadService.instance.remove('home_threads');
+    }
+    final cached = PreloadService.instance.get<List<ThreadSummary>>('home_threads');
     try {
-      // 1. 并发获取 Discuz 移动端门户焦点大图、图文导读、热门聚焦与最新发表，以及核心热区版块数据
-      final results = await Future.wait([
-        _get('forum.php?mobile=2').catchError((_) => ''),
-        getGuide('pic', page: 1).catchError((_) => <ThreadSummary>[]),
-        getGuide('hot', page: 1).catchError((_) => <ThreadSummary>[]),
-        getGuide('newthread', page: 1).catchError((_) => <ThreadSummary>[]),
-        getGuide('digest', page: 1).catchError((_) => <ThreadSummary>[]), // 全站精华
-        getThreadList(52, page: 1).catchError((_) => <ThreadSummary>[]),  // BE附加包
-        getThreadList(140, page: 1).catchError((_) => <ThreadSummary>[]), // JE模组
-        getThreadList(75, page: 1).catchError((_) => <ThreadSummary>[]),  // 人才市场
-        getThreadList(17, page: 1).catchError((_) => <ThreadSummary>[]),  // 服务器大厅
-        getThreadList(41, page: 1).catchError((_) => <ThreadSummary>[]),  // 闲聊讨论
-        getThreadList(2, page: 1).catchError((_) => <ThreadSummary>[]),   // 游戏资讯
+      // 1. 并发获取 Discuz 移动端门户焦点大图、图文导读、热门聚焦与最新发表，以及核心热区版块数据（严格保证实时数据）
+      final results = await Future.wait<dynamic>([
+        _get('forum.php?mobile=2', forceRefresh: forceRefresh).catchError((_) => ''),
+        getGuide('pic', page: 1, forceRefresh: forceRefresh).catchError((_) => <ThreadSummary>[]),
+        getGuide('hot', page: 1, forceRefresh: forceRefresh).catchError((_) => <ThreadSummary>[]),
+        getGuide('newthread', page: 1, forceRefresh: forceRefresh).catchError((_) => <ThreadSummary>[]),
+        getGuide('digest', page: 1, forceRefresh: forceRefresh).catchError((_) => <ThreadSummary>[]), // 全站精华
+        getThreadList(52, page: 1, forceRefresh: forceRefresh).catchError((_) => <ThreadSummary>[]),  // BE附加包
+        getThreadList(140, page: 1, forceRefresh: forceRefresh).catchError((_) => <ThreadSummary>[]), // JE模组
+        getThreadList(75, page: 1, forceRefresh: forceRefresh).catchError((_) => <ThreadSummary>[]),  // 人才市场
+        getThreadList(17, page: 1, forceRefresh: forceRefresh).catchError((_) => <ThreadSummary>[]),  // 服务器大厅
+        getThreadList(41, page: 1, forceRefresh: forceRefresh).catchError((_) => <ThreadSummary>[]),  // 闲聊讨论
+        getThreadList(2, page: 1, forceRefresh: forceRefresh).catchError((_) => <ThreadSummary>[]),   // 游戏资讯
       ]);
 
       final homePortalHtml = results[0] as String;
@@ -403,12 +412,16 @@ class KlpbbsApi {
       }
 
       if (enriched.isNotEmpty) {
-        PreloadService.instance.set('home_threads', enriched);
+        PreloadService.instance.set(
+          'home_threads',
+          enriched,
+          ttl: const Duration(seconds: 20),
+        );
         return enriched;
       }
     } catch (_) {}
     if (cached != null && cached.isNotEmpty) return cached;
-    return SeedData.homeThreads;
+    return const [];
   }
 
   /// 版块导航列表（真实分区结构，扁平化所有版块）
@@ -417,20 +430,49 @@ class KlpbbsApi {
     if (groups.isNotEmpty) {
       return groups.expand((g) => g.forums).toList();
     }
-    return SeedData.forumGroups.expand((g) => g.forums).toList();
+    return const [];
   }
 
   /// 社区版块树（分区 → 版块），多端合并提取移动端高清图标与 PC 端精准贴数/今日帖数
-  static Future<List<ForumGroup>> getForumGroups() async {
+  /// 支持本地持久化磁盘存储（0ms 秒开），结合 SWR 后台静默联网更新
+  static Future<List<ForumGroup>> getForumGroups({bool forceRefresh = false}) async {
     final cached = PreloadService.instance.get<List<ForumGroup>>(
       'forum_groups',
     );
+    if (!forceRefresh && cached != null && cached.isNotEmpty) {
+      return cached;
+    }
+
+    // 优先从本地持久化磁盘缓存瞬时加载（0ms 启动秒开）
+    if (!forceRefresh) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final rawJson = prefs.getString('cached_forum_groups_json');
+        if (rawJson != null && rawJson.isNotEmpty) {
+          final list = (jsonDecode(rawJson) as List<dynamic>)
+              .map((e) => ForumGroup.fromJson(e as Map<String, dynamic>))
+              .toList();
+          if (list.isNotEmpty) {
+            final injected = _injectFavoriteForums(list, prefs);
+            PreloadService.instance.set('forum_groups', injected, ttl: const Duration(hours: 24));
+            // 在后台静默异步拉取服务端最新实时版块树并更新本地
+            unawaited(getForumGroups(forceRefresh: true).catchError((_) => const <ForumGroup>[]));
+            return injected;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (forceRefresh) {
+      PreloadService.instance.remove('forum_groups');
+    }
     try {
       final results = await Future.wait([
-        _get('forum.php?forumlist=1&mobile=2').catchError((_) => ''),
+        _get('forum.php?forumlist=1&mobile=2', forceRefresh: forceRefresh).catchError((_) => ''),
         _get(
           'forum.php?mobile=no',
           headers: {'User-Agent': AppConfig.pcUserAgent},
+          forceRefresh: forceRefresh,
         ).catchError((_) => ''),
       ]);
       final mobileGroups = ComiisParser.parseForumGroups(results[0]);
@@ -448,6 +490,7 @@ class KlpbbsApi {
         PreloadService.instance.set('site_stats', finalStats);
       }
 
+      final prefs = await SharedPreferences.getInstance();
       if (mobileGroups.isNotEmpty) {
         final pcMap = <int, Forum>{};
         for (final g in pcGroups) {
@@ -460,9 +503,6 @@ class KlpbbsApi {
           final mergedForums = <Forum>[];
           for (final mf in mg.forums) {
             final pf = pcMap[mf.fid];
-            final seed = SeedData.forumGroups
-                .expand((g) => g.forums)
-                .firstWhere((s) => s.fid == mf.fid, orElse: () => mf);
             mergedForums.add(
               Forum(
                 fid: mf.fid,
@@ -470,14 +510,14 @@ class KlpbbsApi {
                 description:
                     (mf.description != null && mf.description!.isNotEmpty)
                         ? mf.description!
-                        : (pf?.description ?? seed.description),
+                        : (pf?.description ?? ''),
                 gid: mg.gid,
                 iconUrl: (mf.iconUrl != null && mf.iconUrl!.isNotEmpty)
                     ? mf.iconUrl
-                    : (pf?.iconUrl ?? seed.iconUrl),
+                    : (pf?.iconUrl ?? ''),
                 threadCount: (mf.threadCount >= 0)
                     ? mf.threadCount
-                    : (pf?.threadCount ?? seed.threadCount),
+                    : (pf?.threadCount ?? 0),
                 todayCount: (mf.todayCount >= 0)
                     ? mf.todayCount
                     : (pf?.todayCount ?? -1),
@@ -488,15 +528,104 @@ class KlpbbsApi {
             ForumGroup(gid: mg.gid, name: mg.name, forums: mergedForums),
           );
         }
-        PreloadService.instance.set('forum_groups', mergedGroups);
-        return mergedGroups;
+        final finalGroups = _injectFavoriteForums(mergedGroups, prefs);
+        PreloadService.instance.set(
+          'forum_groups',
+          finalGroups,
+          ttl: const Duration(hours: 24),
+        );
+        try {
+          final rawJson = jsonEncode(finalGroups.map((g) => g.toJson()).toList());
+          await prefs.setString('cached_forum_groups_json', rawJson);
+        } catch (_) {}
+        return finalGroups;
       }
       if (pcGroups.isNotEmpty) {
-        PreloadService.instance.set('forum_groups', pcGroups);
-        return pcGroups;
+        final finalGroups = _injectFavoriteForums(pcGroups, prefs);
+        PreloadService.instance.set(
+          'forum_groups',
+          finalGroups,
+          ttl: const Duration(hours: 24),
+        );
+        try {
+          final rawJson = jsonEncode(finalGroups.map((g) => g.toJson()).toList());
+          await prefs.setString('cached_forum_groups_json', rawJson);
+        } catch (_) {}
+        return finalGroups;
       }
     } catch (_) {}
-    return cached ?? SeedData.forumGroups;
+    return cached ?? const [];
+  }
+
+  /// 统一将本地收藏/关注版块注入版块分组中的「我关注的」分区 (gid 0)，确保与本地持久化及全站多页面完全一致
+  static List<ForumGroup> _injectFavoriteForums(
+    List<ForumGroup> groups,
+    SharedPreferences prefs,
+  ) {
+    if (groups.isEmpty) return groups;
+
+    final allKnownForums = <int, Forum>{};
+    for (final g in groups) {
+      for (final f in g.forums) {
+        if (!allKnownForums.containsKey(f.fid) ||
+            (allKnownForums[f.fid]!.iconUrl?.isEmpty ?? true)) {
+          allKnownForums[f.fid] = f;
+        }
+      }
+    }
+
+    final rawFavList = prefs.getStringList('fav_forums') ?? const [];
+    final favFids = rawFavList.map(int.tryParse).whereType<int>().toSet();
+
+    // 自动收集服务端原始 groups 中已关注的版块到 favFids（只合并不误删）
+    bool hasNew = false;
+    for (final g in groups) {
+      if (g.gid == 0 || g.name.contains('关注') || g.name.contains('收藏')) {
+        for (final f in g.forums) {
+          if (favFids.add(f.fid)) {
+            hasNew = true;
+          }
+        }
+      }
+    }
+    if (hasNew) {
+      prefs.setStringList('fav_forums', favFids.map((e) => '$e').toList());
+    }
+
+    // 若本地未初始化关注且服务端未包含关注，提供首屏推荐关注版块保底
+    if (favFids.isEmpty) {
+      favFids.addAll(const [41, 43, 52]);
+    }
+
+    final combinedFavs = <Forum>[];
+    final seenFids = <int>{};
+    for (final fid in favFids) {
+      if (seenFids.add(fid)) {
+        final f = allKnownForums[fid] ??
+            Forum(
+              fid: fid,
+              name: ComiisParser.getForumNameByFid(fid) ?? '版块 $fid',
+              gid: 0,
+            );
+        combinedFavs.add(f.copyWith(gid: 0));
+      }
+    }
+
+    final result = <ForumGroup>[
+      ForumGroup(
+        gid: 0,
+        name: '我关注的',
+        forums: combinedFavs,
+      ),
+    ];
+
+    for (final g in groups) {
+      if (g.gid != 0 && !g.name.contains('关注') && !g.name.contains('收藏')) {
+        result.add(g);
+      }
+    }
+
+    return result;
   }
 
   /// 获取全站统计数据（今日发帖 / 昨日发帖 / 论坛总帖 / 注册会员）
@@ -629,7 +758,7 @@ class KlpbbsApi {
         return header;
       } catch (_) {
         final cached = PreloadService.instance.get<ForumHeaderInfo>(cacheKey);
-        return cached ?? SeedData.getForumHeader(fid, '');
+        return cached ?? ForumHeaderInfo(fid: fid, name: '');
       }
     }
   }
@@ -719,6 +848,21 @@ class KlpbbsApi {
     String? orderby,
     bool forceRefresh = false,
   }) async {
+    final cacheKey = 'forum_bundle_${fid}_${page}_${typeid ?? 0}_${orderby ?? ""}';
+    if (!forceRefresh) {
+      final cached = PreloadService.instance.get<
+        ({
+          List<ThreadSummary> threads,
+          ForumHeaderInfo header,
+          List<({int typeid, String name})> types,
+          List<Forum> subForums,
+        })
+      >(cacheKey);
+      if (cached != null) {
+        return cached;
+      }
+    }
+
     final results = await Future.wait([
       _get(
         'forum.php?mod=forumdisplay&fid=$fid${typeid != null && typeid > 0 ? '&filter=typeid&typeid=$typeid' : ''}${orderby != null && orderby.isNotEmpty ? '&orderby=$orderby' : ''}&page=$page&mobile=2',
@@ -758,12 +902,17 @@ class KlpbbsApi {
       subForums = ComiisParser.parseSubForums(pcHtml, currentFid: fid);
     }
 
-    return (
+    final bundle = (
       threads: threads,
       header: header,
       types: types,
       subForums: subForums,
     );
+    if (threads.isNotEmpty || !header.isEmpty) {
+      PreloadService.instance.set(cacheKey, bundle, ttl: const Duration(minutes: 5));
+    }
+
+    return bundle;
   }
 
   /// 版块帖子列表（实时获取）
@@ -772,14 +921,23 @@ class KlpbbsApi {
     int? typeid,
     int page = 1,
     String? orderby,
+    bool forceRefresh = false,
   }) async {
     final cacheKey = 'thread_list_${fid}_${typeid}_${orderby}_$page';
+    if (!forceRefresh) {
+      final cached = PreloadService.instance.get<List<ThreadSummary>>(cacheKey);
+      if (cached != null && cached.isNotEmpty) {
+        return cached;
+      }
+    } else {
+      PreloadService.instance.remove(cacheKey);
+    }
     try {
       final buf = StringBuffer('forum.php?mod=forumdisplay&fid=$fid&mobile=2');
       if (typeid != null) buf.write('&filter=typeid&typeid=$typeid');
       if (orderby != null) buf.write('&orderby=$orderby');
       if (page > 1) buf.write('&page=$page');
-      final html = await _get(buf.toString());
+      final html = await _get(buf.toString(), forceRefresh: forceRefresh);
       if (html.isEmpty) return const [];
       final res = await Isolate.run(
         () => ComiisParser.parseThreadList(html, pageFid: fid),
@@ -804,10 +962,6 @@ class KlpbbsApi {
         return enrichedRes;
       }
     } catch (_) {}
-    if (page == 1) {
-      final seed = SeedData.homeThreads.where((t) => t.fid == fid).toList();
-      if (seed.isNotEmpty) return seed;
-    }
     final cached = PreloadService.instance.get<List<ThreadSummary>>(cacheKey);
     return cached ?? const [];
   }
@@ -992,7 +1146,7 @@ class KlpbbsApi {
     final html = await _get(
       'forum.php?mod=viewthread&tid=$tid&mobile=2&page=$page',
     );
-    final detail = ComiisParser.parseThreadDetail(html);
+    final detail = await ComiisParser.parseThreadDetailAsync(html);
     return detail;
   }
 
@@ -1011,7 +1165,7 @@ class KlpbbsApi {
     final future = () async {
       try {
         final html = await _get('forum.php?mod=viewthread&tid=$tid&mobile=2');
-        final detail = ComiisParser.parseThreadDetail(html);
+        final detail = await ComiisParser.parseThreadDetailAsync(html);
         if (detail.forumName.isNotEmpty) {
           ComiisParser.registerThread(
             tid,
@@ -1148,12 +1302,12 @@ class KlpbbsApi {
 
     SignHeaderInfo bestResult = const SignHeaderInfo();
 
-    // 优先请求移动端与 PC 端多重 endpoints，确保捕获最新登录状态
+    // 优先请求 PC 端全量页面（含今日之星、连续天数、全天统计与准确打卡状态），失败再降级请求手机端
     final endpoints = [
-      ('plugin.php?id=k_misign:sign&mobile=2', <String, String>{}),
       ('plugin.php?id=k_misign:sign&mobile=no', {'User-Agent': AppConfig.pcUserAgent}),
-      ('plugin.php?id=k_misign:sign', <String, String>{}),
+      ('plugin.php?id=k_misign:sign&mobile=2', <String, String>{}),
       ('k_misign-sign.html', {'User-Agent': AppConfig.pcUserAgent}),
+      ('plugin.php?id=k_misign:sign', <String, String>{}),
     ];
 
     for (final (path, headers) in endpoints) {
@@ -1176,9 +1330,9 @@ class KlpbbsApi {
               parsed.todaySignCount > 0 ||
               parsed.continuousDays > 0 ||
               parsed.totalDays > 0) {
-            if (bestResult.starUsername.isEmpty || parsed.todaySignCount > bestResult.todaySignCount) {
-              bestResult = parsed;
-            }
+            bestResult = parsed;
+            // 已获取到有效统计数据，无需继续串行重试后续端点
+            break;
           }
         }
       } catch (_) {}
@@ -1393,14 +1547,106 @@ class KlpbbsApi {
     return res;
   }
 
-  /// 用户空间（个人资料）
+  // ================= 登录用户个人资料 7 天持久化长效缓存 =================
+  static int? _cachedMyUid;
+  static String? _cachedMyUsername;
+  static String? _cachedMyAvatar;
+  static UserSpace? _cachedMyUserSpace;
+
+  static const String _keyCachedMyUid = 'klpbbs_cached_my_uid';
+  static const String _keyCachedMyUsername = 'klpbbs_cached_my_username';
+  static const String _keyCachedMyAvatar = 'klpbbs_cached_my_avatar';
+  static const String _keyCachedUserSpaceJson = 'klpbbs_cached_user_space_json';
+  static const String _keyCachedUserProfileTime = 'klpbbs_cached_user_profile_time';
+  static const Duration userProfileTtl = Duration(days: 7);
+
+  /// 初始化/恢复登录用户个人资料（App 启动时在 main() 调用）
+  static Future<void> initUserProfileCache() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final savedTimeMs = sp.getInt(_keyCachedUserProfileTime) ?? 0;
+      if (savedTimeMs > 0) {
+        final savedDate = DateTime.fromMillisecondsSinceEpoch(savedTimeMs);
+        if (DateTime.now().difference(savedDate) < userProfileTtl) {
+          _cachedMyUid = sp.getInt(_keyCachedMyUid);
+          _cachedMyUsername = sp.getString(_keyCachedMyUsername);
+          _cachedMyAvatar = sp.getString(_keyCachedMyAvatar);
+          final rawJson = sp.getString(_keyCachedUserSpaceJson);
+          if (rawJson != null && rawJson.isNotEmpty) {
+            try {
+              final map = jsonDecode(rawJson) as Map<String, dynamic>;
+              final space = UserSpace.fromJson(map);
+              _cachedMyUserSpace = space;
+              if (space.uid > 0) {
+                PreloadService.instance.set('user_space_${space.uid}', space, ttl: userProfileTtl);
+              }
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// 持久化缓存登录用户的空间资料（7天有效）
+  static Future<void> saveUserProfile(UserSpace space) async {
+    if (space.uid <= 0) return;
+    _cachedMyUid = space.uid;
+    if (space.username.isNotEmpty) _cachedMyUsername = space.username;
+    if (space.faceUrl.isNotEmpty) _cachedMyAvatar = space.faceUrl;
+    _cachedMyUserSpace = space;
+    PreloadService.instance.set('user_space_${space.uid}', space, ttl: userProfileTtl);
+
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setInt(_keyCachedMyUid, space.uid);
+      if (space.username.isNotEmpty) {
+        await sp.setString(_keyCachedMyUsername, space.username);
+      }
+      if (space.faceUrl.isNotEmpty) {
+        await sp.setString(_keyCachedMyAvatar, space.faceUrl);
+      }
+      await sp.setString(_keyCachedUserSpaceJson, jsonEncode(space.toJson()));
+      await sp.setInt(_keyCachedUserProfileTime, DateTime.now().millisecondsSinceEpoch);
+    } catch (_) {}
+  }
+
+  /// 清除登录用户持久化资料缓存（登出时调用）
+  static Future<void> clearUserProfileCache() async {
+    _cachedMyUid = null;
+    _cachedMyUsername = null;
+    _cachedMyAvatar = null;
+    _cachedMyUserSpace = null;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.remove(_keyCachedMyUid);
+      await sp.remove(_keyCachedMyUsername);
+      await sp.remove(_keyCachedMyAvatar);
+      await sp.remove(_keyCachedUserSpaceJson);
+      await sp.remove(_keyCachedUserProfileTime);
+    } catch (_) {}
+  }
+
+  /// 获取当前已缓存的我的 UID（纯同步/零延迟）
+  static int? get currentCachedMyUid => _cachedMyUid;
+
+  /// 获取当前已缓存的我的用户名（纯同步/零延迟）
+  static String? get currentCachedMyUsername => _cachedMyUsername;
+
+  /// 获取当前已缓存的我的头像 URL（纯同步/零延迟）
+  static String? get currentCachedMyAvatar => _cachedMyAvatar;
+
+  /// 用户空间（个人资料，支持 7 天长期本地持久化秒开）
   static Future<UserSpace?> getUserSpace(int uid, {bool forceRefresh = false}) async {
     final cacheKey = 'user_space_$uid';
     if (!forceRefresh) {
-      final cached = PreloadService.instance.get<UserSpace>(cacheKey);
+      final cached = PreloadService.instance.get<UserSpace>(cacheKey, ignoreExpired: true);
       if (cached != null) return cached;
+      if (_cachedMyUserSpace != null && (_cachedMyUserSpace!.uid == uid || uid <= 0)) {
+        return _cachedMyUserSpace;
+      }
     } else {
       PreloadService.instance.remove(cacheKey);
+      _cachedMyUserSpace = null;
     }
 
     try {
@@ -1450,9 +1696,9 @@ class KlpbbsApi {
           credits: userPc?.credits.isNotEmpty == true
               ? userPc!.credits
               : (userMob?.credits ?? ''),
-          group: userPc?.group.isNotEmpty == true
-              ? userPc!.group
-              : (userMob?.group ?? ''),
+          group: userMob?.group.isNotEmpty == true
+              ? userMob!.group
+              : (userPc?.group ?? ''),
           regdate: userPc?.regdate.isNotEmpty == true
               ? userPc!.regdate
               : (userMob?.regdate ?? ''),
@@ -1460,12 +1706,12 @@ class KlpbbsApi {
               ? userPc!.lastvisit
               : (userMob?.lastvisit ?? ''),
           signature: userPc?.signature ?? '',
-          level: userPc?.level.isNotEmpty == true
-              ? userPc!.level
-              : (userMob?.level ?? ''),
-          levelName: userPc?.levelName.isNotEmpty == true
-              ? userPc!.levelName
-              : (userMob?.levelName ?? ''),
+          level: userMob?.level.isNotEmpty == true
+              ? userMob!.level
+              : (userPc?.level ?? ''),
+          levelName: userMob?.levelName.isNotEmpty == true
+              ? userMob!.levelName
+              : (userPc?.levelName ?? ''),
           medals: userPc?.medals ?? const [],
           faceUrl: userPc?.faceUrl.isNotEmpty == true ? userPc!.faceUrl : (userMob?.faceUrl ?? ''),
           bgUrl: userMob?.bgUrl.isNotEmpty == true ? userMob!.bgUrl : (userPc?.bgUrl ?? ''),
@@ -1483,7 +1729,7 @@ class KlpbbsApi {
           profileProgress: userPc?.profileProgress ?? userMob?.profileProgress ?? 0,
         );
 
-        PreloadService.instance.set(cacheKey, res, ttl: const Duration(minutes: 15));
+        PreloadService.instance.set(cacheKey, res, ttl: const Duration(minutes: 30));
         return res;
       }
 
@@ -1552,7 +1798,11 @@ class KlpbbsApi {
         },
         gameProfile: {...?userMobile?.gameProfile, ...?userPc?.gameProfile},
       );
-      PreloadService.instance.set(cacheKey, res, ttl: const Duration(minutes: 15));
+      if (isMe) {
+        await saveUserProfile(res);
+      } else {
+        PreloadService.instance.set(cacheKey, res, ttl: const Duration(minutes: 30));
+      }
       return res;
     } catch (_) {
       return null;
@@ -1572,16 +1822,100 @@ class KlpbbsApi {
     }
   }
 
-  /// 获取当前登录用户 uid（从「我的」用户中心页解析）
-  static Future<int?> getMyUid() async {
+  /// 获取当前登录用户 uid（优先使用 7 天本地持久化缓存，避免无谓网络开销）
+  static Future<int?> getMyUid({bool forceRefresh = false}) async {
+    if (!DioClient.isLoggedIn) {
+      _cachedMyUid = null;
+      return null;
+    }
+    if (!forceRefresh && _cachedMyUid != null && _cachedMyUid! > 0) {
+      return _cachedMyUid;
+    }
+    // 尝试从本地 SharedPreferences 恢复
+    if (!forceRefresh) {
+      try {
+        final sp = await SharedPreferences.getInstance();
+        final savedTimeMs = sp.getInt(_keyCachedUserProfileTime) ?? 0;
+        if (savedTimeMs > 0) {
+          final savedDate = DateTime.fromMillisecondsSinceEpoch(savedTimeMs);
+          if (DateTime.now().difference(savedDate) < userProfileTtl) {
+            final uid = sp.getInt(_keyCachedMyUid);
+            if (uid != null && uid > 0) {
+              _cachedMyUid = uid;
+              return uid;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
     try {
       final html = await _get(
         'home.php?mod=space&do=profile&mycenter=1&mobile=2',
+        forceRefresh: forceRefresh,
       );
-      final m = RegExp(r'''space(?:&amp;|&)uid=(\d+)''').firstMatch(html);
-      if (m != null) return int.tryParse(m.group(1)!);
+      final m = RegExp(r'''space(?:&amp;|&)uid=(\d+)''').firstMatch(html) ??
+          RegExp(r'home\.php\?mod=space&amp;uid=(\d+)').firstMatch(html) ??
+          RegExp(r'home\.php\?mod=space&uid=(\d+)').firstMatch(html) ??
+          RegExp(r'space-uid-(\d+)\.html').firstMatch(html) ??
+          RegExp(r'uid=(\d+)').firstMatch(html);
+      if (m != null) {
+        final uid = int.tryParse(m.group(1)!);
+        if (uid != null && uid > 0) {
+          _cachedMyUid = uid;
+          try {
+            final sp = await SharedPreferences.getInstance();
+            await sp.setInt(_keyCachedMyUid, uid);
+            await sp.setInt(_keyCachedUserProfileTime, DateTime.now().millisecondsSinceEpoch);
+          } catch (_) {}
+          return uid;
+        }
+      }
     } catch (_) {}
-    return null;
+
+    if (forceRefresh || _cachedMyUid == null) {
+      final status = await checkLoginStatus(forceRefresh: forceRefresh);
+      if (status.uid != null && status.uid! > 0) {
+        _cachedMyUid = status.uid;
+        return status.uid;
+      }
+    }
+    return _cachedMyUid;
+  }
+
+  /// 获取当前登录用户的权限身份（管理员 / 超级版主 / 当前版块版主）
+  static Future<({bool isAdmin, bool isSuperMod, bool isModerator, String group, String username})> getMyRole({int? fid}) async {
+    final myUid = await getMyUid();
+    if (myUid == null || myUid <= 0) {
+      return (isAdmin: false, isSuperMod: false, isModerator: false, group: '', username: '');
+    }
+    try {
+      final space = await getUserSpace(myUid);
+      final grp = (space?.group.isNotEmpty == true)
+          ? space!.group
+          : (space?.levelName ?? '');
+      final username = space?.username ?? '';
+      final isAdmin = grp.contains('管理员');
+      final isSuperMod = grp.contains('超级版主');
+      var isMod = grp.contains('版主');
+      if (!isMod && fid != null && fid > 0 && username.isNotEmpty) {
+        try {
+          final header = await getForumHeader(fid);
+          if (header.moderators.isNotEmpty && header.moderators.contains(username)) {
+            isMod = true;
+          }
+        } catch (_) {}
+      }
+      return (
+        isAdmin: isAdmin,
+        isSuperMod: isSuperMod,
+        isModerator: isMod,
+        group: grp,
+        username: username,
+      );
+    } catch (_) {
+      return (isAdmin: false, isSuperMod: false, isModerator: false, group: '', username: '');
+    }
   }
 
   /// 小喇叭广播（ahome_horn，内嵌于「社区」页 forumlist=1）
@@ -2080,14 +2414,36 @@ class KlpbbsApi {
 
   /// 退出登录
   static Future<bool> logout() async {
-    final page = await _get('home.php?mobile=no');
-    final formhash = _extractFormhash(page);
-    if (formhash == null) return false;
-    final html = await _get(
-      'member.php?mod=logging&action=logout&formhash=$formhash&mobile=no',
-    );
+    bool serverOk = false;
+    try {
+      final page = await _get('home.php?mobile=no');
+      final formhash = _extractFormhash(page) ?? _cachedFormhash;
+      if (formhash != null && formhash.isNotEmpty) {
+        final html = await _get(
+          'member.php?mod=logging&action=logout&formhash=$formhash&mobile=no',
+        );
+        serverOk = !html.contains('alert_error');
+      }
+    } catch (_) {}
+
+    // 彻底重置所有本地内存与磁盘脏缓存
+    _cachedMyUid = null;
+    _cachedFormhash = null;
+    _cachedSignFormhash = null;
+    PreloadService.instance.clear();
+    clearQuickCache();
+
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.remove('my_uid');
+      await sp.remove('cached_username');
+      await sp.remove('fav_tids');
+      await sp.remove('liked_tids');
+    } catch (_) {}
+
+    // 清理 Dio 及已挂载的 WebView2 全局 Cookies
     await DioClient.clearCookies();
-    return !html.contains('alert_error');
+    return serverOk;
   }
 
   /// 收藏帖子（支持自定义备注 description、分类标签 favtag）
@@ -2130,7 +2486,9 @@ class KlpbbsApi {
         res,
         defaultMsg: '收藏成功！',
       );
-      final isSuccess = !res.contains('alert_error') || res.contains('成功') || res.contains('succeed') || res.contains('信息');
+      final isSuccess = (res.contains('succeed') || res.contains('成功') || res.contains('已收藏过')) &&
+          !res.contains('alert_error') &&
+          !res.contains('抱歉');
       if (isSuccess) {
         final prefs = await SharedPreferences.getInstance();
         final favList = (prefs.getStringList('fav_tids') ?? []).toList();
@@ -2285,12 +2643,20 @@ class KlpbbsApi {
         },
       );
 
-      // 同步本地已收藏版块缓存
+      // 同步本地已收藏版块缓存并立即失效旧缓存
       final prefs = await SharedPreferences.getInstance();
       final set = (prefs.getStringList('fav_forums') ?? []).toSet();
       set.add('$fid');
       await prefs.setStringList('fav_forums', set.toList());
+      _quickGetCache.removeWhere((k, _) => k.contains('do=favorite') || k.contains('type=forum'));
       PreloadService.instance.remove('forum_groups');
+      await prefs.remove('cached_forum_groups_json');
+      ForumFavoriteNotifier.instance.notifyFavoriteChanged(fid, true);
+      // 后台立刻强制重新获取一次收藏版块与版块树数据，完成双向同步
+      unawaited(getMyUid().then((u) {
+        if (u != null && u > 0) getFavoriteForums(u, forceRefresh: true).catchError((_) => const <Forum>[]);
+      }).catchError((_) {}));
+      unawaited(getForumGroups(forceRefresh: true).catchError((_) => const <ForumGroup>[]));
 
       final isSuccess = res.contains('succeed') ||
           res.contains('信息') ||
@@ -2378,12 +2744,20 @@ class KlpbbsApi {
 
       _forumFavidCache.remove(fid);
 
-      // 同步本地已收藏版块缓存
+      // 同步本地已收藏版块缓存并立即失效旧缓存
       final prefs = await SharedPreferences.getInstance();
       final favList = (prefs.getStringList('fav_forums') ?? []).toList();
       favList.remove('$fid');
       await prefs.setStringList('fav_forums', favList);
+      _quickGetCache.removeWhere((k, _) => k.contains('do=favorite') || k.contains('type=forum'));
       PreloadService.instance.remove('forum_groups');
+      await prefs.remove('cached_forum_groups_json');
+      ForumFavoriteNotifier.instance.notifyFavoriteChanged(fid, false);
+      // 后台立刻强制重新获取一次收藏版块与版块树数据，完成双向同步
+      unawaited(getMyUid().then((u) {
+        if (u != null && u > 0) getFavoriteForums(u, forceRefresh: true).catchError((_) => const <Forum>[]);
+      }).catchError((_) {}));
+      unawaited(getForumGroups(forceRefresh: true).catchError((_) => const <ForumGroup>[]));
 
       final msg = _extractDiscuzResponseMessage(
         res,
@@ -2399,10 +2773,11 @@ class KlpbbsApi {
   static final Map<int, int> _forumFavidCache = {};
 
   /// 我的收藏版块（从 Discuz 原生收藏中心拉取：home.php?mod=space&do=favorite&type=forum）
-  static Future<List<Forum>> getFavoriteForums(int uid) async {
+  static Future<List<Forum>> getFavoriteForums(int uid, {bool forceRefresh = false}) async {
     try {
       final html = await _get(
         'home.php?mod=space&do=favorite&type=forum&mobile=no',
+        forceRefresh: forceRefresh,
       );
       final list = ComiisParser.parseFavoriteForums(html);
       if (list.isNotEmpty) {
@@ -2426,7 +2801,7 @@ class KlpbbsApi {
         .whereType<int>()
         .where((f) => f > 0)
         .toList();
-    final allForums = SeedData.forumGroups.expand((g) => g.forums).toList();
+    final allForums = await getForums();
     return favList.map((fid) {
       return allForums.firstWhere(
         (f) => f.fid == fid,
@@ -2449,63 +2824,102 @@ class KlpbbsApi {
       String loginhash,
       String seccodehash,
       String seccodemodid,
+      bool hasSecCode,
     })
   >
   getSecCodeInfo() async {
-    final page = await _get('member.php?mod=logging&action=login&mobile=no');
-    return ComiisParser.parseSecCodeInfo(page);
+    final page = await _get(
+      'member.php?mod=logging&action=login&mobile=no',
+      forceRefresh: true,
+      cacheTtl: Duration.zero,
+    );
+    final info = ComiisParser.parseSecCodeInfo(page);
+    return (
+      formhash: info.formhash,
+      loginhash: info.loginhash,
+      seccodehash: info.seccodehash,
+      seccodemodid: info.seccodemodid,
+      hasSecCode: info.hasSecCode,
+    );
   }
 
   /// 提取注册页面的 SecCode / FormHash 信息
   static Future<({String formhash, String seccodehash, String seccodemodid})>
   getRegisterSecCodeInfo() async {
-    final page = await _get('member.php?mod=register&mobile=2');
+    final page = await _get(
+      'member.php?mod=register&mobile=2',
+      forceRefresh: true,
+      cacheTtl: Duration.zero,
+    );
     final info = ComiisParser.parseSecCodeInfo(page);
     return (
       formhash: info.formhash,
-      seccodehash: info.seccodehash,
+      seccodehash: info.seccodehash.isNotEmpty ? info.seccodehash : 'cS0',
       seccodemodid: info.seccodemodid,
     );
   }
 
   /// 构造验证码图片绝对 URL（供 UI 直接显示）
   static String getSecCodeImageUrl(String seccodehash) {
+    final sHash = seccodehash.isNotEmpty ? seccodehash : 'cS0';
     final ts = DateTime.now().millisecondsSinceEpoch;
-    return '${AppConfig.baseUrl}misc.php?mod=seccode&update=$ts&idhash=$seccodehash';
+    return '${AppConfig.baseUrl}misc.php?mod=seccode&update=$ts&idhash=$sHash';
   }
 
   /// 获取验证码二进制图片数据
   ///
-  /// 流程：先 `action=update` 生成并存储验证码（需 Referer 同源，否则 "Access Denied"），
-  /// 再请求图片 `misc.php?mod=seccode&update={ts}&idhash={hash}`（同样需 Referer）。
+  /// 深度适配 Discuz 原生验证码协议：
+  /// 1. 先通过 `action=update&idhash=xxx` 通知 Discuz 服务端在 Session 中生成验证码及专用更新随机码（update token）；
+  /// 2. 从返回的脚本中精准提取 Discuz 服务端分配的带 token 的图片路径（如 `misc.php?mod=seccode&update=61269&idhash=cS0`）；
+  /// 3. 带上同源 Referer 请求图片字节流，确保客户端获取的图片与 Discuz 服务端待核对的 Session 验证码 100% 一致。
   static Future<Uint8List?> getSecCodeImageBytes(
     String seccodehash, {
     String seccodemodid = '',
     String referer = '',
   }) async {
     try {
+      final sHash = seccodehash.isNotEmpty ? seccodehash : 'cS0';
       final ref = referer.isNotEmpty
           ? referer
           : '${AppConfig.baseUrl}member.php?mod=logging&action=login';
-      // 1) 生成验证码（action=update）
+
+      // 1) 触发服务端生成验证码会话（action=update）
       final updUrl =
-          'misc.php?mod=seccode&action=update&idhash=$seccodehash'
+          'misc.php?mod=seccode&action=update&idhash=$sHash'
           '${seccodemodid.isNotEmpty ? '&modid=$seccodemodid' : ''}';
-      await _dio.get<List<int>>(
+      final updRes = await _dio.get<String>(
         updUrl,
         options: Options(
-          responseType: ResponseType.bytes,
+          responseType: ResponseType.plain,
           headers: {'Referer': ref},
         ),
       );
-      // 2) 取图
-      final ts = DateTime.now().millisecondsSinceEpoch;
-      final url = 'misc.php?mod=seccode&update=$ts&idhash=$seccodehash';
+      final body = updRes.data ?? '';
+
+      // 2) 从响应中提取 Discuz 分配的真实图片链接与 update 随机码
+      final srcMatch = RegExp(
+        r'''src=["\x27]([^"\x27]*misc\.php\?mod=seccode[^"\x27]*)["\x27]''',
+      ).firstMatch(body);
+      String imgUrl;
+      if (srcMatch != null) {
+        imgUrl = srcMatch.group(1)!.replaceAll('&amp;', '&');
+      } else {
+        final updateMatch = RegExp(r'''update=(\d+)''').firstMatch(body);
+        final token = updateMatch != null
+            ? updateMatch.group(1)!
+            : '${DateTime.now().millisecondsSinceEpoch}';
+        imgUrl = 'misc.php?mod=seccode&update=$token&idhash=$sHash';
+      }
+
+      // 3) 请求真实二进制验证码图片数据
       final res = await _dio.get<List<int>>(
-        url,
+        imgUrl,
         options: Options(
           responseType: ResponseType.bytes,
-          headers: {'Referer': ref, 'Accept': 'image/*,*/*;q=0.8'},
+          headers: {
+            'Referer': ref,
+            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          },
         ),
       );
       if (res.data != null && res.data!.isNotEmpty) {
@@ -2516,11 +2930,12 @@ class KlpbbsApi {
   }
 
   /// 登录（支持带 Discuz 验证码 SecCode、安全提问、自动登录提交；mobile=no 强制 PC 模板）
-  static Future<({bool success, String message})> login(
+  static Future<({bool success, String message, bool needsSecCode})> login(
     String username,
     String password, {
     String? seccodeverify,
     String? seccodehash,
+    String? seccodemodid,
     String? formhash,
     String? loginhash,
     int questionid = 0,
@@ -2530,16 +2945,18 @@ class KlpbbsApi {
     var fHash = formhash;
     var lHash = loginhash;
     var sHash = seccodehash;
+    var sModid = seccodemodid;
 
     if (fHash == null || lHash == null) {
       final info = await getSecCodeInfo();
       fHash ??= info.formhash;
       lHash ??= info.loginhash;
       sHash ??= info.seccodehash;
+      sModid ??= info.seccodemodid;
     }
 
     if (fHash.isEmpty) {
-      return (success: false, message: '获取论坛表单凭证（formhash）失败，请检查网络');
+      return (success: false, message: '获取论坛表单凭证（formhash）失败，请检查网络', needsSecCode: false);
     }
 
     final loginParam = lHash.isNotEmpty ? '&loginhash=$lHash' : '';
@@ -2548,8 +2965,9 @@ class KlpbbsApi {
 
     final data = <String, dynamic>{
       'formhash': fHash,
-      'referer': AppConfig.baseUrl,
+      'referer': '${AppConfig.baseUrl}./',
       'loginfield': 'username',
+      'fastloginfield': 'username',
       'username': username,
       'password': password,
       'questionid': '$questionid',
@@ -2559,25 +2977,33 @@ class KlpbbsApi {
       'handlekey': 'ls',
     };
 
-    if (sHash != null &&
-        sHash.isNotEmpty &&
-        seccodeverify != null &&
-        seccodeverify.isNotEmpty) {
-      data['seccodehash'] = sHash;
+    // 只有在明确提供了验证码时才附加提交验证码参数，防止无验证码时误触发服务端校验失败
+    if (seccodeverify != null && seccodeverify.isNotEmpty) {
+      data['seccodehash'] = (sHash != null && sHash.isNotEmpty) ? sHash : 'cS0';
       data['seccodeverify'] = seccodeverify;
+      if (sModid != null && sModid.isNotEmpty) {
+        data['seccodemodid'] = sModid;
+      }
     }
 
     final html = await _post(postUrl, data);
 
+    final needsCaptcha = html.contains('seccode_invalid') ||
+        html.contains('验证码填写错误') ||
+        html.contains('updateseccode(') ||
+        html.contains('seccode');
+
     if (html.contains('login_strike')) {
-      return (success: false, message: '密码错误次数过多，请 15 分钟后再试');
+      return (success: false, message: '密码错误次数过多，请 15 分钟后再试', needsSecCode: true);
     }
     if (html.contains('seccode_invalid') || html.contains('验证码填写错误')) {
-      return (success: false, message: '验证码输入错误或已过期，请刷新重试');
+      return (success: false, message: '验证码输入错误或已过期，请重新输入图形验证码', needsSecCode: true);
     }
     if (html.contains('password_error') || html.contains('密码错误')) {
-      return (success: false, message: '登录失败：账号或密码错误');
+      return (success: false, message: '登录失败：账号或密码错误', needsSecCode: needsCaptcha);
     }
+
+    // 匹配 Discuz 登录成功标识或已捕获 auth cookie
     final isSucceed =
         html.contains('location_login_succeed') ||
         html.contains('欢迎您回来') ||
@@ -2587,8 +3013,11 @@ class KlpbbsApi {
 
     if (isSucceed) {
       await DioClient.saveCookies();
-      await checkLoginStatus();
-      return (success: true, message: '登录成功');
+      // 登录成功立即清空所有旧的内存预加载缓存，确保后续各页面绝对拉取最新实时数据
+      PreloadService.instance.clear();
+      final status = await checkLoginStatus();
+      final displayName = status.username ?? username;
+      return (success: true, message: '欢迎您回来，$displayName', needsSecCode: false);
     }
 
     if (html.contains('alert_error')) {
@@ -2597,17 +3026,17 @@ class KlpbbsApi {
       ).firstMatch(html);
       final m2 = RegExp(r'alert_error[^>]*>([^<]+)<').firstMatch(html);
       final msg = m1?.group(1)?.trim() ?? m2?.group(1)?.trim() ?? '登录失败，请核对信息';
-      return (success: false, message: msg);
+      return (success: false, message: msg, needsSecCode: needsCaptcha);
     }
 
     if (DioClient.isLoggedIn) {
       await DioClient.saveCookies();
+      PreloadService.instance.clear();
       await checkLoginStatus();
+      return (success: true, message: '登录成功', needsSecCode: false);
     }
-    return (
-      success: DioClient.isLoggedIn,
-      message: DioClient.isLoggedIn ? '登录成功' : '登录未完成（可能需滑动验证或防刷拦截）',
-    );
+
+    return (success: false, message: '登录未能识别成功响应，请重试', needsSecCode: needsCaptcha);
   }
 
   /// 手动导入 Cookie 字符串（支持直接粘贴 Cookie 快速完成登录认证）
@@ -2630,13 +3059,15 @@ class KlpbbsApi {
     return DioClient.isLoggedIn;
   }
 
-  /// 发帖前获取发帖页凭证与版块允许的特殊主题类型（普通=0/投票=1/辩论=5 等）。
+  /// 发帖前获取发帖页凭证与版块允许的特殊主题类型（普通=0/投票=1/辩论=5 等）及未使用附件。
   static Future<
     ({
       String formhash,
       Set<int> allowedSpecials,
       List<({int value, String name})> typeOptions,
+      List<PostAttachmentItem> unusedAttachments,
       String errorMessage,
+      PostEditorAttributes editorAttributes,
     })
   >
   getNewThreadInfo(int fid) async {
@@ -2649,7 +3080,9 @@ class KlpbbsApi {
         formhash: '',
         allowedSpecials: info.allowedSpecials,
         typeOptions: info.typeOptions,
+        unusedAttachments: info.unusedAttachments,
         errorMessage: '无法获取发帖凭证，请检查登录状态或版块权限',
+        editorAttributes: info.editorAttributes,
       );
     }
     return info;
@@ -2666,6 +3099,8 @@ class KlpbbsApi {
     List<String>? pollOptions,
     int? pollDays,
     int? pollMaxChoices,
+    bool? pollVisibility,
+    bool? pollOvert,
     String? affirmPoint,
     String? negaPoint,
     String? endTime,
@@ -2675,6 +3110,16 @@ class KlpbbsApi {
     int? rewardCredit,
     int? rewardTimes,
     List<String>? tags,
+    bool isAnonymous = false,
+    bool hiddenReplies = false,
+    bool orderType = false,
+    bool allowNoticeAuthor = true,
+    bool useSig = true,
+    bool htmlOn = false,
+    bool parseUrlOff = false,
+    bool smileyOff = false,
+    bool bbcodeOff = false,
+    bool replyEmailNotice = false,
     bool? asMobile,
   }) async {
     var formhash = _cachedFormhash;
@@ -2698,13 +3143,21 @@ class KlpbbsApi {
       'formhash': formhash,
       'posttime': '${DateTime.now().millisecondsSinceEpoch ~/ 1000}',
       'wysiwyg': '1',
-      'usesig': '1',
-      'allownoticeauthor': '1',
+      'usesig': useSig ? '1' : '0',
+      'allownoticeauthor': allowNoticeAuthor ? '1' : '0',
       'topicsubmit': 'yes',
       'subject': subject,
       'message': message,
       'handlekey': 'newthread',
       if (special != 0) 'special': '$special',
+      if (isAnonymous) 'isanonymous': '1',
+      if (hiddenReplies) 'hiddenreplies': '1',
+      if (orderType) 'ordertype': '1',
+      if (htmlOn) 'htmlon': '1',
+      if (parseUrlOff) 'parseurloff': '1',
+      if (smileyOff) 'smileyoff': '1',
+      if (bbcodeOff) 'bbcodeoff': '1',
+      if (replyEmailNotice) 'emailnotify': '1',
     };
     if (typeid != null) data['typeid'] = '$typeid';
 
@@ -2736,7 +3189,8 @@ class KlpbbsApi {
     if (special == 1 && pollOptions != null && pollOptions.isNotEmpty) {
       data['polls'] = '${pollOptions.length}';
       data['polloption[]'] = pollOptions;
-      data['visibilitypoll'] = '0';
+      data['visibilitypoll'] = pollVisibility == true ? '1' : '0';
+      if (pollOvert == true) data['overt'] = '1';
       if (pollDays != null && pollDays > 0) {
         data['expiration'] = '$pollDays';
       }
@@ -2786,6 +3240,42 @@ class KlpbbsApi {
     return -1; // 成功但无法确认 tid
   }
 
+  /// 获取 Discuz 回复页信息（formhash、权限提示与未使用附件列表）
+  static Future<({
+    String formhash,
+    String? errorMessage,
+    List<PostAttachmentItem> unusedAttachments,
+    PostEditorAttributes editorAttributes,
+  })> getReplyInfo(int tid, {int? fid, bool? asMobile}) async {
+    try {
+      final html = await _get(
+        'forum.php?mod=post&action=reply&tid=$tid',
+        headers: {
+          'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
+          if (asMobile == true) 'User-Agent': AppConfig.mobileUserAgent,
+          if (asMobile == false) 'User-Agent': AppConfig.pcUserAgent,
+        },
+      );
+      final info = ComiisParser.parseNewThreadInfo(html);
+      if (info.formhash.isNotEmpty) {
+        _cachedFormhash = info.formhash;
+      }
+      return (
+        formhash: info.formhash,
+        errorMessage: info.errorMessage.isNotEmpty ? info.errorMessage : null,
+        unusedAttachments: info.unusedAttachments,
+        editorAttributes: info.editorAttributes,
+      );
+    } catch (e) {
+      return (
+        formhash: _cachedFormhash ?? '',
+        errorMessage: null,
+        unusedAttachments: <PostAttachmentItem>[],
+        editorAttributes: const PostEditorAttributes(),
+      );
+    }
+  }
+
   /// 回复（支持楼层回复、引用、点评与附件关联）
   static Future<bool> replyThread(
     int tid,
@@ -2798,6 +3288,18 @@ class KlpbbsApi {
     List<int>? attachAids,
     bool asComment = false,
     bool? asMobile,
+    bool? isAnonymous,
+    bool? hiddenReplies,
+    bool? allowNoticeAuthor,
+    bool? useSig,
+    bool? htmlOn,
+    bool? parseUrlOff,
+    bool? smileyOff,
+    bool? bbcodeOff,
+    bool? replyEmailNotice,
+    int? fid,
+    String? noticeauthormsg,
+    int? repposition,
   }) async {
     var formhash = _cachedFormhash;
     try {
@@ -2817,26 +3319,38 @@ class KlpbbsApi {
     if (formhash == null || formhash.isEmpty) return false;
     // 楼中楼（点评）：回复时带 comment 参数 + pid 定位楼层
     // 注意：commentsubmit 的 submitcheck 要求 formhash 在 GET
+    final fidParam = (fid != null && fid > 0) ? '&fid=$fid' : '';
     final url = asComment && pid != null
-        ? 'forum.php?mod=post&action=reply&tid=$tid&extra=&replysubmit=yes&comment=$pid&formhash=$formhash${asMobile == true ? '&mobile=2' : ''}'
+        ? 'forum.php?mod=post&action=reply&tid=$tid$fidParam&extra=&replysubmit=yes&comment=$pid&formhash=$formhash${asMobile == true ? '&mobile=2' : ''}'
         : (reppost != null
-            ? 'forum.php?mod=post&action=reply&tid=$tid&reppost=$reppost&extra=&replysubmit=yes${asMobile == true ? '&mobile=2' : ''}'
+            ? 'forum.php?mod=post&action=reply&tid=$tid$fidParam&reppost=$reppost&extra=&replysubmit=yes${asMobile == true ? '&mobile=2' : ''}'
             : (repquote != null
-                ? 'forum.php?mod=post&action=reply&tid=$tid&repquote=$repquote&extra=&replysubmit=yes${asMobile == true ? '&mobile=2' : ''}'
-                : 'forum.php?mod=post&action=reply&tid=$tid&extra=&replysubmit=yes${asMobile == true ? '&mobile=2' : ''}'));
+                ? 'forum.php?mod=post&action=reply&tid=$tid$fidParam&repquote=$repquote&extra=&replysubmit=yes${asMobile == true ? '&mobile=2' : ''}'
+                : 'forum.php?mod=post&action=reply&tid=$tid$fidParam&extra=&replysubmit=yes${asMobile == true ? '&mobile=2' : ''}'));
     final replyData = <String, dynamic>{
       'formhash': formhash,
       'posttime': '${DateTime.now().millisecondsSinceEpoch ~/ 1000}',
       'wysiwyg': '1',
-      'usesig': '1',
+      'usesig': (useSig ?? true) ? '1' : '0',
       'handlekey': 'fastpost',
       'replysubmit': 'yes',
       'message': message,
+      if (fid != null && fid > 0) 'fid': '$fid',
       if (asComment && pid != null) 'comment': '$pid',
       if (reppost != null) 'reppost': '$reppost',
       if (repquote != null) 'repquote': '$repquote',
+      if (repposition != null && repposition > 0) 'repposition': '$repposition',
       if (noticeauthor != null && noticeauthor.isNotEmpty) 'noticeauthor': noticeauthor,
+      if (noticeauthormsg != null && noticeauthormsg.isNotEmpty) 'noticeauthormsg': noticeauthormsg,
       if (noticetrimstr != null && noticetrimstr.isNotEmpty) 'noticetrimstr': noticetrimstr,
+      if (isAnonymous == true) 'isanonymous': '1',
+      if (hiddenReplies == true) 'hiddenreplies': '1',
+      if (allowNoticeAuthor != null) 'allownoticeauthor': allowNoticeAuthor ? '1' : '0',
+      if (replyEmailNotice == true) 'emailnotice': '1',
+      if (htmlOn == true) 'htmlon': '1',
+      if (parseUrlOff == true) 'parseurloff': '1',
+      if (smileyOff == true) 'smileyoff': '1',
+      if (bbcodeOff == true) 'bbcodeoff': '1',
     };
 
     final aids = <int>{
@@ -2858,7 +3372,10 @@ class KlpbbsApi {
         if (asMobile == false) 'User-Agent': AppConfig.pcUserAgent,
       },
     );
-    final ok = !html.contains('alert_error') && !html.contains('抱歉，您尚未登录');
+    final ok = !html.contains('alert_error') &&
+        !html.contains('抱歉，您尚未登录') &&
+        !html.contains('抱歉，指定的主题不存在') &&
+        !html.contains('您当前的访问请求当中含有非法字符');
     if (ok) {
       _clearCache(tid);
     }
@@ -2913,9 +3430,13 @@ class KlpbbsApi {
   static Future<
     ({bool isLoggedIn, int? uid, String? username, String? formhash})
   >
-  checkLoginStatus() async {
+  checkLoginStatus({bool forceRefresh = false}) async {
     try {
-      final html = await _get('home.php?mod=spacecp&mobile=no');
+      final html = await _get(
+        'home.php?mod=spacecp&mobile=no',
+        forceRefresh: forceRefresh,
+        cacheTtl: forceRefresh ? Duration.zero : const Duration(seconds: 15),
+      );
       final formhash = _extractFormhash(html) ?? _cachedFormhash;
       if (html.contains('member.php?mod=logging&action=login') &&
           !html.contains('action=logout')) {
@@ -2945,6 +3466,9 @@ class KlpbbsApi {
 
       final loggedIn =
           uid != null || DioClient.isLoggedIn || html.contains('action=logout');
+      if (uid != null && uid > 0) {
+        _cachedMyUid = uid;
+      }
       return (
         isLoggedIn: loggedIn,
         uid: uid,
@@ -4216,10 +4740,6 @@ class KlpbbsApi {
     // 2. 依次尝试签到端点（全实时直接请求，零缓存）
     String html = '';
     final endpoints = [
-      ('plugin.php?id=k_misign:sign&operation=qiandao&format=text&formhash=$fh', <String, String>{
-        'X-Requested-With': 'XMLHttpRequest',
-        'Referer': '${AppConfig.baseUrl}plugin.php?id=k_misign:sign&mobile=2',
-      }),
       ('plugin.php?id=k_misign:sign&operation=qiandao&format=button&formhash=$fh', <String, String>{
         'User-Agent': AppConfig.pcUserAgent,
         'X-Requested-With': 'XMLHttpRequest',
@@ -4236,6 +4756,10 @@ class KlpbbsApi {
         'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
       }),
       ('plugin.php?id=k_misign:sign&operation=qiandao&mobile=2&formhash=$fh', <String, String>{
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': '${AppConfig.baseUrl}plugin.php?id=k_misign:sign&mobile=2',
+      }),
+      ('plugin.php?id=k_misign:sign&operation=qiandao&format=text&formhash=$fh', <String, String>{
         'X-Requested-With': 'XMLHttpRequest',
         'Referer': '${AppConfig.baseUrl}plugin.php?id=k_misign:sign&mobile=2',
       }),
@@ -4300,8 +4824,11 @@ class KlpbbsApi {
     if (expM != null) rewardExp = expM.group(1);
 
     final rankM =
-        RegExp(r'第\s*(\d+)\s*(?:个|位)?签到').firstMatch(html) ??
-        RegExp('id="qiandaobtnnum"[^>]*>(\\d+)<').firstMatch(html);
+        RegExp(r'id="qiandaobtnnum"[^>]*>(\d+)<').firstMatch(html) ??
+        RegExp(r'qiandaobtnnum">(\d+)<').firstMatch(html) ??
+        RegExp(r'第\s*(\d+)\s*(?:个|位|名)?签到').firstMatch(html) ??
+        RegExp(r'您是今天第\s*(\d+)\s*个签到的会员').firstMatch(html) ??
+        RegExp(r'排名\s*[：:]?\s*(\d+)').firstMatch(html);
     if (rankM != null) rank = int.tryParse(rankM.group(1)!);
 
     final daysM =
@@ -4339,9 +4866,6 @@ class KlpbbsApi {
         html.contains('k_misign:signed') ||
         html.contains('signsuccess')) {
       _clearCache();
-      try {
-        AutoSignService.instance.markSignedToday();
-      } catch (_) {}
     }
 
     return (
@@ -4354,13 +4878,298 @@ class KlpbbsApi {
     );
   }
 
-  /// 编辑自己的帖子（先取编辑页 formhash，再提交，支持附件关联）
+  /// 解码 HTML 实体（还原 Discuz textarea 中的真实原始 BBCode）
+  static String _unescapeHtml(String text) {
+    return text
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&#39;', "'")
+        .replaceAll('&apos;', "'")
+        .replaceAll('&nbsp;', ' ')
+        .replaceAll('&amp;', '&')
+        .replaceAllMapped(RegExp(r'&#(\d+);'), (m) {
+          final code = int.tryParse(m.group(1)!);
+          return code != null ? String.fromCharCode(code) : m.group(0)!;
+        })
+        .replaceAllMapped(RegExp(r'&#x([0-9a-fA-F]+);'), (m) {
+          final code = int.tryParse(m.group(1)!, radix: 16);
+          return code != null ? String.fromCharCode(code) : m.group(0)!;
+        });
+  }
+
+  /// 获取帖子/楼层真实编辑数据（直接解析 Discuz 编辑页原始 BBCode 与表单数据）
+  static Future<PostEditInfo> getPostEditInfo(
+    int fid,
+    int tid,
+    int pid,
+  ) async {
+    String html = '';
+    try {
+      html = await _get(
+        'forum.php?mod=post&action=edit&fid=$fid&tid=$tid&pid=$pid&mobile=no',
+        headers: {
+          'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
+        },
+      );
+    } catch (e) {
+      return PostEditInfo(errorMessage: '网络连接异常：$e');
+    }
+
+    // 检查移动端重定向或兜底
+    if (!html.contains('<textarea') && !html.contains('messagetext')) {
+      try {
+        final mobHtml = await _get(
+          'forum.php?mod=post&action=edit&fid=$fid&tid=$tid&pid=$pid&mobile=2',
+          headers: {
+            'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
+          },
+        );
+        if (mobHtml.contains('<textarea') ||
+            mobHtml.contains('messagetext') ||
+            mobHtml.contains('jump_c')) {
+          html = mobHtml;
+        }
+      } catch (_) {}
+    }
+
+    // 1. 检查是否有 Discuz 权限/错误提示
+    final msgMatch = RegExp(r'<div id="messagetext"[^>]*>([\s\S]*?)</div>').firstMatch(html);
+    if (msgMatch != null) {
+      final msg = msgMatch.group(1)!
+          .replaceAll(RegExp(r'<script[\s\S]*?</script>'), '')
+          .replaceAll(RegExp(r'<[^>]+>'), ' ')
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
+      if (msg.contains('没有权限') ||
+          msg.contains('未登录') ||
+          msg.contains('已过') ||
+          msg.contains('抱歉')) {
+        return PostEditInfo(errorMessage: msg);
+      }
+    }
+    final jumpMatch = RegExp(r'<div class="jump_c"[^>]*>([\s\S]*?)</div>').firstMatch(html);
+    if (jumpMatch != null) {
+      final msg = jumpMatch.group(1)!
+          .replaceAll(RegExp(r'<[^>]+>'), ' ')
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
+      if (msg.contains('没有权限') || msg.contains('未登录') || msg.contains('抱歉')) {
+        return PostEditInfo(errorMessage: msg);
+      }
+    }
+
+    // 2. 提取 formhash 和 posttime
+    final formhash = _extractFormhash(html) ?? _cachedFormhash;
+    final posttimeMatch = RegExp(r'name="posttime"[^>]*value="(\d+)"').firstMatch(html);
+    final posttime = posttimeMatch?.group(1);
+
+    // 3. 提取 textarea 中的 BBCode message 原文
+    final textareaMatch = RegExp(
+      r'<textarea[^>]+name="message"[^>]*>([\s\S]*?)</textarea>',
+      caseSensitive: false,
+    ).firstMatch(html) ??
+    RegExp(
+      r'<textarea[^>]+id="needmessage"[^>]*>([\s\S]*?)</textarea>',
+      caseSensitive: false,
+    ).firstMatch(html);
+    String rawMessage = '';
+    if (textareaMatch != null) {
+      rawMessage = _unescapeHtml(textareaMatch.group(1)!);
+    }
+
+    // 4. 提取标题 subject
+    String subject = '';
+    final subjectMatch = RegExp(
+      r'<input[^>]+name="subject"[^>]*value="([^"]*)"',
+      caseSensitive: false,
+    ).firstMatch(html) ??
+    RegExp(
+      r'<input[^>]+value="([^"]*)"[^>]*name="subject"',
+      caseSensitive: false,
+    ).firstMatch(html);
+    if (subjectMatch != null) {
+      subject = _unescapeHtml(subjectMatch.group(1)!);
+    }
+
+    // 5. 提取分类 typeid
+    int? typeid;
+    final typeidSelectMatch = RegExp(
+      r'<select[^>]+name="typeid"[^>]*>([\s\S]*?)</select>',
+      caseSensitive: false,
+    ).firstMatch(html);
+    if (typeidSelectMatch != null) {
+      final optMatch = RegExp(
+        r'<option[^>]+value="(\d+)"[^>]*selected',
+        caseSensitive: false,
+      ).firstMatch(typeidSelectMatch.group(1)!);
+      if (optMatch != null) {
+        typeid = int.tryParse(optMatch.group(1)!);
+      }
+    }
+    if (typeid == null) {
+      final typeidInputMatch = RegExp(
+        r'<input[^>]+name="typeid"[^>]*value="(\d+)"',
+        caseSensitive: false,
+      ).firstMatch(html);
+      if (typeidInputMatch != null) {
+        typeid = int.tryParse(typeidInputMatch.group(1)!);
+      }
+    }
+
+    // 6. 提取阅读权限 readperm
+    int? readperm;
+    final readpermMatch = RegExp(
+      r'<input[^>]+name="readperm"[^>]*value="(\d+)"',
+      caseSensitive: false,
+    ).firstMatch(html);
+    if (readpermMatch != null) {
+      readperm = int.tryParse(readpermMatch.group(1)!);
+    }
+
+    // 7. 提取标签 tags
+    final tags = <String>[];
+    final tagsMatch = RegExp(
+      r'<input[^>]+name="tags"[^>]*value="([^"]*)"',
+      caseSensitive: false,
+    ).firstMatch(html);
+    if (tagsMatch != null && tagsMatch.group(1)!.isNotEmpty) {
+      final tStr = _unescapeHtml(tagsMatch.group(1)!);
+      tags.addAll(
+        tStr.split(RegExp(r'[,，\s]+')).where((s) => s.isNotEmpty),
+      );
+    }
+
+    // 8. 提取已有附件列表
+    final attachments = <PostAttachmentItem>[];
+    final seenAids = <int>{};
+
+    final attachRowRegex = RegExp(
+      r'<(?:tr|tbody)[^>]+id="attach_(\d+)"[^>]*>([\s\S]*?)</(?:tr|tbody)>',
+      caseSensitive: false,
+    );
+    for (final m in attachRowRegex.allMatches(html)) {
+      final aid = int.tryParse(m.group(1)!);
+      if (aid != null && !seenAids.contains(aid)) {
+        seenAids.add(aid);
+        final rowContent = m.group(2)!;
+        final nameMatch = RegExp(
+          r'<a[^>]+class="attnt"[^>]*>([^<]+)</a>',
+          caseSensitive: false,
+        ).firstMatch(rowContent) ??
+        RegExp(
+          r'id="span_attach_\d+"[^>]*>([^<]+)<',
+          caseSensitive: false,
+        ).firstMatch(rowContent) ??
+        RegExp(
+          r'<a[^>]+title="([^"]+)"',
+          caseSensitive: false,
+        ).firstMatch(rowContent);
+        final filename = nameMatch != null
+            ? _unescapeHtml(nameMatch.group(1)!.trim())
+            : '附件_$aid';
+
+        final sizeMatch = RegExp(
+          r'<span class="xg1">\s*\(([\d\.]+)\s*([KkMmGg]?[Bb])',
+          caseSensitive: false,
+        ).firstMatch(rowContent);
+        int filesize = 0;
+        if (sizeMatch != null) {
+          final numVal = double.tryParse(sizeMatch.group(1)!) ?? 0;
+          final unit = sizeMatch.group(2)!.toUpperCase();
+          if (unit.startsWith('M')) {
+            filesize = (numVal * 1024 * 1024).round();
+          } else if (unit.startsWith('K')) {
+            filesize = (numVal * 1024).round();
+          } else {
+            filesize = numVal.round();
+          }
+        }
+
+        final lowerName = filename.toLowerCase();
+        final isImage = lowerName.endsWith('.png') ||
+            lowerName.endsWith('.jpg') ||
+            lowerName.endsWith('.jpeg') ||
+            lowerName.endsWith('.gif') ||
+            lowerName.endsWith('.webp') ||
+            rowContent.contains('attach_img');
+
+        final isInserted = rawMessage.contains('[attach]$aid') ||
+            rawMessage.contains('[attachimg]$aid');
+
+        attachments.add(
+          PostAttachmentItem(
+            aid: aid,
+            filename: filename,
+            filesize: filesize,
+            isImage: isImage,
+            isInserted: isInserted,
+          ),
+        );
+      }
+    }
+
+    // 方式 B：检查 delete[] 复选框
+    for (final m in RegExp(r'name="delete\[\]"[^>]+value="(\d+)"').allMatches(html)) {
+      final aid = int.tryParse(m.group(1)!);
+      if (aid != null && !seenAids.contains(aid)) {
+        seenAids.add(aid);
+        final isInserted = rawMessage.contains('[attach]$aid') ||
+            rawMessage.contains('[attachimg]$aid');
+        attachments.add(
+          PostAttachmentItem(
+            aid: aid,
+            filename: '附件_$aid',
+            filesize: 0,
+            isImage: false,
+            isInserted: isInserted,
+          ),
+        );
+      }
+    }
+
+    // 方式 C：从 message 中的 [attach] 或 [attachimg] 兜底提取
+    for (final m in RegExp(r'\[attach(?:img)?\](\d+)\[/attach(?:img)?\]').allMatches(rawMessage)) {
+      final aid = int.tryParse(m.group(1)!);
+      if (aid != null && !seenAids.contains(aid)) {
+        seenAids.add(aid);
+        attachments.add(
+          PostAttachmentItem(
+            aid: aid,
+            filename: '附件_$aid',
+            filesize: 0,
+            isImage: m.group(0)!.contains('attachimg'),
+            isInserted: true,
+          ),
+        );
+      }
+    }
+
+    final isFirstFloor = subject.isNotEmpty || html.contains('name="subject"');
+
+    return PostEditInfo(
+      subject: subject,
+      message: rawMessage,
+      typeid: typeid,
+      readperm: readperm,
+      tags: tags,
+      formhash: formhash,
+      posttime: posttime,
+      attachments: attachments,
+      isFirstFloor: isFirstFloor,
+    );
+  }
+
+  /// 编辑自己的帖子（先取编辑页 formhash，再提交，支持分类、权限、标签与附件关联）
   static Future<bool> editPost(
     int fid,
     int tid,
     int pid, {
     required String subject,
     required String message,
+    int? typeid,
+    int? readPerm,
+    List<String>? tags,
     List<int>? attachAids,
   }) async {
     var formhash = _cachedFormhash;
@@ -4381,9 +5190,19 @@ class KlpbbsApi {
       'wysiwyg': '1',
       'usesig': '1',
       'editsubmit': 'yes',
-      'subject': subject,
+      if (subject.isNotEmpty) 'subject': subject,
       'message': message,
     };
+
+    if (typeid != null && typeid > 0) {
+      editData['typeid'] = '$typeid';
+    }
+    if (readPerm != null && readPerm > 0) {
+      editData['readperm'] = '$readPerm';
+    }
+    if (tags != null && tags.isNotEmpty) {
+      editData['tags'] = tags.join(',');
+    }
 
     final aids = <int>{
       ...?attachAids,

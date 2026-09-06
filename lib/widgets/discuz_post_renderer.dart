@@ -39,6 +39,36 @@ class DiscuzPostRenderer extends StatelessWidget {
     this.onQuickReply,
   });
 
+  static final _urlRegex = RegExp(
+    r'(https?://[^\s<>"，。]+|www\.[^\s<>"，。]+)',
+    caseSensitive: false,
+  );
+  static final _bgRegex = RegExp(
+    r'background(?:-color)?\s*:\s*([^;]+)',
+    caseSensitive: false,
+  );
+  static final _colorRegex = RegExp(
+    r'(?:^|;|\s)color\s*:\s*([^;]+)',
+    caseSensitive: false,
+  );
+  static final _fontSizeRegex = RegExp(
+    r'font-size\s*:\s*([^;]+)',
+    caseSensitive: false,
+  );
+  static final _fontWeightBoldRegex = RegExp(
+    r'font-weight\s*:\s*bold',
+    caseSensitive: false,
+  );
+  static final _indentRegex = RegExp(
+    r'text-indent\s*:\s*(\d+)em',
+    caseSensitive: false,
+  );
+  static final _lhRegex = RegExp(
+    r'line-height\s*:\s*(\d+)px',
+    caseSensitive: false,
+  );
+  static final _nonNumericRegex = RegExp(r'[^0-9.]');
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -842,6 +872,16 @@ class DiscuzPostRenderer extends StatelessWidget {
     String contentHtml, {
     String? align,
   }) {
+    String quoteTitle;
+    final trimmedAuthor = author.trim();
+    if (trimmedAuthor.isEmpty) {
+      quoteTitle = '引用：';
+    } else if (trimmedAuthor.contains('发表于') || trimmedAuthor.contains('说道')) {
+      quoteTitle = trimmedAuthor;
+    } else {
+      quoteTitle = '$trimmedAuthor 说道：';
+    }
+
     final quoteWidget = Container(
       width: double.infinity,
       margin: const EdgeInsets.symmetric(vertical: 4),
@@ -864,16 +904,21 @@ class DiscuzPostRenderer extends StatelessWidget {
                 color: theme.colorScheme.primary,
               ),
               const SizedBox(width: 4),
-              Text(
-                '$author 说道：',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.primary,
-                  fontWeight: FontWeight.bold,
+              Expanded(
+                child: Text(
+                  quoteTitle,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.2,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 5),
           SelectableText.rich(
             TextSpan(
               children: _htmlToSpans(contentHtml, theme, context: context),
@@ -881,7 +926,8 @@ class DiscuzPostRenderer extends StatelessWidget {
             style: theme.textTheme.bodyMedium?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
               fontStyle: FontStyle.normal,
-              height: 1.5,
+              height: 1.55,
+              letterSpacing: 0.25,
               fontSize: 13.5,
             ),
           ),
@@ -1543,7 +1589,8 @@ class DiscuzPostRenderer extends StatelessWidget {
         ),
       );
     } else if (isNetEase) {
-      final nid = RegExp(r'id=(\d+)').firstMatch(src)?.group(1);
+      final nid = RegExp(r'id=(\d+)').firstMatch(src)?.group(1) ??
+          RegExp(r'song/(\d+)').firstMatch(src)?.group(1);
       if (nid != null) {
         videoWidget = Container(
           margin: const EdgeInsets.symmetric(vertical: 6),
@@ -1754,75 +1801,17 @@ class DiscuzPostRenderer extends StatelessWidget {
     );
   }
 
-  // 弹出全屏图片画廊
+  // 弹出全屏图片画廊（支持流畅双指缩放、双击放大、手势不冲突且保持原比例）
   void _openLightbox(BuildContext context, String imageUrl) {
     final images = floor.images.isNotEmpty ? floor.images : [imageUrl];
     final initIndex = images.indexOf(imageUrl).clamp(0, images.length - 1);
 
     showDialog(
       context: context,
-      barrierColor: Colors.black.withAlpha(230),
-      builder: (_) => Dialog.fullscreen(
-        backgroundColor: Colors.transparent,
-        child: Stack(
-          children: [
-            PageView.builder(
-              itemCount: images.length,
-              controller: PageController(initialPage: initIndex),
-              itemBuilder: (ctx, i) => Center(
-                child: InteractiveViewer(
-                  maxScale: 6,
-                  minScale: 0.5,
-                  child: CachedNetworkImage(
-                    imageUrl: images[i],
-                    httpHeaders: AppConfig.imageHeaders,
-                    width: MediaQuery.of(ctx).size.width,
-                    fit: BoxFit.contain,
-                    errorWidget: (_, __, ___) => const Icon(
-                      Icons.broken_image_outlined,
-                      size: 48,
-                      color: Colors.white38,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            SafeArea(
-              child: Align(
-                alignment: Alignment.topRight,
-                child: Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(
-                          Icons.copy_rounded,
-                          color: Colors.white,
-                        ),
-                        tooltip: '复制图片链接',
-                        onPressed: () {
-                          Clipboard.setData(ClipboardData(text: imageUrl));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('已复制图片直链')),
-                          );
-                        },
-                      ),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.close_rounded,
-                          color: Colors.white,
-                        ),
-                        tooltip: '关闭 (Esc)',
-                        onPressed: () => Navigator.of(context).pop(),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
+      barrierColor: Colors.black.withAlpha(240),
+      builder: (_) => _SmoothGalleryViewer(
+        images: images,
+        initialIndex: initIndex,
       ),
     );
   }
@@ -1900,6 +1889,7 @@ class DiscuzPostRenderer extends StatelessWidget {
     ThemeData theme, {
     BuildContext? context,
     TextAlign? defaultAlign,
+    int listDepth = 0,
   }) {
     if (html.isEmpty) return const [];
 
@@ -1914,6 +1904,7 @@ class DiscuzPostRenderer extends StatelessWidget {
       TextStyle? parent, {
       bool insideLink = false,
       String? linkHref,
+      int currentDepth = 0,
     }) {
       final spans = <InlineSpan>[];
       final nodes = node is List ? node : (node.nodes ?? const []);
@@ -1931,11 +1922,7 @@ class DiscuzPostRenderer extends StatelessWidget {
                 ),
               );
             } else {
-              final urlRegex = RegExp(
-                r'(https?://[^\s<>"，。]+|www\.[^\s<>"，。]+)',
-                caseSensitive: false,
-              );
-              final matches = urlRegex.allMatches(text);
+              final matches = _urlRegex.allMatches(text);
               if (matches.isNotEmpty) {
                 int lastEnd = 0;
                 for (final m in matches) {
@@ -2057,10 +2044,7 @@ class DiscuzPostRenderer extends StatelessWidget {
           // 通用 CSS 行内 style 属性解析（background-color, color, font-size, font-weight 等）
           final styleAttr = n.attributes['style'] ?? '';
           if (styleAttr.isNotEmpty) {
-            final bgM = RegExp(
-              r'background(?:-color)?\s*:\s*([^;]+)',
-              caseSensitive: false,
-            ).firstMatch(styleAttr);
+            final bgM = _bgRegex.firstMatch(styleAttr);
             if (bgM != null) {
               final bgStr = bgM.group(1)!.trim();
               if (bgStr.isNotEmpty && bgStr != 'none' && bgStr != 'transparent') {
@@ -2074,10 +2058,7 @@ class DiscuzPostRenderer extends StatelessWidget {
                 );
               }
             }
-            final colorM = RegExp(
-              r'(?:^|;|\s)color\s*:\s*([^;]+)',
-              caseSensitive: false,
-            ).firstMatch(styleAttr);
+            final colorM = _colorRegex.firstMatch(styleAttr);
             if (colorM != null) {
               final colorStr = colorM.group(1)!.trim();
               if (colorStr.isNotEmpty) {
@@ -2089,28 +2070,40 @@ class DiscuzPostRenderer extends StatelessWidget {
                 );
               }
             }
-            final sizeM = RegExp(
-              r'font-size\s*:\s*([^;]+)',
-              caseSensitive: false,
-            ).firstMatch(styleAttr);
+            final sizeM = _fontSizeRegex.firstMatch(styleAttr);
             if (sizeM != null) {
               final sizeStr = sizeM.group(1)!.trim();
               final numVal = double.tryParse(
-                sizeStr.replaceAll(RegExp(r'[^0-9.]'), ''),
+                sizeStr.replaceAll(_nonNumericRegex, ''),
               );
               if (numVal != null) {
                 style = (style ?? baseStyle)?.copyWith(fontSize: numVal);
               }
             }
-            final weightM = RegExp(
-              r'font-weight\s*:\s*bold',
-              caseSensitive: false,
-            ).firstMatch(styleAttr);
+            final weightM = _fontWeightBoldRegex.firstMatch(styleAttr);
             if (weightM != null) {
               style = (style ?? baseStyle)?.copyWith(
                 fontWeight: FontWeight.bold,
               );
             }
+          }
+
+          // Discuz 列表标签（[list], [list=1], [list=a], [list=A], [list=i], [list=I]）
+          // 深度还原 Discuz Web 样式：支持嵌套深度、悬挂缩进（Hanging Indent）、多字母/罗马数字序号与项目垂直间距
+          if (tag == 'ul' || tag == 'ol') {
+            spans.add(
+              WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: _buildDiscuzList(
+                  n,
+                  theme,
+                  context: context,
+                  baseStyle: style ?? baseStyle,
+                  depth: currentDepth,
+                ),
+              ),
+            );
+            continue;
           }
 
           if (tag == 'table') {
@@ -2221,8 +2214,8 @@ class DiscuzPostRenderer extends StatelessWidget {
           // Discuz 官方段落标签 [p=行高, 缩进, 对齐] 与普通 <p>
           if (tag == 'p') {
             final pAlign = _parseTextAlign(n) ?? defaultAlign;
-            final indentM = RegExp(r'text-indent\s*:\s*(\d+)em', caseSensitive: false).firstMatch(styleAttr);
-            final lhM = RegExp(r'line-height\s*:\s*(\d+)px', caseSensitive: false).firstMatch(styleAttr);
+            final indentM = _indentRegex.firstMatch(styleAttr);
+            final lhM = _lhRegex.firstMatch(styleAttr);
             var pStyle = style ?? baseStyle;
             if (lhM != null) {
               final lh = double.tryParse(lhM.group(1)!);
@@ -2231,7 +2224,13 @@ class DiscuzPostRenderer extends StatelessWidget {
                 pStyle = pStyle?.copyWith(height: lh / fs);
               }
             }
-            final childSpans = walk(n, pStyle, insideLink: insideLink, linkHref: linkHref);
+            final childSpans = walk(
+              n,
+              pStyle,
+              insideLink: insideLink,
+              linkHref: linkHref,
+              currentDepth: currentDepth,
+            );
             if (indentM != null) {
               final em = int.tryParse(indentM.group(1)!) ?? 2;
               childSpans.insert(0, TextSpan(text: '\u3000' * em, style: pStyle));
@@ -2304,8 +2303,9 @@ class DiscuzPostRenderer extends StatelessWidget {
             final href = n.attributes['href'] ?? '';
             if (href.isNotEmpty) {
               final link = _absolute(href);
+              final linkColor = style?.color ?? theme.colorScheme.primary;
               final linkStyle = (style ?? baseStyle)?.copyWith(
-                color: theme.colorScheme.primary,
+                color: linkColor,
                 decoration: TextDecoration.underline,
               );
               final childSpans = walk(
@@ -2364,9 +2364,6 @@ class DiscuzPostRenderer extends StatelessWidget {
                 tag == 'h6' ||
                 tag == 'center' ||
                 tag == 'blockquote' ||
-                tag == 'ul' ||
-                tag == 'ol' ||
-                tag == 'li' ||
                 tag == 'tr';
 
             if (isBlock && spans.isNotEmpty && !_spansEndWithNewline(spans)) {
@@ -2374,15 +2371,22 @@ class DiscuzPostRenderer extends StatelessWidget {
             }
 
             if (tag == 'li') {
-              var prefix = '• ';
-              if (n.parent?.localName == 'ol') {
-                final liSiblings = n.parent!.children.where((c) => c.localName == 'li').toList();
-                final idx = liSiblings.indexOf(n);
-                prefix = '${idx >= 0 ? idx + 1 : 1}. ';
-              }
-              spans.add(TextSpan(text: prefix, style: (style ?? baseStyle)?.copyWith(fontWeight: FontWeight.bold)));
+              // 孤立 li 降级显示（正常 li 均已由 _buildDiscuzList 结构化渲染）
+              spans.add(TextSpan(
+                text: '• ',
+                style: (style ?? baseStyle)?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: theme.colorScheme.primary.withAlpha(220),
+                ),
+              ));
             }
-            spans.addAll(walk(n, style ?? baseStyle, insideLink: insideLink, linkHref: linkHref));
+            spans.addAll(walk(
+              n,
+              style ?? baseStyle,
+              insideLink: insideLink,
+              linkHref: linkHref,
+              currentDepth: currentDepth,
+            ));
             if (isBlock && spans.isNotEmpty && !_spansEndWithNewline(spans)) {
               spans.add(const TextSpan(text: '\n'));
             }
@@ -2392,7 +2396,7 @@ class DiscuzPostRenderer extends StatelessWidget {
       return spans;
     }
 
-    return walk(doc, baseStyle);
+    return walk(doc, baseStyle, currentDepth: listDepth);
   }
 
   bool _spansEndWithNewline(List<InlineSpan> spans) {
@@ -2409,17 +2413,24 @@ class DiscuzPostRenderer extends StatelessWidget {
     Brightness? brightness,
     bool isBackground = false,
   }) {
+    var clean = colorStr.trim().toLowerCase();
+    // 移除单双引号、分号与首尾空白 (例如 [color='deepskyblue'] 或 style="color: red;")
+    clean = clean.replaceAll(RegExp(r'''['";\s]'''), '');
+    if (clean.isEmpty) return Colors.grey;
+
     Color baseColor;
-    final trimmed = colorStr.trim().toLowerCase();
-    if (trimmed.startsWith('#')) {
-      final hex = trimmed.replaceFirst('#', '');
-      if (hex.length == 6) {
-        baseColor = Color(int.parse('FF$hex', radix: 16));
-      } else if (hex.length == 3) {
-        final full = hex.split('').map((c) => '$c$c').join();
-        baseColor = Color(int.parse('FF$full', radix: 16));
-      } else if (hex.length == 8) {
-        baseColor = Color(int.parse(hex, radix: 16));
+    final hexCandidate = clean.startsWith('#') ? clean.substring(1) : clean;
+    if (RegExp(r'^[0-9a-f]{6}$').hasMatch(hexCandidate)) {
+      baseColor = Color(int.parse('FF$hexCandidate', radix: 16));
+    } else if (RegExp(r'^[0-9a-f]{3}$').hasMatch(hexCandidate)) {
+      final full = hexCandidate.split('').map((c) => '$c$c').join();
+      baseColor = Color(int.parse('FF$full', radix: 16));
+    } else if (RegExp(r'^[0-9a-f]{8}$').hasMatch(hexCandidate)) {
+      baseColor = Color(int.parse(hexCandidate, radix: 16));
+    } else if (clean.startsWith('rgb(') || clean.startsWith('rgba(')) {
+      final nums = RegExp(r'\d+').allMatches(clean).map((m) => int.tryParse(m.group(0) ?? '') ?? 0).toList();
+      if (nums.length >= 3) {
+        baseColor = Color.fromARGB(255, nums[0], nums[1], nums[2]);
       } else {
         baseColor = Colors.grey;
       }
@@ -2469,19 +2480,28 @@ class DiscuzPostRenderer extends StatelessWidget {
         'royalblue': Color(0xFF4169E1),
         'dodgerblue': Color(0xFF1E90FF),
       };
-      baseColor = colorMap[trimmed] ?? Colors.grey;
+      baseColor = colorMap[clean] ?? Colors.grey;
     }
-    if (!isBackground) {
-      final lum = baseColor.computeLuminance();
+
+    if (!isBackground && brightness != null) {
+      final hsl = HSLColor.fromColor(baseColor);
       if (brightness == Brightness.dark) {
-        // 深色模式下：如果字体太暗（如纯黑 #000000、深灰、深蓝），自动提升为高对比度银白色
-        if (lum < 0.28) {
+        // 深色模式下：如果纯黑或极暗灰（无彩度），调整为银白色
+        if (hsl.saturation < 0.12 && hsl.lightness < 0.35) {
           return const Color(0xFFE2E8F0);
         }
-      } else if (brightness == Brightness.light) {
-        // 浅色模式下：如果字体太亮（如纯白 #FFFFFF、极浅灰、浅黄），自动调整为高对比度深色
-        if (lum > 0.82) {
+        // 如果是有色彩倾向但偏暗（如深蓝、墨绿），保留其色相与饱和度，提升明度至可读区间
+        if (hsl.lightness < 0.52) {
+          return hsl.withLightness(0.68).toColor();
+        }
+      } else {
+        // 浅色模式下：如果纯白或极浅灰，调整为深青灰色
+        if (hsl.saturation < 0.12 && hsl.lightness > 0.82) {
           return const Color(0xFF1E293B);
+        }
+        // 如果是有色彩倾向但偏浅亮（如浅黄、浅青），保留其色相，压低明度保证对比度
+        if (hsl.lightness > 0.72) {
+          return hsl.withLightness(0.42).toColor();
         }
       }
     }
@@ -2582,6 +2602,205 @@ class DiscuzPostRenderer extends StatelessWidget {
       );
     }
     return spans;
+  }
+
+  /// 结构化 Discuz 列表构建（完美还原 Discuz 网页版样式、悬挂缩进、层级嵌套与字母/罗马序号）
+  Widget _buildDiscuzList(
+    html_dom.Element listEl,
+    ThemeData theme, {
+    BuildContext? context,
+    TextStyle? baseStyle,
+    int depth = 0,
+  }) {
+    final isOl = listEl.localName == 'ol';
+    final typeAttr = listEl.attributes['type']?.trim() ?? (isOl ? '1' : '');
+    final startVal = int.tryParse(listEl.attributes['start'] ?? '') ?? 1;
+
+    final childrenWidgets = <Widget>[];
+
+    int itemIndex = 0;
+    for (final node in listEl.nodes) {
+      if (node is html_dom.Element && node.localName == 'li') {
+        final prefix = _getDiscuzListPrefix(isOl, typeAttr, startVal + itemIndex, depth);
+        itemIndex++;
+
+        childrenWidgets.add(
+          _buildDiscuzListItem(
+            node,
+            prefix,
+            theme,
+            context: context,
+            baseStyle: baseStyle,
+            depth: depth,
+          ),
+        );
+      } else if (node is html_dom.Element && (node.localName == 'ul' || node.localName == 'ol')) {
+        childrenWidgets.add(
+          _buildDiscuzList(
+            node,
+            theme,
+            context: context,
+            baseStyle: baseStyle,
+            depth: depth + 1,
+          ),
+        );
+      }
+    }
+
+    // 对齐 Discuz Web 边距（margin-left: 24px），层级递归递增
+    final leftIndent = depth == 0 ? 8.0 : 16.0;
+
+    return Container(
+      width: double.infinity,
+      margin: EdgeInsets.only(
+        top: depth == 0 ? 4.0 : 2.0,
+        bottom: depth == 0 ? 4.0 : 2.0,
+        left: leftIndent,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: childrenWidgets,
+      ),
+    );
+  }
+
+  Widget _buildDiscuzListItem(
+    html_dom.Element liEl,
+    String prefix,
+    ThemeData theme, {
+    BuildContext? context,
+    TextStyle? baseStyle,
+    int depth = 0,
+  }) {
+    final prefixStyle = (baseStyle ?? theme.textTheme.bodyMedium)?.copyWith(
+      fontWeight: FontWeight.bold,
+      color: theme.colorScheme.primary.withAlpha(220),
+      height: 1.55,
+      fontSize: (baseStyle?.fontSize ?? 14.5),
+    );
+
+    // 区分 li 下的直接行内内容与嵌套的子列表 (ul/ol)
+    final directContentNodes = <dynamic>[];
+    final nestedLists = <html_dom.Element>[];
+
+    for (final child in liEl.nodes) {
+      if (child is html_dom.Element && (child.localName == 'ul' || child.localName == 'ol')) {
+        nestedLists.add(child);
+      } else {
+        directContentNodes.add(child);
+      }
+    }
+
+    final tempEl = html_dom.Element.tag('span');
+    for (final node in directContentNodes) {
+      tempEl.append(node.clone(true));
+    }
+
+    final itemSpans = _htmlToSpans(
+      tempEl.innerHtml,
+      theme,
+      context: context,
+      listDepth: depth + 1,
+    );
+
+    // 悬挂缩进（Hanging Indent）：前缀占用固定列宽，右侧文字内容在 Expanded 中完整自适应折行
+    final prefixWidth = prefix.length > 2 ? (prefix.length * 8.5 + 4.0) : 18.0;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2.5),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: prefixWidth,
+                child: Text(
+                  prefix,
+                  style: prefixStyle,
+                  textAlign: TextAlign.left,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text.rich(
+                  TextSpan(children: itemSpans, style: baseStyle),
+                ),
+              ),
+            ],
+          ),
+          for (final nested in nestedLists)
+            _buildDiscuzList(
+              nested,
+              theme,
+              context: context,
+              baseStyle: baseStyle,
+              depth: depth + 1,
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _getDiscuzListPrefix(bool isOl, String type, int index, int depth) {
+    if (!isOl) {
+      if (depth == 0) return '• ';
+      if (depth == 1) return '◦ ';
+      return '▪ ';
+    }
+    switch (type.toLowerCase()) {
+      case 'a':
+        return _toAlpha(index, lowercase: type == 'a');
+      case 'i':
+        return _toRoman(index, lowercase: type == 'i');
+      case '1':
+      default:
+        return '$index. ';
+    }
+  }
+
+  static String _toAlpha(int n, {required bool lowercase}) {
+    if (n <= 0) return '$n. ';
+    var result = '';
+    var num = n;
+    while (num > 0) {
+      num--;
+      result = String.fromCharCode((lowercase ? 97 : 65) + (num % 26)) + result;
+      num ~/= 26;
+    }
+    return '$result. ';
+  }
+
+  static String _toRoman(int n, {required bool lowercase}) {
+    if (n <= 0 || n > 3999) return '$n. ';
+    const romanMap = [
+      (1000, 'M'),
+      (900, 'CM'),
+      (500, 'D'),
+      (400, 'CD'),
+      (100, 'C'),
+      (90, 'XC'),
+      (50, 'L'),
+      (40, 'XL'),
+      (10, 'X'),
+      (9, 'IX'),
+      (5, 'V'),
+      (4, 'IV'),
+      (1, 'I'),
+    ];
+    var num = n;
+    final buffer = StringBuffer();
+    for (final pair in romanMap) {
+      while (num >= pair.$1) {
+        buffer.write(pair.$2);
+        num -= pair.$1;
+      }
+    }
+    final res = buffer.toString();
+    return lowercase ? '${res.toLowerCase()}. ' : '$res. ';
   }
 
   Widget _buildInlineTable(
@@ -3465,9 +3684,10 @@ class _DiscuzFlyWidgetState extends State<_DiscuzFlyWidget>
     final spans = widget.htmlToSpans(widget.html);
     final theme = widget.theme;
 
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.symmetric(vertical: 6),
+    return RepaintBoundary(
+      child: Container(
+        width: double.infinity,
+        margin: const EdgeInsets.symmetric(vertical: 6),
       decoration: BoxDecoration(
         color: theme.colorScheme.primaryContainer.withAlpha(25),
         borderRadius: BorderRadius.circular(10),
@@ -3560,7 +3780,8 @@ class _DiscuzFlyWidgetState extends State<_DiscuzFlyWidget>
           ),
         ),
       ),
-    );
+    ),
+  );
   }
 }
 
@@ -3598,6 +3819,184 @@ class _DiscuzRubyWidget extends StatelessWidget {
           style: baseStyle,
         ),
       ],
+    );
+  }
+}
+
+/// 流畅全屏图片画廊（双指平滑缩放、双击缩放、手势隔离、防误触翻页）
+class _SmoothGalleryViewer extends StatefulWidget {
+  final List<String> images;
+  final int initialIndex;
+
+  const _SmoothGalleryViewer({
+    required this.images,
+    required this.initialIndex,
+  });
+
+  @override
+  State<_SmoothGalleryViewer> createState() => _SmoothGalleryViewerState();
+}
+
+class _SmoothGalleryViewerState extends State<_SmoothGalleryViewer> {
+  late final PageController _pageController;
+  late int _currentIndex;
+  final Map<int, TransformationController> _transformControllers = {};
+  bool _isZoomed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    _pageController = PageController(initialPage: widget.initialIndex);
+  }
+
+  TransformationController _getController(int index) {
+    return _transformControllers.putIfAbsent(index, () {
+      final ctrl = TransformationController();
+      ctrl.addListener(() {
+        final scale = ctrl.value.getMaxScaleOnAxis();
+        final zoomed = scale > 1.05;
+        if (zoomed != _isZoomed) {
+          setState(() {
+            _isZoomed = zoomed;
+          });
+        }
+      });
+      return ctrl;
+    });
+  }
+
+  void _handleDoubleTap(int index, TapDownDetails details) {
+    final ctrl = _getController(index);
+    final currentScale = ctrl.value.getMaxScaleOnAxis();
+    if (currentScale > 1.2) {
+      ctrl.value = Matrix4.identity();
+    } else {
+      final position = details.localPosition;
+      const targetScale = 2.5;
+      final x = -position.dx * (targetScale - 1);
+      final y = -position.dy * (targetScale - 1);
+      final matrix = Matrix4.identity()
+        ..translate(x, y)
+        ..scale(targetScale);
+      ctrl.value = matrix;
+    }
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    for (final c in _transformControllers.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog.fullscreen(
+      backgroundColor: Colors.black.withAlpha(240),
+      child: Stack(
+        children: [
+          PageView.builder(
+            itemCount: widget.images.length,
+            controller: _pageController,
+            physics: _isZoomed
+                ? const NeverScrollableScrollPhysics()
+                : const BouncingScrollPhysics(),
+            onPageChanged: (idx) {
+              setState(() {
+                _currentIndex = idx;
+                _isZoomed = false;
+              });
+            },
+            itemBuilder: (ctx, i) {
+              final ctrl = _getController(i);
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onDoubleTapDown: (d) => _handleDoubleTap(i, d),
+                onDoubleTap: () {},
+                child: Center(
+                  child: InteractiveViewer(
+                    transformationController: ctrl,
+                    minScale: 0.8,
+                    maxScale: 6.0,
+                    boundaryMargin: const EdgeInsets.all(1000),
+                    clipBehavior: Clip.none,
+                    child: CachedNetworkImage(
+                      imageUrl: widget.images[i],
+                      httpHeaders: AppConfig.imageHeaders,
+                      fit: BoxFit.contain,
+                      placeholder: (_, __) => const Center(
+                        child: SizedBox(
+                          width: 32,
+                          height: 32,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white70,
+                          ),
+                        ),
+                      ),
+                      errorWidget: (_, __, ___) => const Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.broken_image_outlined, size: 48, color: Colors.white38),
+                          SizedBox(height: 8),
+                          Text('图片加载失败', style: TextStyle(color: Colors.white54, fontSize: 13)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    if (widget.images.length > 1)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withAlpha(120),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Text(
+                          '${_currentIndex + 1} / ${widget.images.length}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.copy_rounded, color: Colors.white),
+                      tooltip: '复制图片直链',
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: widget.images[_currentIndex]));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('已复制图片直链')),
+                        );
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close_rounded, color: Colors.white),
+                      tooltip: '关闭 (Esc)',
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -199,8 +199,9 @@ class InlineHtmlText extends StatelessWidget {
           if (tag == 'a') {
             final href = el.attributes['href'] ?? '';
             final link = _absolute(href);
+            final linkColor = style.color ?? theme.colorScheme.primary;
             final linkStyle = style.copyWith(
-              color: theme.colorScheme.primary,
+              color: linkColor,
               decoration: TextDecoration.underline,
             );
             if (href.isNotEmpty) {
@@ -304,17 +305,24 @@ class InlineHtmlText extends StatelessWidget {
   }
 
   Color _parseColor(String raw, {Brightness? brightness, bool isBackground = false}) {
-    var clean = raw.toLowerCase().trim();
+    var clean = raw.trim().toLowerCase();
+    // 移除单双引号、分号与首尾空白 (例如 [color='deepskyblue'] 或 style="color: red;")
+    clean = clean.replaceAll(RegExp(r'''['";\s]'''), '');
+    if (clean.isEmpty) return Colors.grey;
+
     Color baseColor;
-    if (clean.startsWith('#')) {
-      final hex = clean.substring(1);
-      if (hex.length == 6) {
-        baseColor = Color(int.parse('FF$hex', radix: 16));
-      } else if (hex.length == 3) {
-        final full = hex.split('').map((c) => '$c$c').join();
-        baseColor = Color(int.parse('FF$full', radix: 16));
-      } else if (hex.length == 8) {
-        baseColor = Color(int.parse(hex, radix: 16));
+    final hexCandidate = clean.startsWith('#') ? clean.substring(1) : clean;
+    if (RegExp(r'^[0-9a-f]{6}$').hasMatch(hexCandidate)) {
+      baseColor = Color(int.parse('FF$hexCandidate', radix: 16));
+    } else if (RegExp(r'^[0-9a-f]{3}$').hasMatch(hexCandidate)) {
+      final full = hexCandidate.split('').map((c) => '$c$c').join();
+      baseColor = Color(int.parse('FF$full', radix: 16));
+    } else if (RegExp(r'^[0-9a-f]{8}$').hasMatch(hexCandidate)) {
+      baseColor = Color(int.parse(hexCandidate, radix: 16));
+    } else if (clean.startsWith('rgb(') || clean.startsWith('rgba(')) {
+      final nums = RegExp(r'\d+').allMatches(clean).map((m) => int.tryParse(m.group(0) ?? '') ?? 0).toList();
+      if (nums.length >= 3) {
+        baseColor = Color.fromARGB(255, nums[0], nums[1], nums[2]);
       } else {
         baseColor = Colors.grey;
       }
@@ -359,25 +367,41 @@ class InlineHtmlText extends StatelessWidget {
         'khaki': Color(0xFFF0E68C),
         'deepskyblue': Color(0xFF00BFFF),
         'skyblue': Color(0xFF87CEEB),
+        'lightskyblue': Color(0xFF87CEFA),
+        'powderblue': Color(0xFFB0E0E6),
         'royalblue': Color(0xFF4169E1),
         'dodgerblue': Color(0xFF1E90FF),
+        'mediumpurple': Color(0xFF9370DB),
+        'orchid': Color(0xFFDA70D6),
+        'plum': Color(0xFFDDA0DD),
+        'sandybrown': Color(0xFFF4A460),
+        'sienna': Color(0xFFA0522D),
+        'darkslategray': Color(0xFF2F4F4F),
         'white': Colors.white,
         'black': Colors.black,
       };
       baseColor = colorMap[clean] ?? Colors.grey;
     }
 
-    if (!isBackground) {
-      final lum = baseColor.computeLuminance();
+    if (!isBackground && brightness != null) {
+      final hsl = HSLColor.fromColor(baseColor);
       if (brightness == Brightness.dark) {
-        // 深色模式下：如果字体太暗（如纯黑 #000000、深灰、深蓝），自动提升为高对比度银白色
-        if (lum < 0.28) {
+        // 深色模式下：如果纯黑或极暗灰（无彩度），调整为银白色
+        if (hsl.saturation < 0.12 && hsl.lightness < 0.35) {
           return const Color(0xFFE2E8F0);
         }
-      } else if (brightness == Brightness.light) {
-        // 浅色模式下：如果字体太亮（如纯白 #FFFFFF、极浅灰、浅黄），自动调整为高对比度深色
-        if (lum > 0.82) {
+        // 如果是有色彩倾向但偏暗（如深蓝、墨绿），保留其色相与饱和度，提升明度至可读区间
+        if (hsl.lightness < 0.52) {
+          return hsl.withLightness(0.68).toColor();
+        }
+      } else {
+        // 浅色模式下：如果纯白或极浅灰，调整为深青灰色
+        if (hsl.saturation < 0.12 && hsl.lightness > 0.82) {
           return const Color(0xFF1E293B);
+        }
+        // 如果是有色彩倾向但偏浅亮（如浅黄、浅青），保留其色相，压低明度保证对比度
+        if (hsl.lightness > 0.72) {
+          return hsl.withLightness(0.42).toColor();
         }
       }
     }

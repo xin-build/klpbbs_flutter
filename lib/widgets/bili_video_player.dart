@@ -84,6 +84,7 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> {
 
   bool _isHoveringControls = false;
   bool _isDragging = false;
+  double? _dragValue;
 
   void _showControlsTemporarily() {
     if (!_controlsVisible) {
@@ -215,11 +216,14 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> {
     return StreamBuilder<Duration>(
       stream: player.stream.position,
       builder: (ctx, snap) {
-        final pos = snap.data ?? Duration.zero;
+        final pos = _isDragging && _dragValue != null
+            ? Duration(milliseconds: _dragValue!.toInt())
+            : (snap.data ?? Duration.zero);
         final dur = player.state.duration;
         final maxMs = dur.inMilliseconds > 0 ? dur.inMilliseconds : 1;
+
         return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 10),
           child: Row(
             children: [
               Text(
@@ -245,17 +249,24 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> {
                     value: pos.inMilliseconds.clamp(0, maxMs).toDouble(),
                     max: maxMs.toDouble(),
                     onChangeStart: (v) {
-                      _isDragging = true;
+                      setState(() {
+                        _isDragging = true;
+                        _dragValue = v;
+                      });
                       _hideTimer?.cancel();
                       if (!_controlsVisible) {
                         setState(() => _controlsVisible = true);
                       }
                     },
                     onChanged: (v) {
-                      player.seek(Duration(milliseconds: v.toInt()));
+                      setState(() => _dragValue = v);
                     },
                     onChangeEnd: (v) {
-                      _isDragging = false;
+                      player.seek(Duration(milliseconds: v.toInt()));
+                      setState(() {
+                        _isDragging = false;
+                        _dragValue = null;
+                      });
                       _showControlsTemporarily();
                     },
                   ),
@@ -489,10 +500,14 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> {
                               // 播放/暂停
                               IconButton(
                                 tooltip: _playing ? '暂停' : '播放',
-                                icon: Icon(
-                                  _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                                  color: Colors.white,
-                                  size: 24,
+                                icon: AnimatedSwitcher(
+                                  duration: const Duration(milliseconds: 200),
+                                  child: Icon(
+                                    _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                                    key: ValueKey<bool>(_playing),
+                                    color: Colors.white,
+                                    size: 24,
+                                  ),
                                 ),
                                 visualDensity: VisualDensity.compact,
                                 onPressed: _togglePlay,
@@ -894,17 +909,31 @@ class _FullscreenBiliPlayerState extends State<_FullscreenBiliPlayer> {
   bool _playing = true;
   bool _isHoveringControls = false;
   bool _isDragging = false;
+  double? _dragValue;
+  StreamSubscription? _subPlaying;
+  StreamSubscription? _subCompleted;
 
   @override
   void initState() {
     super.initState();
     _speed = widget.speed;
     _playing = widget.player?.state.playing ?? true;
+    _subPlaying = widget.player?.stream.playing.listen((playing) {
+      if (mounted) setState(() => _playing = playing);
+    });
+    _subCompleted = widget.player?.stream.completed.listen((completed) {
+      if (mounted && completed) {
+        setState(() => _playing = false);
+        _showControlsTemporarily();
+      }
+    });
     _showControlsTemporarily();
   }
 
   @override
   void dispose() {
+    _subPlaying?.cancel();
+    _subCompleted?.cancel();
     _hideTimer?.cancel();
     super.dispose();
   }
@@ -929,7 +958,6 @@ class _FullscreenBiliPlayerState extends State<_FullscreenBiliPlayer> {
       await widget.player?.play();
     }
     if (mounted) {
-      setState(() => _playing = !_playing);
       _showControlsTemporarily();
     }
   }
@@ -1060,7 +1088,9 @@ class _FullscreenBiliPlayerState extends State<_FullscreenBiliPlayer> {
                               StreamBuilder<Duration>(
                                 stream: widget.player!.stream.position,
                                 builder: (ctx, snap) {
-                                  final pos = snap.data ?? Duration.zero;
+                                  final pos = _isDragging && _dragValue != null
+                                      ? Duration(milliseconds: _dragValue!.toInt())
+                                      : (snap.data ?? Duration.zero);
                                   final dur = widget.player!.state.duration;
                                   final maxMs = dur.inMilliseconds > 0 ? dur.inMilliseconds : 1;
                                   return Row(
@@ -1074,17 +1104,24 @@ class _FullscreenBiliPlayerState extends State<_FullscreenBiliPlayer> {
                                           value: pos.inMilliseconds.clamp(0, maxMs).toDouble(),
                                           max: maxMs.toDouble(),
                                           onChangeStart: (v) {
-                                            _isDragging = true;
+                                            setState(() {
+                                              _isDragging = true;
+                                              _dragValue = v;
+                                            });
                                             _hideTimer?.cancel();
                                             if (!_controlsVisible) {
                                               setState(() => _controlsVisible = true);
                                             }
                                           },
                                           onChanged: (v) {
-                                            widget.player!.seek(Duration(milliseconds: v.toInt()));
+                                            setState(() => _dragValue = v);
                                           },
                                           onChangeEnd: (v) {
-                                            _isDragging = false;
+                                            widget.player?.seek(Duration(milliseconds: v.toInt()));
+                                            setState(() {
+                                              _isDragging = false;
+                                              _dragValue = null;
+                                            });
                                             _showControlsTemporarily();
                                           },
                                         ),
@@ -1100,10 +1137,14 @@ class _FullscreenBiliPlayerState extends State<_FullscreenBiliPlayer> {
                       Row(
                         children: [
                           IconButton(
-                            icon: Icon(
-                              _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                              color: Colors.white,
-                              size: 28,
+                            icon: AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 200),
+                              child: Icon(
+                                _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                                key: ValueKey<bool>(_playing),
+                                color: Colors.white,
+                                size: 28,
+                              ),
                             ),
                             onPressed: _togglePlay,
                           ),

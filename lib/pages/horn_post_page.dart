@@ -1,10 +1,10 @@
-import 'package:cached_network_image/cached_network_image.dart';
+﻿import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/write_confirm.dart';
-import '../widgets/app_back_button.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 
 /// 小喇叭发布页（ahome_horn:add）
@@ -103,11 +103,11 @@ class _HornPostPageState extends State<HornPostPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const AppBackButton(),
+        leading: const GlobalNavLeading(),
         title: const Text('发布小喇叭'),
         actions: [
-          const GlobalNavButton(),
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: FilledButton(

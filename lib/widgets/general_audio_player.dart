@@ -30,7 +30,8 @@ class GeneralAudioPlayer extends StatefulWidget {
   State<GeneralAudioPlayer> createState() => _GeneralAudioPlayerState();
 }
 
-class _GeneralAudioPlayerState extends State<GeneralAudioPlayer> {
+class _GeneralAudioPlayerState extends State<GeneralAudioPlayer>
+    with SingleTickerProviderStateMixin {
   Player? _player;
   bool _playing = false;
   bool _loading = false;
@@ -42,7 +43,12 @@ class _GeneralAudioPlayerState extends State<GeneralAudioPlayer> {
   bool _muted = false;
   double _rate = 1.0;
 
+  late final AnimationController _waveController;
+  bool _isDragging = false;
+  double? _dragValue;
+
   StreamSubscription? _subPlaying;
+  StreamSubscription? _subCompleted;
   StreamSubscription? _subPos;
   StreamSubscription? _subDur;
   StreamSubscription? _subBuf;
@@ -65,6 +71,11 @@ class _GeneralAudioPlayerState extends State<GeneralAudioPlayer> {
   @override
   void initState() {
     super.initState();
+    _waveController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 650),
+    );
+
     final existing = GeneralAudioPlayer._players[widget.src];
     if (existing != null) {
       _player = existing;
@@ -72,21 +83,36 @@ class _GeneralAudioPlayerState extends State<GeneralAudioPlayer> {
       _position = existing.state.position;
       _duration = existing.state.duration;
       _attachSubscriptions(existing);
+      if (_playing) _waveController.repeat(reverse: true);
     }
   }
 
   void _attachSubscriptions(Player p) {
     _subPlaying?.cancel();
+    _subCompleted?.cancel();
     _subPos?.cancel();
     _subDur?.cancel();
     _subBuf?.cancel();
     _subErr?.cancel();
 
     _subPlaying = p.stream.playing.listen((playing) {
-      if (mounted) setState(() => _playing = playing);
+      if (mounted) {
+        setState(() => _playing = playing);
+        if (playing) {
+          if (!_waveController.isAnimating) _waveController.repeat(reverse: true);
+        } else {
+          _waveController.stop();
+        }
+      }
+    });
+    _subCompleted = p.stream.completed.listen((completed) {
+      if (mounted && completed) {
+        setState(() => _playing = false);
+        _waveController.stop();
+      }
     });
     _subPos = p.stream.position.listen((pos) {
-      if (mounted) setState(() => _position = pos);
+      if (mounted && !_isDragging) setState(() => _position = pos);
     });
     _subDur = p.stream.duration.listen((dur) {
       if (mounted) setState(() => _duration = dur);
@@ -106,7 +132,9 @@ class _GeneralAudioPlayerState extends State<GeneralAudioPlayer> {
 
   @override
   void dispose() {
+    _waveController.dispose();
     _subPlaying?.cancel();
+    _subCompleted?.cancel();
     _subPos?.cancel();
     _subDur?.cancel();
     _subBuf?.cancel();
@@ -182,6 +210,41 @@ class _GeneralAudioPlayerState extends State<GeneralAudioPlayer> {
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
+  Widget _buildWaveBars(ColorScheme colorScheme) {
+    return AnimatedBuilder(
+      animation: _waveController,
+      builder: (context, _) {
+        final v = _waveController.value;
+        final heights = _playing
+            ? [
+                3.0 + 7.0 * ((v * 1.3) % 1.0),
+                4.0 + 8.0 * (((v + 0.4) * 1.5) % 1.0),
+                2.5 + 8.5 * (((v + 0.7) * 1.2) % 1.0),
+              ]
+            : [2.5, 2.5, 2.5];
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            for (int i = 0; i < heights.length; i++) ...[
+              if (i > 0) const SizedBox(width: 2),
+              Container(
+                width: 2.5,
+                height: heights[i],
+                decoration: BoxDecoration(
+                  color: _playing
+                      ? colorScheme.primary
+                      : colorScheme.outlineVariant,
+                  borderRadius: BorderRadius.circular(1.5),
+                ),
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -189,7 +252,10 @@ class _GeneralAudioPlayerState extends State<GeneralAudioPlayer> {
     final isDark = theme.brightness == Brightness.dark;
 
     final maxMs = _duration.inMilliseconds.toDouble();
-    final curMs = _position.inMilliseconds.toDouble().clamp(0.0, maxMs > 0 ? maxMs : 1.0);
+    final effectivePos = _isDragging && _dragValue != null
+        ? Duration(milliseconds: _dragValue!.toInt())
+        : _position;
+    final curMs = effectivePos.inMilliseconds.toDouble().clamp(0.0, maxMs > 0 ? maxMs : 1.0);
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 6),
@@ -198,7 +264,7 @@ class _GeneralAudioPlayerState extends State<GeneralAudioPlayer> {
         color: isDark
             ? colorScheme.surfaceContainerHighest.withAlpha(80)
             : colorScheme.primaryContainer.withAlpha(45),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: _playing
               ? colorScheme.primary.withAlpha(140)
@@ -222,8 +288,8 @@ class _GeneralAudioPlayerState extends State<GeneralAudioPlayer> {
           Row(
             children: [
               Container(
-                width: 36,
-                height: 36,
+                width: 38,
+                height: 38,
                 decoration: BoxDecoration(
                   color: _playing
                       ? colorScheme.primary
@@ -232,7 +298,7 @@ class _GeneralAudioPlayerState extends State<GeneralAudioPlayer> {
                 ),
                 child: IconButton(
                   padding: EdgeInsets.zero,
-                  iconSize: 20,
+                  iconSize: 22,
                   icon: _loading
                       ? SizedBox(
                           width: 18,
@@ -242,11 +308,19 @@ class _GeneralAudioPlayerState extends State<GeneralAudioPlayer> {
                             color: _playing ? Colors.white : colorScheme.primary,
                           ),
                         )
-                      : Icon(
-                          _playing
-                              ? Icons.pause_rounded
-                              : Icons.play_arrow_rounded,
-                          color: _playing ? Colors.white : colorScheme.primary,
+                      : AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 220),
+                          transitionBuilder: (child, anim) => ScaleTransition(
+                            scale: anim,
+                            child: FadeTransition(opacity: anim, child: child),
+                          ),
+                          child: Icon(
+                            _playing
+                                ? Icons.pause_rounded
+                                : Icons.play_arrow_rounded,
+                            key: ValueKey<bool>(_playing),
+                            color: _playing ? Colors.white : colorScheme.primary,
+                          ),
                         ),
                   onPressed: _togglePlay,
                   tooltip: _playing ? '暂停' : '播放',
@@ -257,15 +331,23 @@ class _GeneralAudioPlayerState extends State<GeneralAudioPlayer> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      _displayTitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w600,
-                        color: colorScheme.onSurface,
-                      ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            _displayTitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w600,
+                              color: colorScheme.onSurface,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        _buildWaveBars(colorScheme),
+                      ],
                     ),
                     const SizedBox(height: 2),
                     Text(
@@ -273,9 +355,10 @@ class _GeneralAudioPlayerState extends State<GeneralAudioPlayer> {
                           ? _error!
                           : _buffering
                               ? '缓冲中...'
-                              : '${_formatTime(_position)} / ${_formatTime(_duration)}',
+                              : '${_formatTime(effectivePos)} / ${_formatTime(_duration)}',
                       style: TextStyle(
                         fontSize: 11,
+                        fontFeatures: const [FontFeature.tabularFigures()],
                         color: _error != null
                             ? colorScheme.error
                             : colorScheme.onSurfaceVariant,
@@ -353,10 +436,25 @@ class _GeneralAudioPlayerState extends State<GeneralAudioPlayer> {
                   min: 0.0,
                   max: maxMs,
                   value: curMs,
-                  onChanged: (val) {
-                    setState(() => _position = Duration(milliseconds: val.toInt()));
+                  onChangeStart: (val) {
+                    setState(() {
+                      _isDragging = true;
+                      _dragValue = val;
+                    });
                   },
-                  onChangeEnd: _seek,
+                  onChanged: (val) {
+                    setState(() {
+                      _dragValue = val;
+                      _position = Duration(milliseconds: val.toInt());
+                    });
+                  },
+                  onChangeEnd: (val) {
+                    _seek(val);
+                    setState(() {
+                      _isDragging = false;
+                      _dragValue = null;
+                    });
+                  },
                 ),
               ),
             ),

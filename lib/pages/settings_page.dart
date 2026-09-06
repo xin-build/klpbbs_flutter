@@ -1,4 +1,4 @@
-import 'package:file_picker/file_picker.dart';
+﻿import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
@@ -7,23 +7,26 @@ import '../services/auto_sign_service.dart';
 import '../services/download_service.dart';
 import '../services/push_notification_service.dart';
 import '../services/rgb_theme_service.dart';
+import '../widgets/global_app_drawer.dart';
+import '../widgets/global_nav.dart';
 import '../widgets/responsive_layout.dart';
 import 'download_manager_page.dart';
 
 enum SettingsCategory {
-  appearance('外观与个性化', Icons.palette_outlined, Icons.palette_rounded),
-  sign('自动签到', Icons.event_available_outlined, Icons.event_available_rounded),
-  notification('消息推送与后台', Icons.notifications_outlined, Icons.notifications_rounded),
-  layout('排版与多端模式', Icons.devices_outlined, Icons.devices_rounded),
-  download('下载与存储管理', Icons.download_outlined, Icons.download_rounded),
-  performance('性能与 GPU 加速', Icons.speed_outlined, Icons.speed_rounded),
-  forum('论坛与阅读偏好', Icons.forum_outlined, Icons.forum_rounded),
-  about('关于与系统诊断', Icons.info_outline, Icons.info_rounded);
+  appearance('外观与个性化', '色彩、深色模式、字体缩放', Icons.palette_outlined, Icons.palette_rounded),
+  sign('自动签到', '每日定时、多账号、极速冲榜', Icons.event_available_outlined, Icons.event_available_rounded),
+  notification('消息推送与后台', '轮询探测、后台挂起、托盘守护', Icons.notifications_outlined, Icons.notifications_rounded),
+  layout('排版与多端模式', '宽屏双栏、导航布局', Icons.devices_outlined, Icons.devices_rounded),
+  download('下载与存储管理', '并发线程、路径配置', Icons.download_outlined, Icons.download_rounded),
+  performance('性能与 GPU 加速', '硬件加速、渲染引擎、图片缓存', Icons.speed_outlined, Icons.speed_rounded),
+  forum('论坛与阅读偏好', '屏蔽黑名单、阅读细节', Icons.forum_outlined, Icons.forum_rounded),
+  about('关于与系统诊断', '版本信息、系统诊断、检查更新', Icons.info_outline, Icons.info_rounded);
 
   final String label;
+  final String subtitle;
   final IconData icon;
   final IconData selectedIcon;
-  const SettingsCategory(this.label, this.icon, this.selectedIcon);
+  const SettingsCategory(this.label, this.subtitle, this.icon, this.selectedIcon);
 }
 
 /// 高度自定义设置中心（支持 PC 宽屏双栏与移动端层级视图）
@@ -65,7 +68,12 @@ class _SettingsPageState extends State<SettingsPage> {
     final colorScheme = theme.colorScheme;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('系统设置'), elevation: 0),
+      drawer: const GlobalAppDrawer(),
+      appBar: AppBar(
+        leading: const GlobalNavLeading(),
+        title: const Text('系统设置'),
+        elevation: 0,
+      ),
       body: isDesktop
           ? Row(
               children: [
@@ -101,6 +109,15 @@ class _SettingsPageState extends State<SettingsPage> {
                                     : colorScheme.onSurface,
                               ),
                             ),
+                            subtitle: Text(
+                              cat.subtitle,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: colorScheme.onSurfaceVariant.withAlpha(160),
+                              ),
+                            ),
                             selected: isSelected,
                             selectedTileColor: colorScheme.primaryContainer
                                 .withAlpha(80),
@@ -127,40 +144,79 @@ class _SettingsPageState extends State<SettingsPage> {
               ],
             )
           : ListView(
-              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-              children: SettingsCategory.values.map((cat) {
-                return Card(
-                  margin: const EdgeInsets.symmetric(vertical: 4),
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+              children: [
+                Card(
                   elevation: 0,
                   color: colorScheme.surfaceContainerLow,
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(16),
                     side: BorderSide(
                       color: colorScheme.outlineVariant.withAlpha(40),
-                      width: 0.6,
+                      width: 0.8,
                     ),
                   ),
-                  child: ListTile(
-                    leading: Icon(cat.icon, color: colorScheme.primary),
-                    title: Text(
-                      cat.label,
-                      style: const TextStyle(fontWeight: FontWeight.w600),
+                  clipBehavior: Clip.antiAlias,
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: SettingsCategory.values.length,
+                    separatorBuilder: (_, __) => Divider(
+                      height: 1,
+                      indent: 58,
+                      color: colorScheme.outlineVariant.withAlpha(30),
                     ),
-                    trailing: const Icon(Icons.chevron_right_rounded, size: 20),
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => Scaffold(
-                            appBar: AppBar(title: Text(cat.label)),
-                            body: SettingsPage.buildCategoryView(cat),
+                    itemBuilder: (ctx, idx) {
+                      final cat = SettingsCategory.values[idx];
+                      return ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 4,
+                        ),
+                        leading: Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: colorScheme.primaryContainer.withAlpha(90),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(cat.icon, color: colorScheme.primary, size: 22),
+                        ),
+                        title: Text(
+                          cat.label,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 15,
                           ),
                         ),
+                        subtitle: Text(
+                          cat.subtitle,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: colorScheme.onSurfaceVariant.withAlpha(200),
+                          ),
+                        ),
+                        trailing: Icon(
+                          Icons.chevron_right_rounded,
+                          size: 20,
+                          color: colorScheme.onSurfaceVariant.withAlpha(140),
+                        ),
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => Scaffold(
+                                appBar: AppBar(title: Text(cat.label)),
+                                body: SettingsPage.buildCategoryView(cat),
+                              ),
+                            ),
+                          );
+                        },
                       );
                     },
                   ),
-                );
-              }).toList(),
+                ),
+              ],
             ),
     );
   }
@@ -866,6 +922,20 @@ class _PerformanceSettingsView extends StatelessWidget {
                 value: AppConfig.smoothScrollPhysics,
                 onChanged: (v) => AppConfig.setSmoothScrollPhysics(v),
               ),
+              const Divider(height: 1),
+              SwitchListTile(
+                title: const Text('后台多线程并发解析引擎 (Isolate Engine)'),
+                subtitle: const Text('利用多核 CPU 后台多线程解析帖子 HTML 与 BBCode，彻底消除主线程掉帧与卡顿'),
+                value: AppConfig.enableMultiThreadParsing,
+                onChanged: (v) => AppConfig.setMultiThreadParsing(v),
+              ),
+              const Divider(height: 1),
+              SwitchListTile(
+                title: const Text('GPU 硬件加速与图层缓存 (Layer Raster Cache)'),
+                subtitle: const Text('启用 GPU 独立图层缓存与重绘边界隔离，显著降低复杂图文滚动时的 CPU 占用'),
+                value: AppConfig.enableGpuAcceleratedRendering,
+                onChanged: (v) => AppConfig.setGpuAcceleratedRendering(v),
+              ),
             ],
           ),
         ),
@@ -1346,7 +1416,7 @@ class _AboutSettingsViewState extends State<_AboutSettingsView> {
               child: Column(
                 children: [
                   Text(
-                    '苦力怕论坛客户端 v1.0.4',
+                    '苦力怕论坛客户端 ${AppConfig.versionDisplay}',
                     style: TextStyle(
                       color: colorScheme.outline,
                       fontSize: 12.5,
@@ -2160,15 +2230,32 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
 
 Widget _buildSectionHeader(String title) {
   return Builder(
-    builder: (context) => Padding(
-      padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
-      child: Text(
-        title,
-        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-          color: Theme.of(context).colorScheme.primary,
-          fontWeight: FontWeight.bold,
+    builder: (context) {
+      final colorScheme = Theme.of(context).colorScheme;
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(4, 16, 4, 8),
+        child: Row(
+          children: [
+            Container(
+              width: 3.5,
+              height: 14,
+              margin: const EdgeInsets.only(right: 8),
+              decoration: BoxDecoration(
+                color: colorScheme.primary,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Text(
+              title,
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                color: colorScheme.primary,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.3,
+              ),
+            ),
+          ],
         ),
-      ),
-    ),
+      );
+    },
   );
 }

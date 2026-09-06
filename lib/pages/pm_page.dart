@@ -1,7 +1,7 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
-import '../widgets/app_back_button.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 
 /// 私信发送页（本地测试环境可写）
@@ -56,10 +56,10 @@ class _PmPageState extends State<PmPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const AppBackButton(),
+        leading: const GlobalNavLeading(),
         title: Text('私信给 ${widget.toName}'),
-        actions: const [GlobalNavButton()],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),

@@ -1,8 +1,9 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/write_confirm.dart';
 import '../widgets/empty_view.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 
 import '../api/klpbbs_api.dart';
@@ -276,10 +277,11 @@ class _PmInboxPageState extends State<PmInboxPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
+        leading: const GlobalNavLeading(),
         title: const Text('私信收件箱'),
         actions: [
-          const GlobalNavButton(),
           if (!_selectionMode)
             IconButton(
               icon: const Icon(Icons.done_all, size: 20),

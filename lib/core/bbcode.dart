@@ -123,13 +123,19 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
   // [backcolor=颜色]...[/backcolor] → <span style="background-color:...">...</span>
   s = s.replaceAllMapped(
     RegExp(r'\[backcolor=([^\]]+)\]([\s\S]*?)\[/backcolor\]', caseSensitive: false),
-    (m) => '<span style="background-color:${m[1]}">${m[2]}</span>',
+    (m) {
+      final color = (m[1] ?? '').replaceAll(RegExp(r'''["']'''), '').trim();
+      return '<span style="background-color:$color">${m[2]}</span>';
+    },
   );
 
   // [color=xxx]...[/color]
   s = s.replaceAllMapped(
     RegExp(r'\[color=([^\]]+)\]([\s\S]*?)\[/color\]', caseSensitive: false),
-    (m) => '<font color="${m[1]}">${m[2]}</font>',
+    (m) {
+      final color = (m[1] ?? '').replaceAll(RegExp(r'''["']'''), '').trim();
+      return '<font color="$color">${m[2]}</font>';
+    },
   );
 
   // [url=xxx]...[/url] 与 [url]...[/url]
@@ -338,19 +344,37 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
   // [postbg]背景图[/postbg] 清理
   s = s.replaceAll(RegExp(r'\[postbg\][\s\S]*?\[/postbg\]', caseSensitive: false), '');
 
-  // 7. 列表标签 [list=1] / [list=a] / [list=A] / [list] / [*]
-  s = s.replaceAllMapped(
-    RegExp(r'\[\*\]([\s\S]*?)(?=\[\*\]|\[/list\])', caseSensitive: false),
-    (m) => '<li>${m[1]?.trim() ?? ''}</li>',
-  );
-  s = s.replaceAllMapped(
-    RegExp(r'\[list=([^\]]+)\]([\s\S]*?)\[/list\]', caseSensitive: false),
-    (m) => '<ol type="${m[1]}">${m[2]}</ol>',
-  );
-  s = s.replaceAllMapped(
-    RegExp(r'\[list\]([\s\S]*?)\[/list\]', caseSensitive: false),
-    (m) => '<ul>${m[1]}</ul>',
-  );
+  // 7. 列表标签 [list=1] / [list=a] / [list=A] / [list=i] / [list=I] / [list] / [*]
+  // 依据 Discuz 规范，支持嵌套列表解析，循环由内向外依次展开
+  for (var round = 0; round < 4; round++) {
+    final prev = s;
+    // 匹配最内层的有序列表 [list=...]...[/list]
+    s = s.replaceAllMapped(
+      RegExp(r'\[list=([^\]]+)\]((?:(?!\[list)[\s\S])*?)\[/list\]', caseSensitive: false),
+      (m) {
+        final type = m[1]!.trim();
+        var inner = m[2] ?? '';
+        inner = inner.replaceAllMapped(
+          RegExp(r'\[\*\]([\s\S]*?)(?=\[\*\]|$)', caseSensitive: false),
+          (item) => '<li>${item[1]?.trim() ?? ''}</li>',
+        );
+        return '<ol type="$type">$inner</ol>';
+      },
+    );
+    // 匹配最内层的无序列表 [list]...[/list]
+    s = s.replaceAllMapped(
+      RegExp(r'\[list\]((?:(?!\[list)[\s\S])*?)\[/list\]', caseSensitive: false),
+      (m) {
+        var inner = m[1] ?? '';
+        inner = inner.replaceAllMapped(
+          RegExp(r'\[\*\]([\s\S]*?)(?=\[\*\]|$)', caseSensitive: false),
+          (item) => '<li>${item[1]?.trim() ?? ''}</li>',
+        );
+        return '<ul>$inner</ul>';
+      },
+    );
+    if (s == prev) break;
+  }
 
 
   // 7. 换行与块标签格式化

@@ -1,8 +1,9 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../services/download_service.dart';
-import '../widgets/app_back_button.dart';
+import '../widgets/global_app_drawer.dart';
+import '../widgets/global_nav.dart';
 
 /// 下载任务管理中心页面（兼容 PC 宽屏与手机端）
 class DownloadManagerPage extends StatelessWidget {
@@ -14,8 +15,9 @@ class DownloadManagerPage extends StatelessWidget {
     final colorScheme = theme.colorScheme;
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const AppBackButton(),
+        leading: const GlobalNavLeading(),
         title: const Text('下载管理器'),
         elevation: 0,
         actions: [

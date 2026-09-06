@@ -1,4 +1,4 @@
-import 'dart:math' as math;
+﻿import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -6,6 +6,7 @@ import '../api/klpbbs_api.dart';
 import '../models/forum.dart';
 import '../models/thread_summary.dart';
 import '../models/user_space.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
 import '../widgets/skeleton_list.dart';
@@ -360,9 +361,10 @@ class _SearchPageState extends State<SearchPage> {
     final colorScheme = theme.colorScheme;
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
+        leading: const GlobalNavLeading(),
         title: const Text('论坛搜索 (Xunsearch)'),
-        actions: const [GlobalNavButton()],
       ),
       body: GestureDetector(
         onTap: () => FocusScope.of(context).unfocus(),

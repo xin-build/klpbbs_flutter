@@ -1,9 +1,10 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/dio_client.dart';
 import '../models/friend_item.dart';
 import '../widgets/empty_view.dart';
+import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/thread_card.dart';
 import 'pm_detail_page.dart';
@@ -88,12 +89,11 @@ class _FriendPageState extends State<FriendPage>
             : '好友列表');
 
     return Scaffold(
+      drawer: const GlobalAppDrawer(),
       appBar: AppBar(
+        leading: const GlobalNavLeading(),
         title: Text(title),
         centerTitle: true,
-        actions: const [
-          GlobalNavButton(),
-        ],
         bottom: isMe
             ? PreferredSize(
                 preferredSize: const Size.fromHeight(48),
