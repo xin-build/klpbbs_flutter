@@ -1,4 +1,4 @@
-﻿import 'package:cached_network_image/cached_network_image.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -8,6 +8,7 @@ import '../core/write_confirm.dart';
 import '../models/medal_item.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
+import '../widgets/responsive_layout.dart';
 import 'credit_page.dart';
 
 /// 苦力怕论坛勋章中心（深度复刻图四与官方移动端：勋章中心 / 我的勋章 / 勋章排序，统一 Material 3 主题）
@@ -329,10 +330,14 @@ class _MedalPageState extends State<MedalPage> with SingleTickerProviderStateMix
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
+    final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+    final canPop = Navigator.of(context).canPop();
+
     return Scaffold(
       drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const GlobalNavLeading(),
+        automaticallyImplyLeading: !isDesktop,
+        leading: (isDesktop && !canPop) ? null : const GlobalNavLeading(),
         title: const Text('勋章中心', style: TextStyle(fontWeight: FontWeight.bold)),
         centerTitle: true,
         actions: [

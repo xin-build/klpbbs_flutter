@@ -116,8 +116,7 @@ class KlpbbsApp extends StatelessWidget {
           listenable: Listenable.merge([AppConfig.instance, RgbThemeService.instance]),
           builder: (context, _) {
             final isAndroid = !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
-            final isCustomMonet = AppConfig.style == AppStyle.custom;
-            final useDynamic = isAndroid && isCustomMonet && lightDynamic != null;
+            final useDynamic = isAndroid && AppConfig.useSystemMonet && lightDynamic != null;
 
             final seed = AppConfig.seedColor;
             final density = AppConfig.density.toVisualDensity;

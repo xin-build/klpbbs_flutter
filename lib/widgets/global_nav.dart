@@ -467,33 +467,19 @@ class GlobalNavLeading extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (!showBackButton) {
-      return const GlobalNavButton();
-    }
     final canPop = Navigator.of(context).canPop();
-    final hasBack = canPop || onBack != null;
-    if (!hasBack) {
-      return const GlobalNavButton();
-    }
-    final isDesktop = ResponsiveBreakpoints.isDesktop(context) ||
-        Theme.of(context).platform == TargetPlatform.windows ||
-        Theme.of(context).platform == TargetPlatform.linux ||
-        Theme.of(context).platform == TargetPlatform.macOS;
-    if (isDesktop) {
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const GlobalNavButton(),
-          AppBackButton(
-            onBack: onBack,
-            fallbackToHome: false,
-          ),
-        ],
+    final hasBack = showBackButton && (canPop || onBack != null);
+    if (hasBack) {
+      return AppBackButton(
+        onBack: onBack,
+        fallbackToHome: false,
       );
     }
-    return AppBackButton(
-      onBack: onBack,
-      fallbackToHome: false,
-    );
+    // 桌面宽屏模式下，左侧已有常驻导航侧边栏，无需展示冗余汉堡菜单按钮
+    final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+    if (isDesktop) {
+      return const SizedBox.shrink();
+    }
+    return const GlobalNavButton();
   }
 }

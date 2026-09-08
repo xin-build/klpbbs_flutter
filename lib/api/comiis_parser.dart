@@ -58,6 +58,25 @@ typedef ThreadDetailParsed = ({
 class ComiisParser {
   /// 作者个性签名缓存（按 uid 缓存，跨楼层复用）
   static final Map<int, String> authorSigCache = {};
+
+  /// 检查字符串是否属于日期、时间或相对时间格式（如 "2026-9-7"、"12:34"、"3天前"、"昨天"、"刚刚"）
+  static bool isDateOrTime(String text) {
+    final s = text.trim();
+    if (s.isEmpty) return false;
+    if (RegExp(r'^(刚刚|昨天|前天|今天|半小时前|\d+\s*(秒|分钟|小时|天|周|月|年)前)').hasMatch(s)) {
+      return true;
+    }
+    if (RegExp(r'^\d{4}[-/\.]\d{1,2}([-/\.]\d{1,2})?(\s+\d{1,2}:\d{2}(:\d{2})?)?$').hasMatch(s)) {
+      return true;
+    }
+    if (RegExp(r'^\d{1,2}[-/\.]\d{1,2}(\s+\d{1,2}:\d{2}(:\d{2})?)?$').hasMatch(s)) {
+      return true;
+    }
+    if (RegExp(r'^\d{1,2}:\d{2}(:\d{2})?$').hasMatch(s)) {
+      return true;
+    }
+    return false;
+  }
   /// 将相对 URL 解析为绝对 URL（去除重复斜杠，避免 https://klpbbs.com// 导致 404）
   static String? _absolute(String? url) {
     if (url == null || url.isEmpty) return null;
@@ -2203,8 +2222,9 @@ class ComiisParser {
         ? null
         : rawExcerpt.replaceAll(RegExp(r'^本帖最后由.*?编辑\s*'), '').trim();
 
-    // 封面图：整项检索，优先 comiis_loadimages / file / zoomfile / data-src / src
-    final cover = _coverFromScope(li);
+    // 封面图：整项检索，优先 comiis_loadimages / file / zoomfile / data-src / src（支持提取最多 3 张）
+    final covers = _coversFromScope(li);
+    final cover = covers.isNotEmpty ? covers.first : null;
 
     // 赞/推荐数（从 .zhan_list 提取，如 "8赞"）
     final zhanEl = li.querySelector('.zhan_list a.imgbox, .zhan_list a[href*="recommend"], a[class*="num-all_"]');
@@ -2295,10 +2315,10 @@ class ComiisParser {
     }
     itemFid ??= pageFid;
 
-    // 提取条目内嵌版块名
+    // 提取条目内嵌版块名（严禁使用 span.f_d 等发布时间节点，杜绝时间与版块标签重复）
     String? rawForum;
     final metaSpan = li.querySelector(
-      '.twlist_info span, .twlist_info p, .comiis_mh_txtlist span, span.f_d',
+      '.twlist_info span:not(.f_d), .twlist_info p, .comiis_mh_txtlist span:not(.f_d)',
     );
     if (metaSpan != null) {
       final clone = metaSpan.clone(true);
@@ -2331,12 +2351,31 @@ class ComiisParser {
       }
     }
 
+    // 强力过滤：若提取到的文本实质为日期或时间，必须剔除
+    bool isDateOrTime(String s) {
+      final t = s.trim();
+      return RegExp(r'^\d{4}[-/年]\d{1,2}[-/月]\d{1,2}').hasMatch(t) ||
+          RegExp(r'^\d{1,2}[-/月]\d{1,2}').hasMatch(t) ||
+          RegExp(r'^\d{1,2}:\d{2}').hasMatch(t) ||
+          t.contains('前') ||
+          t.contains('昨天') ||
+          t.contains('今天') ||
+          t.contains('刚刚');
+    }
+    if (rawForum != null && isDateOrTime(rawForum)) {
+      rawForum = null;
+    }
+    if (typeName != null && isDateOrTime(typeName)) {
+      typeName = null;
+    }
+
     final resolvedForumName = resolveForumName(
       fid: itemFid,
       rawForumName: rawForum,
       title: title,
       typeName: typeName,
     );
+
 
     // 剔除与版块名重复的主题分类标签（避免出现两个相同的版块标签）
     if (typeName != null) {
@@ -2449,6 +2488,7 @@ class ComiisParser {
       typeName: typeName,
       excerpt: excerpt,
       coverUrl: cover,
+      imageUrls: covers,
       forumName: resolvedForumName,
       timeText: timeText,
       replies: replies,
@@ -2626,53 +2666,65 @@ class ComiisParser {
         lower.contains('.gif');
   }
 
-  /// 从列表/首页作用域内提取封面图：优先 `comiis_loadimages` / `file` / `zoomfile` / `data-src` / `background-image`，其次 `src`；排除评论区/点赞区/头像/占位/版块图标/表情/印章。
-  static String? _coverFromScope(html_dom.Element scope) {
-    // 0. 如果条目本身带有无图标识，直接返回 null
+  /// 从列表/首页作用域内提取多张封面图（最多 3 张）：支持 Issue #6
+  static List<String> _coversFromScope(html_dom.Element scope) {
     if (scope.classes.contains('wzlist_noimg') ||
         scope.classes.contains('noimg') ||
         scope.querySelector('.wzlist_noimg') != null) {
-      return null;
+      return const [];
     }
 
-    // 1. 优先从专属正文封面容器中检索（排除无图文章容器、印章、头像和用户容器）
-    final dedicatedImg = scope.querySelector(
-      '.comiis_pyqlist_img img, .mmlist_li_img img, .threadlist_img img, .comiis_postimg img, .box_img img, .comiis_pic img, .listimgbigx img, .listimgs img, .listimg img, .kmimg img, img.kmimg, .forumlist_li_box .listimg img, .forumlist_li_box .milist_oneimg img, .milist_oneimg img, .milist_img img, .twlist_li_img img, .comiis_twimg img',
-    );
-    if (dedicatedImg != null &&
-        !_isInAuthorOrMedalSection(dedicatedImg) &&
-        !_isInCommentSection(dedicatedImg)) {
-      final alt = dedicatedImg.attributes['alt'] ?? '';
-      final cls = dedicatedImg.attributes['class'] ?? '';
-      if (!cls.contains('stamp') &&
-          !cls.contains('top_tximg') &&
-          !cls.contains('chide') &&
-          alt != '新人帖' &&
-          alt != '包含附件' &&
-          alt != '包含图片') {
-        for (final candidate in [
-          dedicatedImg.attributes['comiis_loadimages'] ?? '',
-          dedicatedImg.attributes['file'] ?? '',
-          dedicatedImg.attributes['zoomfile'] ?? '',
-          dedicatedImg.attributes['data-src'] ?? '',
-          dedicatedImg.attributes['data-original'] ?? '',
-          dedicatedImg.attributes['data-echo'] ?? '',
-          dedicatedImg.attributes['lazysrc'] ?? '',
-          dedicatedImg.attributes['data-thumb'] ?? '',
-          dedicatedImg.attributes['thumb'] ?? '',
-          dedicatedImg.attributes['src'] ?? '',
-        ]) {
-          if (candidate.isNotEmpty &&
-              !candidate.contains('none.png') &&
-              !candidate.contains('spacer.gif')) {
-            final u = _image(candidate);
-            if (_isValidCoverUrl(u)) return u;
-          }
-        }
+    final results = <String>[];
+    final seenUrls = <String>{};
+
+    void addCover(String? candidate) {
+      if (candidate == null || candidate.isEmpty || results.length >= 3) return;
+      if (candidate.contains('none.png') ||
+          candidate.contains('spacer.gif') ||
+          candidate.contains('avatar') ||
+          candidate.contains('common_') ||
+          candidate.contains('smiley')) {
+        return;
+      }
+      final u = _image(candidate);
+      if (u != null && _isValidCoverUrl(u) && seenUrls.add(u)) {
+        results.add(u);
       }
     }
 
-    // 2. 检查 background-image 及 data-cover / data-original 属性（排除作者区、评论区与印章区）
+    // 1. 优先从专属正文封面容器中检索
+    for (final dedicatedImg in scope.querySelectorAll(
+      '.comiis_pyqlist_img img, .mmlist_li_img img, .threadlist_img img, .comiis_postimg img, .box_img img, .comiis_pic img, .listimgbigx img, .listimgs img, .listimg img, .kmimg img, img.kmimg, .forumlist_li_box .listimg img, .forumlist_li_box .milist_oneimg img, .milist_oneimg img, .milist_img img, .twlist_li_img img, .comiis_twimg img',
+    )) {
+      if (_isInAuthorOrMedalSection(dedicatedImg) || _isInCommentSection(dedicatedImg)) continue;
+      final alt = dedicatedImg.attributes['alt'] ?? '';
+      final cls = dedicatedImg.attributes['class'] ?? '';
+      if (cls.contains('stamp') ||
+          cls.contains('top_tximg') ||
+          cls.contains('chide') ||
+          alt == '新人帖' ||
+          alt == '包含附件' ||
+          alt == '包含图片') {
+        continue;
+      }
+      for (final candidate in [
+        dedicatedImg.attributes['comiis_loadimages'],
+        dedicatedImg.attributes['file'],
+        dedicatedImg.attributes['zoomfile'],
+        dedicatedImg.attributes['data-src'],
+        dedicatedImg.attributes['data-original'],
+        dedicatedImg.attributes['data-echo'],
+        dedicatedImg.attributes['lazysrc'],
+        dedicatedImg.attributes['data-thumb'],
+        dedicatedImg.attributes['thumb'],
+        dedicatedImg.attributes['src'],
+      ]) {
+        addCover(candidate);
+        if (results.length >= 3) return results;
+      }
+    }
+
+    // 2. 检查 background-image 及 data-cover / data-original 属性
     for (final el in scope.querySelectorAll(
       'div.comiis_twimg, div.comiis_pic, a.comiis_pica, a.kmimg, .listimg, .listimgs, [data-cover]',
     )) {
@@ -2685,32 +2737,27 @@ class ComiisParser {
         continue;
       }
 
-      final dataCover =
-          el.attributes['data-cover'] ??
-          el.attributes['data-original'] ??
-          el.attributes['data-echo'] ??
-          '';
-      if (dataCover.isNotEmpty &&
-          !dataCover.contains('none.png') &&
-          !dataCover.contains('spacer.gif')) {
-        final u = _image(dataCover);
-        if (_isValidCoverUrl(u)) return u;
-      }
+      addCover(
+        el.attributes['data-cover'] ??
+            el.attributes['data-original'] ??
+            el.attributes['data-echo'],
+      );
+      if (results.length >= 3) return results;
+
       final style = el.attributes['style'] ?? '';
       final bgM = RegExp(
         r'url\s*\(\s*[\x27\x22]?([^\x27\x22\)]+)[\x27\x22]?\s*\)',
       ).firstMatch(style);
       if (bgM != null) {
-        final raw = bgM.group(1)!;
-        if (!raw.contains('none.png') && !raw.contains('spacer.gif')) {
-          final u = _image(raw);
-          if (_isValidCoverUrl(u)) return u;
-        }
+        addCover(bgM.group(1));
+        if (results.length >= 3) return results;
       }
     }
 
-    // 3. 遍历专属图片容器内的图片（排除印章、用户头像、徽章、表情、点赞区、评论区）
-    for (final img in scope.querySelectorAll('.threadlist_img img, .comiis_pyqlist_img img, .mmlist_li_img img, .listimg img, .box_img img, .comiis_pic img')) {
+    // 3. 遍历专属图片容器与正文摘要内的图片
+    for (final img in scope.querySelectorAll(
+      '.threadlist_img img, .comiis_pyqlist_img img, .mmlist_li_img img, .listimg img, .box_img img, .comiis_pic img, .list_body img',
+    )) {
       if (_isInCommentSection(img) || _isInAuthorOrMedalSection(img)) continue;
 
       final cls = img.attributes['class'] ?? '';
@@ -2740,46 +2787,32 @@ class ComiisParser {
         continue;
       }
 
-      final lazy = img.attributes['comiis_loadimages'] ?? '';
-      final file = img.attributes['file'] ?? '';
-      final zoomfile = img.attributes['zoomfile'] ?? '';
-      final dataSrc = img.attributes['data-src'] ?? '';
-      final dataOrig = img.attributes['data-original'] ?? '';
-      final dataEcho = img.attributes['data-echo'] ?? '';
-      final lazySrc = img.attributes['lazysrc'] ?? '';
-      final dataThumb = img.attributes['data-thumb'] ?? '';
-      final thumb = img.attributes['thumb'] ?? '';
-      final src = img.attributes['src'] ?? '';
-
       for (final candidate in [
-        lazy,
-        file,
-        zoomfile,
-        dataSrc,
-        dataOrig,
-        dataEcho,
-        lazySrc,
-        dataThumb,
-        thumb,
-        src,
+        img.attributes['comiis_loadimages'],
+        img.attributes['file'],
+        img.attributes['zoomfile'],
+        img.attributes['data-src'],
+        img.attributes['data-original'],
+        img.attributes['data-echo'],
+        img.attributes['lazysrc'],
+        img.attributes['data-thumb'],
+        img.attributes['thumb'],
+        img.attributes['src'],
       ]) {
-        if (candidate.isNotEmpty &&
-            !candidate.contains('none.png') &&
-            !candidate.contains('spacer.gif') &&
-            !candidate.contains('avatar') &&
-            !candidate.contains('common_') &&
-            !candidate.contains('smiley') &&
-            !alt.contains('avatar')) {
-          final u = _image(candidate);
-          if (_isValidCoverUrl(u)) {
-            return u;
-          }
-        }
+        addCover(candidate);
+        if (results.length >= 3) return results;
       }
     }
 
-    return null;
+    return results;
   }
+
+  /// 从作用域提取首张封面图
+  static String? _coverFromScope(html_dom.Element scope) {
+    final list = _coversFromScope(scope);
+    return list.isNotEmpty ? list.first : null;
+  }
+
 
   /// 辅助判断当前元素是否处于作者栏、勋章栏或用户头像信息区（包括无图文章卡片的头像区）
   static bool _isInAuthorOrMedalSection(html_dom.Element el) {
@@ -8459,6 +8492,14 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           }
         }
 
+        // 7.0 评论复审中提示卡片 (Discuz 评论复审中... 编号: 10465735)
+        if (innerText.contains('评论复审中') || (innerText.contains('复审中') && innerText.contains('编号'))) {
+          final idM = RegExp(r'编号[:：\s]*(\d+)').firstMatch(innerText);
+          final reviewId = idM?.group(1);
+          blocks.add(ReviewStatusBlock(status: '评论复审中...', reviewId: reviewId));
+          continue;
+        }
+
         // 7. 屏蔽/封禁/审核中/锁定状态
         if (innerText.contains('作者被禁止或删除') ||
             innerText.contains('内容自动屏蔽') ||
@@ -8512,14 +8553,20 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
                     : null))
             : null;
 
+        // 关键安全修复：不能将包含丰富图文或多段落内容的复合容器误判为单一附件节点（TID 133669）
+        final isCompositeContainer = (tag == 'div' || tag == 'center' || tag == 'p' || tag == 'table') &&
+            (node.querySelectorAll('img, p, div, table, blockquote, h1, h2, h3, h4, hr').length > 1 ||
+                node.text.trim().length > 120);
+
         final isAttachNode = !hasRealContentImage &&
+            !isCompositeContainer &&
             (node.classes.any((c) => c.contains('attach')) ||
                 node.id.contains('attach') ||
                 node.querySelector(
                       '.attach_tit, .attnm, .tattl, .attach_size, .att_price, .attach_price',
                     ) !=
-                    null ||
-                attachA != null);
+                    null);
+
 
         if (isAttachNode && attachA != null) {
           final href = _absolute(attachA.attributes['href']) ?? '';

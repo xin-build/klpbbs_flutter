@@ -14,6 +14,7 @@ import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/skeleton_list.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../widgets/responsive_layout.dart';
 import 'thread_list_page.dart';
 
 /// 社区版块大全 / 版块导航中心
@@ -135,11 +136,14 @@ class _ForumsPageState extends State<ForumsPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+    final canPop = Navigator.of(context).canPop();
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const GlobalNavLeading(),
+        automaticallyImplyLeading: !isDesktop,
+        leading: (isDesktop && !canPop) ? null : const GlobalNavLeading(),
         title: _isSearching
             ? TextField(
                 controller: _searchCtrl,

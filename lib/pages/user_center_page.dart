@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../api/klpbbs_api.dart';
@@ -7,6 +7,7 @@ import '../core/preload_service.dart';
 import '../models/user_space.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
+import '../widgets/responsive_layout.dart';
 import '../widgets/thread_card.dart';
 import 'credit_page.dart';
 import 'facemall_page.dart';
@@ -16,6 +17,8 @@ import 'homestyle_page.dart';
 import 'login_page.dart';
 import 'magic_page.dart';
 import 'medal_page.dart';
+import 'modcp_page.dart';
+import '../models/user_role.dart';
 import 'notice_page.dart';
 import 'profile_settings_page.dart';
 import 'settings_page.dart';
@@ -34,6 +37,7 @@ class UserCenterPage extends StatefulWidget {
 class _UserCenterPageState extends State<UserCenterPage> {
   int? _myUid;
   UserSpace? _userSpace;
+  DiscuzUserRole? _userRole;
   bool _loading = true;
   String _iron = '0';
   String _credits = '0';
@@ -115,6 +119,10 @@ class _UserCenterPageState extends State<UserCenterPage> {
     } else {
       setState(() => _loading = false);
     }
+
+    KlpbbsApi.getMyRole().then((role) {
+      if (mounted) setState(() => _userRole = role);
+    }).catchError((_) {});
   }
 
   void _openSpace() {
@@ -168,10 +176,14 @@ class _UserCenterPageState extends State<UserCenterPage> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
+    final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+    final canPop = Navigator.of(context).canPop();
+
     return Scaffold(
       drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const GlobalNavLeading(),
+        automaticallyImplyLeading: !isDesktop,
+        leading: (isDesktop && !canPop) ? null : const GlobalNavLeading(),
         title: const Text('个人中心'),
         centerTitle: false,
         actions: [
@@ -340,6 +352,24 @@ class _UserCenterPageState extends State<UserCenterPage> {
                   ),
                 ], colorScheme),
                 const SizedBox(height: 18),
+
+                if (_userRole?.hasAnyModPermission == true) ...[
+                  _buildSectionTitle('管理控制台', colorScheme),
+                  const SizedBox(height: 8),
+                  _buildCardGroup([
+                    _buildMenuTile(
+                      icon: Icons.admin_panel_settings_outlined,
+                      iconColor: colorScheme.primary,
+                      title: '前台管理中心 (ModCP)',
+                      subtitle: '违规举报跟进 / 违规用户禁言与封禁 / 主题管理',
+                      trailingText: _userRole?.groupTitle ?? '管理组',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const ModCpPage()),
+                      ),
+                    ),
+                  ], colorScheme),
+                  const SizedBox(height: 18),
+                ],
 
                 // 5. 账号设置与系统
                 _buildSectionTitle('账号与应用设置', colorScheme),

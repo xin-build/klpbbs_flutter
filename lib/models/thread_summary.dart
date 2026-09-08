@@ -15,6 +15,9 @@ class ThreadSummary {
   /// 封面图（相对 URL 已由解析器拼接为绝对 URL；无图时为 null）
   final String? coverUrl;
 
+  /// 帖子附带的图片列表（最多 3 张）
+  final List<String> imageUrls;
+
   /// 所属版块名，如「BE附加包」「闲聊讨论」
   final String? forumName;
 
@@ -67,6 +70,7 @@ class ThreadSummary {
     this.badge,
     this.excerpt,
     this.coverUrl,
+    this.imageUrls = const [],
     this.forumName,
     this.typeName,
     this.timeText,
@@ -93,6 +97,7 @@ class ThreadSummary {
     String? badge,
     String? excerpt,
     String? coverUrl,
+    List<String>? imageUrls,
     String? forumName,
     String? typeName,
     String? timeText,
@@ -118,6 +123,7 @@ class ThreadSummary {
       badge: badge ?? this.badge,
       excerpt: excerpt ?? this.excerpt,
       coverUrl: coverUrl ?? this.coverUrl,
+      imageUrls: imageUrls ?? this.imageUrls,
       forumName: forumName ?? this.forumName,
       typeName: typeName ?? this.typeName,
       timeText: timeText ?? this.timeText,

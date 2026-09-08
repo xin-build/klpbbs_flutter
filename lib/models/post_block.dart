@@ -390,3 +390,18 @@ class ShieldBlock extends PostBlock {
   String toString() => 'ShieldBlock(title: $title, reason: $reason)';
 }
 
+/// 评论复审中状态区块（Discuz 评论复审/安全审核状态提示）
+class ReviewStatusBlock extends PostBlock {
+  final String status;
+  final String? reviewId;
+
+  const ReviewStatusBlock({
+    this.status = '评论复审中...',
+    this.reviewId,
+  });
+
+  @override
+  String toString() => 'ReviewStatusBlock(status: $status, reviewId: $reviewId)';
+}
+
+

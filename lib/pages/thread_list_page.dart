@@ -35,7 +35,13 @@ class ThreadListPage extends StatefulWidget {
 }
 
 class _ThreadListPageState extends State<ThreadListPage> {
-  late Future<({List<ThreadSummary> threads, ForumHeaderInfo header})> _future;
+  ForumHeaderInfo? _headerInfo;
+  List<ThreadSummary> _stickyThreads = [];
+  List<ThreadSummary> _normalThreads = [];
+  bool _isInitialLoading = true;
+  bool _isPageLoading = false;
+  String? _errorMessage;
+
   int _page = 1;
   List<({int typeid, String name})> _types = const [];
   int? _selectedType;
@@ -43,22 +49,23 @@ class _ThreadListPageState extends State<ThreadListPage> {
   int? _selectedTid;
   bool _isFav = false;
 
-  List<Forum> _allForums = [];
   List<Forum> _subForums = [];
+
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
     ForumFavoriteNotifier.instance.addListener(_onFavEvent);
     _loadFavStatus();
-    _future = _fetchData();
+    _fetchData(page: 1, isInitial: true);
     _loadTypes();
-    _loadAllForums();
     _loadSubForums();
   }
 
   @override
   void dispose() {
+    _scrollController.dispose();
     ForumFavoriteNotifier.instance.removeListener(_onFavEvent);
     super.dispose();
   }
@@ -85,7 +92,6 @@ class _ThreadListPageState extends State<ThreadListPage> {
 
   Future<void> _toggleFav() async {
     final nextFav = !_isFav;
-    // 立即响应 UI，无需等待网络返回，保证即时刷新
     setState(() => _isFav = nextFav);
 
     try {
@@ -116,18 +122,11 @@ class _ThreadListPageState extends State<ThreadListPage> {
     } catch (_) {}
   }
 
-  Future<void> _loadAllForums() async {
-    try {
-      final list = await KlpbbsApi.getForums();
-      if (mounted) setState(() => _allForums = list);
-    } catch (_) {}
-  }
-
-  Future<({List<ThreadSummary> threads, ForumHeaderInfo header})> _fetchData({
+  Future<void> _fetchData({
     int page = 1,
     bool forceRefresh = false,
+    bool isInitial = false,
   }) async {
-    // SWR 策略：如果缓存中已有该版块数据包，瞬间直出展示，并在后台静默更新
     final cacheKey = 'forum_bundle_${widget.fid}_${page}_${_selectedType ?? 0}_${_orderby ?? ""}';
     final cached = PreloadService.instance.get<
       ({
@@ -138,57 +137,90 @@ class _ThreadListPageState extends State<ThreadListPage> {
       })
     >(cacheKey);
 
-    if (!forceRefresh && cached != null) {
+    if (isInitial && cached != null && !forceRefresh) {
       if (mounted) {
-        if (cached.types.isNotEmpty) _types = cached.types;
-        if (cached.subForums.isNotEmpty) _subForums = cached.subForums;
-      }
-      // 在后台静默发起网络拉取（SWR）无感更新
-      unawaited(
-        _fetchData(page: page, forceRefresh: true).then((fresh) {
-          if (mounted && fresh.threads.isNotEmpty) {
-            setState(() {
-              _future = Future.value(fresh);
-            });
+        setState(() {
+          _headerInfo = cached.header;
+          if (cached.types.isNotEmpty) _types = cached.types;
+          if (cached.subForums.isNotEmpty) _subForums = cached.subForums;
+          _stickyThreads = cached.threads.where((t) => t.isSticky).toList();
+          _normalThreads = cached.threads.where((t) => !t.isSticky).toList();
+          _isInitialLoading = false;
+          _isPageLoading = false;
+          _page = page;
+          if (_selectedTid == null && cached.threads.isNotEmpty) {
+            _selectedTid = cached.threads.first.tid;
           }
-        }).catchError((_) {}),
-      );
-      return (
-        threads: cached.threads,
-        header: cached.header,
-      );
+        });
+      }
+      unawaited(_fetchData(page: page, forceRefresh: true));
+      return;
     }
-
-    final bundle = await KlpbbsApi.getForumBundle(
-      widget.fid,
-      page: page,
-      typeid: _selectedType,
-      orderby: _orderby,
-      forceRefresh: forceRefresh,
-    );
 
     if (mounted) {
-      if (bundle.types.isNotEmpty) {
-        setState(() => _types = bundle.types);
-      }
-      if (bundle.subForums.isNotEmpty) {
-        setState(() => _subForums = bundle.subForums);
-      }
-      if (bundle.header.isFavorited && !_isFav) {
-        setState(() => _isFav = true);
-        SharedPreferences.getInstance().then((prefs) {
-          final list = (prefs.getStringList('fav_forums') ?? []).toSet();
-          if (list.add('${widget.fid}')) {
-            prefs.setStringList('fav_forums', list.toList());
-          }
-        }).catchError((_) {});
-      }
+      setState(() {
+        if (_headerInfo == null && isInitial) {
+          _isInitialLoading = true;
+        } else {
+          _isPageLoading = true;
+        }
+        _errorMessage = null;
+      });
     }
 
-    return (
-      threads: bundle.threads,
-      header: bundle.header,
-    );
+    try {
+      final bundle = await KlpbbsApi.getForumBundle(
+        widget.fid,
+        page: page,
+        typeid: _selectedType,
+        orderby: _orderby,
+        forceRefresh: forceRefresh,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _headerInfo = bundle.header;
+        if (bundle.types.isNotEmpty) _types = bundle.types;
+        if (bundle.subForums.isNotEmpty) _subForums = bundle.subForums;
+        _stickyThreads = bundle.threads.where((t) => t.isSticky).toList();
+        _normalThreads = bundle.threads.where((t) => !t.isSticky).toList();
+        _page = page;
+        _isInitialLoading = false;
+        _isPageLoading = false;
+        if (_selectedTid == null && bundle.threads.isNotEmpty) {
+          _selectedTid = bundle.threads.first.tid;
+        }
+        if (bundle.header.isFavorited && !_isFav) {
+          _isFav = true;
+          SharedPreferences.getInstance().then((prefs) {
+            final list = (prefs.getStringList('fav_forums') ?? []).toSet();
+            if (list.add('${widget.fid}')) {
+              prefs.setStringList('fav_forums', list.toList());
+            }
+          }).catchError((_) {});
+        }
+      });
+      if (_scrollController.hasClients && _scrollController.offset > 280) {
+        _scrollController.animateTo(
+          280,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isInitialLoading = false;
+        _isPageLoading = false;
+        if (_headerInfo == null) {
+          _errorMessage = e.toString();
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('加载失败：$e')),
+          );
+        }
+      });
+    }
   }
 
   Future<void> _loadSubForums() async {
@@ -206,10 +238,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
   }
 
   void _reload() {
-    setState(() {
-      _page = 1;
-      _future = _fetchData(page: 1, forceRefresh: true);
-    });
+    _fetchData(page: _page, forceRefresh: true);
   }
 
   Future<void> _openPostPage() async {
@@ -222,47 +251,8 @@ class _ThreadListPageState extends State<ThreadListPage> {
   }
 
   void _goPage(int page) {
-    setState(() {
-      _page = page;
-      _future = _fetchData(page: page);
-    });
-  }
-
-  Future<void> _jumpPage() async {
-    final ctrl = TextEditingController();
-    final target = await showDialog<int>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('跳转到第几页'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
-            hintText: '输入页码',
-            border: OutlineInputBorder(),
-          ),
-          onSubmitted: (v) {
-            final p = int.tryParse(v);
-            if (p != null && p >= 1) Navigator.of(ctx).pop(p);
-          },
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final p = int.tryParse(ctrl.text.trim());
-              if (p != null && p >= 1) Navigator.of(ctx).pop(p);
-            },
-            child: const Text('跳转'),
-          ),
-        ],
-      ),
-    );
-    if (target != null && target >= 1) _goPage(target);
+    if (page == _page && !_isPageLoading) return;
+    _fetchData(page: page);
   }
 
   void _openThread(int tid) {
@@ -276,297 +266,280 @@ class _ThreadListPageState extends State<ThreadListPage> {
     }
   }
 
-  void _showForumPicker() {
-    if (_allForums.isEmpty) return;
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (ctx) => DraggableScrollableSheet(
-        initialChildSize: 0.6,
-        maxChildSize: 0.9,
-        minChildSize: 0.3,
-        expand: false,
-        builder: (_, scrollCtrl) => ListView.builder(
-          controller: scrollCtrl,
-          itemCount: _allForums.length,
-          itemBuilder: (_, i) {
-            final f = _allForums[i];
-            final isCurrent = f.fid == widget.fid;
-            return ListTile(
-              title: Text(
-                f.name,
-                style: TextStyle(
-                  fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
-                  color: isCurrent ? Theme.of(context).colorScheme.primary : null,
-                ),
-              ),
-              trailing: isCurrent ? const Icon(Icons.check, color: Colors.green) : null,
-              onTap: () {
-                Navigator.of(ctx).pop();
-                if (!isCurrent) {
-                  Navigator.of(context).pushReplacement(
-                    MaterialPageRoute(
-                      builder: (_) => ThreadListPage(fid: f.fid, title: f.name),
-                    ),
-                  );
-                }
-              },
-            );
-          },
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final isDesktop = ResponsiveBreakpoints.isDesktop(context);
-    final isMasterDetail = isDesktop && AppConfig.isMasterDetailEnabled;
+    final isMasterDetail = isDesktop &&
+        AppConfig.isMasterDetailEnabled &&
+        MediaQuery.sizeOf(context).width >= 768.0;
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    final body = FutureBuilder<({List<ThreadSummary> threads, ForumHeaderInfo header})>(
-      future: _future,
-      builder: (context, snap) {
-        if (snap.connectionState != ConnectionState.done) {
-          return const SkeletonList(itemCount: 8);
-        }
-        if (snap.hasError) {
-          return Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('加载失败：${snap.error}', textAlign: TextAlign.center),
-                const SizedBox(height: 12),
-                FilledButton(onPressed: _reload, child: const Text('重试')),
-              ],
-            ),
-          );
-        }
-        final threads = snap.data?.threads ?? [];
-        final header = snap.data?.header ?? ForumHeaderInfo(fid: widget.fid, name: widget.title);
+    final header = _headerInfo ?? ForumHeaderInfo(fid: widget.fid, name: widget.title);
 
-        // 默认选中首篇
-        if (_selectedTid == null && threads.isNotEmpty && isDesktop) {
-          _selectedTid = threads.first.tid;
-        }
-
-        final stickyThreads = threads.where((t) => t.isSticky).toList();
-        final normalThreads = threads.where((t) => !t.isSticky).toList();
-
-        final listView = RefreshIndicator(
-          onRefresh: () async => _reload(),
-          child: ListView(
-            key: PageStorageKey('thread_list_${widget.fid}_$_selectedType'),
-            padding: const EdgeInsets.fromLTRB(0, 0, 0, 80),
-            children: [
-              // 0. 版块头部 Banner + 统计栏 + 导览/版规卡片（100% 对齐网页版）
-              ForumHeaderWidget(
-                headerInfo: header,
-                onPost: _openPostPage,
-              ),
-
-              // 1. 分类横向 Tab 栏 (全部 | 村庄改革 | 独立创作...)
-              _buildCategoryTabBar(theme),
-
-              // 2. 真实子版块入口
-              _buildSubforumSection(theme),
-
-              // 3. 彩色置顶帖区
-              if (stickyThreads.isNotEmpty)
-                _buildStickySection(stickyThreads, theme),
-
-              // 4. 排序 Chips
-              _buildOrderChips(theme),
-
-              // 8. 普通帖子列表
-              if (normalThreads.isEmpty && stickyThreads.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 40),
-                  child: EmptyView(
-                    icon: Icons.inbox_outlined,
-                    title: '本版块暂无更多帖子',
-                    subtitle: '点击右下角按钮抢先发布！',
-                  ),
+    // 首次加载且无缓存直出时展示骨架屏
+    if (_isInitialLoading && _headerInfo == null) {
+      return Scaffold(
+        appBar: AppBar(
+          leading: Navigator.of(context).canPop()
+              ? IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  tooltip: '返回',
+                  onPressed: () => Navigator.of(context).maybePop(),
                 )
-              else
-                for (final t in normalThreads)
-                  RepaintBoundary(
-                    child: Container(
-                      margin: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 3,
-                      ),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        border: (_selectedTid == t.tid &&
-                                isDesktop &&
-                                AppConfig.isMasterDetailEnabled)
-                            ? Border.all(
-                                color: colorScheme.primary,
-                                width: 1.8,
-                              )
-                            : null,
-                      ),
-                      child: ThreadCard(
-                        thread: t,
-                        onTap: () => _openThread(t.tid),
-                        onAuthorTap: t.uid == null
-                            ? null
-                            : () => Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (_) =>
-                                        UserSpacePage(uid: t.uid!),
-                                  ),
-                                ),
-                      ),
-                    ),
-                  ),
+              : null,
+          title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        ),
+        body: const SkeletonList(itemCount: 8),
+      );
+    }
 
-              // 9. 分页导航
-              _buildPagination(theme),
+    // 首次加载出错且无数据
+    if (_errorMessage != null && _headerInfo == null) {
+      return Scaffold(
+        appBar: AppBar(
+          leading: Navigator.of(context).canPop()
+              ? IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  tooltip: '返回',
+                  onPressed: () => Navigator.of(context).maybePop(),
+                )
+              : null,
+          title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        ),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('加载失败：$_errorMessage', textAlign: TextAlign.center),
+              const SizedBox(height: 12),
+              FilledButton(onPressed: _reload, child: const Text('重试')),
             ],
           ),
-        );
+        ),
+      );
+    }
 
-        if (isMasterDetail) {
-          return Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+    // 局部刷新的普通帖子区（固定的内容固定，翻页仅刷新普通帖子列表和翻页器）
+    Widget normalThreadsSection;
+    if (_isPageLoading) {
+      normalThreadsSection = Padding(
+        padding: const EdgeInsets.symmetric(vertical: 36),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              // 左侧：帖子列表栏（自带版块专属顶栏，高度与右侧详情栏完全一致平整对齐）
-              SizedBox(
-                width: 440,
-                child: ScaffoldMessenger(
-                  child: Scaffold(
-                    appBar: AppBar(
-                      leading: Navigator.of(context).canPop()
-                          ? IconButton(
-                              icon: const Icon(Icons.arrow_back),
-                              tooltip: '返回',
-                              onPressed: () => Navigator.of(context).maybePop(),
-                            )
-                          : null,
-                      title: Text(widget.title),
-                      actions: [
-                        if (_allForums.isNotEmpty)
-                          IconButton(
-                            icon: const Icon(Icons.swap_horiz, size: 20),
-                            tooltip: '切换版块',
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                            onPressed: _showForumPicker,
-                          ),
-                        IconButton(
-                          icon: const Icon(Icons.pin_outlined, size: 20),
-                          tooltip: '跳转页码',
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                          onPressed: _jumpPage,
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.search, size: 20),
-                          tooltip: '搜索',
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                          onPressed: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => const SearchPage(),
-                              ),
-                            );
-                          },
-                        ),
-                        IconButton(
-                          icon: Icon(
-                            _isFav ? Icons.star_rounded : Icons.star_border_rounded,
-                            size: 22,
-                            color: _isFav ? const Color(0xFFFFB300) : null,
-                          ),
-                          tooltip: _isFav ? '已收藏版块（点击取消）' : '收藏版块',
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                          onPressed: _toggleFav,
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.refresh, size: 20),
-                          tooltip: '刷新',
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                          onPressed: _reload,
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.edit, size: 20),
-                          tooltip: '发帖',
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                          onPressed: _openPostPage,
-                        ),
-                        const SizedBox(width: 6),
-                      ],
-                    ),
-                    body: listView,
-                  ),
+              const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(strokeWidth: 2.2),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '正在加载第 $_page 页...',
+                style: TextStyle(fontSize: 12, color: colorScheme.outline),
+              ),
+            ],
+          ),
+        ),
+      );
+    } else if (_normalThreads.isEmpty && _stickyThreads.isEmpty) {
+      normalThreadsSection = const Padding(
+        padding: EdgeInsets.symmetric(vertical: 40),
+        child: EmptyView(
+          icon: Icons.inbox_outlined,
+          title: '本版块暂无更多帖子',
+          subtitle: '点击右下角按钮抢先发布！',
+        ),
+      );
+    } else {
+      normalThreadsSection = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final t in _normalThreads)
+            RepaintBoundary(
+              child: Container(
+                margin: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 3,
                 ),
-              ),
-              // 中间：优雅的分界线
-              VerticalDivider(
-                width: 1,
-                thickness: 1,
-                color: colorScheme.outlineVariant.withAlpha(80),
-              ),
-              // 右侧：帖子详情展示区（自带独立 ScaffoldMessenger，杜绝双栏同时弹出通知）
-              Expanded(
-                child: ScaffoldMessenger(
-                  child: _selectedTid == null
-                      ? Scaffold(
-                          appBar: AppBar(
-                            title: const Text('帖子详情'),
-                          ),
-                          body: Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  Icons.article_outlined,
-                                  size: 56,
-                                  color: colorScheme.outlineVariant,
-                                ),
-                                const SizedBox(height: 12),
-                                Text(
-                                  '选择左侧帖子查看详情',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    color: colorScheme.outline,
-                                  ),
-                                ),
-                              ],
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: (_selectedTid == t.tid &&
+                          isDesktop &&
+                          AppConfig.isMasterDetailEnabled)
+                      ? Border.all(
+                          color: colorScheme.primary,
+                          width: 1.8,
+                        )
+                      : null,
+                ),
+                child: ThreadCard(
+                  thread: t,
+                  onTap: () => _openThread(t.tid),
+                  onAuthorTap: t.uid == null
+                      ? null
+                      : () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => UserSpacePage(uid: t.uid!),
                             ),
                           ),
-                        )
-                      : ThreadDetailPage(
-                          key: ValueKey(_selectedTid),
-                          tid: _selectedTid!,
-                          showBackButton: false,
-                        ),
                 ),
               ),
-            ],
-          );
-        }
+            ),
+        ],
+      );
+    }
 
-        return Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 900),
-            child: listView,
+    final listView = RefreshIndicator(
+      onRefresh: () async => _reload(),
+      child: ListView(
+        controller: _scrollController,
+        key: PageStorageKey('thread_list_${widget.fid}_${_selectedType ?? 0}'),
+        padding: const EdgeInsets.fromLTRB(0, 0, 0, 80),
+        children: [
+          // 0. 版块头部 Banner + 统计栏 + 导览/版规卡片（常驻稳定）
+          ForumHeaderWidget(
+            headerInfo: header,
+            onPost: _openPostPage,
           ),
-        );
-      },
+
+          // 1. 分类横向 Tab 栏 (全部 | 村庄改革 | 独立创作...)
+          _buildCategoryTabBar(theme),
+
+          // 2. 真实子版块入口
+          _buildSubforumSection(theme),
+
+          // 3. 彩色置顶帖区（常驻）
+          if (_stickyThreads.isNotEmpty)
+            _buildStickySection(_stickyThreads, theme),
+
+          // 4. 排序 Chips
+          _buildOrderChips(theme),
+
+          // 5. 局部定向刷新的普通帖子区
+          normalThreadsSection,
+
+          // 6. 分页导航
+          _buildPagination(theme),
+        ],
+      ),
     );
 
     if (isMasterDetail) {
       return DesktopShortcutsWrapper(
         onRefresh: _reload,
-        child: body,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // 左侧：帖子列表栏（精简顶栏：去除冗余切换版块/跳转页码，版块标题绝不遮挡）
+            SizedBox(
+              width: 440,
+              child: ScaffoldMessenger(
+                child: Scaffold(
+                  appBar: AppBar(
+                    leading: Navigator.of(context).canPop()
+                        ? IconButton(
+                            icon: const Icon(Icons.arrow_back),
+                            tooltip: '返回',
+                            onPressed: () => Navigator.of(context).maybePop(),
+                          )
+                        : null,
+                    title: Text(
+                      widget.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    actions: [
+                      IconButton(
+                        icon: Icon(
+                          _isFav ? Icons.star_rounded : Icons.star_border_rounded,
+                          size: 22,
+                          color: _isFav ? const Color(0xFFFFB300) : null,
+                        ),
+                        tooltip: _isFav ? '已收藏版块（点击取消）' : '收藏版块',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                        onPressed: _toggleFav,
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.search, size: 20),
+                        tooltip: '搜索',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                        onPressed: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const SearchPage(),
+                            ),
+                          );
+                        },
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.refresh, size: 20),
+                        tooltip: '刷新',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                        onPressed: _reload,
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.edit, size: 20),
+                        tooltip: '发帖',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                        onPressed: _openPostPage,
+                      ),
+                      const SizedBox(width: 6),
+                    ],
+                  ),
+                  body: listView,
+                ),
+              ),
+            ),
+            // 中间：分界线
+            VerticalDivider(
+              width: 1,
+              thickness: 1,
+              color: colorScheme.outlineVariant.withAlpha(80),
+            ),
+            // 右侧：帖子详情展示区（完全独立解耦，翻页时不闪烁骨架屏）
+            Expanded(
+              child: ScaffoldMessenger(
+                child: _selectedTid == null
+                    ? Scaffold(
+                        appBar: AppBar(
+                          title: const Text('帖子详情'),
+                        ),
+                        body: Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.article_outlined,
+                                size: 56,
+                                color: colorScheme.outlineVariant,
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                '选择左侧帖子查看详情',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: colorScheme.outline,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    : ThreadDetailPage(
+                        key: ValueKey(_selectedTid),
+                        tid: _selectedTid!,
+                        showBackButton: false,
+                      ),
+              ),
+            ),
+          ],
+        ),
       );
     }
 
@@ -576,7 +549,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
         drawer: const GlobalAppDrawer(),
         appBar: AppBar(
           leading: const GlobalNavLeading(),
-          title: Text(widget.title),
+          title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
           actions: [
             IconButton(
               icon: Icon(
@@ -585,17 +558,6 @@ class _ThreadListPageState extends State<ThreadListPage> {
               ),
               tooltip: _isFav ? '已收藏版块（点击取消）' : '收藏版块',
               onPressed: _toggleFav,
-            ),
-            if (_allForums.isNotEmpty)
-              IconButton(
-                icon: const Icon(Icons.swap_horiz),
-                tooltip: '切换版块',
-                onPressed: _showForumPicker,
-              ),
-            IconButton(
-              icon: const Icon(Icons.pin_outlined),
-              tooltip: '跳转页码',
-              onPressed: _jumpPage,
             ),
             IconButton(
               icon: const Icon(Icons.search),
@@ -615,7 +577,12 @@ class _ThreadListPageState extends State<ThreadListPage> {
             ),
           ],
         ),
-        body: body,
+        body: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 900),
+            child: listView,
+          ),
+        ),
         floatingActionButton: FloatingActionButton.extended(
           icon: const Icon(Icons.edit),
           label: const Text('发帖'),
@@ -640,8 +607,12 @@ class _ThreadListPageState extends State<ThreadListPage> {
             label: '全部',
             selected: _selectedType == null,
             onSelected: () {
-              setState(() => _selectedType = null);
-              _reload();
+              if (_selectedType == null) return;
+              setState(() {
+                _selectedType = null;
+                _page = 1;
+              });
+              _fetchData(page: 1);
             },
             colorScheme: colorScheme,
           ),
@@ -651,8 +622,12 @@ class _ThreadListPageState extends State<ThreadListPage> {
               label: t.name,
               selected: _selectedType == t.typeid,
               onSelected: () {
-                setState(() => _selectedType = t.typeid);
-                _reload();
+                if (_selectedType == t.typeid) return;
+                setState(() {
+                  _selectedType = t.typeid;
+                  _page = 1;
+                });
+                _fetchData(page: 1);
               },
               colorScheme: colorScheme,
             ),
@@ -915,11 +890,14 @@ class _ThreadListPageState extends State<ThreadListPage> {
                 label: Text(label),
                 selected: _orderby == key,
                 visualDensity: VisualDensity.compact,
-                onSelected: (_) => setState(() {
-                  _orderby = key;
-                  _page = 1;
-                  _future = _fetchData(page: 1);
-                }),
+                onSelected: (_) {
+                  if (_orderby == key) return;
+                  setState(() {
+                    _orderby = key;
+                    _page = 1;
+                  });
+                  _fetchData(page: 1);
+                },
               ),
             ),
         ],

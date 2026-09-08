@@ -260,6 +260,8 @@ class DiscuzPostRenderer extends StatelessWidget {
       HideBlock(:final reason) => _buildHideBlock(context, theme, reason),
       ShieldBlock(:final title, :final reason, :final iconType) =>
         _buildShieldBlock(context, theme, title, reason, iconType),
+      ReviewStatusBlock(:final status, :final reviewId) =>
+        _buildReviewStatusBlock(context, theme, status, reviewId),
       CardContainerBlock() => _buildCardContainerBlock(context, theme, block),
       DividerBlock() => Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
@@ -423,6 +425,75 @@ class DiscuzPostRenderer extends StatelessWidget {
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  /// 评论复审中状态卡片（自适应深浅主题，与网页版完全对齐）
+  Widget _buildReviewStatusBlock(
+    BuildContext context,
+    ThemeData theme,
+    String status,
+    String? reviewId,
+  ) {
+    final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
+    final blueColor = isDark ? const Color(0xFF64B5F6) : const Color(0xFF1E88E5);
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: isDark
+            ? colorScheme.surfaceContainerLow
+            : const Color(0xFFF8F9FA),
+        borderRadius: BorderRadius.circular(8),
+        border: Border(
+          left: BorderSide(color: blueColor, width: 4),
+          top: BorderSide(color: colorScheme.outlineVariant.withAlpha(40), width: 0.5),
+          right: BorderSide(color: colorScheme.outlineVariant.withAlpha(40), width: 0.5),
+          bottom: BorderSide(color: colorScheme.outlineVariant.withAlpha(40), width: 0.5),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: blueColor,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            status,
+            style: TextStyle(
+              fontSize: 13.5,
+              fontWeight: FontWeight.bold,
+              color: colorScheme.onSurface,
+            ),
+          ),
+          if (reviewId != null && reviewId.isNotEmpty) ...[
+            const SizedBox(width: 8),
+            Text(
+              '编号: ',
+              style: TextStyle(
+                fontSize: 12.5,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            Text(
+              reviewId,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+                color: blueColor,
+              ),
+            ),
+          ],
         ],
       ),
     );

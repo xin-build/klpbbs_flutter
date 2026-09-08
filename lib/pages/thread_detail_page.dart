@@ -20,9 +20,11 @@ import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/inline_html_text.dart';
 import '../widgets/favorite_dialog.dart';
+import '../widgets/floor_admin_dialog.dart';
 import '../widgets/report_dialog.dart';
 import '../widgets/skeleton_list.dart';
 import '../widgets/thread_card.dart';
+import '../widgets/topic_admin_dialog.dart';
 import 'login_page.dart';
 import 'post_page.dart';
 import 'search_page.dart';
@@ -87,6 +89,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   int? _favid;
   int? _myUid;
   int? _firstAuthorUid;
+  int? _threadFid;
   bool _canModerate = false;
   int _likes = 0;
   int _favorites = 0;
@@ -148,6 +151,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     }
 
     if (r.fid != null && r.fid > 0) {
+      _threadFid = r.fid;
       KlpbbsApi.getMyRole(fid: r.fid).then((role) {
         if (mounted) {
           final canMod = role.isAdmin || role.isSuperMod || role.isModerator;
@@ -777,6 +781,18 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   Future<void> _onMenuAction(String action) async {
     if (!context.mounted) return;
     switch (action) {
+      case 'topic_admin':
+        final snap = await _future;
+        if (!mounted) return;
+        final targetFid = _threadFid ?? snap.fid ?? 2;
+        final ok = await TopicAdminDialog.show(
+          context,
+          fid: targetFid,
+          tid: widget.tid,
+          threadTitle: _title.isNotEmpty ? _title : snap.title,
+        );
+        if (ok == true && mounted) _reload();
+        break;
       case 'edit':
         final navigator = Navigator.of(context);
         final confirmed = await confirmWrite(context, '编辑帖子');
@@ -802,14 +818,68 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       case 'delete':
         final messenger = ScaffoldMessenger.of(context);
         final navigator = Navigator.of(context);
-        final confirmed = await confirmWrite(context, '删除帖子');
-        if (!confirmed || !mounted) return;
+        final reasonCtrl = TextEditingController(text: '违规内容');
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (dlgCtx) => AlertDialog(
+            title: Text(_canModerate ? '管理删除主题' : '删除主题'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('确定要删除该主题吗？此操作不可撤销。'),
+                if (_canModerate) ...[
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: reasonCtrl,
+                    decoration: const InputDecoration(
+                      labelText: '管理删帖理由',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dlgCtx).pop(false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(dlgCtx).colorScheme.error,
+                  foregroundColor: Theme.of(dlgCtx).colorScheme.onError,
+                ),
+                onPressed: () => Navigator.of(dlgCtx).pop(true),
+                child: const Text('确认删除'),
+              ),
+            ],
+          ),
+        );
+        if (confirmed != true || !mounted) return;
         try {
-          final ok = await KlpbbsApi.deletePost(2, widget.tid, 1);
+          bool ok = false;
+          String? failMsg;
+          final snap = await _future;
+          final targetFid = _threadFid ?? snap.fid ?? 2;
+          if (_canModerate) {
+            final reason = reasonCtrl.text.trim().isEmpty ? '违规内容' : reasonCtrl.text.trim();
+            final res = await KlpbbsApi.moderateDeleteThread(
+              fid: targetFid,
+              tid: widget.tid,
+              reason: reason,
+            );
+            ok = res.success;
+            failMsg = res.message;
+          } else {
+            final targetPid = snap.floors.isNotEmpty ? (snap.floors.first.pid ?? 1) : 1;
+            ok = await KlpbbsApi.deletePost(targetFid, widget.tid, targetPid);
+          }
           messenger.showSnackBar(
-            SnackBar(content: Text(ok ? '已删除' : '删除失败（可能无权限）')),
+            SnackBar(content: Text(ok ? '已删除主题' : (failMsg ?? '删除失败（可能无权限或已被处理）'))),
           );
-          if (ok && mounted) navigator.pop();
+          if (ok && mounted) navigator.pop(true);
         } catch (e) {
           messenger.showSnackBar(SnackBar(content: Text('删除异常：$e')));
         }
@@ -896,6 +966,17 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                     ],
                   ),
                 ),
+                if (_canModerate)
+                  const PopupMenuItem(
+                    value: 'topic_admin',
+                    child: Row(
+                      children: [
+                        Icon(Icons.admin_panel_settings_outlined, size: 18),
+                        SizedBox(width: 8),
+                        Text('管理此主题 (TopicAdmin)'),
+                      ],
+                    ),
+                  ),
                 if (_canEditPost) ...[
                   const PopupMenuItem(
                     value: 'edit',
@@ -919,16 +1000,17 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                       ),
                     ),
                 ],
-                const PopupMenuItem(
-                  value: 'report',
-                  child: Row(
-                    children: [
-                      Icon(Icons.report_problem_outlined, size: 18),
-                      SizedBox(width: 8),
-                      Text('举报'),
-                    ],
+                if (!_canModerate && (_firstAuthorUid == null || _myUid != _firstAuthorUid))
+                  const PopupMenuItem(
+                    value: 'report',
+                    child: Row(
+                      children: [
+                        Icon(Icons.report_problem_outlined, size: 18),
+                        SizedBox(width: 8),
+                        Text('举报'),
+                      ],
+                    ),
                   ),
-                ),
               ],
             ),
           ],
@@ -1642,6 +1724,26 @@ class _FloorViewState extends State<_FloorView> {
     return floor.uid != null && floor.uid! > 0 && floor.uid == myUid;
   }
 
+  bool get _isSelf {
+    final myUid = widget.myUid;
+    return myUid != null && myUid > 0 && floor.uid != null && floor.uid == myUid;
+  }
+
+  bool get _canReport {
+    if (widget.canModerate) return false;
+    if (_isSelf) return false;
+    return true;
+  }
+
+  bool get _isFirstFloorOverall {
+    return widget.isFirstFloor ||
+        (widget.page == 1 && index == 0) ||
+        floor.floorNumber == '1' ||
+        floor.floorNumber == '1楼' ||
+        floor.floorNumber == '楼主' ||
+        floor.floorNumber == '1#';
+  }
+
   Future<void> _onEditFloor(BuildContext context) async {
     final navigator = Navigator.of(context);
     final detailState =
@@ -1849,180 +1951,233 @@ class _FloorViewState extends State<_FloorView> {
     );
   }
 
+  Widget _buildTextAction({
+    required Widget icon,
+    required String label,
+    required VoidCallback onTap,
+    Color? color,
+    Color? backgroundColor,
+    String? tooltip,
+    bool showLabel = true,
+  }) {
+    final theme = Theme.of(context);
+    final fg = color ?? theme.colorScheme.onSurfaceVariant;
+    final btn = Material(
+      color: backgroundColor ?? Colors.transparent,
+      borderRadius: BorderRadius.circular(6),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconTheme(
+                data: IconThemeData(color: fg, size: 14.5),
+                child: icon,
+              ),
+              if (showLabel && label.isNotEmpty) ...[
+                const SizedBox(width: 4),
+                Text(
+                  label,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: fg,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+    if (tooltip != null && tooltip.isNotEmpty) {
+      return Tooltip(message: tooltip, child: btn);
+    }
+    return btn;
+  }
+
+  Widget _buildIconAction({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onTap,
+    Color? color,
+    double size = 16,
+  }) {
+    final theme = Theme.of(context);
+    final fg = color ?? theme.colorScheme.onSurfaceVariant.withAlpha(200);
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(6),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(6),
+          child: SizedBox(
+            width: 28,
+            height: 28,
+            child: Center(
+              child: Icon(icon, size: size, color: fg),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildActionRow(BuildContext context, ThemeData theme) {
     final effectiveLiked = widget.isLiked ?? _isLiked;
     final effectiveCount = widget.likesCount ?? _likesCount;
-
-    final leftActions = <Widget>[
-      // 赞
-      TextButton.icon(
-        style: TextButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          minimumSize: Size.zero,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-        onPressed: _toggleFloorLike,
-        icon: Icon(
-          effectiveLiked ? Icons.thumb_up : Icons.thumb_up_outlined,
-          size: 15,
-          color: effectiveLiked ? theme.colorScheme.primary : null,
-        ),
-        label: Text(
-          effectiveCount > 0
-              ? (effectiveLiked ? '已赞 $effectiveCount' : '赞 $effectiveCount')
-              : (effectiveLiked ? '已赞' : '赞'),
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: effectiveLiked ? theme.colorScheme.primary : null,
-            fontWeight: effectiveLiked ? FontWeight.bold : null,
-          ),
-        ),
-      ),
-      // 回复
-      TextButton.icon(
-        style: TextButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          minimumSize: Size.zero,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-        onPressed: () => _openReply(context, quote: false),
-        icon: const Icon(Icons.comment_outlined, size: 15),
-        label: Text('回复', style: theme.textTheme.bodySmall),
-      ),
-      // 打赏
-      TextButton.icon(
-        style: TextButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          minimumSize: Size.zero,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-        onPressed: () => _onRewardFloor(context),
-        icon: const Icon(Icons.card_giftcard, size: 15),
-        label: Text('赏', style: theme.textTheme.bodySmall),
-      ),
-    ];
-
-    final rightActions = <Widget>[
-      // 楼中楼
-      if (floor.floorNumber != '1' && floor.floorNumber != '楼主' && floor.floorNumber != '1#')
-        TextButton.icon(
-          style: TextButton.styleFrom(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-            minimumSize: Size.zero,
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-          onPressed: () => _onReplyFloorWrite(),
-          icon: const Icon(Icons.forum_outlined, size: 14),
-          label: Text(
-            floor.replyFloors.isNotEmpty ? '楼中楼(${floor.replyFloors.length})' : '发起楼中楼',
-            style: theme.textTheme.bodySmall,
-          ),
-        ),
-      // 编辑（如果是自己的楼层或楼主）
-      if (_canEdit)
-        TextButton.icon(
-          style: TextButton.styleFrom(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-            minimumSize: Size.zero,
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-          onPressed: () => _onEditFloor(context),
-          icon: const Icon(Icons.edit_outlined, size: 14),
-          label: Text(widget.isFirstFloor ? '编辑帖子' : '编辑回复', style: theme.textTheme.bodySmall),
-        ),
-      // 引用
-      TextButton.icon(
-        style: TextButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-          minimumSize: Size.zero,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-        onPressed: () => _openReply(context, quote: true),
-        icon: const Icon(Icons.format_quote, size: 14),
-        label: Text('引用', style: theme.textTheme.bodySmall),
-      ),
-      // 分享
-      TextButton.icon(
-        style: TextButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-          minimumSize: Size.zero,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-        onPressed: () {
-          final url = '${AppConfig.baseUrl}forum.php?mod=redirect&goto=findpost&pid=${floor.pid ?? 0}';
-          Clipboard.setData(ClipboardData(text: url));
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('楼层链接已复制：$url')));
-        },
-        icon: const Icon(Icons.share_outlined, size: 14),
-        label: Text('分享', style: theme.textTheme.bodySmall),
-      ),
-      // 道具
-      if (floor.magicItems.isNotEmpty)
-        TextButton.icon(
-          style: TextButton.styleFrom(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-            minimumSize: Size.zero,
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-          onPressed: () => _onMagicFloor(context),
-          icon: const Icon(Icons.auto_fix_high, size: 14),
-          label: Text('道具', style: theme.textTheme.bodySmall),
-        ),
-      // 举报
-      TextButton.icon(
-        style: TextButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-          minimumSize: Size.zero,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-        onPressed: () => _onReportFloor(context),
-        icon: const Icon(Icons.flag_outlined, size: 14),
-        label: Text('举报', style: theme.textTheme.bodySmall),
-      ),
-    ];
 
     return Padding(
       padding: const EdgeInsets.only(top: 8),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          if (constraints.maxWidth < 560) {
-            return Wrap(
-              spacing: 6,
-              runSpacing: 4,
-              alignment: WrapAlignment.spaceBetween,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 4,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: leftActions,
-                ),
-                Wrap(
-                  spacing: 4,
-                  runSpacing: 4,
-                  alignment: WrapAlignment.end,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: rightActions,
-                ),
-              ],
-            );
-          }
+          final isVeryCompact = constraints.maxWidth < 340;
+          final isCompact = constraints.maxWidth < 600;
+
+          // 赞按钮文字
+          final likeText = effectiveCount > 0
+              ? (effectiveLiked ? '已赞 $effectiveCount' : '赞 $effectiveCount')
+              : (effectiveLiked ? '已赞' : '赞');
+
+          // 左侧常用主要功能（图文并茂）：赞、回复、楼中楼(若有子评论)
+          final leftWidgets = <Widget>[
+            // 赞
+            _buildTextAction(
+              icon: Icon(
+                effectiveLiked ? Icons.thumb_up_rounded : Icons.thumb_up_outlined,
+                size: 15,
+                color: effectiveLiked ? theme.colorScheme.primary : null,
+              ),
+              label: likeText,
+              onTap: _toggleFloorLike,
+              color: effectiveLiked ? theme.colorScheme.primary : null,
+              backgroundColor: effectiveLiked
+                  ? theme.colorScheme.primary.withAlpha(20)
+                  : null,
+              tooltip: effectiveLiked ? '取消点赞' : '点赞此楼层',
+            ),
+            const SizedBox(width: 4),
+            // 回复
+            _buildTextAction(
+              icon: const Icon(Icons.chat_bubble_outline_rounded, size: 14.5),
+              label: '回复',
+              onTap: () => _openReply(context, quote: false),
+              tooltip: '回复此楼层',
+            ),
+            // 楼中楼（若存在子楼层评论时展示数字）
+            if (!_isFirstFloorOverall && floor.replyFloors.isNotEmpty) ...[
+              const SizedBox(width: 4),
+              _buildTextAction(
+                icon: const Icon(Icons.forum_outlined, size: 14),
+                label: isCompact
+                    ? '${floor.replyFloors.length}'
+                    : '楼中楼(${floor.replyFloors.length})',
+                onTap: () => _onReplyFloorWrite(),
+                color: theme.colorScheme.primary,
+                backgroundColor: theme.colorScheme.primary.withAlpha(15),
+                tooltip: '查看/回复楼中楼(${floor.replyFloors.length})',
+              ),
+            ],
+          ];
+
+          // 右侧次要功能（纯图标）与常用举报（图文/紧凑图标）
+          final rightWidgets = <Widget>[
+            // 发起楼中楼（无子楼层评论且非首楼时展示紧凑图标）
+            if (!_isFirstFloorOverall && floor.replyFloors.isEmpty)
+              _buildIconAction(
+                icon: Icons.forum_outlined,
+                tooltip: '发起楼中楼',
+                onTap: () => _onReplyFloorWrite(),
+              ),
+            // 编辑（如果是自己的楼层或楼主）
+            if (_canEdit)
+              _buildIconAction(
+                icon: Icons.edit_outlined,
+                tooltip: widget.isFirstFloor ? '编辑帖子' : '编辑回复',
+                onTap: () => _onEditFloor(context),
+              ),
+            // 打赏评分（纯图标）
+            _buildIconAction(
+              icon: Icons.card_giftcard_rounded,
+              tooltip: '打赏评分',
+              onTap: () => _onRewardFloor(context),
+            ),
+            // 引用（纯图标）
+            _buildIconAction(
+              icon: Icons.format_quote_rounded,
+              tooltip: '引用回复',
+              onTap: () => _openReply(context, quote: true),
+            ),
+            // 分享（纯图标）
+            _buildIconAction(
+              icon: Icons.share_outlined,
+              tooltip: '分享链接',
+              onTap: () {
+                final pid = floor.pid;
+                final url = (pid != null && pid > 0)
+                    ? '${AppConfig.baseUrl}forum.php?mod=redirect&goto=findpost&pid=$pid'
+                    : '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid';
+                Clipboard.setData(ClipboardData(text: url));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('楼层链接已复制：$url'),
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              },
+            ),
+            // 道具（若有可用道具）
+            if (floor.magicItems.isNotEmpty)
+              _buildIconAction(
+                icon: Icons.auto_fix_high_rounded,
+                tooltip: '使用道具',
+                onTap: () => _onMagicFloor(context),
+              ),
+            // 举报（常用功能：完整图文显示；极窄屏幕自适应折叠为图标）
+            if (_canReport)
+              _buildTextAction(
+                icon: const Icon(Icons.flag_outlined, size: 14),
+                label: '举报',
+                showLabel: !isVeryCompact,
+                onTap: () => _onReportFloor(context),
+                color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
+                tooltip: '举报违规楼层',
+              ),
+            // 管理此楼（管理员/版主专用）
+            if (widget.canModerate)
+              _buildIconAction(
+                icon: Icons.shield_outlined,
+                tooltip: '管理本楼',
+                onTap: () => _onManageFloor(context),
+              ),
+          ];
+
           return Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Wrap(
-                spacing: 6,
-                runSpacing: 4,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: leftActions,
+              // 左侧主交互组
+              Flexible(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: leftWidgets,
+                ),
               ),
-              Wrap(
-                spacing: 4,
-                runSpacing: 4,
-                alignment: WrapAlignment.end,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: rightActions,
+              const SizedBox(width: 4),
+              // 右侧辅助工具组（保持单行紧凑美观）
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (int i = 0; i < rightWidgets.length; i++) ...[
+                    if (i > 0) const SizedBox(width: 2),
+                    rightWidgets[i],
+                  ],
+                ],
               ),
             ],
           );
@@ -2347,6 +2502,8 @@ class _FloorViewState extends State<_FloorView> {
               _ReplyFloorSection(
                 floor: floor,
                 tid: tid,
+                canModerate: widget.canModerate,
+                myUid: widget.myUid,
                 onReplyToAuthor: (author, msgid) =>
                     _onReplyFloorWrite(initialAuthor: author, msgid: msgid),
                 onWriteReply: () => _onReplyFloorWrite(),
@@ -2650,16 +2807,29 @@ class _FloorViewState extends State<_FloorView> {
               ),
               const Divider(height: 1),
             ],
-            ListTile(
-              leading: const Icon(Icons.forum_outlined),
-              title: Text((index == 0 || floor.floorNumber == '1' || floor.floorNumber == '楼主' || floor.floorNumber == '1#') ? '回复主题' : '楼中楼回复'),
-              subtitle: Text((index == 0 || floor.floorNumber == '1' || floor.floorNumber == '楼主' || floor.floorNumber == '1#') ? '回复楼主发表的主题内容' : '引用该楼层进行楼中楼回复'),
-              onTap: () {
-                Navigator.of(ctx).pop();
-                _openReply(context, quote: !(index == 0 || floor.floorNumber == '1' || floor.floorNumber == '楼主' || floor.floorNumber == '1#'));
-              },
-            ),
-            const Divider(height: 1),
+            if (!_isFirstFloorOverall) ...[
+              ListTile(
+                leading: const Icon(Icons.forum_outlined),
+                title: const Text('楼中楼回复'),
+                subtitle: const Text('引用该楼层进行楼中楼回复'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _openReply(context, quote: true);
+                },
+              ),
+              const Divider(height: 1),
+            ] else ...[
+              ListTile(
+                leading: const Icon(Icons.reply_outlined),
+                title: const Text('回复主题'),
+                subtitle: const Text('回复楼主发表的主题内容'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _openReply(context, quote: false);
+                },
+              ),
+              const Divider(height: 1),
+            ],
             ListTile(
               leading: const Icon(Icons.select_all),
               title: const Text('选择复制正文'),
@@ -2724,14 +2894,24 @@ class _FloorViewState extends State<_FloorView> {
                 ).showSnackBar(SnackBar(content: Text('楼层链接已复制')));
               },
             ),
-            ListTile(
-              leading: const Icon(Icons.flag_outlined),
-              title: const Text('举报'),
-              onTap: () {
-                Navigator.of(ctx).pop();
-                _onReportFloor(context);
-              },
-            ),
+            if (_canReport)
+              ListTile(
+                leading: const Icon(Icons.flag_outlined),
+                title: const Text('举报'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _onReportFloor(context);
+                },
+              ),
+            if (widget.canModerate)
+              ListTile(
+                leading: const Icon(Icons.shield_outlined),
+                title: const Text('管理此楼 (屏蔽/警告/删楼/IP)'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _onManageFloor(context);
+                },
+              ),
             const SizedBox(height: 8),
           ],
         ),
@@ -2739,8 +2919,38 @@ class _FloorViewState extends State<_FloorView> {
     );
   }
 
+  // 管理楼层（弹 Discuz 楼层管理弹窗）
+  Future<void> _onManageFloor(BuildContext context) async {
+    final ok = await FloorAdminDialog.show(
+      context,
+      fid: fid ?? 2,
+      tid: tid,
+      pid: floor.pid ?? 0,
+      floorIndex: index,
+      author: floor.author,
+      snippet: floor.contentHtml.replaceAll(RegExp(r'<[^>]+>'), ' ').trim(),
+    );
+    if (ok == true && mounted) {
+      widget.onReload?.call();
+    }
+  }
+
   // 楼层举报（弹 Discuz 规范选项弹窗 + reportPost）
   void _onReportFloor(BuildContext context) {
+    if (!DioClient.isLoggedIn) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('请先登录论坛账号后再提交举报'),
+          action: SnackBarAction(
+            label: '去登录',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const LoginPage()),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
     ReportDialog.show(
       context,
       tid: tid,
@@ -2752,6 +2962,20 @@ class _FloorViewState extends State<_FloorView> {
 
   // 楼中楼单条评论举报
   void _onReportFloorComment(ReplyFloorComment comment) {
+    if (!DioClient.isLoggedIn) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('请先登录论坛账号后再提交举报'),
+          action: SnackBarAction(
+            label: '去登录',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const LoginPage()),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
     ReportDialog.show(
       context,
       tid: tid,
@@ -2763,6 +2987,20 @@ class _FloorViewState extends State<_FloorView> {
 
   // 发起/回复楼中楼（支持表情库面板、快捷表情插入与实时反馈）
   void _onReplyFloorWrite({String? initialAuthor, int? msgid}) {
+    if (!DioClient.isLoggedIn) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('请先登录论坛账号后再进行楼中楼回复'),
+          action: SnackBarAction(
+            label: '去登录',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const LoginPage()),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
     final hasAuthor = initialAuthor != null && initialAuthor.trim().isNotEmpty;
     final ctrl = TextEditingController(
       text: hasAuthor ? '回复 @$initialAuthor : ' : '',
@@ -3002,6 +3240,20 @@ class _FloorViewState extends State<_FloorView> {
 
   // 打赏（Discuz rating：金额快捷选择 + 理由）
   void _onRewardFloor(BuildContext context) {
+    if (!DioClient.isLoggedIn) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('请先登录论坛账号后再进行打赏评分'),
+          action: SnackBarAction(
+            label: '去登录',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const LoginPage()),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
     final amountCtrl = TextEditingController(text: '1');
     final reasonCtrl = TextEditingController();
     int selected = 1;
@@ -3192,6 +3444,20 @@ class _FloorViewState extends State<_FloorView> {
 
   // 回复/引用回复（完全对齐 Discuz Web 端逻辑）
   void _openReply(BuildContext context, {required bool quote}) {
+    if (!DioClient.isLoggedIn) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(quote ? '请先登录论坛账号后再进行引用回复' : '请先登录论坛账号后再进行回复'),
+          action: SnackBarAction(
+            label: '去登录',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const LoginPage()),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
     final isFirst = widget.isFirstFloor ||
         floor.floorNumber == '1' ||
         floor.floorNumber == '楼主' ||
@@ -3286,6 +3552,20 @@ class _FloorViewState extends State<_FloorView> {
 
   /// 道具菜单（mgc_post_{pid}）：底部弹出可用道具，点击在本地环境使用
   void _onMagicFloor(BuildContext context) {
+    if (!DioClient.isLoggedIn) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('请先登录论坛账号后再使用道具'),
+          action: SnackBarAction(
+            label: '去登录',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const LoginPage()),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
       builder: (ctx) {
@@ -3370,6 +3650,8 @@ class _FloorViewState extends State<_FloorView> {
 class _ReplyFloorSection extends StatelessWidget {
   final PostFloor floor;
   final int tid;
+  final bool canModerate;
+  final int? myUid;
   final void Function(String author, int msgid)? onReplyToAuthor;
   final VoidCallback? onWriteReply;
   final void Function(ReplyFloorComment comment)? onReportComment;
@@ -3377,6 +3659,8 @@ class _ReplyFloorSection extends StatelessWidget {
   const _ReplyFloorSection({
     required this.floor,
     required this.tid,
+    this.canModerate = false,
+    this.myUid,
     this.onReplyToAuthor,
     this.onWriteReply,
     this.onReportComment,
@@ -3430,6 +3714,8 @@ class _ReplyFloorSection extends StatelessWidget {
           for (final c in floor.replyFloors)
             _ReplyFloorItem(
               comment: c,
+              canModerate: canModerate,
+              myUid: myUid,
               onReply: onReplyToAuthor,
               onReport: onReportComment,
             ),
@@ -3450,11 +3736,15 @@ class _ReplyFloorSection extends StatelessWidget {
 
 class _ReplyFloorItem extends StatelessWidget {
   final ReplyFloorComment comment;
+  final bool canModerate;
+  final int? myUid;
   final void Function(String author, int msgid)? onReply;
   final void Function(ReplyFloorComment comment)? onReport;
 
   const _ReplyFloorItem({
     required this.comment,
+    this.canModerate = false,
+    this.myUid,
     this.onReply,
     this.onReport,
   });
@@ -3499,14 +3789,15 @@ class _ReplyFloorItem extends StatelessWidget {
                 onReply?.call(comment.author, comment.msgid);
               },
             ),
-            ListTile(
-              leading: const Icon(Icons.flag_outlined),
-              title: const Text('举报此违规评论'),
-              onTap: () {
-                Navigator.pop(ctx);
-                onReport?.call(comment);
-              },
-            ),
+            if (!canModerate && (comment.uid == null || comment.uid != myUid))
+              ListTile(
+                leading: const Icon(Icons.flag_outlined),
+                title: const Text('举报此违规评论'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  onReport?.call(comment);
+                },
+              ),
             if (comment.uid != null && comment.uid! > 0)
               ListTile(
                 leading: const Icon(Icons.person_outline),

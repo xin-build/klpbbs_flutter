@@ -12,6 +12,8 @@ import '../pages/favorite_forums_page.dart';
 import '../pages/guide_page.dart';
 import '../pages/login_page.dart';
 import '../pages/magic_page.dart';
+import '../pages/modcp_page.dart';
+import '../models/user_role.dart';
 import '../pages/notice_page.dart';
 import '../pages/pm_inbox_page.dart';
 import '../pages/profile_settings_page.dart';
@@ -41,6 +43,7 @@ class GlobalAppDrawer extends StatefulWidget {
 class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
   int? _myUid;
   String? _myUsername;
+  DiscuzUserRole? _userRole;
 
   @override
   void initState() {
@@ -71,9 +74,12 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
       if (cachedSpace != null && cachedSpace.username.isNotEmpty) {
         name = cachedSpace.username;
       }
+      final role = await KlpbbsApi.getMyRole();
+      if (!mounted) return;
       setState(() {
         _myUid = uid;
         _myUsername = name;
+        _userRole = role;
       });
     }
   }
@@ -396,6 +402,17 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
                       selectedIcon: Icons.manage_accounts_rounded,
                       title: '资料设置',
                       onTap: () => _pushPage(ProfileSettingsPage(uid: _myUid)),
+                    ),
+                  ],
+                  if (_userRole?.hasAnyModPermission == true) ...[
+                    const Divider(height: 16),
+                    _buildSectionHeader('管理权限'),
+                    _buildNavItem(
+                      icon: Icons.admin_panel_settings_outlined,
+                      selectedIcon: Icons.admin_panel_settings_rounded,
+                      title: '前台管理中心 (ModCP)',
+                      color: colorScheme.primary,
+                      onTap: () => _pushPage(const ModCpPage()),
                     ),
                   ],
 

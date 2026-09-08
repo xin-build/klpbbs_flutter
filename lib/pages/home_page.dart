@@ -517,7 +517,7 @@ class _HomePageState extends State<HomePage> {
                 onPressed: _openNotifications,
               ),
             ),
-            if (isDesktop)
+            if (isDesktop && MediaQuery.sizeOf(context).width >= 768)
               IconButton(
                 icon: const Icon(Icons.settings_outlined),
                 tooltip: '设置',

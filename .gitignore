@@ -77,4 +77,7 @@ tools/
 截图/
 资源/
 ._cache_adb.exe
-
+*.zip
+*.apk
+*.tar.gz
+*.ipa

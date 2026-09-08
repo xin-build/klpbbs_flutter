@@ -28,6 +28,7 @@ import '../models/site_stats.dart';
 import '../models/smiley.dart';
 import '../models/thread_summary.dart';
 import '../models/user_space.dart';
+import '../models/user_role.dart';
 import '../models/usergroup_comparison.dart';
 import 'comiis_parser.dart';
 
@@ -1883,11 +1884,11 @@ class KlpbbsApi {
     return _cachedMyUid;
   }
 
-  /// 获取当前登录用户的权限身份（管理员 / 超级版主 / 当前版块版主）
-  static Future<({bool isAdmin, bool isSuperMod, bool isModerator, String group, String username})> getMyRole({int? fid}) async {
+  /// 获取当前登录用户的权限身份（管理员 / 超级版主 / 当前版块版主 / 特殊受限组）
+  static Future<DiscuzUserRole> getMyRole({int? fid}) async {
     final myUid = await getMyUid();
     if (myUid == null || myUid <= 0) {
-      return (isAdmin: false, isSuperMod: false, isModerator: false, group: '', username: '');
+      return const DiscuzUserRole();
     }
     try {
       final space = await getUserSpace(myUid);
@@ -1895,26 +1896,56 @@ class KlpbbsApi {
           ? space!.group
           : (space?.levelName ?? '');
       final username = space?.username ?? '';
+
       final isAdmin = grp.contains('管理员');
       final isSuperMod = grp.contains('超级版主');
       var isMod = grp.contains('版主');
-      if (!isMod && fid != null && fid > 0 && username.isNotEmpty) {
+      final isMuted = grp.contains('禁止发言') || (space?.lockReason.contains('禁言') == true);
+      final isBanned = grp.contains('禁止访问') || (space?.isLocked == true);
+
+      int adminId = 0;
+      int groupId = 0;
+      if (isAdmin) {
+        adminId = 1;
+        groupId = 1;
+      } else if (isSuperMod) {
+        adminId = 2;
+        groupId = 2;
+      } else if (isMod) {
+        adminId = 3;
+        groupId = 3;
+      } else if (isMuted) {
+        groupId = 4;
+      } else if (isBanned) {
+        groupId = 5;
+      }
+
+      final moderatedFids = <int>[];
+      if (fid != null && fid > 0 && username.isNotEmpty) {
         try {
           final header = await getForumHeader(fid);
           if (header.moderators.isNotEmpty && header.moderators.contains(username)) {
             isMod = true;
+            if (adminId == 0) adminId = 3;
+            moderatedFids.add(fid);
           }
         } catch (_) {}
       }
-      return (
+      return DiscuzUserRole(
+        uid: myUid,
+        username: username,
+        groupId: groupId,
+        adminId: adminId,
+        groupTitle: grp,
         isAdmin: isAdmin,
         isSuperMod: isSuperMod,
         isModerator: isMod,
-        group: grp,
-        username: username,
+        moderatedFids: moderatedFids,
+        isMuted: isMuted,
+        isBanned: isBanned,
       );
     } catch (_) {
-      return (isAdmin: false, isSuperMod: false, isModerator: false, group: '', username: '');
+      return DiscuzUserRole(uid: myUid);
     }
   }
 
@@ -5699,6 +5730,511 @@ class KlpbbsApi {
     );
     return !html.contains('alert_error');
   }
+
+  /// 统一 Discuz 主题管理提交接口 (forum.php?mod=topicadmin&action=moderate)
+  static Future<({bool success, String message})> moderateTopicAdmin({
+    required int fid,
+    required int tid,
+    required int optgroup,
+    required String operation,
+    Map<String, dynamic> extraParams = const {},
+    String reason = '管理操作',
+  }) async {
+    try {
+      var formhash = _cachedFormhash;
+      final page = await _get(
+        'forum.php?mod=topicadmin&action=moderate&fid=$fid&moderate[]=$tid&operation=$operation&infloat=yes&handlekey=mods&inajax=1&mobile=no',
+        headers: {
+          'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
+        },
+      );
+      formhash = _extractFormhash(page) ?? formhash;
+      if (formhash == null || formhash.isEmpty) {
+        return (success: false, message: '获取管理权限凭证失败，请确认是否已登录并具备管理权限');
+      }
+
+      final payload = <String, dynamic>{
+        'formhash': formhash,
+        'fid': '$fid',
+        'moderate[]': '$tid',
+        'operation': operation,
+        'optgroup': '$optgroup',
+        'reason': reason,
+        'modsubmit': 'yes',
+        ...extraParams,
+      };
+
+      final res = await _post(
+        'forum.php?mod=topicadmin&action=moderate&fid=$fid&optgroup=$optgroup&modsubmit=yes&inajax=1',
+        payload,
+        headers: {
+          'Referer':
+              '${AppConfig.baseUrl}forum.php?mod=topicadmin&action=moderate&fid=$fid&moderate[]=$tid&operation=$operation',
+        },
+      );
+
+      if (res.contains('succeedhandle') || (!res.contains('alert_error') && !res.contains('抱歉') && res.isNotEmpty)) {
+        return (success: true, message: '操作成功');
+      } else {
+        final m = RegExp(r'<div class="alert_error"[^>]*>([\s\S]*?)</div>').firstMatch(res);
+        final msg = m?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '操作失败，可能无权限或已被处理';
+        return (success: false, message: msg);
+      }
+    } catch (e) {
+      return (success: false, message: '管理操作异常：$e');
+    }
+  }
+
+  /// 置顶主题 (0=取消置顶, 1=本版置顶, 2=分区置顶, 3=全局置顶)
+  static Future<({bool success, String message})> moderateStickThread({
+    required int fid,
+    required int tid,
+    required int stickLevel,
+    String reason = '版主置顶管理',
+  }) {
+    return moderateTopicAdmin(
+      fid: fid,
+      tid: tid,
+      optgroup: 1,
+      operation: 'stick',
+      extraParams: {'sticklevel': '$stickLevel'},
+      reason: reason,
+    );
+  }
+
+  /// 加精主题 (0=取消精华, 1=精华I, 2=精华II, 3=精华III)
+  static Future<({bool success, String message})> moderateDigestThread({
+    required int fid,
+    required int tid,
+    required int digestLevel,
+    String reason = '版主加精管理',
+  }) {
+    return moderateTopicAdmin(
+      fid: fid,
+      tid: tid,
+      optgroup: 1,
+      operation: 'digest',
+      extraParams: {'digestlevel': '$digestLevel'},
+      reason: reason,
+    );
+  }
+
+  /// 高亮变色主题
+  static Future<({bool success, String message})> moderateHighlightThread({
+    required int fid,
+    required int tid,
+    String color = '1',
+    bool bold = false,
+    bool italic = false,
+    bool underline = false,
+    String reason = '版主高亮管理',
+  }) {
+    final extra = <String, dynamic>{
+      'highlight_color': color,
+    };
+    if (bold) extra['highlight_style[1]'] = '1';
+    if (italic) extra['highlight_style[2]'] = '1';
+    if (underline) extra['highlight_style[3]'] = '1';
+    return moderateTopicAdmin(
+      fid: fid,
+      tid: tid,
+      optgroup: 1,
+      operation: 'highlight',
+      extraParams: extra,
+      reason: reason,
+    );
+  }
+
+  /// 关闭 / 打开主题 (close=true 锁定禁止回复, false 解锁开启)
+  static Future<({bool success, String message})> moderateCloseThread({
+    required int fid,
+    required int tid,
+    required bool close,
+    String reason = '版主锁定管理',
+  }) {
+    return moderateTopicAdmin(
+      fid: fid,
+      tid: tid,
+      optgroup: 4,
+      operation: 'close',
+      extraParams: {'close': close ? '1' : '0'},
+      reason: reason,
+    );
+  }
+
+  /// 移动主题到目标版块
+  static Future<({bool success, String message})> moderateMoveThread({
+    required int fid,
+    required int tid,
+    required int targetFid,
+    String reason = '版主移动主题',
+  }) {
+    return moderateTopicAdmin(
+      fid: fid,
+      tid: tid,
+      optgroup: 2,
+      operation: 'move',
+      extraParams: {'moveto': '$targetFid', 'type': 'normal'},
+      reason: reason,
+    );
+  }
+
+  /// 给主题盖图章 (stamp: 0=取消图章, 1~10=图章编号)
+  static Future<({bool success, String message})> moderateStampThread({
+    required int fid,
+    required int tid,
+    required int stampId,
+    String reason = '版主盖图章管理',
+  }) {
+    return moderateTopicAdmin(
+      fid: fid,
+      tid: tid,
+      optgroup: 5,
+      operation: 'stamp',
+      extraParams: {'stamp': '$stampId'},
+      reason: reason,
+    );
+  }
+
+  /// 版主/管理人员通过 topicadmin 接口管理删帖
+  static Future<({bool success, String message})> moderateDeleteThread({
+    required int fid,
+    required int tid,
+    String reason = '版主管理删帖',
+  }) async {
+    return moderateTopicAdmin(
+      fid: fid,
+      tid: tid,
+      optgroup: 3,
+      operation: 'delete',
+      extraParams: {'operations[]': 'delete'},
+      reason: reason,
+    );
+  }
+
+  /// 删除指定单楼层回帖 (delpost)
+  static Future<({bool success, String message})> moderateDeleteFloor({
+    required int fid,
+    required int tid,
+    required int pid,
+    String reason = '违规回帖删除',
+  }) async {
+    try {
+      var formhash = _cachedFormhash;
+      if (formhash == null || formhash.isEmpty) {
+        final page = await _get('forum.php?mod=viewthread&tid=$tid&mobile=2');
+        formhash = _extractFormhash(page);
+      }
+      if (formhash == null || formhash.isEmpty) {
+        return (success: false, message: '获取凭证失败，请先登录');
+      }
+
+      final res = await _post(
+        'forum.php?mod=topicadmin&action=delpost&fid=$fid&tid=$tid&modsubmit=yes&inajax=1',
+        {
+          'formhash': formhash,
+          'topiclist[]': '$pid',
+          'reason': reason,
+          'modsubmit': 'yes',
+        },
+        headers: {
+          'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
+        },
+      );
+
+      if (res.contains('succeedhandle') || (!res.contains('alert_error') && !res.contains('抱歉') && res.isNotEmpty)) {
+        return (success: true, message: '楼层删除成功');
+      } else {
+        final m = RegExp(r'<div class="alert_error"[^>]*>([\s\S]*?)</div>').firstMatch(res);
+        final msg = m?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '删除楼层失败';
+        return (success: false, message: msg);
+      }
+    } catch (e) {
+      return (success: false, message: '删除楼层异常：$e');
+    }
+  }
+
+  /// 屏蔽 / 取消屏蔽指定楼层 (banpost)
+  static Future<({bool success, String message})> moderateBanFloor({
+    required int fid,
+    required int tid,
+    required int pid,
+    required bool banned,
+    String reason = '违规内容屏蔽',
+  }) async {
+    try {
+      var formhash = _cachedFormhash;
+      if (formhash == null || formhash.isEmpty) {
+        final page = await _get('forum.php?mod=viewthread&tid=$tid&mobile=2');
+        formhash = _extractFormhash(page);
+      }
+      if (formhash == null || formhash.isEmpty) {
+        return (success: false, message: '获取凭证失败，请先登录');
+      }
+
+      final res = await _post(
+        'forum.php?mod=topicadmin&action=banpost&fid=$fid&tid=$tid&modsubmit=yes&inajax=1',
+        {
+          'formhash': formhash,
+          'topiclist[]': '$pid',
+          'banned': banned ? '1' : '0',
+          'reason': reason,
+          'modsubmit': 'yes',
+        },
+        headers: {
+          'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
+        },
+      );
+
+      if (res.contains('succeedhandle') || (!res.contains('alert_error') && !res.contains('抱歉') && res.isNotEmpty)) {
+        return (success: true, message: banned ? '楼层已成功屏蔽' : '已解除楼层屏蔽');
+      } else {
+        final m = RegExp(r'<div class="alert_error"[^>]*>([\s\S]*?)</div>').firstMatch(res);
+        final msg = m?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '屏蔽操作失败';
+        return (success: false, message: msg);
+      }
+    } catch (e) {
+      return (success: false, message: '屏蔽操作异常：$e');
+    }
+  }
+
+  /// 警告 / 取消警告指定楼层作者 (warnpost)
+  static Future<({bool success, String message})> moderateWarnFloor({
+    required int fid,
+    required int tid,
+    required int pid,
+    required bool warned,
+    String reason = '违规言论警告',
+  }) async {
+    try {
+      var formhash = _cachedFormhash;
+      if (formhash == null || formhash.isEmpty) {
+        final page = await _get('forum.php?mod=viewthread&tid=$tid&mobile=2');
+        formhash = _extractFormhash(page);
+      }
+      if (formhash == null || formhash.isEmpty) {
+        return (success: false, message: '获取凭证失败，请先登录');
+      }
+
+      final res = await _post(
+        'forum.php?mod=topicadmin&action=warnpost&fid=$fid&tid=$tid&modsubmit=yes&inajax=1',
+        {
+          'formhash': formhash,
+          'topiclist[]': '$pid',
+          'warned': warned ? '1' : '0',
+          'reason': reason,
+          'modsubmit': 'yes',
+        },
+        headers: {
+          'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
+        },
+      );
+
+      if (res.contains('succeedhandle') || (!res.contains('alert_error') && !res.contains('抱歉') && res.isNotEmpty)) {
+        return (success: true, message: warned ? '已向该作者发出警告' : '已撤销警告');
+      } else {
+        final m = RegExp(r'<div class="alert_error"[^>]*>([\s\S]*?)</div>').firstMatch(res);
+        final msg = m?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '警告操作失败';
+        return (success: false, message: msg);
+      }
+    } catch (e) {
+      return (success: false, message: '警告操作异常：$e');
+    }
+  }
+
+  /// 查询指定楼层真实发帖 IP 与归属地 (getip)
+  static Future<({bool success, String ip, String location, String message})> getFloorIp({
+    required int fid,
+    required int tid,
+    required int pid,
+  }) async {
+    try {
+      final html = await _get(
+        'forum.php?mod=topicadmin&action=getip&fid=$fid&tid=$tid&pid=$pid&inajax=1',
+        headers: {
+          'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
+        },
+      );
+
+      if (html.contains('alert_error')) {
+        final m = RegExp(r'<div class="alert_error"[^>]*>([\s\S]*?)</div>').firstMatch(html);
+        final msg = m?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '无权查看该楼层 IP';
+        return (success: false, ip: '', location: '', message: msg);
+      }
+
+      final ipMatch = RegExp(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})').firstMatch(html);
+      final ip = ipMatch?.group(1) ?? '';
+      var location = '';
+      final locMatch = RegExp(r'来自[:：]\s*([^<]+)').firstMatch(html);
+      if (locMatch != null) {
+        location = locMatch.group(1)?.trim() ?? '';
+      }
+      if (ip.isNotEmpty) {
+        return (success: true, ip: ip, location: location, message: '获取成功');
+      }
+      return (success: false, ip: '', location: '', message: '未能解析到有效 IP');
+    } catch (e) {
+      return (success: false, ip: '', location: '', message: '查询 IP 异常：$e');
+    }
+  }
+
+  /// 获取前台管理中心 (ModCP) 待处理举报列表
+  static Future<List<({int id, String url, String message, String uName, String dateline})>> getModReports({
+    int? fid,
+    int page = 1,
+  }) async {
+    try {
+      final fidParam = (fid != null && fid > 0) ? '&fid=$fid' : '';
+      final html = await _get('forum.php?mod=modcp&action=report$fidParam&page=$page');
+      final list = <({int id, String url, String message, String uName, String dateline})>[];
+
+      final rows = RegExp(r'<tr[^>]*>([\s\S]*?)<\/tr>', caseSensitive: false).allMatches(html);
+      for (final r in rows) {
+        final content = r.group(1) ?? '';
+        final idMatch = RegExp(r'name="reportids\[\]"\s+value="(\d+)"').firstMatch(content);
+        if (idMatch == null) continue;
+        final id = int.tryParse(idMatch.group(1)!) ?? 0;
+
+        final urlMatch = RegExp(r'<a\s+href="([^"]+)"[^>]*target="_blank"').firstMatch(content);
+        final url = urlMatch?.group(1) ?? '';
+
+        final uMatch = RegExp(r'<a\s+href="home\.php\?mod=space&[^"]*"[^>]*>([^<]+)</a>').firstMatch(content);
+        final uName = uMatch?.group(1) ?? '匿名用户';
+
+        final msgMatch = RegExp(r'<td[^>]*class="[^"]*report[^"]*"[^>]*>([\s\S]*?)</td>', caseSensitive: false).firstMatch(content) ??
+            RegExp(r'<p>([\s\S]*?)</p>', caseSensitive: false).firstMatch(content);
+        final rawMsg = msgMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '违规举报';
+
+        final dateMatch = RegExp(r'(\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{1,2})').firstMatch(content);
+        final dateline = dateMatch?.group(1) ?? '';
+
+        list.add((
+          id: id,
+          url: url,
+          message: rawMsg,
+          uName: uName,
+          dateline: dateline,
+        ));
+      }
+      return list;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// 前台管理中心 (ModCP) 标记已处理 / 删除举报
+  static Future<bool> resolveModReport({required List<int> reportIds}) async {
+    if (reportIds.isEmpty) return false;
+    try {
+      var formhash = _cachedFormhash;
+      if (formhash == null || formhash.isEmpty) {
+        final p = await _get('forum.php?mod=modcp&action=report');
+        formhash = _extractFormhash(p);
+      }
+      if (formhash == null || formhash.isEmpty) return false;
+
+      final payload = <String, dynamic>{
+        'formhash': formhash,
+        'dosubmit': 'yes',
+        'op': 'delete',
+      };
+      for (final id in reportIds) {
+        payload['reportids[$id]'] = '$id';
+      }
+
+      final res = await _post(
+        'forum.php?mod=modcp&action=report&op=delete&inajax=1',
+        payload,
+        headers: {
+          'Referer': '${AppConfig.baseUrl}forum.php?mod=modcp&action=report',
+        },
+      );
+      return !res.contains('alert_error');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 前台管理中心 (ModCP) 违规用户禁言 / 封号 (bannew: 4=禁止发言, 5=禁止访问)
+  static Future<({bool success, String message})> banUserInModCp({
+    required String username,
+    required int banGroupId,
+    int days = 0,
+    String reason = '违规处理',
+  }) async {
+    try {
+      var formhash = _cachedFormhash;
+      if (formhash == null || formhash.isEmpty) {
+        final p = await _get('forum.php?mod=modcp&action=member&op=ban');
+        formhash = _extractFormhash(p);
+      }
+      if (formhash == null || formhash.isEmpty) {
+        return (success: false, message: '获取管理凭证失败，请确认是否已登录并具备版主/管理权限');
+      }
+
+      final res = await _post(
+        'forum.php?mod=modcp&action=member&op=ban&inajax=1',
+        {
+          'formhash': formhash,
+          'username': username,
+          'bannew': '$banGroupId',
+          'banexpirynew': '$days',
+          'reason': reason,
+          'bansubmit': 'yes',
+        },
+        headers: {
+          'Referer': '${AppConfig.baseUrl}forum.php?mod=modcp&action=member&op=ban',
+        },
+      );
+
+      if (res.contains('succeedhandle') || (!res.contains('alert_error') && !res.contains('抱歉') && res.isNotEmpty)) {
+        return (success: true, message: banGroupId == 4 ? '用户已成功禁言' : '用户已成功封号');
+      } else {
+        final m = RegExp(r'<div class="alert_error"[^>]*>([\s\S]*?)</div>').firstMatch(res);
+        final msg = m?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '处理失败，可能无权限或目标用户名不存在';
+        return (success: false, message: msg);
+      }
+    } catch (e) {
+      return (success: false, message: '处理异常：$e');
+    }
+  }
+
+  /// 获取回复引用的官方 Discuz 结构与隐藏参数（repquote）
+  static Future<({
+    String quoteText,
+    String? noticeauthor,
+    String? noticetrimstr,
+    String? noticeauthormsg,
+  })?> getReplyQuote({
+    required int fid,
+    required int tid,
+    required int repquotePid,
+  }) async {
+    try {
+      final html = await _get(
+        'forum.php?mod=post&action=reply&fid=$fid&tid=$tid&repquote=$repquotePid&extra=page%3D1&page=1&mobile=no',
+        headers: {
+          'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
+        },
+      );
+      final doc = html_parser.parse(html);
+      final msgEl = doc.querySelector('textarea#postmessage, textarea[name="message"]');
+      final quoteText = msgEl?.text.trim() ?? '';
+      final noticeauthor = doc.querySelector('input[name="noticeauthor"]')?.attributes['value'];
+      final noticetrimstr = doc.querySelector('input[name="noticetrimstr"]')?.attributes['value'];
+      final noticeauthormsg = doc.querySelector('input[name="noticeauthormsg"]')?.attributes['value'];
+
+      return (
+        quoteText: quoteText,
+        noticeauthor: noticeauthor,
+        noticetrimstr: noticetrimstr,
+        noticeauthormsg: noticeauthormsg,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
 
   /// 申请/购买勋章（解析 Discuz 真实返回提示）
   static Future<({bool success, String message})> applyMedal(

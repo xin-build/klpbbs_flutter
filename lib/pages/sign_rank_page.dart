@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
@@ -10,6 +10,7 @@ import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
 import '../widgets/thread_card.dart';
+import '../widgets/responsive_layout.dart';
 import 'credit_page.dart';
 import 'settings_page.dart';
 import 'user_space_page.dart';
@@ -609,10 +610,14 @@ class _SignRankPageState extends State<SignRankPage>
 
   @override
   Widget build(BuildContext context) {
+    final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+    final canPop = Navigator.of(context).canPop();
+
     return Scaffold(
       drawer: const GlobalAppDrawer(),
       appBar: AppBar(
-        leading: const GlobalNavLeading(),
+        automaticallyImplyLeading: !isDesktop,
+        leading: (isDesktop && !canPop) ? null : const GlobalNavLeading(),
         title: const Text('每日签到', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
         bottom: _loadingHeader
             ? const PreferredSize(

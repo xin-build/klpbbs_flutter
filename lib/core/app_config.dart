@@ -281,6 +281,8 @@ class AppConfig extends ChangeNotifier {
 
   // 论坛与阅读偏好
   static bool showFloorSignature = true;
+  static bool showThreadListImages = true;
+  static bool useSystemMonet = false;
   static bool autoCheckin = false;
   static bool fastWriteMode = false;
   static int defaultStartTab = 0;
@@ -408,6 +410,8 @@ class AppConfig extends ChangeNotifier {
 
       // 论坛功能
       showFloorSignature = sp.getBool('show_floor_signature') ?? true;
+      showThreadListImages = sp.getBool('show_thread_list_images') ?? true;
+      useSystemMonet = sp.getBool('use_system_monet') ?? false;
       autoCheckin = sp.getBool('auto_checkin') ?? sp.getBool('auto_sign_on_launch') ?? false;
       fastWriteMode = sp.getBool('fast_write_mode') ?? false;
       defaultStartTab = sp.getInt('default_start_tab') ?? 0;
@@ -493,9 +497,11 @@ class AppConfig extends ChangeNotifier {
 
   static Future<void> setCustomSeedColor(Color color) async {
     customSeedColorValue = color.toARGB32();
+    useSystemMonet = false;
     style = AppStyle.custom;
     final sp = await SharedPreferences.getInstance();
     await sp.setInt('custom_seed_color', customSeedColorValue);
+    await sp.setBool('use_system_monet', false);
     await sp.setString('app_style', AppStyle.custom.name);
     instance.notifyListeners();
   }
@@ -633,6 +639,20 @@ class AppConfig extends ChangeNotifier {
     showFloorSignature = show;
     final sp = await SharedPreferences.getInstance();
     await sp.setBool('show_floor_signature', show);
+    instance.notifyListeners();
+  }
+
+  static Future<void> setShowThreadListImages(bool show) async {
+    showThreadListImages = show;
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool('show_thread_list_images', show);
+    instance.notifyListeners();
+  }
+
+  static Future<void> setUseSystemMonet(bool use) async {
+    useSystemMonet = use;
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool('use_system_monet', use);
     instance.notifyListeners();
   }
 

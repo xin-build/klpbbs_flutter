@@ -1,4 +1,5 @@
-﻿import 'package:file_picker/file_picker.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
@@ -63,7 +64,8 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+    final isDesktop = ResponsiveBreakpoints.isDesktop(context) &&
+        MediaQuery.sizeOf(context).width >= 600.0;
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
@@ -318,6 +320,19 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
                         onPressed: _showCustomColorDialog,
                       ),
                     ],
+                  ),
+                ],
+                if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) ...[
+                  const Divider(height: 24),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('系统动态莫奈取色 (Material You)'),
+                    subtitle: const Text('开启后提取 Android 12+ 系统壁纸主题色，关闭则使用上方选定色彩'),
+                    value: AppConfig.useSystemMonet,
+                    onChanged: (v) {
+                      AppConfig.setUseSystemMonet(v);
+                      setState(() {});
+                    },
                   ),
                 ],
               ],
@@ -624,27 +639,133 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
       Colors.blueGrey,
     ];
 
+    Color currentColor = Color(AppConfig.customSeedColorValue);
+    String hexString = '#${currentColor.toARGB32().toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
+    final textCtrl = TextEditingController(text: hexString);
+
+    Color? parseHex(String val) {
+      var s = val.replaceAll('#', '').trim();
+      if (s.length == 6) s = 'FF$s';
+      if (s.length == 8) {
+        final v = int.tryParse(s, radix: 16);
+        if (v != null) return Color(v);
+      }
+      return null;
+    }
+
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('选取自定义色彩'),
-        content: SizedBox(
-          width: 320,
-          child: Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: colors.map((c) {
-              return InkWell(
-                onTap: () {
-                  AppConfig.setCustomSeedColor(c);
+      builder: (ctx) => StatefulBuilder(
+        builder: (dialogCtx, setDialogState) {
+          final dialogTheme = Theme.of(dialogCtx);
+          return AlertDialog(
+            title: const Text('自定义主题色彩'),
+            content: SizedBox(
+              width: 340,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: currentColor,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: dialogTheme.colorScheme.outline,
+                              width: 2,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: TextField(
+                            controller: textCtrl,
+                            decoration: const InputDecoration(
+                              labelText: '16 进制色彩代码',
+                              hintText: '#3BA55D 或 3BA55D',
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                            onChanged: (val) {
+                              final parsed = parseHex(val);
+                              if (parsed != null) {
+                                setDialogState(() {
+                                  currentColor = parsed;
+                                });
+                              }
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    const Text('常用调色板：', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: colors.map((c) {
+                        final isSel = currentColor.toARGB32() == c.toARGB32();
+                        return InkWell(
+                          onTap: () {
+                            setDialogState(() {
+                              currentColor = c;
+                              textCtrl.text = '#${c.toARGB32().toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
+                            });
+                          },
+                          borderRadius: BorderRadius.circular(18),
+                          child: Container(
+                            width: 36,
+                            height: 36,
+                            decoration: BoxDecoration(
+                              color: c,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: isSel ? Colors.white : Colors.transparent,
+                                width: 2,
+                              ),
+                              boxShadow: isSel
+                                  ? [
+                                      BoxShadow(
+                                        color: c.withAlpha(140),
+                                        blurRadius: 6,
+                                        spreadRadius: 2,
+                                      )
+                                    ]
+                                  : null,
+                            ),
+                            child: isSel
+                                ? const Icon(Icons.check, size: 18, color: Colors.white)
+                                : null,
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  final parsed = parseHex(textCtrl.text) ?? currentColor;
+                  AppConfig.setCustomSeedColor(parsed);
                   Navigator.of(ctx).pop();
                 },
-                borderRadius: BorderRadius.circular(20),
-                child: CircleAvatar(backgroundColor: c, radius: 20),
-              );
-            }).toList(),
-          ),
-        ),
+                child: const Text('应用色彩'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -1017,6 +1138,16 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
         Card(
           child: Column(
             children: [
+              SwitchListTile(
+                title: const Text('帖子列表显示图片预览'),
+                subtitle: const Text('在版块与搜索列表中显示最多3张附图预览（单图16:9裁剪，多图1:1方形裁剪）'),
+                value: AppConfig.showThreadListImages,
+                onChanged: (v) {
+                  AppConfig.setShowThreadListImages(v);
+                  setState(() {});
+                },
+              ),
+              const Divider(height: 1),
               SwitchListTile(
                 title: const Text('显示楼层个性签名档'),
                 subtitle: const Text('在帖子详情楼层底部渲染用户签名'),

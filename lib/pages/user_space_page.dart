@@ -1258,10 +1258,12 @@ class _UserSpacePageState extends State<UserSpacePage> {
                         Wrap(
                           spacing: 6,
                           children: [
-                            if (user.gameProfile['性别'] != null && user.gameProfile['性别']!.isNotEmpty)
+                            if (user.gameProfile['性别'] == '男' || user.gameProfile['性别'] == '女')
                               _buildSmallBadge(
                                 user.gameProfile['性别'] == '女' ? '♀ 女' : '♂ 男',
-                                const Color(0xFF1976D2),
+                                user.gameProfile['性别'] == '女'
+                                    ? const Color(0xFFE91E63)
+                                    : const Color(0xFF1976D2),
                               ),
                             _buildSmallBadge(
                               _formatUserLevel(user),

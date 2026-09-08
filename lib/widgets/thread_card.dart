@@ -388,92 +388,148 @@ class _ThreadCardState extends State<ThreadCard> {
     }
   }
 
-  /// 16:9 大图流布局
+  List<String> get _cardImages {
+    if (!AppConfig.showThreadListImages || AppConfig.imageQuality == ImageQuality.noImage) {
+      return const [];
+    }
+    final list = <String>[];
+    for (final url in widget.thread.imageUrls) {
+      final trimmed = url.trim();
+      if (trimmed.isNotEmpty && !list.contains(trimmed)) {
+        list.add(trimmed);
+      }
+      if (list.length >= 3) break;
+    }
+    if (list.isEmpty && widget.thread.coverUrl != null && widget.thread.coverUrl!.trim().isNotEmpty) {
+      list.add(widget.thread.coverUrl!.trim());
+    }
+    return list;
+  }
+
+  Widget _buildImagesPreview(BuildContext context, ColorScheme colorScheme) {
+    final images = _cardImages;
+    if (images.isEmpty) return const SizedBox.shrink();
+
+    if (images.length == 1) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: AspectRatio(
+            aspectRatio: 16 / 9,
+            child: RetryImage(
+              imageUrl: images[0],
+              fit: BoxFit.cover,
+              alignment: Alignment.center,
+              filterQuality: FilterQuality.medium,
+              memCacheWidth: 720,
+              placeholder: (_, __) => Container(
+                color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                child: const Center(
+                  child: SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              ),
+              errorWidget: (_, __, ___) => const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (images.length == 2) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: AspectRatio(
+                  aspectRatio: 1,
+                  child: RetryImage(
+                    imageUrl: images[0],
+                    fit: BoxFit.cover,
+                    alignment: Alignment.center,
+                    filterQuality: FilterQuality.medium,
+                    memCacheWidth: 400,
+                    placeholder: (_, __) => Container(
+                      color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                    ),
+                    errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: AspectRatio(
+                  aspectRatio: 1,
+                  child: RetryImage(
+                    imageUrl: images[1],
+                    fit: BoxFit.cover,
+                    alignment: Alignment.center,
+                    filterQuality: FilterQuality.medium,
+                    memCacheWidth: 400,
+                    placeholder: (_, __) => Container(
+                      color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                    ),
+                    errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        children: [
+          for (int i = 0; i < 3; i++) ...[
+            if (i > 0) const SizedBox(width: 6),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: AspectRatio(
+                  aspectRatio: 1,
+                  child: RetryImage(
+                    imageUrl: images[i],
+                    fit: BoxFit.cover,
+                    alignment: Alignment.center,
+                    filterQuality: FilterQuality.medium,
+                    memCacheWidth: 320,
+                    placeholder: (_, __) => Container(
+                      color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                    ),
+                    errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 16:9 大图流 / 标准卡片布局
   Widget _buildLargeCoverLayout(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final thread = widget.thread;
-    final hasCover =
-        thread.coverUrl != null &&
-        thread.coverUrl!.isNotEmpty &&
-        AppConfig.imageQuality != ImageQuality.noImage;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (hasCover) ...[
-          ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: AspectRatio(
-              aspectRatio: 16 / 9,
-              child: Stack(
-                fit: StackFit.expand,
-                alignment: Alignment.center,
-                children: [
-                  Container(
-                    color: colorScheme.surfaceContainerHighest.withAlpha(80),
-                  ),
-                  RetryImage(
-                    imageUrl: thread.coverUrl!,
-                    fit: BoxFit.cover,
-                    alignment: Alignment.center,
-                    filterQuality: FilterQuality.medium,
-                    memCacheWidth: 720,
-                    placeholder: (_, __) => Container(
-                      color: colorScheme.surfaceContainerHighest.withAlpha(80),
-                      child: const Center(
-                        child: SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      ),
-                    ),
-                    errorWidget: (_, __, ___) => const SizedBox.shrink(),
-                  ),
-                  if (thread.isHot)
-                    Positioned(
-                      top: 8,
-                      right: 8,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.redAccent.withAlpha(220),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.local_fire_department,
-                              color: Colors.white,
-                              size: 12,
-                            ),
-                            SizedBox(width: 2),
-                            Text(
-                              'HOT',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-        ],
-        // 标题
         _buildTitle(theme),
-        _buildTagRow(theme),
         if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
           const SizedBox(height: 5),
           Text(
@@ -487,8 +543,8 @@ class _ThreadCardState extends State<ThreadCard> {
             ),
           ),
         ],
-        const SizedBox(height: 10),
-        // 底部作者与统计信息
+        _buildImagesPreview(context, colorScheme),
+        const SizedBox(height: 8),
         _buildFooter(theme),
       ],
     );
@@ -499,10 +555,8 @@ class _ThreadCardState extends State<ThreadCard> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final thread = widget.thread;
-    final hasCover =
-        thread.coverUrl != null &&
-        thread.coverUrl!.isNotEmpty &&
-        AppConfig.imageQuality != ImageQuality.noImage;
+    final images = _cardImages;
+    final hasThumbnail = images.isNotEmpty;
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -512,7 +566,6 @@ class _ThreadCardState extends State<ThreadCard> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildTitle(theme),
-              _buildTagRow(theme),
               if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
                 const SizedBox(height: 4),
                 Text(
@@ -525,12 +578,12 @@ class _ThreadCardState extends State<ThreadCard> {
                   ),
                 ),
               ],
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
               _buildFooter(theme),
             ],
           ),
         ),
-        if (hasCover) ...[
+        if (hasThumbnail) ...[
           const SizedBox(width: 12),
           ClipRRect(
             borderRadius: BorderRadius.circular(8),
@@ -538,7 +591,7 @@ class _ThreadCardState extends State<ThreadCard> {
               width: 92,
               height: 68,
               child: RetryImage(
-                imageUrl: thread.coverUrl!,
+                imageUrl: images.first,
                 fit: BoxFit.cover,
                 alignment: Alignment.center,
                 filterQuality: FilterQuality.medium,
@@ -571,15 +624,13 @@ class _ThreadCardState extends State<ThreadCard> {
     );
   }
 
-  /// 网格/桌面卡片布局：自适应图文卡片（有真实封面则显示首图，无图则展示整洁的纯文本卡片）
+  /// 网格/桌面卡片布局
   Widget _buildGridLayout(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final thread = widget.thread;
-    final hasCover =
-        thread.coverUrl != null &&
-        thread.coverUrl!.trim().isNotEmpty &&
-        AppConfig.imageQuality != ImageQuality.noImage;
+    final images = _cardImages;
+    final hasCover = images.isNotEmpty;
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -591,7 +642,7 @@ class _ThreadCardState extends State<ThreadCard> {
               width: 112,
               height: 86,
               child: RetryImage(
-                imageUrl: thread.coverUrl!,
+                imageUrl: images.first,
                 fit: BoxFit.cover,
                 alignment: Alignment.center,
                 filterQuality: FilterQuality.medium,
@@ -621,38 +672,25 @@ class _ThreadCardState extends State<ThreadCard> {
           ),
           const SizedBox(width: 12),
         ],
-        // 主要信息区：确保标题、标签、摘要与底部作者行层次分明且绝不溢出或被裁切
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _buildTitle(theme, maxLines: 2),
-                    const SizedBox(height: 2),
-                    _buildTagRow(theme),
-                    if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
-                      const SizedBox(height: 2),
-                      Flexible(
-                        child: Text(
-                          thread.excerpt!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: colorScheme.onSurfaceVariant.withAlpha(220),
-                            fontSize: 11.5,
-                            height: 1.25,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
+              _buildTitle(theme, maxLines: 2),
+              if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
+                const SizedBox(height: 3),
+                Text(
+                  thread.excerpt!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant.withAlpha(220),
+                    fontSize: 11.5,
+                    height: 1.25,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 2),
+              ],
+              const SizedBox(height: 4),
               _buildFooter(theme),
             ],
           ),
@@ -661,23 +699,7 @@ class _ThreadCardState extends State<ThreadCard> {
     );
   }
 
-  Widget _buildTitle(ThemeData theme, {int maxLines = 2}) {
-    final thread = widget.thread;
-    return Text(
-      thread.title,
-      maxLines: maxLines,
-      overflow: TextOverflow.ellipsis,
-      style: theme.textTheme.titleMedium?.copyWith(
-        fontWeight: FontWeight.w600,
-        fontSize: 14.5,
-        height: 1.35,
-        color: theme.colorScheme.onSurface,
-      ),
-    );
-  }
-
-  /// 标题下方标签行（置顶/精/荐/热/版块分类），保证每个帖子均有版块标识并彻底去重
-  Widget _buildTagRow(ThemeData theme) {
+  List<(String, Color, Color)> _getTags(ThemeData theme) {
     final colorScheme = theme.colorScheme;
     final thread = widget.thread;
     final tags = <(String, Color, Color)>[];
@@ -697,9 +719,10 @@ class _ThreadCardState extends State<ThreadCard> {
           .replaceAll('来自', '')
           .trim();
       if (clean.isEmpty) return;
-      final norm = clean.toLowerCase();
+      // 强过滤：时间日期绝不作为标签展示（解决 Issue #6 列表时间重复问题）
+      if (ComiisParser.isDateOrTime(clean)) return;
 
-      // 去重检查：防止相同或包含关系的版块/分类标签重复出现（例如 [人才市场] 与 人才市场，或 BE附加包 与 附加包）
+      final norm = clean.toLowerCase();
       for (final existing in seenTexts) {
         if (existing == norm) return;
         if (existing.length >= 2 && norm.length >= 2) {
@@ -739,7 +762,6 @@ class _ThreadCardState extends State<ThreadCard> {
       addTag('热', Colors.white, const Color(0xFFF97316));
     }
 
-    // 确保每个帖子均展示 100% 准确的版块识别标签
     final forumToDisplay = _resolvedForum ??
         ComiisParser.resolveForumName(
           tid: thread.tid,
@@ -773,34 +795,51 @@ class _ThreadCardState extends State<ThreadCard> {
       );
     }
 
-    if (tags.isEmpty) return const SizedBox.shrink();
+    return tags;
+  }
 
-    return Padding(
-      padding: const EdgeInsets.only(top: 4),
-      child: Wrap(
-        spacing: 5,
-        runSpacing: 4,
+  Widget _buildTitle(ThemeData theme, {int maxLines = 2}) {
+    final thread = widget.thread;
+    final tags = _getTags(theme);
+
+    return Text.rich(
+      TextSpan(
         children: [
           for (final (cleanLabel, fg, bg) in tags)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-              decoration: BoxDecoration(
-                color: bg,
-                borderRadius: BorderRadius.circular(4),
-                border: Border.all(color: fg.withAlpha(45), width: 0.5),
-              ),
-              child: Text(
-                cleanLabel,
-                style: TextStyle(
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w600,
-                  color: fg,
-                  height: 1.2,
+            WidgetSpan(
+              alignment: PlaceholderAlignment.middle,
+              child: Container(
+                margin: const EdgeInsets.only(right: 5),
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                decoration: BoxDecoration(
+                  color: bg,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: fg.withAlpha(45), width: 0.5),
+                ),
+                child: Text(
+                  cleanLabel,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w600,
+                    color: fg,
+                    height: 1.2,
+                  ),
                 ),
               ),
             ),
+          TextSpan(
+            text: thread.title,
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+              fontSize: 14.5,
+              height: 1.35,
+              color: theme.colorScheme.onSurface,
+            ),
+          ),
         ],
       ),
+      maxLines: maxLines,
+      overflow: TextOverflow.ellipsis,
     );
   }
 

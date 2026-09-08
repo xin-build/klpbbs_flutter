@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
@@ -597,14 +597,14 @@ class _FacemallPageState extends State<FacemallPage>
               // 1. 顶部大圆形挂件预览舞台 (1:1 深度对齐网页截图)
               _buildTopPreviewStage(theme),
 
-              // 2. 核心导航标签 (挂件商城 / 我的挂件 / 激活记录) - 红色高亮下划线
+              // 2. 核心导航标签 (挂件商城 / 我的挂件 / 激活记录) - 语义化主题高亮下划线
               Container(
                 color: colorScheme.surface,
                 child: TabBar(
                   controller: _tabController,
-                  labelColor: const Color(0xFFE53935),
-                  unselectedLabelColor: const Color(0xFF555555),
-                  indicatorColor: const Color(0xFFE53935),
+                  labelColor: colorScheme.primary,
+                  unselectedLabelColor: colorScheme.onSurfaceVariant,
+                  indicatorColor: colorScheme.primary,
                   indicatorWeight: 3,
                   labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5),
                   tabs: const [
@@ -635,21 +635,23 @@ class _FacemallPageState extends State<FacemallPage>
 
   /// 顶部预览区（对齐图二：居中头像、虚线环、更换头像、卸下挂件）
   Widget _buildTopPreviewStage(ThemeData theme) {
+    final colorScheme = theme.colorScheme;
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
+        color: colorScheme.surface,
         border: Border(
           bottom: BorderSide(
-            color: theme.colorScheme.outlineVariant.withAlpha(40),
+            color: colorScheme.outlineVariant.withAlpha(40),
           ),
         ),
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // 更换头像按钮 (蓝色圆形)
+          // 更换头像按钮 (主题色圆形)
           InkWell(
             onTap: () {
               Navigator.of(context).push(
@@ -662,9 +664,9 @@ class _FacemallPageState extends State<FacemallPage>
             child: Container(
               width: 58,
               height: 58,
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: Color(0xFF00A2FF),
+                color: colorScheme.primary,
               ),
               child: const Center(
                 child: Text(
@@ -691,7 +693,7 @@ class _FacemallPageState extends State<FacemallPage>
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   border: Border.all(
-                    color: const Color(0xFFE2E4E8),
+                    color: colorScheme.outlineVariant.withAlpha(120),
                     width: 1.5,
                   ),
                 ),
@@ -700,7 +702,7 @@ class _FacemallPageState extends State<FacemallPage>
             ],
           ),
           const SizedBox(width: 32),
-          // 卸下挂件按钮 (灰色边框圆形)
+          // 卸下挂件按钮 (自适应深浅色背景与边框)
           InkWell(
             onTap: _unequipPendant,
             borderRadius: BorderRadius.circular(30),
@@ -709,18 +711,18 @@ class _FacemallPageState extends State<FacemallPage>
               height: 58,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: Colors.white,
+                color: colorScheme.surfaceContainerHigh,
                 border: Border.all(
-                  color: const Color(0xFFDCDFE6),
+                  color: colorScheme.outlineVariant.withAlpha(120),
                   width: 1.5,
                 ),
               ),
-              child: const Center(
+              child: Center(
                 child: Text(
                   '卸下\n挂件',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    color: Color(0xFF909399),
+                    color: colorScheme.onSurfaceVariant,
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
                     height: 1.25,
@@ -771,7 +773,7 @@ class _FacemallPageState extends State<FacemallPage>
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                       decoration: BoxDecoration(
-                        color: isSelected ? const Color(0xFF00A2FF) : Colors.transparent,
+                        color: isSelected ? theme.colorScheme.primary : Colors.transparent,
                         borderRadius: BorderRadius.circular(16),
                       ),
                       child: Text(
@@ -779,7 +781,7 @@ class _FacemallPageState extends State<FacemallPage>
                         style: TextStyle(
                           fontSize: 13.5,
                           fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                          color: isSelected ? Colors.white : const Color(0xFF555555),
+                          color: isSelected ? theme.colorScheme.onPrimary : theme.colorScheme.onSurfaceVariant,
                         ),
                       ),
                     ),
@@ -795,10 +797,10 @@ class _FacemallPageState extends State<FacemallPage>
           child: (_initialLoading || _loadingCategory) && currentList.isEmpty
               ? const Center(child: CircularProgressIndicator())
               : currentList.isEmpty
-                  ? const Center(
+                  ? Center(
                       child: Text(
                         '该分类下暂无挂件商品',
-                        style: TextStyle(fontSize: 14, color: Color(0xFF999999)),
+                        style: TextStyle(fontSize: 14, color: theme.colorScheme.outline),
                       ),
                     )
                   : GridView.builder(
@@ -816,17 +818,17 @@ class _FacemallPageState extends State<FacemallPage>
 
                     return Container(
                       decoration: BoxDecoration(
-                        color: Colors.white,
+                        color: theme.colorScheme.surfaceContainerLow,
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(
                           color: isEquipped
-                              ? const Color(0xFF00A2FF)
-                              : const Color(0xFFEBEEF5),
+                              ? theme.colorScheme.primary
+                              : theme.colorScheme.outlineVariant.withAlpha(70),
                           width: isEquipped ? 2 : 1,
                         ),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withAlpha(4),
+                            color: theme.colorScheme.shadow.withAlpha(10),
                             blurRadius: 4,
                             offset: const Offset(0, 2),
                           ),
@@ -853,9 +855,9 @@ class _FacemallPageState extends State<FacemallPage>
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 textAlign: TextAlign.center,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontSize: 13,
-                                  color: Color(0xFF333333),
+                                  color: theme.colorScheme.onSurface,
                                   fontWeight: FontWeight.w500,
                                 ),
                               ),
@@ -882,12 +884,11 @@ class _FacemallPageState extends State<FacemallPage>
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.face_retouching_natural, size: 54, color: Color(0xFFCCCCCC)),
+            Icon(Icons.face_retouching_natural, size: 54, color: theme.colorScheme.outlineVariant),
             const SizedBox(height: 12),
-            const Text('您尚未拥有任何头像挂件', style: TextStyle(fontSize: 15, color: Color(0xFF666666))),
+            Text('您尚未拥有任何头像挂件', style: TextStyle(fontSize: 15, color: theme.colorScheme.outline)),
             const SizedBox(height: 12),
             FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: const Color(0xFF00A2FF)),
               onPressed: () => _tabController.animateTo(0),
               child: const Text('前往挂件商城挑选'),
             ),
@@ -915,10 +916,12 @@ class _FacemallPageState extends State<FacemallPage>
 
         return Container(
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: theme.colorScheme.surfaceContainerLow,
             borderRadius: BorderRadius.circular(8),
             border: Border.all(
-              color: isEquipped ? const Color(0xFF00A2FF) : const Color(0xFFEBEEF5),
+              color: isEquipped
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.outlineVariant.withAlpha(70),
               width: isEquipped ? 2 : 1,
             ),
           ),
@@ -936,13 +939,17 @@ class _FacemallPageState extends State<FacemallPage>
                 title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF333333)),
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  color: theme.colorScheme.onSurface,
+                ),
               ),
               if (endtime.isNotEmpty) ...[
                 const SizedBox(height: 2),
                 Text(
                   '$endtime 到期',
-                  style: const TextStyle(fontSize: 11, color: Color(0xFF999999)),
+                  style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
                 ),
               ],
               const SizedBox(height: 8),
@@ -973,7 +980,6 @@ class _FacemallPageState extends State<FacemallPage>
                           _loadMyPendants();
                         },
                         style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFF00A2FF),
                           padding: const EdgeInsets.symmetric(horizontal: 12),
                           visualDensity: VisualDensity.compact,
                         ),
@@ -1000,15 +1006,18 @@ class _FacemallPageState extends State<FacemallPage>
             child: _loadingPayList
                 ? const Center(child: CircularProgressIndicator())
                 : _payList.isEmpty
-                    ? const Center(
+                    ? Center(
                         child: Text(
                           '暂无挂件激活与购买记录',
-                          style: TextStyle(fontSize: 14, color: Color(0xFF999999)),
+                          style: TextStyle(fontSize: 14, color: theme.colorScheme.outline),
                         ),
                       )
                     : ListView.separated(
                         itemCount: _payList.length,
-                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        separatorBuilder: (_, __) => Divider(
+                          height: 1,
+                          color: theme.colorScheme.outlineVariant.withAlpha(50),
+                        ),
                         itemBuilder: (ctx, i) {
                           final item = _payList[i];
                           final title = item['title']?.toString() ?? '头像挂件';
@@ -1017,7 +1026,7 @@ class _FacemallPageState extends State<FacemallPage>
                           final time = item['time']?.toString() ?? '';
 
                           return ListTile(
-                            leading: const Icon(Icons.history, color: Color(0xFF00A2FF)),
+                            leading: Icon(Icons.history, color: theme.colorScheme.primary),
                             title: Text('$title · $day 天'),
                             subtitle: Text('$time · 消耗 $price 铁粒'),
                             dense: true,
