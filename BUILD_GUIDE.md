@@ -1,7 +1,11 @@
 # 苦力怕论坛客户端（KLPBBS App）全平台编译与发布指南
 
-> **适用版本**：v1.0.4+  
+> **适用版本**：v1.0.10+  
 > **文档目标**：标准化多平台（Android、Windows、macOS、iOS、Linux）编译规范、签名规则、CI/CD 自动化发布流程与常见错误避坑手册，供后续开发与自动化构建长期参考。
+
+> [!IMPORTANT]
+> **关于多平台构建职责分工（重要）**：
+> **请勿在本地编译 Android APK！** Android APK（含发布签名）连同 macOS、iOS、Linux 等五大平台安装包，**一律交由 GitHub Actions 云端自动化矩阵统一构建与发布**。本地仅负责功能开发、`dart analyze lib` 静态校验，以及按需执行 `flutter build windows --release` 验证 Windows 桌面端。这样既避免了开发者本地 Android SDK/NDK 繁重的环境依赖，又能确保云端产物签名和依赖的一致性。
 
 ---
 
@@ -164,31 +168,17 @@ analyzer:
 ### 6.1 代码分析与静态检查
 ```bash
 # 检查整个项目的静态分析情况（应提示 No issues found!）
-flutter analyze
+dart analyze lib
 ```
 
-### 6.2 各平台本地 Release 构建
+### 6.2 本地 Release 构建与验证（重点）
+> **注意**：本地无需在开发者机器上编译 Android APK（由 GitHub Actions 云端统一构建并完成正规签名）。本地仅用于验证 Windows 桌面端运行与产物打包：
 ```bash
-# 1. Android APK 签名构建
-flutter build apk --release
-
-# 2. Windows 桌面版构建
+# Windows 桌面版 Release 构建（本地推荐构建此项进行真机验证）
 flutter build windows --release
 
-# 3. macOS 桌面版构建 (需在 macOS 环境)
-flutter build macos --release
-
-# 4. iOS 免签名 IPA 构建 (需在 macOS 环境)
-flutter build ios --release --no-codesign
-
-# 5. Linux 桌面版构建 (需在 Linux 环境)
-flutter build linux --release
-```
-
-### 6.3 Android 签名指纹校验
-```bash
-# 校验 APK 签名有效性与证书指纹
-apksigner verify --print-certs build/app/outputs/flutter-apk/app-release.apk
+# 打包 Windows 产物为 ZIP 归档
+powershell -Command "Compress-Archive -Path 'build\windows\x64\runner\Release\*' -DestinationPath 'klpbbs-windows-x64.zip' -Force"
 ```
 
 ---
@@ -197,22 +187,30 @@ apksigner verify --print-certs build/app/outputs/flutter-apk/app-release.apk
 
 每次发布新版本时，严格执行以下标准流程：
 
-1. **版本号递增**：
-   在 [`pubspec.yaml`](file:///f:/klpbbs/pubspec.yaml) 中更新版本号（例如 `version: 1.0.5+6`）。
+1. **版本号双向同步递增**：
+   - 在 [`pubspec.yaml`](file:///f:/klpbbs/pubspec.yaml) 中更新版本号（例如 `version: 1.0.10+11`）。
+   - 在应用内部配置 [`lib/core/app_config.dart`](file:///f:/klpbbs/lib/core/app_config.dart) 中同步更新：
+     ```dart
+     static const String appVersion = '1.0.10';
+     static const String buildNumber = '11';
+     ```
 2. **本地静态分析检查**：
-   运行 `flutter analyze`，确保 **0 error, 0 warning**。
-3. **提交与推送代码**：
+   运行 `dart analyze lib`，确保 **0 error, 0 warning**。
+3. **本地 Windows 构建验证（本地无需编译 APK）**：
+   运行 `flutter build windows --release` 确保无编译错误，**请勿在本地编译 Android APK，APK 与全平台包交由 GitHub CI 云端自动化构建**。
+4. **提交与推送代码**：
    ```bash
-   git commit -am "chore: release v1.0.5"
+   git add .
+   git commit -m "feat: 变更说明 (v1.0.10)"
    ```
-4. **打 Tag 并强制同步推送**：
+5. **打 Tag 并同步推送触发云端编译**：
    ```bash
-   git tag -fa v1.0.5 -m "Release v1.0.5"
+   git tag -fa v1.0.10 -m "Release v1.0.10"
    git push origin master -f
    git push origin master:main -f
-   git push origin v1.0.5 -f
+   git push origin v1.0.10 -f
    ```
-5. **监控 GitHub Actions**：
-   观察 Actions 页面中 Android、Windows、macOS、iOS、Linux 5 个 Job 是否全部绿标通过。
-6. **验证 GitHub Release**：
-   访问 `https://github.com/xin-build/klpbbs_flutter/releases/tag/v1.0.5` 确认 5 个平台的安装包全部就绪。
+6. **监控 GitHub Actions**：
+   推送 Tag 后，GitHub Actions 自动触发 `Build Multi-Platform Releases` 工作流，并在云端完成 Android APK、Windows、macOS、iOS、Linux 5 大平台产物的并行编译与自动签名打包。
+7. **验证 GitHub Release**：
+   访问 `https://github.com/xin-build/klpbbs_flutter/releases/tag/v1.0.10` 确认 5 个平台的安装包全部编译并发布就绪。
