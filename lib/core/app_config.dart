@@ -94,8 +94,8 @@ class AppConfig extends ChangeNotifier {
   AppConfig._();
 
   // ================= 应用版本信息 =================
-  static const String appVersion = '1.0.8';
-  static const String buildNumber = '9';
+  static const String appVersion = '1.0.10';
+  static const String buildNumber = '11';
   static const String versionDisplay = 'v$appVersion (Build $buildNumber)';
 
   // ================= 论坛环境与网络 =================

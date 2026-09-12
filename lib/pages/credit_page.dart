@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/write_confirm.dart';
@@ -162,8 +162,10 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('积分', style: TextStyle(fontWeight: FontWeight.bold)),
         centerTitle: true,
         actions: [

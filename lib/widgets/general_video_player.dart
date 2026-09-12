@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:url_launcher/url_launcher.dart' as url_launcher;
+import '../core/url_helper.dart';
 
 /// 通用内嵌视频播放器组件（基于 media_kit 与 media_kit_video，支持多平台与全屏沉浸播放）
 class GeneralVideoPlayer extends StatefulWidget {
@@ -313,19 +314,36 @@ class _GeneralVideoPlayerState extends State<GeneralVideoPlayer> {
                   ),
                 ),
 
-              // 3. 错误提示
+              // 3. 错误提示与外部浏览器打开兜底
               if (_error != null)
                 Center(
                   child: Container(
                     margin: const EdgeInsets.all(16),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                     decoration: BoxDecoration(
                       color: Colors.black87,
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.redAccent.withAlpha(100)),
                     ),
-                    child: Text(
-                      _error!,
-                      style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _error!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+                        ),
+                        const SizedBox(height: 8),
+                        FilledButton.tonalIcon(
+                          onPressed: () => UrlHelper.openExternalBrowser(context, widget.src),
+                          icon: const Icon(Icons.open_in_browser, size: 16),
+                          label: const Text('在浏览器中播放', style: TextStyle(fontSize: 12)),
+                          style: FilledButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),

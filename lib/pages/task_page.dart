@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../widgets/global_app_drawer.dart';
@@ -25,8 +25,10 @@ class _TaskPageState extends State<TaskPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('任务中心'),
       ),
       body: FutureBuilder<List<({int id, String name, String reward})>>(

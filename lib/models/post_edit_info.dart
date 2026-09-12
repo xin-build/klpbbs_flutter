@@ -1,3 +1,6 @@
+import 'thread_sort_model.dart';
+import '../core/app_config.dart';
+
 /// Discuz 帖子已上传/已有附件模型
 class PostAttachmentItem {
   final int aid;
@@ -16,6 +19,9 @@ class PostAttachmentItem {
     this.isInserted = false,
   });
 
+  /// 附件预览或下载 URL
+  String get previewUrl => '${AppConfig.baseUrl}forum.php?mod=attachment&aid=$aid';
+
   String get sizeText {
     if (filesize < 1024) return '$filesize B';
     if (filesize < 1024 * 1024) {
@@ -30,6 +36,8 @@ class PostEditInfo {
   final String subject;
   final String message;
   final int? typeid;
+  final int? sortid;
+  final ThreadSortInfo? threadSortInfo;
   final int? readperm;
   final List<String> tags;
   final String? formhash;
@@ -37,11 +45,14 @@ class PostEditInfo {
   final List<PostAttachmentItem> attachments;
   final bool isFirstFloor;
   final String? errorMessage;
+  final PostEditorAttributes? editorAttributes;
 
   const PostEditInfo({
     this.subject = '',
     this.message = '',
     this.typeid,
+    this.sortid,
+    this.threadSortInfo,
     this.readperm,
     this.tags = const [],
     this.formhash,
@@ -49,6 +60,7 @@ class PostEditInfo {
     this.attachments = const [],
     this.isFirstFloor = false,
     this.errorMessage,
+    this.editorAttributes,
   });
 
   bool get hasError => errorMessage != null && errorMessage!.isNotEmpty;
@@ -100,6 +112,15 @@ class PostEditorAttributes {
   // 用户组阅读权限选项列表
   final List<({int value, String name})> readPermOptions;
 
+  // 管理用户组专属特性 (Discuz post_editor_extra.htm & post_editpost.htm)
+  final List<({int value, String name})> stickTopicOptions; // 置顶选项 (select[name="sticktopic"])
+  final List<({int value, String name})> addDigestOptions;  // 加精选项 (select[name="adddigest"])
+  final bool canCloseThread;                                // 允许直接锁定主题 (input[name="closed"])
+  final bool canDeletePost;                                 // 编辑模式允许直接删除本帖 (input[name="delete"])
+
+  bool get hasManagementOptions =>
+      stickTopicOptions.isNotEmpty || addDigestOptions.isNotEmpty || canCloseThread || canDeletePost;
+
   const PostEditorAttributes({
     this.useSig = const PostOptionAttribute(available: true, checked: true, disabled: false),
     this.isAnonymous = const PostOptionAttribute(available: true, checked: false, disabled: false),
@@ -114,5 +135,9 @@ class PostEditorAttributes {
     this.bbcodeOff = const PostOptionAttribute(available: true, checked: false, disabled: false),
     this.imgContent = const PostOptionAttribute(available: true, checked: false, disabled: true),
     this.readPermOptions = const [],
+    this.stickTopicOptions = const [],
+    this.addDigestOptions = const [],
+    this.canCloseThread = false,
+    this.canDeletePost = false,
   });
 }

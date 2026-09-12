@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart' as url_launcher;
 
 import '../main.dart';
+import '../pages/papa_ai_chat_page.dart';
+import '../pages/papa_ai_wallet_page.dart';
 import '../pages/thread_detail_page.dart';
 import '../pages/thread_list_page.dart';
 import '../pages/user_space_page.dart';
@@ -104,8 +106,17 @@ class UrlHelper {
         host == '127.0.0.1';
   }
 
-  /// 打开链接：站内帖子/版块/用户空间走应用内导航，外部链接唤起系统外部浏览器
-  static Future<bool> openLink(BuildContext? context, String rawLink) async {
+  /// 强制唤起系统外部浏览器打开链接（跳过应用内路由分发）
+  static Future<bool> openExternalBrowser(BuildContext? context, String rawLink) async {
+    return openLink(context, rawLink, forceExternal: true);
+  }
+
+  /// 打开链接：默认站内帖子/版块/用户空间走应用内导航，外部链接唤起系统外部浏览器；若 forceExternal=true 则强制系统外部浏览器打开
+  static Future<bool> openLink(
+    BuildContext? context,
+    String rawLink, {
+    bool forceExternal = false,
+  }) async {
     if (rawLink.trim().isEmpty) return false;
     final trimmed = normalizeUrl(rawLink);
     if (trimmed.isEmpty) return false;
@@ -114,8 +125,40 @@ class UrlHelper {
         ? context
         : appNavigatorKey.currentContext;
 
-    // 只有站内链接才尝试应用内路由分发
-    if (isInternalUrl(trimmed)) {
+    // 只有非强制外部模式且为站内链接时才尝试应用内路由分发
+    if (!forceExternal && isInternalUrl(trimmed)) {
+      // 0. 帕帕 AI 助手与火药钱包跳转 (plugin.php?id=klpbbs_ai[:wallet] / &view=wallet / &convid=... / &type=...)
+      if (trimmed.contains('klpbbs_ai')) {
+        if (targetContext != null && targetContext.mounted) {
+          final isWallet = trimmed.contains('klpbbs_ai:wallet') ||
+              trimmed.contains('view=wallet') ||
+              trimmed.contains('action=wallet') ||
+              trimmed.contains('mod=wallet');
+          if (isWallet) {
+            Navigator.of(targetContext).push(
+              MaterialPageRoute(builder: (_) => const PapaAiWalletPage()),
+            );
+            return true;
+          }
+
+          final convM = RegExp(r'(?:convid|conv_id|cid)=(\d+)').firstMatch(trimmed);
+          final convId = convM != null ? int.tryParse(convM.group(1)!) : null;
+
+          final typeM = RegExp(r'(?:type|report|view)=(day|week|month)').firstMatch(trimmed);
+          final reportType = typeM?.group(1);
+
+          Navigator.of(targetContext).push(
+            MaterialPageRoute(
+              builder: (_) => PapaAiChatPage(
+                initialConvId: convId,
+                initialReportType: reportType,
+              ),
+            ),
+          );
+          return true;
+        }
+      }
+
       // 1. 站内帖子跳转
       final tReg = RegExp(r'thread-(\d+)|(?:mod=viewthread[^\s]*tid=|tid=)(\d+)');
       final tM = tReg.firstMatch(trimmed);
@@ -193,8 +236,9 @@ class UrlHelper {
       try {
         if (!kIsWeb) {
           if (Platform.isWindows) {
-            await Process.run('cmd', ['/c', 'start', '', trimmed], runInShell: true);
-            return true;
+            // Windows 下使用 explorer.exe 直接打开 URL，避免 cmd /c start 将 URL 中的 & 识别为命令分隔符
+            final res = await Process.run('explorer.exe', [trimmed]);
+            if (res.exitCode == 0 || res.exitCode == 1) return true;
           } else if (Platform.isMacOS) {
             await Process.run('open', [trimmed]);
             return true;

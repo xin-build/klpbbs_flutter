@@ -32,6 +32,7 @@ import 'login_page.dart';
 import 'magic_page.dart';
 import 'medal_page.dart';
 import 'notice_page.dart';
+import 'papa_ai_chat_page.dart';
 import 'pm_inbox_page.dart';
 import 'ranklist_page.dart';
 import 'search_page.dart';
@@ -95,7 +96,8 @@ class _HomePageState extends State<HomePage> {
   void _onPushNotificationUpdate() {
     if (mounted) {
       setState(() {
-        _unreadNotice = PushNotificationService.instance.unreadCount;
+        _unreadNotice = PushNotificationService.instance.unreadNotices;
+        _unreadPm = PushNotificationService.instance.unreadPm;
       });
     }
   }
@@ -371,6 +373,11 @@ class _HomePageState extends State<HomePage> {
                 onTap: () => Navigator.of(ctx).pop('magic'),
               ),
               ListTile(
+                leading: const Icon(Icons.smart_toy_outlined),
+                title: const Text('帕帕 AI 助手'),
+                onTap: () => Navigator.of(ctx).pop('papa_ai'),
+              ),
+              ListTile(
                 leading: const Icon(Icons.mail_outline),
                 title: const Text('私信收件箱'),
                 trailing: _unreadPm > 0
@@ -416,6 +423,10 @@ class _HomePageState extends State<HomePage> {
         Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const MagicPage()),
         );
+      } else if (action == 'papa_ai') {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const PapaAiChatPage()),
+        );
       } else if (action == 'pm') {
         _openPmInbox();
       } else if (action == 'notice') {
@@ -456,20 +467,10 @@ class _HomePageState extends State<HomePage> {
           ),
           automaticallyImplyLeading: !isDesktop,
           leading: (!isDesktop && widget.showDrawerButton)
-              ? ListenableBuilder(
-                  listenable: PushNotificationService.instance,
-                  builder: (context, _) {
-                    final unread = PushNotificationService.instance.unreadCount;
-                    return IconButton(
-                      icon: Badge(
-                        isLabelVisible: unread > 0,
-                        label: Text(unread > 99 ? '99+' : '$unread'),
-                        child: const Icon(Icons.menu_rounded),
-                      ),
-                      tooltip: '打开导航菜单',
-                      onPressed: widget.onOpenDrawer,
-                    );
-                  },
+              ? IconButton(
+                  icon: const Icon(Icons.menu_rounded),
+                  tooltip: '打开导航菜单',
+                  onPressed: widget.onOpenDrawer,
                 )
               : null,
           actions: [
@@ -500,6 +501,18 @@ class _HomePageState extends State<HomePage> {
                 Navigator.of(
                   context,
                 ).push(MaterialPageRoute(builder: (_) => const SearchPage()));
+              },
+            ),
+            IconButton(
+              icon: const Icon(Icons.smart_toy_outlined),
+              tooltip: '帕帕 AI 助手',
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+              onPressed: () {
+                Navigator.of(
+                  context,
+                ).push(MaterialPageRoute(builder: (_) => const PapaAiChatPage()));
               },
             ),
             Badge(
@@ -843,6 +856,12 @@ class _HomePageState extends State<HomePage> {
       Navigator.of(
         context,
       ).push(MaterialPageRoute(builder: (_) => const PmInboxPage()));
+      return;
+    }
+    if (index == 15) {
+      Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const PapaAiChatPage()));
       return;
     }
     if (_onSwitchTab != null) _onSwitchTab!(index);
@@ -1597,14 +1616,14 @@ class QuickActionsWidget extends StatelessWidget {
     final theme = Theme.of(context);
     // 快捷金刚区：舒展的 2 排 × 4 宫格排布，带 M3 触觉反馈与色彩主题
     final items = [
-      (Icons.forum_outlined, '版块导航', const Color(0xFF008AC5), 1),
-      (Icons.event_available, '今日签到', const Color(0xFF00A2FF), 2),
+      (Icons.smart_toy_rounded, '帕帕 AI', const Color(0xFF008AC5), 15),
+      (Icons.forum_outlined, '版块导航', const Color(0xFF00A2FF), 1),
+      (Icons.event_available, '今日签到', const Color(0xFF4CAF50), 2),
       (Icons.military_tech, '勋章中心', const Color(0xFF9C27B0), 3),
       (Icons.local_fire_department, '导读精选', const Color(0xFFFF7043), 10),
       (Icons.search, '全站搜索', const Color(0xFF2E7D32), 11),
       (Icons.gavel, '封神榜', Colors.redAccent, 12),
-      (Icons.leaderboard, '积分排行', const Color(0xFF7E57C2), 13),
-      (Icons.mail_outline, '私信消息', const Color(0xFF009688), 14),
+      (Icons.leaderboard, '排行榜', const Color(0xFF7E57C2), 13),
     ];
 
     return Padding(

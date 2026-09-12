@@ -17,6 +17,7 @@ import 'pages/forums_page.dart';
 import 'pages/guide_page.dart';
 import 'pages/home_page.dart';
 import 'pages/medal_page.dart';
+import 'pages/papa_ai_chat_page.dart';
 import 'pages/post_page.dart';
 import 'pages/ranklist_page.dart';
 import 'pages/search_page.dart';
@@ -88,6 +89,7 @@ void main() async {
     }
   };
   await KlpbbsApi.initUserProfileCache();
+  await KlpbbsApi.sanitizeFavoriteCache();
   await DownloadManager.instance.init();
   await RgbThemeService.instance.init();
   await PushNotificationService.instance.init();
@@ -618,6 +620,16 @@ class _MainShellState extends State<_MainShell> {
         icon: Icons.person_outline,
         selectedIcon: Icons.person,
         label: '个人中心',
+      ),
+      NavItem(
+        icon: Icons.smart_toy_outlined,
+        selectedIcon: Icons.smart_toy_rounded,
+        label: '帕帕 AI',
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const PapaAiChatPage()),
+          );
+        },
       ),
       NavItem(
         icon: Icons.local_fire_department_outlined,

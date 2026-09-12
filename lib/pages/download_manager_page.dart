@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../services/download_service.dart';
@@ -16,8 +16,10 @@ class DownloadManagerPage extends StatelessWidget {
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('下载管理器'),
         elevation: 0,
         actions: [

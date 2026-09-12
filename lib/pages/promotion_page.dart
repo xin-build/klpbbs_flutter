@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../api/klpbbs_api.dart';
@@ -26,8 +26,10 @@ class _PromotionPageState extends State<PromotionPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('推广中心'),
       ),
       body: FutureBuilder<List<({String label, String url})>>(

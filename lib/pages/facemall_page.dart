@@ -584,8 +584,10 @@ class _FacemallPageState extends State<FacemallPage>
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('头像挂件'),
         centerTitle: true,
       ),

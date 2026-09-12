@@ -141,9 +141,11 @@ class _ForumsPageState extends State<ForumsPage> {
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         automaticallyImplyLeading: !isDesktop,
         leading: (isDesktop && !canPop) ? null : const GlobalNavLeading(),
+        leadingWidth: (isDesktop && !canPop) ? null : GlobalNavLeading.preferredLeadingWidth(context),
         title: _isSearching
             ? TextField(
                 controller: _searchCtrl,

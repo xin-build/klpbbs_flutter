@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
@@ -39,7 +40,6 @@ class _NavSheetItem {
 
 /// 全局移动端导航菜单：从任意页面弹出精致的网格导航抽屉（原站克米悬浮菜单与全局导航）。
 void showGlobalNavSheet(BuildContext context) {
-  final unread = PushNotificationService.instance.unreadCount;
   final items = <_NavSheetItem>[
     const _NavSheetItem(
       icon: Icons.home_outlined,
@@ -124,7 +124,7 @@ void showGlobalNavSheet(BuildContext context) {
       label: '消息提醒',
       idx: 10,
       color: const Color(0xFFE91E63),
-      badgeCount: unread,
+      badgeCount: PushNotificationService.instance.unreadNotices,
     ),
     const _NavSheetItem(
       icon: Icons.manage_accounts_outlined,
@@ -432,23 +432,31 @@ void openGlobalAppDrawer(BuildContext context) {
 
 /// 全局导航菜单按钮（放置在 AppBar leading 最左侧）。
 class GlobalNavButton extends StatelessWidget {
-  const GlobalNavButton({super.key});
+  final EdgeInsetsGeometry? padding;
+  final BoxConstraints? constraints;
+  final double iconSize;
+  final Color? color;
+
+  const GlobalNavButton({
+    super.key,
+    this.padding,
+    this.constraints,
+    this.iconSize = 24.0,
+    this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: PushNotificationService.instance,
-      builder: (context, _) {
-        final unread = PushNotificationService.instance.unreadCount;
-        return IconButton(
-          icon: Badge(
-            isLabelVisible: unread > 0,
-            label: Text(unread > 99 ? '99+' : '$unread'),
-            child: const Icon(Icons.menu_rounded),
-          ),
-          tooltip: '打开侧边栏',
-          onPressed: () => openGlobalAppDrawer(context),
-        );
+    return IconButton(
+      icon: Icon(Icons.menu_rounded, size: iconSize),
+      tooltip: '打开侧边栏',
+      color: color,
+      padding: padding ?? const EdgeInsets.all(8),
+      constraints: constraints,
+      visualDensity: VisualDensity.compact,
+      onPressed: () {
+        HapticFeedback.lightImpact();
+        openGlobalAppDrawer(context);
       },
     );
   }
@@ -457,29 +465,105 @@ class GlobalNavButton extends StatelessWidget {
 /// 统一的 AppBar 左侧组件组合（全站导航 + 返回键）
 class GlobalNavLeading extends StatelessWidget {
   final bool showBackButton;
+  final bool showMenuButton;
   final VoidCallback? onBack;
+  final Color? color;
 
   const GlobalNavLeading({
     super.key,
     this.showBackButton = true,
+    this.showMenuButton = true,
     this.onBack,
+    this.color,
   });
+
+  /// 推荐的 leadingWidth 计算方法：
+  /// - 桌面端：返回 null（走默认 56 或无 leading）
+  /// - 移动端：若需同时展示 [☰ 侧边栏] 和 [<- 返回]，返回 80.0；
+  ///   若仅展示其中一个或不展示，返回 null（默认 56.0）
+  static double? preferredLeadingWidth(
+    BuildContext context, {
+    bool showBackButton = true,
+    bool showMenuButton = true,
+    bool hasCustomBack = false,
+  }) {
+    final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+    if (isDesktop) return null;
+    final canPop = Navigator.of(context).canPop();
+    final hasBack = showBackButton && (canPop || hasCustomBack);
+    if (hasBack && showMenuButton) {
+      return 80.0;
+    }
+    return null;
+  }
 
   @override
   Widget build(BuildContext context) {
+    final isDesktop = ResponsiveBreakpoints.isDesktop(context);
     final canPop = Navigator.of(context).canPop();
     final hasBack = showBackButton && (canPop || onBack != null);
-    if (hasBack) {
-      return AppBackButton(
-        onBack: onBack,
-        fallbackToHome: false,
-      );
-    }
+
     // 桌面宽屏模式下，左侧已有常驻导航侧边栏，无需展示冗余汉堡菜单按钮
-    final isDesktop = ResponsiveBreakpoints.isDesktop(context);
     if (isDesktop) {
+      if (hasBack) {
+        return AppBackButton(
+          onBack: onBack,
+          fallbackToHome: false,
+          color: color,
+        );
+      }
       return const SizedBox.shrink();
     }
-    return const GlobalNavButton();
+
+    // 移动端排版：
+    if (hasBack) {
+      if (!showMenuButton) {
+        return AppBackButton(
+          onBack: onBack,
+          fallbackToHome: false,
+          color: color,
+        );
+      }
+
+      // 用户规范：“改个位置，侧边栏放最左边”
+      // 最左侧放 [☰ 侧边栏]，右侧放 [<- 返回]
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          // 如果外部 AppBar 未显式设置 preferredLeadingWidth (默认 56px)，自动采用紧凑 27px 按钮，防止 RenderFlex 溢出
+          final isTight = constraints.maxWidth < 72;
+          final btnSize = isTight ? 27.0 : 38.0;
+          final iconSz = isTight ? 19.0 : 22.0;
+          final pad = isTight ? EdgeInsets.zero : const EdgeInsets.all(6);
+
+          return Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              GlobalNavButton(
+                color: color,
+                padding: pad,
+                constraints: BoxConstraints(minWidth: btnSize, minHeight: btnSize),
+                iconSize: iconSz,
+              ),
+              AppBackButton(
+                onBack: onBack,
+                fallbackToHome: false,
+                color: color,
+                padding: pad,
+                constraints: BoxConstraints(minWidth: btnSize, minHeight: btnSize),
+                iconSize: iconSz,
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
+          );
+        },
+      );
+    }
+
+    if (!showMenuButton) {
+      return const SizedBox.shrink();
+    }
+
+    return GlobalNavButton(color: color);
   }
 }
+

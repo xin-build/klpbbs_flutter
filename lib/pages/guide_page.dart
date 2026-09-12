@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../models/thread_summary.dart';
@@ -93,8 +93,10 @@ class _GuidePageState extends State<GuidePage>
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('导读'),
         centerTitle: true,
         bottom: TabBar(

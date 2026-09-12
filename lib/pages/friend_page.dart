@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/dio_client.dart';
@@ -90,8 +90,10 @@ class _FriendPageState extends State<FriendPage>
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: Text(title),
         centerTitle: true,
         bottom: isMe

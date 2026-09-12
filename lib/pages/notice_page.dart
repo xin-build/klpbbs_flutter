@@ -1,5 +1,4 @@
-﻿import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../models/notice_item.dart';
@@ -55,8 +54,8 @@ class _NoticePageState extends State<NoticePage>
     _tabController = TabController(length: _tabs.length, vsync: this)
       ..addListener(_onTabChanged);
     _fetch();
-    // 进入消息中心时清除未读角标并通知服务端
-    PushNotificationService.instance.clearUnread();
+    // 进入消息中心时清除通知未读角标并通知服务端
+    PushNotificationService.instance.clearNotices();
     KlpbbsApi.ignoreNotice(view: 'mypost');
   }
 
@@ -66,16 +65,7 @@ class _NoticePageState extends State<NoticePage>
       type: _subType.isNotEmpty ? _subType : null,
       page: _page,
     ).then((list) {
-      if (list.isNotEmpty && _page == 1) {
-        final top = list.first;
-        SharedPreferences.getInstance().then((sp) {
-          sp.setString(
-            'notice_last_read_key',
-            '${top.tid}_${top.pid}_${top.timeText}',
-          );
-        });
-      }
-      PushNotificationService.instance.clearUnread();
+      PushNotificationService.instance.clearNotices();
       return list;
     });
   }
@@ -104,7 +94,7 @@ class _NoticePageState extends State<NoticePage>
 
   Future<void> _markAllRead() async {
     final ok = await KlpbbsApi.ignoreNotice(view: _view);
-    PushNotificationService.instance.clearUnread();
+    PushNotificationService.instance.clearNotices();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(ok ? '已标记全部提醒为已读' : '操作失败')),
@@ -142,8 +132,10 @@ class _NoticePageState extends State<NoticePage>
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('消息提醒'),
         centerTitle: true,
         actions: [

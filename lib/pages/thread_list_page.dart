@@ -43,6 +43,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
   String? _errorMessage;
 
   int _page = 1;
+  int? _loadingTargetPage;
   List<({int typeid, String name})> _types = const [];
   int? _selectedType;
   String? _orderby;
@@ -163,6 +164,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
           _isInitialLoading = true;
         } else {
           _isPageLoading = true;
+          _loadingTargetPage = page;
         }
         _errorMessage = null;
       });
@@ -185,6 +187,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
         _stickyThreads = bundle.threads.where((t) => t.isSticky).toList();
         _normalThreads = bundle.threads.where((t) => !t.isSticky).toList();
         _page = page;
+        _loadingTargetPage = null;
         _isInitialLoading = false;
         _isPageLoading = false;
         if (_selectedTid == null && bundle.threads.isNotEmpty) {
@@ -210,6 +213,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
+        _loadingTargetPage = null;
         _isInitialLoading = false;
         _isPageLoading = false;
         if (_headerInfo == null) {
@@ -336,7 +340,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
               ),
               const SizedBox(height: 10),
               Text(
-                '正在加载第 $_page 页...',
+                '正在加载第 ${_loadingTargetPage ?? _page} 页...',
                 style: TextStyle(fontSize: 12, color: colorScheme.outline),
               ),
             ],
@@ -547,8 +551,10 @@ class _ThreadListPageState extends State<ThreadListPage> {
       onRefresh: _reload,
       child: Scaffold(
         drawer: const GlobalAppDrawer(),
+        drawerEdgeDragWidth: 50.0,
         appBar: AppBar(
           leading: const GlobalNavLeading(),
+          leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
           title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
           actions: [
             IconButton(

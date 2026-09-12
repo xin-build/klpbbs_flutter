@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
 import 'user_space_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -188,8 +188,10 @@ class _PmDetailPageState extends State<PmDetailPage> {
       child: FocusScope(
         child: Scaffold(
           drawer: const GlobalAppDrawer(),
+          drawerEdgeDragWidth: 50.0,
           appBar: AppBar(
             leading: const GlobalNavLeading(),
+            leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
             titleSpacing: 0,
         title: InkWell(
           borderRadius: BorderRadius.circular(8),

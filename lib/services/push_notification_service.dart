@@ -79,7 +79,21 @@ class PushNotificationService extends ChangeNotifier {
 
   VoidCallback? onOpenNoticeCallback;
 
-  /// 清除当前未读计数（在进入消息提醒页或点击全部已读后调用）
+  /// 清除通知未读数
+  void clearNotices() {
+    _unreadNotices = 0;
+    _lastUnreadCount = _unreadPm;
+    notifyListeners();
+  }
+
+  /// 清除私信未读数
+  void clearPm() {
+    _unreadPm = 0;
+    _lastUnreadCount = _unreadNotices;
+    notifyListeners();
+  }
+
+  /// 清除全部未读计数（在点击全部已读后调用）
   void clearUnread() {
     _unreadNotices = 0;
     _unreadPm = 0;

@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/write_confirm.dart';
@@ -8,6 +8,7 @@ import '../widgets/global_nav.dart';
 
 import '../api/klpbbs_api.dart';
 import '../models/pm_models.dart';
+import '../services/push_notification_service.dart';
 import '../widgets/thread_card.dart';
 import 'pm_detail_page.dart';
 import 'user_space_page.dart';
@@ -35,6 +36,7 @@ class _PmInboxPageState extends State<PmInboxPage> {
   void initState() {
     super.initState();
     _future = KlpbbsApi.getPmList();
+    PushNotificationService.instance.clearPm();
     _loadRead();
     _loadPinned();
     _loadSearchHistory();
@@ -219,6 +221,7 @@ class _PmInboxPageState extends State<PmInboxPage> {
     }
     await prefs.setStringList('pm_read', list);
     await prefs.setStringList('pm_unread_override', []);
+    PushNotificationService.instance.clearPm();
     if (mounted) {
       setState(() {
         _read = all.map((c) => c.touid).toSet();
@@ -278,8 +281,10 @@ class _PmInboxPageState extends State<PmInboxPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('私信收件箱'),
         actions: [
           if (!_selectionMode)

@@ -9,8 +9,10 @@ import '../core/app_config.dart';
 import '../core/dio_client.dart';
 import '../core/url_helper.dart';
 import '../core/write_confirm.dart';
+import '../models/ai_summary.dart';
 import '../models/post_floor.dart';
 import '../models/smiley.dart';
+import '../widgets/ai_summary_card.dart';
 import '../widgets/bili_video_player.dart';
 import '../widgets/general_audio_player.dart';
 import '../widgets/general_video_player.dart';
@@ -51,33 +53,8 @@ class ThreadDetailPage extends StatefulWidget {
 }
 
 class _ThreadDetailPageState extends State<ThreadDetailPage> {
-  late Future<
-    ({
-      String title,
-      List<PostFloor> floors,
-      int totalPages,
-      int firstAuthorCredits,
-      String publishDate,
-      String lastReplyDate,
-      String forumName,
-      int? fid,
-      List<String> breadcrumbs,
-      String? typeName,
-      int? typeid,
-      int likes,
-      int favorites,
-      int views,
-      int replies,
-      List<String> tags,
-      String? stamp,
-      String? stampUrl,
-      String? coverUrl,
-      bool isFavorited,
-      bool isLiked,
-      int? favid,
-    })
-  >
-  _future;
+  late Future<ThreadDetailParsed> _future;
+  AiSummaryData? _aiSummary;
   final _scrollCtrl = ScrollController();
   int _page = 1;
   bool _scrolled = false;
@@ -97,6 +74,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   int _replies = 0;
   List<String> _tags = const [];
   List<PostFloor> _floors = const [];
+  int? _ordertype;
+  bool _isDescOrder = false;
 
   @override
   void initState() {
@@ -131,7 +110,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
 
   void _loadAndInit({bool forceRefresh = false}) {
     setState(() {
-      _future = KlpbbsApi.getThread(widget.tid, page: _page, forceRefresh: forceRefresh).then((r) async {
+      _future = KlpbbsApi.getThread(
+        widget.tid,
+        page: _page,
+        ordertype: _ordertype,
+        forceRefresh: forceRefresh,
+      ).then((r) async {
         final prefs = await SharedPreferences.getInstance();
         if (mounted) {
           setState(() {
@@ -176,15 +160,41 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     }
 
     final favList = prefs.getStringList('fav_tids') ?? const [];
-    final isLocalFav = favList.contains('${widget.tid}');
+    final isLocalFav = favList.contains('${widget.tid}') || KlpbbsApi.isThreadFavidCached(widget.tid);
     if (DioClient.isLoggedIn) {
-      _favored = r.isFavorited;
-      _favid = r.favid;
-      if (r.isFavorited != isLocalFav) {
-        _saveState('fav_tids', '${widget.tid}', r.isFavorited);
+      if (r.hasExplicitFavState) {
+        // 服务端 DOM 具备明确的收藏标记（无论已收藏还是未收藏，均以服务端最新状态为准）
+        _favored = r.isFavorited;
+        _favid = r.favid ?? (r.isFavorited ? KlpbbsApi.getCachedFavid(widget.tid) : null);
+        if (r.isFavorited) {
+          if (!isLocalFav) {
+            _saveState('fav_tids', '${widget.tid}', true);
+          }
+        } else {
+          // 服务端明确指出当前用户未收藏，坚决清理本地可能残留的历史脏数据
+          if (isLocalFav) {
+            _saveState('fav_tids', '${widget.tid}', false);
+          }
+        }
+      } else {
+        // 服务端未输出显式标记（例如 PC 版降级页面），依赖本地持久化状态并在未命中时进行安全探针验证
+        _favored = isLocalFav;
+        _favid = KlpbbsApi.getCachedFavid(widget.tid);
+        if (!_favored) {
+          KlpbbsApi.checkThreadFavorited(widget.tid).then((serverFav) {
+            if (mounted && serverFav && !_favored) {
+              setState(() {
+                _favored = true;
+                _favid = KlpbbsApi.getCachedFavid(widget.tid);
+              });
+            }
+          }).catchError((_) {});
+        }
       }
     } else {
-      _favored = isLocalFav;
+      // 未登录用户绝不展示高亮激活收藏态
+      _favored = false;
+      _favid = null;
     }
 
     _favorites = r.favorites;
@@ -197,6 +207,16 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     if (_page == 1 || _stamp == null) {
       _stamp = r.stamp;
       _stampUrl = r.stampUrl;
+    }
+    if (r.aiSummary != null) {
+      _aiSummary = r.aiSummary;
+    }
+    if (_ordertype != null) {
+      // 若用户明确指定了 ordertype（1 = 倒序，2 = 正序），必须以明确参数为准
+      _isDescOrder = (_ordertype == 1);
+    } else {
+      // 默认加载下，由服务端解析判断当前主题默认是正序还是倒序
+      _isDescOrder = r.isDescOrder;
     }
   }
 
@@ -214,6 +234,124 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
 
   void _reload() {
     _loadAndInit(forceRefresh: true);
+  }
+
+  /// 切换正序 / 倒序浏览
+  void _toggleOrder() {
+    final nextDesc = !_isDescOrder;
+    final nextOt = nextDesc ? 1 : 2;
+    setState(() {
+      _ordertype = nextOt;
+      _isDescOrder = nextDesc;
+      _page = 1; // 切换排序重置为第1页
+    });
+    // 清除该帖子的缓存，确保网络请求获取全新排序结果
+    KlpbbsApi.clearThreadDetailCache(widget.tid);
+    _loadAndInit(forceRefresh: true);
+
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(nextDesc ? '已切换为 倒序浏览 (最新在前)' : '已切换为 正序浏览 (最早在前)'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  /// 回帖分割与排序栏（模拟 Discuz comiis_pltit）
+  Widget _buildRepliesDivider(BuildContext context, {int repliesCount = 0}) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(14, 12, 14, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withAlpha(80),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: colorScheme.outlineVariant.withAlpha(80),
+          width: 0.8,
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.forum_outlined,
+            size: 16,
+            color: colorScheme.primary,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            '全部评论',
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.bold,
+              color: colorScheme.onSurface,
+            ),
+          ),
+          if (repliesCount > 0) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+              decoration: BoxDecoration(
+                color: colorScheme.primaryContainer.withAlpha(120),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                '$repliesCount',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: colorScheme.primary,
+                ),
+              ),
+            ),
+          ],
+          const Spacer(),
+          // 正序 / 倒序 切换胶囊按钮
+          InkWell(
+            onTap: _toggleOrder,
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: colorScheme.secondaryContainer.withAlpha(100),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: colorScheme.outlineVariant.withAlpha(100),
+                  width: 0.6,
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _isDescOrder ? Icons.arrow_downward_rounded : Icons.arrow_upward_rounded,
+                    size: 14,
+                    color: colorScheme.primary,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _isDescOrder ? '倒序浏览' : '正序浏览',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: colorScheme.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 2),
+                  Icon(
+                    Icons.swap_vert_rounded,
+                    size: 14,
+                    color: colorScheme.outline,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -496,17 +634,23 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
         pid: firstPid,
       );
       if (mounted) {
+        if (res.isLiked != _liked) {
+          setState(() {
+            _liked = res.isLiked;
+          });
+          _saveState('liked_tids', '${widget.tid}', res.isLiked);
+        }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
               res.message.isNotEmpty
                   ? res.message
-                  : (nextLiked ? '点赞成功 +1' : '已取消点赞'),
+                  : (res.isLiked ? '点赞成功 +1' : '已取消点赞'),
             ),
             duration: const Duration(seconds: 2),
           ),
         );
-        // 操作后立即拉取网页最新数据，与网页状态绝对同步
+        // 操作后拉取网页最新数据，与网页状态绝对同步
         _loadAndInit(forceRefresh: true);
       }
     } catch (_) {
@@ -551,15 +695,24 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
           setState(() {
             _favored = fav;
             _favorites += fav ? 1 : (_favorites > 0 ? -1 : 0);
+            if (fav) {
+              _favid = KlpbbsApi.getCachedFavid(widget.tid) ?? _favid;
+            } else {
+              _favid = null;
+            }
           });
           _saveState('fav_tids', '${widget.tid}', fav);
-          _loadAndInit(forceRefresh: true);
         },
       );
       if (res != null) {
         setState(() {
           _favored = res;
           _favorites += res ? 1 : (_favorites > 0 ? -1 : 0);
+          if (res) {
+            _favid = KlpbbsApi.getCachedFavid(widget.tid) ?? _favid;
+          } else {
+            _favid = null;
+          }
         });
         _saveState('fav_tids', '${widget.tid}', res);
       }
@@ -578,6 +731,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       if (nextFav) {
         final res = await KlpbbsApi.favoriteThread(widget.tid);
         if (mounted) {
+          setState(() {
+            _favid = KlpbbsApi.getCachedFavid(widget.tid) ?? _favid;
+          });
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(res.message.isNotEmpty ? res.message : '已收藏'),
@@ -588,6 +744,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       } else {
         final res = await KlpbbsApi.unfavoriteThread(widget.tid, favid: _favid);
         if (mounted) {
+          setState(() {
+            _favid = null;
+          });
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(res.message.isNotEmpty ? res.message : '已取消收藏'),
@@ -596,7 +755,6 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
           );
         }
       }
-      _loadAndInit(forceRefresh: true);
     } catch (_) {}
   }
 
@@ -722,7 +880,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   void _goPage(int page) {
     setState(() {
       _page = page;
-      _future = KlpbbsApi.getThread(widget.tid, page: page).then((r) async {
+      _future = KlpbbsApi.getThread(
+        widget.tid,
+        page: page,
+        ordertype: _ordertype,
+      ).then((r) async {
         final prefs = await SharedPreferences.getInstance();
         if (mounted) {
           setState(() {
@@ -905,7 +1067,32 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
         break;
       case 'open_browser':
         final url = '${AppConfig.baseUrl}thread-${widget.tid}-1-1.html';
-        UrlHelper.openLink(context, url);
+        UrlHelper.openExternalBrowser(context, url);
+        break;
+      case 'ai_summary':
+        if (_aiSummary == null) {
+          try {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('正在获取 AI 总结...'), duration: Duration(seconds: 1)),
+            );
+            final res = await KlpbbsApi.fetchAiSummary(widget.tid, forceRefresh: true);
+            if (res != null && mounted) {
+              setState(() => _aiSummary = res);
+              _scrollCtrl.animateTo(0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+            } else if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('该帖子暂无 AI 总结数据')),
+              );
+            }
+          } catch (e) {
+            if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('获取 AI 总结异常: $e')));
+          }
+        } else {
+          _scrollCtrl.animateTo(0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+        }
+        break;
+      case 'toggle_order':
+        _toggleOrder();
         break;
     }
   }
@@ -925,18 +1112,34 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       policy: ReadingOrderTraversalPolicy(),
       child: Scaffold(
         drawer: widget.showBackButton ? const GlobalAppDrawer() : null,
+        drawerEdgeDragWidth: 50.0,
         appBar: AppBar(
           automaticallyImplyLeading: widget.showBackButton,
           leading: widget.showBackButton
               ? GlobalNavLeading(showBackButton: widget.showBackButton)
               : null,
-          leadingWidth: widget.showBackButton ? null : 0,
+          leadingWidth: widget.showBackButton
+              ? GlobalNavLeading.preferredLeadingWidth(
+                  context,
+                  showBackButton: widget.showBackButton,
+                )
+              : 0,
           title: Text(
             _scrolled && _title.isNotEmpty ? _title : '帖子详情',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
           actions: [
+            IconButton(
+              icon: Icon(
+                _isDescOrder ? Icons.arrow_downward_rounded : Icons.arrow_upward_rounded,
+                size: 20,
+              ),
+              tooltip: _isDescOrder
+                  ? '当前为倒序浏览（最新在前），点击切换为正序'
+                  : '当前为正序浏览（最早在前），点击切换为倒序',
+              onPressed: _toggleOrder,
+            ),
             IconButton(
               icon: const Icon(Icons.refresh_rounded),
               tooltip: '刷新帖子 (F5)',
@@ -946,6 +1149,29 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
               tooltip: '更多选项',
               onSelected: (v) => _onMenuAction(v),
               itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: 'toggle_order',
+                  child: Row(
+                    children: [
+                      Icon(
+                        _isDescOrder ? Icons.arrow_downward_rounded : Icons.arrow_upward_rounded,
+                        size: 18,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(_isDescOrder ? '切换为正序浏览 (最早在前)' : '切换为倒序浏览 (最新在前)'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'ai_summary',
+                  child: Row(
+                    children: [
+                      Icon(Icons.auto_awesome_rounded, size: 18),
+                      SizedBox(width: 8),
+                      Text('AI 智能总结'),
+                    ],
+                  ),
+                ),
                 const PopupMenuItem(
                   value: 'copy_link',
                   child: Row(
@@ -1018,32 +1244,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
         body: Stack(
           fit: StackFit.expand,
           children: [
-            FutureBuilder<
-              ({
-                String title,
-                List<PostFloor> floors,
-                int totalPages,
-                int firstAuthorCredits,
-                String publishDate,
-                String lastReplyDate,
-                String forumName,
-                int? fid,
-                List<String> breadcrumbs,
-                String? typeName,
-                int? typeid,
-                int likes,
-                int favorites,
-                int views,
-                int replies,
-                List<String> tags,
-                String? stamp,
-                String? stampUrl,
-                String? coverUrl,
-                bool isFavorited,
-                bool isLiked,
-                int? favid,
-              })
-            >(
+            FutureBuilder<ThreadDetailParsed>(
               future: _future,
               builder: (context, snap) {
                 if (snap.connectionState != ConnectionState.done) {
@@ -1358,11 +1559,22 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                             ),
                           ),
                           for (var i = 0; i < floors.length; i++) ...[
+                            if (_page == 1 && i == 0 && (_aiSummary != null || data?.aiSummary != null))
+                              AiSummaryCard(
+                                tid: widget.tid,
+                                initialData: _aiSummary ?? data?.aiSummary,
+                                onRefresh: () {
+                                  if (mounted) setState(() {});
+                                },
+                              ),
+                            if ((_page == 1 && i == 1) || (_page > 1 && i == 0))
+                              _buildRepliesDivider(context, repliesCount: data?.replies ?? _replies),
                             () {
                               final isFirstFloor = (_page == 1 && i == 0);
                               final isThreadAuthor = floors[i].isThreadAuthor ||
                                   (_firstAuthorUid != null && floors[i].uid == _firstAuthorUid);
                               return _FloorView(
+                                key: ValueKey('floor_${floors[i].pid ?? i}_${_ordertype ?? 0}_${_isDescOrder}_${_page}_$i'),
                                 floor: floors[i],
                                 index: i,
                                 page: _page,
@@ -1371,6 +1583,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                                 threadTitle: (data?.title ?? _title).isNotEmpty ? (data?.title ?? _title) : null,
                                 isFirstFloor: isFirstFloor,
                                 isThreadAuthor: isThreadAuthor,
+                                isDescOrder: data?.isDescOrder ?? _isDescOrder,
+                                totalReplies: data?.replies ?? _replies,
                                 stamp: isFirstFloor ? (data?.stamp ?? _stamp) : null,
                                 stampUrl: isFirstFloor ? (data?.stampUrl ?? _stampUrl) : null,
                                 isLiked: isFirstFloor ? _liked : null,
@@ -1672,6 +1886,8 @@ class _FloorView extends StatefulWidget {
   final int? fid;
   final bool isFirstFloor;
   final bool isThreadAuthor;
+  final bool isDescOrder;
+  final int? totalReplies;
   final String? stamp;
   final String? stampUrl;
   final String? threadTitle;
@@ -1683,6 +1899,7 @@ class _FloorView extends StatefulWidget {
   final bool canModerate;
 
   const _FloorView({
+    super.key,
     required this.floor,
     required this.index,
     this.page = 1,
@@ -1691,6 +1908,8 @@ class _FloorView extends StatefulWidget {
     this.threadTitle,
     this.isFirstFloor = false,
     this.isThreadAuthor = false,
+    this.isDescOrder = false,
+    this.totalReplies,
     this.stamp,
     this.stampUrl,
     this.isLiked,
@@ -1777,15 +1996,39 @@ class _FloorViewState extends State<_FloorView> {
     if (widget.isFirstFloor) {
       return '楼主';
     }
-    // 2. 如果服务端 HTML 解析出了明确的楼层号（如 11#、沙发、板凳、地板、20# 等），优先展示
+    // 2. 如果服务端 HTML 解析出了明确的楼层号（如 187635#、11#、沙发、板凳、地板、20# 等），优先展示
     final fn = floor.floorNumber.trim();
     if (fn.isNotEmpty && fn != '楼主') {
+      // 正序第1页若服务端未转写，将 2#、3#、4# 转换为传统中国论坛昵称
+      if (!widget.isDescOrder && widget.page == 1) {
+        if (fn == '2#' || index == 1) return '沙发';
+        if (fn == '3#' || index == 2) return '板凳';
+        if (fn == '4#' || index == 3) return '地板';
+      }
       if (fn.endsWith('#')) {
         return '${fn.replaceAll('#', '')} 楼';
       }
-      return fn;
+      // 关键防错：如果当前处于倒序模式，且 HTML 中残留了 "沙发/板凳/地板" 文本，坚决屏蔽伪沙发
+      if (widget.isDescOrder && (fn == '沙发' || fn == '板凳' || fn == '地板')) {
+        // 进入下方倒序真实序号推导
+      } else {
+        return fn;
+      }
     }
-    // 3. 根据分页与索引计算真实的全局楼层序号
+    // 3. 倒序浏览模式下的楼层计算
+    if (widget.isDescOrder) {
+      final total = widget.totalReplies ?? 0;
+      if (total > 0) {
+        // 在倒序下，最高楼层为 total + 1 楼 (楼主算1楼，总回复数 total)
+        // 例如总回复 187634，最高回复楼层为 187635 楼
+        final descFloor = (total + 1) - ((widget.page - 1) * 10 + (index - 1));
+        if (descFloor > 1) {
+          return '$descFloor 楼';
+        }
+      }
+      return '${index + 1} 楼';
+    }
+    // 4. 正序模式：根据分页与索引计算真实的全局楼层序号
     if (widget.page == 1) {
       if (index == 1) return '沙发';
       if (index == 2) return '板凳';
@@ -1807,6 +2050,30 @@ class _FloorViewState extends State<_FloorView> {
       _isLiked = floor.isLiked;
       _likesCount = floor.likes;
       _loadFloorLikedState();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _FloorView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.floor.pid != widget.floor.pid ||
+        oldWidget.floor.floorNumber != widget.floor.floorNumber ||
+        oldWidget.isDescOrder != widget.isDescOrder) {
+      if (widget.isLiked != null) {
+        _isLiked = widget.isLiked!;
+        _likesCount = widget.likesCount ?? floor.likes;
+      } else {
+        _isLiked = floor.isLiked;
+        _likesCount = floor.likes;
+        _loadFloorLikedState();
+      }
+    } else {
+      if (widget.isLiked != null && widget.isLiked != _isLiked) {
+        _isLiked = widget.isLiked!;
+      }
+      if (widget.likesCount != null && widget.likesCount != _likesCount) {
+        _likesCount = widget.likesCount!;
+      }
     }
   }
 
@@ -1872,12 +2139,20 @@ class _FloorViewState extends State<_FloorView> {
         isFirstFloor: widget.isFirstFloor,
         support: nextLiked,
       );
+      if (mounted) {
+        if (res.isLiked != _isLiked) {
+          setState(() {
+            _isLiked = res.isLiked;
+          });
+          _saveFloorLikedState(res.isLiked);
+        }
+      }
       messenger.showSnackBar(
         SnackBar(
           content: Text(
             res.message.isNotEmpty
                 ? res.message
-                : (nextLiked ? '点赞成功 +1' : '已取消点赞'),
+                : (res.isLiked ? '点赞成功 +1' : '已取消点赞'),
           ),
           duration: const Duration(seconds: 2),
         ),
@@ -1889,19 +2164,6 @@ class _FloorViewState extends State<_FloorView> {
           duration: const Duration(seconds: 1),
         ),
       );
-    }
-  }
-
-  @override
-  void didUpdateWidget(covariant _FloorView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.isLiked != null) {
-      _isLiked = widget.isLiked!;
-      _likesCount = widget.likesCount ?? _likesCount;
-    } else if (oldWidget.floor.likes != widget.floor.likes ||
-        oldWidget.floor.isLiked != widget.floor.isLiked) {
-      _isLiked = widget.floor.isLiked;
-      _likesCount = widget.floor.likes;
     }
   }
 

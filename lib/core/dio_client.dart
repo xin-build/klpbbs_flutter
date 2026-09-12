@@ -89,6 +89,11 @@ class DioClient {
     try {
       final sp = await SharedPreferences.getInstance();
       await sp.remove(_cookiePrefsKey);
+      await sp.remove('fav_forums');
+      await sp.remove('fav_tids');
+      await sp.remove('liked_tids');
+      await sp.remove('liked_pids');
+      await sp.remove('cached_forum_groups_json');
     } catch (_) {}
     try {
       await onSessionCleared?.call();

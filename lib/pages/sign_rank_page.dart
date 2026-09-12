@@ -348,7 +348,20 @@ class _SignRankPageState extends State<SignRankPage>
                 const SizedBox(height: 14),
 
                 // 2. 前排签到额外奖励表
-                Text('🏆 前排额外 EP 经验奖励', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: scheme.onSurface)),
+                Row(
+                  children: [
+                    const Icon(Icons.emoji_events_rounded, size: 16, color: Colors.amber),
+                    const SizedBox(width: 6),
+                    Text(
+                      '前排额外 EP 经验奖励',
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.bold,
+                        color: scheme.onSurface,
+                      ),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 6),
                 Container(
                   decoration: BoxDecoration(
@@ -397,7 +410,20 @@ class _SignRankPageState extends State<SignRankPage>
                 const SizedBox(height: 14),
 
                 // 3. 签到等级表
-                Text('🎖️ 签到等级称号门槛', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: scheme.onSurface)),
+                Row(
+                  children: [
+                    Icon(Icons.military_tech_rounded, size: 16, color: scheme.primary),
+                    const SizedBox(width: 6),
+                    Text(
+                      '签到等级称号门槛',
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.bold,
+                        color: scheme.onSurface,
+                      ),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 6),
                 Container(
                   decoration: BoxDecoration(
@@ -502,6 +528,15 @@ class _SignRankPageState extends State<SignRankPage>
     _future = _loadRankList(_op, page: _page, forceRefresh: true);
     _loadHeaderRealtime(forceRefresh: true);
     _loadSignedDays();
+    AutoSignService.instance.addListener(_onAutoSignChanged);
+  }
+
+  void _onAutoSignChanged() {
+    if (!mounted) return;
+    if (AutoSignService.instance.isSignedToday() && !_headerInfo.isSignedToday) {
+      _loadHeaderRealtime(forceRefresh: true);
+      _loadSignedDays(forceRefresh: true);
+    }
   }
 
   void _onTabControllerTick() {
@@ -603,6 +638,7 @@ class _SignRankPageState extends State<SignRankPage>
 
   @override
   void dispose() {
+    AutoSignService.instance.removeListener(_onAutoSignChanged);
     _tabController.removeListener(_onTabControllerTick);
     _tabController.dispose();
     super.dispose();
@@ -615,9 +651,11 @@ class _SignRankPageState extends State<SignRankPage>
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         automaticallyImplyLeading: !isDesktop,
         leading: (isDesktop && !canPop) ? null : const GlobalNavLeading(),
+        leadingWidth: (isDesktop && !canPop) ? null : GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('每日签到', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
         bottom: _loadingHeader
             ? const PreferredSize(

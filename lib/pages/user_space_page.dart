@@ -633,8 +633,10 @@ class _UserSpacePageState extends State<UserSpacePage> {
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: Text(_isMe ? '我的空间' : '个人空间'),
       ),
       body: SingleChildScrollView(
@@ -863,8 +865,10 @@ class _UserSpacePageState extends State<UserSpacePage> {
         if (user == null) {
           return Scaffold(
             drawer: const GlobalAppDrawer(),
+            drawerEdgeDragWidth: 50.0,
             appBar: AppBar(
               leading: const GlobalNavLeading(),
+              leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
               title: Text(_isMe ? '我的空间' : 'Ta 的空间'),
             ),
             body: Center(
@@ -885,8 +889,10 @@ class _UserSpacePageState extends State<UserSpacePage> {
         if (user.isLocked) {
           return Scaffold(
             drawer: const GlobalAppDrawer(),
+            drawerEdgeDragWidth: 50.0,
             appBar: AppBar(
               leading: const GlobalNavLeading(),
+              leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
               title: const Text('提示信息'),
               centerTitle: true,
             ),
@@ -957,6 +963,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
 
         return Scaffold(
           drawer: const GlobalAppDrawer(),
+          drawerEdgeDragWidth: 50.0,
           body: Column(
             children: [
               Expanded(
@@ -975,6 +982,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
                         foregroundColor: Colors.white,
                         backgroundColor: theme.colorScheme.primary,
                         leading: const GlobalNavLeading(),
+                        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
                         title: Text(
                           _isMe ? '我的空间' : 'Ta 的空间',
                           style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
@@ -1948,8 +1956,10 @@ class _MySpacePageState extends State<MySpacePage> {
     if (_uid == null || _uid == 0) {
       return Scaffold(
         drawer: const GlobalAppDrawer(),
+        drawerEdgeDragWidth: 50.0,
         appBar: AppBar(
           leading: const GlobalNavLeading(),
+          leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
           title: const Text('我的空间'),
           centerTitle: true,
         ),

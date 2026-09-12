@@ -1,4 +1,4 @@
-﻿import 'package:file_picker/file_picker.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../api/klpbbs_api.dart';
 import '../models/user_space.dart';
@@ -390,8 +390,10 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage> {
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('资料设置'),
         centerTitle: true,
         actions: [

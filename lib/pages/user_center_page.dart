@@ -181,9 +181,11 @@ class _UserCenterPageState extends State<UserCenterPage> {
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         automaticallyImplyLeading: !isDesktop,
         leading: (isDesktop && !canPop) ? null : const GlobalNavLeading(),
+        leadingWidth: (isDesktop && !canPop) ? null : GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('个人中心'),
         centerTitle: false,
         actions: [

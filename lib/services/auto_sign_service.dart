@@ -53,6 +53,7 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
   // Runtime States
   String _lastSuccessDate = '';
   String _lastNotifiedDate = '';
+  int _lastDay = DateTime.now().day;
   bool _isRunning = false;
   DateTime? _runningStartTime; // 看门狗计时，防止卡死
   bool _isSnipingActive = false; // 是否处于 23:59 准备/冲刺阶段
@@ -158,9 +159,15 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
     final now = DateTime.now();
     final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
 
+    if (now.day != _lastDay) {
+      _lastDay = now.day;
+      _lastCheckTime = null;
+      _lastFallbackCheckTime = null;
+    }
+
     final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch || AppConfig.autoCheckin;
     if (isAnyAutoEnabled && _lastSuccessDate != todayStr && !_isRunning) {
-      checkAndAutoSignIn(triggerSource: '唤醒自动检测');
+      checkAndAutoSignIn(triggerSource: '唤醒自动检测', force: true);
     }
   }
 
@@ -261,12 +268,22 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
     });
   }
 
-  /// 计算下一次心跳周期：处于冲刺临界或定时签到临界期保持 1 秒高精度，平时 30 秒休眠省电
+  /// 计算下一次心跳周期：处于冲刺临界、跨天切换或定时签到临界期保持 1 秒高精度，平时 30 秒休眠省电
   Duration _resolveNextHeartbeatDuration() {
     if (_isRunning) {
       return const Duration(seconds: 1);
     }
     final now = DateTime.now();
+    final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch || AppConfig.autoCheckin;
+
+    // 零点跨天保护守护：只要开启任何自动化，23:59:40 ~ 00:00:30 全程保持 1 秒高频，确保 00:00:01 准点触发
+    if (isAnyAutoEnabled) {
+      if ((now.hour == 23 && now.minute == 59 && now.second >= 40) ||
+          (now.hour == 0 && now.minute == 0 && now.second <= 30)) {
+        return const Duration(seconds: 1);
+      }
+    }
+
     // 零点冲榜临界期：23:58 ~ 次日 00:02
     if (_burstModeEnabled) {
       if ((now.hour == 23 && now.minute >= 58) || (now.hour == 0 && now.minute <= 2)) {
@@ -298,6 +315,21 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
 
     final now = DateTime.now();
     final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch || AppConfig.autoCheckin;
+
+    // 0. 日历跨天秒级响应器 (Midnight Calendar Rollover Trigger)
+    // 只要日期跳变为新的一天，立即重置昨日频控，启动凌晨自动打卡
+    if (now.day != _lastDay) {
+      _lastDay = now.day;
+      _lastCheckTime = null; // 解除 5 分钟防抖
+      _lastFallbackCheckTime = null; // 解除 15 分钟防抖
+      _statusMessage = '检测到零点跨天 ($todayStr)，启动今日凌晨自动签到...';
+      notifyListeners();
+
+      if (isAnyAutoEnabled && !_isRunning && _lastSuccessDate != todayStr && _lastNotifiedDate != todayStr) {
+        checkAndAutoSignIn(triggerSource: '凌晨跨天自动打卡', force: true);
+      }
+    }
 
     // 1. 零点冲榜模式调度（在 23:59 开启准备、校准、预热 FormHash 与时间区间探测）
     if (_burstModeEnabled) {
@@ -345,7 +377,6 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     // 3. 全天未签自动保底与错峰补签机制（15 分钟频率防抖，杜绝频繁唤醒）
-    final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch || AppConfig.autoCheckin;
     if (isAnyAutoEnabled && _lastSuccessDate != todayStr && _lastNotifiedDate != todayStr && !_isRunning) {
       if (_lastFallbackCheckTime == null || now.difference(_lastFallbackCheckTime!).inMinutes >= 15) {
         _lastFallbackCheckTime = now;

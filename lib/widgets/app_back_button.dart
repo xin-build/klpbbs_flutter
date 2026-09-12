@@ -9,12 +9,20 @@ class AppBackButton extends StatelessWidget {
   final bool fallbackToHome;
   final VoidCallback? onBack;
   final Color? color;
+  final EdgeInsetsGeometry? padding;
+  final BoxConstraints? constraints;
+  final double iconSize;
+  final VisualDensity? visualDensity;
 
   const AppBackButton({
     super.key,
     this.fallbackToHome = true,
     this.onBack,
     this.color,
+    this.padding,
+    this.constraints,
+    this.iconSize = 24.0,
+    this.visualDensity,
   });
 
   @override
@@ -25,9 +33,12 @@ class AppBackButton extends StatelessWidget {
     }
 
     return IconButton(
-      icon: const Icon(Icons.arrow_back),
+      icon: Icon(Icons.arrow_back, size: iconSize),
       tooltip: canPop ? '返回' : '返回首页',
       color: color,
+      padding: padding,
+      constraints: constraints,
+      visualDensity: visualDensity,
       onPressed: () {
         if (onBack != null) {
           onBack!();

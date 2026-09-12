@@ -11,6 +11,7 @@ import '../core/app_config.dart';
 import '../core/dio_client.dart';
 import '../core/forum_events.dart';
 import '../core/preload_service.dart';
+import '../models/ai_summary.dart';
 import '../models/credit_log.dart';
 import '../models/darkroom_entry.dart';
 import '../models/forum.dart';
@@ -22,6 +23,7 @@ import '../models/medal_item.dart';
 import '../models/notice_item.dart';
 import '../models/pm_models.dart';
 import '../models/post_edit_info.dart';
+import '../models/thread_sort_model.dart';
 import '../models/post_floor.dart';
 import '../models/sign_entry.dart';
 import '../models/site_stats.dart';
@@ -30,6 +32,7 @@ import '../models/thread_summary.dart';
 import '../models/user_space.dart';
 import '../models/user_role.dart';
 import '../models/usergroup_comparison.dart';
+import '../models/papa_ai.dart';
 import 'comiis_parser.dart';
 
 /// klpbbs 完整 API 封装（浏览 + 写操作 + 内存预加载）
@@ -71,6 +74,12 @@ class KlpbbsApi {
       PreloadService.instance.clear();
       clearQuickCache();
     }
+  }
+
+  /// 彻底清除某个主题的预加载与快速 GET 缓存（包含所有分页与排序变体）
+  static void clearThreadDetailCache(int tid) {
+    PreloadService.instance.clear('thread_detail_${tid}_');
+    clearQuickCache('forum.php?mod=viewthread&tid=$tid');
   }
 
   /// 容错解码（个别插件模板内嵌 GBK 字节）
@@ -469,7 +478,11 @@ class KlpbbsApi {
     }
     try {
       final results = await Future.wait([
-        _get('forum.php?forumlist=1&mobile=2', forceRefresh: forceRefresh).catchError((_) => ''),
+        _get(
+          'forum.php?forumlist=1&mobile=2',
+          headers: {'User-Agent': AppConfig.mobileUserAgent},
+          forceRefresh: forceRefresh,
+        ).catchError((_) => ''),
         _get(
           'forum.php?mobile=no',
           headers: {'User-Agent': AppConfig.pcUserAgent},
@@ -558,7 +571,7 @@ class KlpbbsApi {
     return cached ?? const [];
   }
 
-  /// 统一将本地收藏/关注版块注入版块分组中的「我关注的」分区 (gid 0)，确保与本地持久化及全站多页面完全一致
+  /// 统一将本地收藏/关注版块注入版块分组中的「我关注的」分区 (gid 0)，严格对齐用户实际收藏列表
   static List<ForumGroup> _injectFavoriteForums(
     List<ForumGroup> groups,
     SharedPreferences prefs,
@@ -576,49 +589,39 @@ class KlpbbsApi {
     }
 
     final rawFavList = prefs.getStringList('fav_forums') ?? const [];
-    final favFids = rawFavList.map(int.tryParse).whereType<int>().toSet();
+    final favFids = rawFavList
+        .map(int.tryParse)
+        .whereType<int>()
+        .where((id) => id > 0)
+        .toSet();
 
-    // 自动收集服务端原始 groups 中已关注的版块到 favFids（只合并不误删）
-    bool hasNew = false;
-    for (final g in groups) {
-      if (g.gid == 0 || g.name.contains('关注') || g.name.contains('收藏')) {
-        for (final f in g.forums) {
-          if (favFids.add(f.fid)) {
-            hasNew = true;
-          }
+    final result = <ForumGroup>[];
+
+    // 仅在用户实际关注了版块时构建「我关注的」专属分组，严禁硬编码注入 [41, 43, 52]
+    if (favFids.isNotEmpty) {
+      final combinedFavs = <Forum>[];
+      final seenFids = <int>{};
+      for (final fid in favFids) {
+        if (seenFids.add(fid)) {
+          final f = allKnownForums[fid] ??
+              Forum(
+                fid: fid,
+                name: ComiisParser.getForumNameByFid(fid) ?? '版块 $fid',
+                gid: 0,
+              );
+          combinedFavs.add(f.copyWith(gid: 0));
         }
       }
-    }
-    if (hasNew) {
-      prefs.setStringList('fav_forums', favFids.map((e) => '$e').toList());
-    }
-
-    // 若本地未初始化关注且服务端未包含关注，提供首屏推荐关注版块保底
-    if (favFids.isEmpty) {
-      favFids.addAll(const [41, 43, 52]);
-    }
-
-    final combinedFavs = <Forum>[];
-    final seenFids = <int>{};
-    for (final fid in favFids) {
-      if (seenFids.add(fid)) {
-        final f = allKnownForums[fid] ??
-            Forum(
-              fid: fid,
-              name: ComiisParser.getForumNameByFid(fid) ?? '版块 $fid',
-              gid: 0,
-            );
-        combinedFavs.add(f.copyWith(gid: 0));
+      if (combinedFavs.isNotEmpty) {
+        result.add(
+          ForumGroup(
+            gid: 0,
+            name: '我关注的',
+            forums: combinedFavs,
+          ),
+        );
       }
     }
-
-    final result = <ForumGroup>[
-      ForumGroup(
-        gid: 0,
-        name: '我关注的',
-        forums: combinedFavs,
-      ),
-    ];
 
     for (final g in groups) {
       if (g.gid != 0 && !g.name.contains('关注') && !g.name.contains('收藏')) {
@@ -1006,148 +1009,87 @@ class KlpbbsApi {
     });
   }
 
-  /// 帖子详情（支持内存预加载与分页）
-  static Future<
-    ({
-      String title,
-      List<PostFloor> floors,
-      int totalPages,
-      int firstAuthorCredits,
-      String publishDate,
-      String lastReplyDate,
-      String forumName,
-      int? fid,
-      List<String> breadcrumbs,
-      String? typeName,
-      int? typeid,
-      int likes,
-      int favorites,
-      int views,
-      int replies,
-      List<String> tags,
-      String? stamp,
-      String? stampUrl,
-      String? coverUrl,
-      bool isFavorited,
-      bool isLiked,
-      int? favid,
-    })
-  >
-  getThreadDetail(int tid, {int page = 1, bool forceRefresh = false}) async {
-    final cacheKey = 'thread_detail_${tid}_$page';
+  /// 帖子详情（支持内存预加载与分页，支持正序/倒序 ordertype）
+  static Future<ThreadDetailParsed> getThreadDetail(
+    int tid, {
+    int page = 1,
+    int? ordertype,
+    bool forceRefresh = false,
+  }) async {
+    final otKey = ordertype != null && ordertype > 0 ? '_ot$ordertype' : '';
+    final cacheKey = 'thread_detail_${tid}_$page$otKey';
     if (!forceRefresh) {
-      final cached = PreloadService.instance.get<
-        ({
-          String title,
-          List<PostFloor> floors,
-          int totalPages,
-          int firstAuthorCredits,
-          String publishDate,
-          String lastReplyDate,
-          String forumName,
-          int? fid,
-          List<String> breadcrumbs,
-          String? typeName,
-          int? typeid,
-          int likes,
-          int favorites,
-          int views,
-          int replies,
-          List<String> tags,
-          String? stamp,
-          String? stampUrl,
-          String? coverUrl,
-          bool isFavorited,
-          bool isLiked,
-          int? favid,
-        })
-      >(cacheKey);
+      final cached = PreloadService.instance.get<ThreadDetailParsed>(cacheKey);
       if (cached != null) {
-        _preloadThreadDetail(tid, page);
+        _preloadThreadDetail(tid, page, ordertype: ordertype);
         return cached;
       }
+    } else {
+      PreloadService.instance.remove(cacheKey);
+      clearQuickCache('forum.php?mod=viewthread&tid=$tid');
     }
     try {
-      final res = await _fetchThreadDetail(tid, page);
+      final res = await _fetchThreadDetail(
+        tid,
+        page,
+        ordertype: ordertype,
+        forceRefresh: forceRefresh,
+      );
       PreloadService.instance.set(cacheKey, res);
-      _preloadThreadDetail(tid, page);
+      _preloadThreadDetail(tid, page, ordertype: ordertype);
       return res;
     } catch (_) {
-      final cached = PreloadService.instance.get<
-        ({
-          String title,
-          List<PostFloor> floors,
-          int totalPages,
-          int firstAuthorCredits,
-          String publishDate,
-          String lastReplyDate,
-          String forumName,
-          int? fid,
-          List<String> breadcrumbs,
-          String? typeName,
-          int? typeid,
-          int likes,
-          int favorites,
-          int views,
-          int replies,
-          List<String> tags,
-          String? stamp,
-          String? stampUrl,
-          String? coverUrl,
-          bool isFavorited,
-          bool isLiked,
-          int? favid,
-        })
-      >(cacheKey);
+      final cached = PreloadService.instance.get<ThreadDetailParsed>(cacheKey);
       if (cached != null) return cached;
       rethrow;
     }
   }
 
-  static void _preloadThreadDetail(int tid, int page) {
+  static void _preloadThreadDetail(int tid, int page, {int? ordertype}) {
     Future.microtask(() async {
       try {
         final nextPage = page + 1;
-        final nextKey = 'thread_detail_${tid}_$nextPage';
+        final otKey = ordertype != null && ordertype > 0 ? '_ot$ordertype' : '';
+        final nextKey = 'thread_detail_${tid}_$nextPage$otKey';
         if (!PreloadService.instance.has(nextKey)) {
-          final res = await _fetchThreadDetail(tid, nextPage);
+          final res = await _fetchThreadDetail(tid, nextPage, ordertype: ordertype);
           PreloadService.instance.set(nextKey, res);
         }
       } catch (_) {}
     });
   }
 
-  static Future<
-    ({
-      String title,
-      List<PostFloor> floors,
-      int totalPages,
-      int firstAuthorCredits,
-      String publishDate,
-      String lastReplyDate,
-      String forumName,
-      int? fid,
-      List<String> breadcrumbs,
-      String? typeName,
-      int? typeid,
-      int likes,
-      int favorites,
-      int views,
-      int replies,
-      List<String> tags,
-      String? stamp,
-      String? stampUrl,
-      String? coverUrl,
-      bool isFavorited,
-      bool isLiked,
-      int? favid,
-    })
-  >
-  _fetchThreadDetail(int tid, int page) async {
+  static Future<ThreadDetailParsed> _fetchThreadDetail(
+    int tid,
+    int page, {
+    int? ordertype,
+    bool forceRefresh = false,
+  }) async {
+    final otParam = (ordertype != null && ordertype > 0) ? '&ordertype=$ordertype' : '';
     final html = await _get(
-      'forum.php?mod=viewthread&tid=$tid&mobile=2&page=$page',
+      'forum.php?mod=viewthread&tid=$tid&mobile=2&page=$page$otParam',
+      forceRefresh: forceRefresh,
     );
-    final detail = await ComiisParser.parseThreadDetailAsync(html);
+    var detail = await ComiisParser.parseThreadDetailAsync(html);
+    if (detail.floors.isEmpty) {
+      // 检查是否包含权限/密码等系统错误提示；若无，尝试回退到 PC 端（mobile=no）提取完整内容
+      final hasAlert = html.contains('messagetext') ||
+          html.contains('alert_error') ||
+          html.contains('jump_c') ||
+          html.contains('comiis_tip');
+      if (!hasAlert) {
+        try {
+          final pcHtml = await _get(
+            'forum.php?mod=viewthread&tid=$tid&mobile=no&page=$page$otParam',
+            forceRefresh: forceRefresh,
+          );
+          final pcDetail = await ComiisParser.parseThreadDetailAsync(pcHtml);
+          if (pcDetail.floors.isNotEmpty) {
+            detail = pcDetail;
+          }
+        } catch (_) {}
+      }
+    }
     return detail;
   }
 
@@ -1186,34 +1128,13 @@ class KlpbbsApi {
   }
 
   /// 快速获取主题详情（兼容别名）
-  static Future<
-    ({
-      String title,
-      List<PostFloor> floors,
-      int totalPages,
-      int firstAuthorCredits,
-      String publishDate,
-      String lastReplyDate,
-      String forumName,
-      int? fid,
-      List<String> breadcrumbs,
-      String? typeName,
-      int? typeid,
-      int likes,
-      int favorites,
-      int views,
-      int replies,
-      List<String> tags,
-      String? stamp,
-      String? stampUrl,
-      String? coverUrl,
-      bool isFavorited,
-      bool isLiked,
-      int? favid,
-    })
-  >
-  getThread(int tid, {int page = 1, bool forceRefresh = false}) =>
-      getThreadDetail(tid, page: page, forceRefresh: forceRefresh);
+  static Future<ThreadDetailParsed> getThread(
+    int tid, {
+    int page = 1,
+    int? ordertype,
+    bool forceRefresh = false,
+  }) =>
+      getThreadDetail(tid, page: page, ordertype: ordertype, forceRefresh: forceRefresh);
 
   /// 导读（hot / new / newthread / digest / pic，优先极速移动端流式加载，支持预加载与多级缓存）
   static Future<List<ThreadSummary>> getGuide(
@@ -2230,9 +2151,26 @@ class KlpbbsApi {
   }) async {
     final tagParam = (tag != null && tag.isNotEmpty && tag != '全部') ? '&tag=${Uri.encodeComponent(tag)}' : '';
     final html = await _get(
-      'home.php?mod=space&uid=$uid&do=favorite&view=thread&mobile=no$tagParam${page > 1 ? '&page=$page' : ''}',
+      'home.php?mod=space&uid=$uid&do=favorite&type=thread&mobile=no$tagParam${page > 1 ? '&page=$page' : ''}',
     );
-    return ComiisParser.parseUserThreads(html);
+    final list = ComiisParser.parseUserThreads(html);
+    if (page == 1 && list.isNotEmpty) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        _ensureFavidCacheLoaded(prefs);
+        final currentFavs = (prefs.getStringList('fav_tids') ?? []).toSet();
+        for (final t in list) {
+          currentFavs.add('${t.tid}');
+          final favid = t.favid ?? ComiisParser.extractFavidFromHtml(html, t.tid);
+          if (favid != null && favid > 0) {
+            _threadFavidCache[t.tid] = favid;
+          }
+        }
+        await prefs.setStringList('fav_tids', currentFavs.toList());
+        await _persistThreadFavidCache(prefs);
+      } catch (_) {}
+    }
+    return list;
   }
 
   /// 通知提醒（我的帖子/互动/系统/公共/应用/提到我的，实时获取）
@@ -2521,12 +2459,21 @@ class KlpbbsApi {
           !res.contains('alert_error') &&
           !res.contains('抱歉');
       if (isSuccess) {
+        // 从响应中提取 favid 缓存
+        final favidM = RegExp(r'favid=(\d+)').firstMatch(res);
+        if (favidM != null) {
+          final favid = int.tryParse(favidM.group(1)!);
+          if (favid != null && favid > 0) {
+            _threadFavidCache[tid] = favid;
+          }
+        }
         final prefs = await SharedPreferences.getInstance();
         final favList = (prefs.getStringList('fav_tids') ?? []).toList();
         if (!favList.contains('$tid')) {
           favList.add('$tid');
           await prefs.setStringList('fav_tids', favList);
         }
+        await _persistThreadFavidCache(prefs);
       }
       return (success: isSuccess, message: msg);
     } catch (e) {
@@ -2534,7 +2481,7 @@ class KlpbbsApi {
     }
   }
 
-  /// 取消收藏帖子（支持根据 favid 或 tid 删除收藏）
+  /// 取消收藏帖子（严格通过 favid 主键物理删除，对齐网页 spacecp op=delete 协议）
   static Future<({bool success, String message})> unfavoriteThread(
     int tid, {
     int? favid,
@@ -2552,14 +2499,14 @@ class KlpbbsApi {
         return (success: false, message: '未能获取 FormHash，请重试');
       }
 
-      int? targetFavid = favid;
+      int? targetFavid = (favid != null && favid > 0) ? favid : _threadFavidCache[tid];
       if (targetFavid == null || targetFavid <= 0) {
         try {
-          final favPage = await _get('home.php?mod=space&do=favorite&view=thread&mobile=2');
-          targetFavid = ComiisParser.extractFavidFromHtml(favPage, tid);
+          final favPage = await _get('home.php?mod=space&do=favorite&type=thread&mobile=no');
+          targetFavid = ComiisParser.extractFavidFromHtml(favPage, tid, type: 'thread');
           if (targetFavid == null || targetFavid <= 0) {
-            final pcFavPage = await _get('home.php?mod=space&do=favorite&view=thread&mobile=no');
-            targetFavid = ComiisParser.extractFavidFromHtml(pcFavPage, tid);
+            final mFavPage = await _get('home.php?mod=space&do=favorite&type=thread&mobile=2');
+            targetFavid = ComiisParser.extractFavidFromHtml(mFavPage, tid, type: 'thread');
           }
         } catch (_) {}
       }
@@ -2583,12 +2530,12 @@ class KlpbbsApi {
           formData,
           headers: {
             'X-Requested-With': 'XMLHttpRequest',
-            'Referer': '${AppConfig.baseUrl}home.php?mod=space&do=favorite&view=thread',
+            'Referer': '${AppConfig.baseUrl}home.php?mod=space&do=favorite&type=thread',
           },
         );
       }
 
-      // 若未指定 favid 或 favid 删除未返回成功，再执行基于 tid 的标准删除
+      // 若未指定 favid 或 favid 删除未返回成功，再执行基于 tid 的删除兜底
       if (res.isEmpty || !res.contains('succeed')) {
         final resTid = await _post(
           'home.php?mod=spacecp&ac=favorite&op=delete&type=thread&id=$tid&inajax=1',
@@ -2601,11 +2548,14 @@ class KlpbbsApi {
         if (res.isEmpty) res = resTid;
       }
 
+      _threadFavidCache.remove(tid);
+
       // 同步本地缓存
       final prefs = await SharedPreferences.getInstance();
       final favList = (prefs.getStringList('fav_tids') ?? []).toList();
       favList.remove('$tid');
       await prefs.setStringList('fav_tids', favList);
+      await _persistThreadFavidCache(prefs);
 
       final msg = _extractDiscuzResponseMessage(
         res,
@@ -2620,7 +2570,7 @@ class KlpbbsApi {
   /// 获取用户收藏标签列表
   static Future<List<String>> getFavoriteTags() async {
     try {
-      final html = await _get('home.php?mod=space&do=favorite&view=thread&mobile=no');
+      final html = await _get('home.php?mod=space&do=favorite&type=thread&mobile=no');
       final tags = <String>[];
       final matches = RegExp(r'home\.php\?mod=space&amp;do=favorite&amp;type=thread&amp;tag=([^"&]+)').allMatches(html);
       for (final m in matches) {
@@ -2674,13 +2624,31 @@ class KlpbbsApi {
         },
       );
 
-      // 同步本地已收藏版块缓存并立即失效旧缓存
-      final prefs = await SharedPreferences.getInstance();
-      final set = (prefs.getStringList('fav_forums') ?? []).toSet();
-      set.add('$fid');
-      await prefs.setStringList('fav_forums', set.toList());
+      final isSuccess = res.contains('succeed') ||
+          res.contains('信息') ||
+          res.contains('成功') ||
+          res.contains('已收藏过') ||
+          !res.contains('alert_error');
+
+      if (isSuccess) {
+        // 从响应中提取 favid 缓存
+        final favidM = RegExp(r'favid=(\d+)').firstMatch(res);
+        if (favidM != null) {
+          final favid = int.tryParse(favidM.group(1)!);
+          if (favid != null && favid > 0) {
+            _forumFavidCache[fid] = favid;
+          }
+        }
+        // 同步本地已收藏版块缓存并立即失效旧缓存
+        final prefs = await SharedPreferences.getInstance();
+        final set = (prefs.getStringList('fav_forums') ?? []).toSet();
+        set.add('$fid');
+        await prefs.setStringList('fav_forums', set.toList());
+      }
+
       _quickGetCache.removeWhere((k, _) => k.contains('do=favorite') || k.contains('type=forum'));
       PreloadService.instance.remove('forum_groups');
+      final prefs = await SharedPreferences.getInstance();
       await prefs.remove('cached_forum_groups_json');
       ForumFavoriteNotifier.instance.notifyFavoriteChanged(fid, true);
       // 后台立刻强制重新获取一次收藏版块与版块树数据，完成双向同步
@@ -2689,10 +2657,6 @@ class KlpbbsApi {
       }).catchError((_) {}));
       unawaited(getForumGroups(forceRefresh: true).catchError((_) => const <ForumGroup>[]));
 
-      final isSuccess = res.contains('succeed') ||
-          res.contains('信息') ||
-          res.contains('成功') ||
-          !res.contains('alert_error');
       final msg = _extractDiscuzResponseMessage(
         res,
         defaultMsg: isSuccess ? '已成功收藏该版块' : '收藏失败，请稍后重试',
@@ -2725,13 +2689,13 @@ class KlpbbsApi {
         return (success: false, message: '未能获取 FormHash，请重试');
       }
 
-      int? targetFavid = favid;
+      int? targetFavid = (favid != null && favid > 0) ? favid : _forumFavidCache[fid];
       if (targetFavid == null || targetFavid <= 0) {
         try {
           final favPage = await _get('home.php?mod=space&do=favorite&type=forum&mobile=no');
           targetFavid = ComiisParser.extractFavidFromHtml(favPage, fid, type: 'forum');
           if (targetFavid == null || targetFavid <= 0) {
-            final mFavPage = await _get('home.php?mod=space&do=favorite&view=forum&mobile=2');
+            final mFavPage = await _get('home.php?mod=space&do=favorite&type=forum&mobile=2');
             targetFavid = ComiisParser.extractFavidFromHtml(mFavPage, fid, type: 'forum');
           }
         } catch (_) {}
@@ -2802,6 +2766,192 @@ class KlpbbsApi {
 
   /// 内存中缓存的版块 FID -> FAV_ID 映射
   static final Map<int, int> _forumFavidCache = {};
+  /// 内存中缓存的帖子 TID -> FAV_ID 映射
+  static final Map<int, int> _threadFavidCache = {};
+
+  /// 检查特定 TID 是否有缓存的 favid 或在收藏中
+  static bool isThreadFavidCached(int tid) {
+    return _threadFavidCache.containsKey(tid);
+  }
+
+  /// 获取缓存的 favid
+  static int? getCachedFavid(int tid) {
+    return _threadFavidCache[tid];
+  }
+
+  /// 确保从本地持久化中加载 TID -> FAV_ID 映射
+  static void _ensureFavidCacheLoaded(SharedPreferences prefs) {
+    if (_threadFavidCache.isNotEmpty) return;
+    try {
+      final mapStr = prefs.getString('fav_favid_map');
+      if (mapStr != null && mapStr.isNotEmpty) {
+        final decoded = jsonDecode(mapStr) as Map<String, dynamic>;
+        for (final entry in decoded.entries) {
+          final t = int.tryParse(entry.key);
+          final f = entry.value is int ? entry.value as int : int.tryParse(entry.value.toString());
+          if (t != null && f != null && t > 0 && f > 0) {
+            _threadFavidCache[t] = f;
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// 持久化 TID -> FAV_ID 映射
+  static Future<void> _persistThreadFavidCache(SharedPreferences prefs) async {
+    try {
+      final map = <String, int>{};
+      for (final e in _threadFavidCache.entries) {
+        map['${e.key}'] = e.value;
+      }
+      await prefs.setString('fav_favid_map', jsonEncode(map));
+    } catch (_) {}
+  }
+
+  /// 缓存单个帖子的 favid 并持久化
+  static Future<void> cacheThreadFavid(int tid, int favid) async {
+    if (tid <= 0 || favid <= 0) return;
+    _threadFavidCache[tid] = favid;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await _persistThreadFavidCache(prefs);
+    } catch (_) {}
+  }
+
+  /// 净化旧版本残留的脏收藏缓存（一次性迁移修复）
+  static Future<void> sanitizeFavoriteCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final hasSanitized = prefs.getBool('fav_cache_sanitized_v3') ?? false;
+      if (!hasSanitized) {
+        await prefs.remove('fav_tids');
+        _threadFavidCache.clear();
+        await prefs.remove('fav_favid_map');
+        await prefs.setBool('fav_cache_sanitized_v3', true);
+        if (DioClient.isLoggedIn) {
+          unawaited(syncFavorites());
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// 全量/增量同步用户收藏（以服务端真实数据作为绝对唯一事实来源，对齐本地 fav_tids 与 _threadFavidCache）
+  static Future<void> syncFavorites({int? uid}) async {
+    if (!DioClient.isLoggedIn) return;
+    try {
+      final targetUid = uid ?? await getMyUid();
+      if (targetUid == null || targetUid <= 0) return;
+
+      final prefs = await SharedPreferences.getInstance();
+      _ensureFavidCacheLoaded(prefs);
+
+      // 拉取第1页收藏
+      final htmlP1 = await _get(
+        'home.php?mod=space&uid=$targetUid&do=favorite&type=thread&mobile=no',
+        forceRefresh: true,
+      );
+      final listP1 = ComiisParser.parseUserThreads(htmlP1);
+      final isEmp = htmlP1.contains('class="emp"') ||
+          htmlP1.contains('暂无') ||
+          htmlP1.contains('no_favorite_yet') ||
+          htmlP1.contains('没有收藏');
+
+      // 只要是有效收藏中心页面，以服务端数据作为唯一事实来源
+      final isValidFavPage = htmlP1.contains('do=favorite') ||
+          htmlP1.contains('comiis_mysclist') ||
+          htmlP1.contains('id="delform"') ||
+          isEmp;
+
+      if (!isValidFavPage && listP1.isEmpty) return;
+
+      final serverFavTids = <String>{};
+      final newFavidMap = <int, int>{};
+      for (final t in listP1) {
+        serverFavTids.add('${t.tid}');
+        final favid = t.favid ?? ComiisParser.extractFavidFromHtml(htmlP1, t.tid);
+        if (favid != null && favid > 0) {
+          newFavidMap[t.tid] = favid;
+        }
+      }
+
+      // 检查是否有下一页
+      if (htmlP1.contains('page=2')) {
+        try {
+          final htmlP2 = await _get(
+            'home.php?mod=space&uid=$targetUid&do=favorite&type=thread&mobile=no&page=2',
+            forceRefresh: true,
+          );
+          final listP2 = ComiisParser.parseUserThreads(htmlP2);
+          for (final t in listP2) {
+            serverFavTids.add('${t.tid}');
+            final favid = t.favid ?? ComiisParser.extractFavidFromHtml(htmlP2, t.tid);
+            if (favid != null && favid > 0) {
+              newFavidMap[t.tid] = favid;
+            }
+          }
+        } catch (_) {}
+      }
+
+      // 用服务端的权威数据完全覆盖本地 TID 集合与 favid 映射，杜绝历史脏数据残留
+      _threadFavidCache.clear();
+      _threadFavidCache.addAll(newFavidMap);
+      await prefs.setStringList('fav_tids', serverFavTids.toList());
+      await _persistThreadFavidCache(prefs);
+    } catch (_) {}
+  }
+
+  /// 轻量级探测某个帖子是否已被当前用户收藏（直接与服务端 spacecp 对齐）
+  static Future<bool> checkThreadFavorited(int tid) async {
+    if (tid <= 0 || !DioClient.isLoggedIn) return false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _ensureFavidCacheLoaded(prefs);
+
+      // 请求 spacecp 收藏对话框/状态探针
+      final res = await _get(
+        'home.php?mod=spacecp&ac=favorite&type=thread&id=$tid&inajax=1',
+        cacheTtl: Duration.zero,
+        forceRefresh: true,
+      );
+
+      // Discuz 核心行为规范：
+      // 1. 若当前用户已收藏该主题，Discuz 直接触发 showmessage('favorite_repeat')，
+      //    返回包含「您已收藏」或「请勿重复收藏」的 XML 提示，且绝不输出收藏表单模板。
+      // 2. 若当前用户未收藏该主题，Discuz 渲染 spacecp_favorite 弹窗输入表单（包含 favoriteform_、favoritesubmit 等），
+      //    由于模板 JS 中包含 succeedhandle 回调，切不可检测 'succeed'，否则会导致全部未收藏帖子被误判！
+      final isAlreadyFav = res.contains('favorite_repeat') ||
+          res.contains('您已收藏') ||
+          res.contains('请勿重复收藏') ||
+          res.contains('重复收藏');
+
+      final isNotFavForm = res.contains('favoriteform_') ||
+          res.contains('favoritesubmit') ||
+          res.contains('name="description"');
+
+      final favList = (prefs.getStringList('fav_tids') ?? []).toSet();
+
+      if (isAlreadyFav) {
+        favList.add('$tid');
+        await prefs.setStringList('fav_tids', favList.toList());
+        return true;
+      } else if (isNotFavForm) {
+        // 服务端明确返回添加收藏表单，说明真实状态为未收藏，必须坚决清除可能存在的本地污染标记
+        if (favList.remove('$tid')) {
+          await prefs.setStringList('fav_tids', favList.toList());
+        }
+        _threadFavidCache.remove(tid);
+        await _persistThreadFavidCache(prefs);
+        return false;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /// 清空收藏主键缓存
+  static void clearFavoriteCaches() {
+    _forumFavidCache.clear();
+    _threadFavidCache.clear();
+  }
 
   /// 我的收藏版块（从 Discuz 原生收藏中心拉取：home.php?mod=space&do=favorite&type=forum）
   static Future<List<Forum>> getFavoriteForums(int uid, {bool forceRefresh = false}) async {
@@ -2810,22 +2960,28 @@ class KlpbbsApi {
         'home.php?mod=space&do=favorite&type=forum&mobile=no',
         forceRefresh: forceRefresh,
       );
-      final list = ComiisParser.parseFavoriteForums(html);
-      if (list.isNotEmpty) {
+      // 检查页面是否为合法的 Discuz 收藏中心页面
+      final isValidFavPage = html.contains('do=favorite') ||
+          html.contains('comiis_mysclist') ||
+          html.contains('id="delform"') ||
+          html.contains('暂无收藏') ||
+          html.contains('class="emp"');
+      if (isValidFavPage) {
+        final list = ComiisParser.parseFavoriteForums(html);
         final prefs = await SharedPreferences.getInstance();
-        final set = (prefs.getStringList('fav_forums') ?? []).toSet();
+        _forumFavidCache.clear();
         for (final f in list) {
-          set.add('${f.fid}');
           if (f.favid != null && f.favid! > 0) {
             _forumFavidCache[f.fid] = f.favid!;
           }
         }
-        await prefs.setStringList('fav_forums', set.toList());
+        // 服务端返回数据为绝对真理源，直接全量覆盖本地持久化
+        await prefs.setStringList('fav_forums', list.map((f) => '${f.fid}').toList());
         return list;
       }
     } catch (_) {}
 
-    // 如果网络异常或尚未解析到，从本地持久化版块列表安全构建，绝不覆写清空
+    // 仅在网络离线/异常时，才从本地持久化版块列表安全回退读取
     final prefs = await SharedPreferences.getInstance();
     final favList = (prefs.getStringList('fav_forums') ?? [])
         .map(int.tryParse)
@@ -3090,20 +3246,29 @@ class KlpbbsApi {
     return DioClient.isLoggedIn;
   }
 
-  /// 发帖前获取发帖页凭证与版块允许的特殊主题类型（普通=0/投票=1/辩论=5 等）及未使用附件。
+  /// 发帖前获取发帖页凭证与版块允许的特殊主题类型（普通=0/投票=1/辩论=5 等）、分类信息发帖模板及未使用附件。
   static Future<
     ({
       String formhash,
       Set<int> allowedSpecials,
       List<({int value, String name})> typeOptions,
+      ThreadSortInfo? threadSortInfo,
       List<PostAttachmentItem> unusedAttachments,
       String errorMessage,
       PostEditorAttributes editorAttributes,
     })
   >
-  getNewThreadInfo(int fid) async {
+  getNewThreadInfo(int fid, {int? sortid, bool? asMobile}) async {
+    final sortParam = (sortid != null && sortid > 0) ? '&sortid=$sortid' : '';
     final html = await _get(
-      'forum.php?mod=post&action=newthread&fid=$fid&mobile=no',
+      asMobile == true
+          ? 'forum.php?mod=post&action=newthread&fid=$fid$sortParam&mobile=2'
+          : 'forum.php?mod=post&action=newthread&fid=$fid$sortParam&mobile=no',
+      headers: {
+        'Referer': '${AppConfig.baseUrl}forum.php?mod=forumdisplay&fid=$fid',
+        if (asMobile == true) 'User-Agent': AppConfig.mobileUserAgent,
+        if (asMobile == false) 'User-Agent': AppConfig.pcUserAgent,
+      },
     );
     final info = ComiisParser.parseNewThreadInfo(html);
     if (info.formhash.isEmpty && info.errorMessage.isEmpty) {
@@ -3111,6 +3276,7 @@ class KlpbbsApi {
         formhash: '',
         allowedSpecials: info.allowedSpecials,
         typeOptions: info.typeOptions,
+        threadSortInfo: info.threadSortInfo,
         unusedAttachments: info.unusedAttachments,
         errorMessage: '无法获取发帖凭证，请检查登录状态或版块权限',
         editorAttributes: info.editorAttributes,
@@ -3119,13 +3285,50 @@ class KlpbbsApi {
     return info;
   }
 
-  /// 发帖（支持投票、辩论、附件关联与高级选项，完全对齐 Discuz Web 端）
+  /// 获取指定版块特定模板的分类信息配置（threadsorts / sortid）
+  static Future<ThreadSortInfo?> getThreadSortInfo(int fid, int sortid, {bool? asMobile}) async {
+    try {
+      final html = await _get(
+        'forum.php?mod=post&action=newthread&fid=$fid&sortid=$sortid&mobile=no',
+        headers: {
+          'Referer': '${AppConfig.baseUrl}forum.php?mod=post&action=newthread&fid=$fid',
+          if (asMobile == true) 'User-Agent': AppConfig.mobileUserAgent,
+          if (asMobile == false) 'User-Agent': AppConfig.pcUserAgent,
+        },
+      );
+      return ComiisParser.parseThreadSortInfo(html);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 删除未使用的附件（Discuz 标准 ajax deleteattach 接口）
+  static Future<bool> deleteUnusedAttachments(
+    List<int> aids, {
+    required String formhash,
+    int? tid,
+    int? pid,
+  }) async {
+    if (aids.isEmpty || formhash.isEmpty) return false;
+    try {
+      final aidsQuery = aids.map((a) => 'aids[]=$a').join('&');
+      final path = 'forum.php?mod=ajax&action=deleteattach&inajax=yes&formhash=$formhash&tid=${tid ?? 0}&pid=${pid ?? 0}&$aidsQuery';
+      final res = await _get(path);
+      return !res.contains('error') && !res.contains('alert_error');
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// 发帖（支持投票、辩论、分类信息模板、附件关联与高级选项，完全对齐 Discuz Web 端）
   /// 发帖。成功返回新帖 tid，失败返回 null
   static Future<int?> postThread(
     int fid,
     String subject,
     String message, {
     int? typeid,
+    int? sortid,
+    Map<String, dynamic>? typeoptions,
     int special = 0,
     List<String>? pollOptions,
     int? pollDays,
@@ -3151,14 +3354,18 @@ class KlpbbsApi {
     bool smileyOff = false,
     bool bbcodeOff = false,
     bool replyEmailNotice = false,
+    int? stickTopic,
+    int? addDigest,
+    bool? closed,
     bool? asMobile,
   }) async {
     var formhash = _cachedFormhash;
+    final sortQuery = (sortid != null && sortid > 0) ? '&sortid=$sortid' : '';
     try {
       final page = await _get(
         asMobile == true
-            ? 'forum.php?mod=post&action=newthread&fid=$fid&mobile=2'
-            : 'forum.php?mod=post&action=newthread&fid=$fid&mobile=no',
+            ? 'forum.php?mod=post&action=newthread&fid=$fid$sortQuery&mobile=2'
+            : 'forum.php?mod=post&action=newthread&fid=$fid$sortQuery&mobile=no',
         headers: {
           'Referer': '${AppConfig.baseUrl}forum.php?mod=forumdisplay&fid=$fid',
           if (asMobile == true) 'User-Agent': AppConfig.mobileUserAgent,
@@ -3189,8 +3396,25 @@ class KlpbbsApi {
       if (smileyOff) 'smileyoff': '1',
       if (bbcodeOff) 'bbcodeoff': '1',
       if (replyEmailNotice) 'emailnotify': '1',
+      if (stickTopic != null && stickTopic > 0) 'sticktopic': '$stickTopic',
+      if (addDigest != null && addDigest > 0) 'adddigest': '$addDigest',
+      if (closed == true) 'closed': '1',
     };
     if (typeid != null) data['typeid'] = '$typeid';
+    if (sortid != null && sortid > 0) {
+      data['sortid'] = '$sortid';
+      data['selectsortid'] = '$sortid';
+      if (typeoptions != null && typeoptions.isNotEmpty) {
+        for (final entry in typeoptions.entries) {
+          final val = entry.value;
+          if (val is List) {
+            data['typeoption[${entry.key}][]'] = val.map((e) => '$e').toList();
+          } else if (val != null && '$val'.isNotEmpty) {
+            data['typeoption[${entry.key}]'] = '$val';
+          }
+        }
+      }
+    }
 
     // 自动关联上传的附件到新主题
     final aids = <int>{
@@ -3200,7 +3424,9 @@ class KlpbbsApi {
     };
     for (final aid in aids) {
       data['attachnew[$aid][description]'] = '';
-      data['unused[]'] = '$aid';
+    }
+    if (aids.isNotEmpty) {
+      data['unused[]'] = aids.map((a) => '$a').toList();
     }
 
     // 附加高级选项支持：阅读权限、回帖奖励、主题标签
@@ -3560,16 +3786,14 @@ class KlpbbsApi {
     return defaultMsg;
   }
 
-  /// 帖子主题推荐/点赞与取消点赞（严格对照 comiis_viewthread.js 逻辑）
-  /// - 点赞：forum.php?mod=misc&action=recommend&do=add&tid=$tid&hash=$formhash&inajax=1
-  /// - 若服务端返回「您已评价过本主题」或 support 为 false：调用 plugin.php?id=comiis_app&comiis=re_recommend&tid=$tid&inajax=1 实现无缝取消点赞
-  static Future<({bool success, String message})> recommendThread(
+  /// 帖子主题推荐/点赞与取消点赞（严格对接 Discuz 原生与克米移动端）
+  static Future<({bool success, String message, bool isLiked})> recommendThread(
     int tid, {
     bool support = true,
     int? pid,
   }) async {
     if (!DioClient.isLoggedIn) {
-      return (success: false, message: '请先登录论坛账号后再进行点赞');
+      return (success: false, message: '请先登录论坛账号后再进行点赞', isLiked: false);
     }
     try {
       var formhash = _cachedFormhash;
@@ -3578,8 +3802,10 @@ class KlpbbsApi {
         formhash = _extractFormhash(page);
       }
       if (formhash == null || formhash.isEmpty) {
-        return (success: false, message: '未能获取点赞 FormHash，请重试');
+        return (success: false, message: '未能获取点赞 FormHash，请重试', isLiked: false);
       }
+
+      final prefs = await SharedPreferences.getInstance();
 
       // 1. 用户显式触发取消点赞 (support: false)
       if (!support) {
@@ -3602,14 +3828,17 @@ class KlpbbsApi {
               );
             } catch (_) {}
           }
+          final likedList = (prefs.getStringList('liked_tids') ?? []).toList();
+          likedList.remove('$tid');
+          await prefs.setStringList('liked_tids', likedList);
           _clearCache(tid);
-          return (success: true, message: '已取消点赞');
+          return (success: true, message: '已取消点赞', isLiked: false);
         } catch (e) {
-          return (success: false, message: '取消点赞失败：$e');
+          return (success: false, message: '取消点赞失败：$e', isLiked: true);
         }
       }
 
-      // 2. 发起点赞请求
+      // 2. 发起点赞请求 (support: true)
       final html = await _get(
         'forum.php?mod=misc&action=recommend&do=add&tid=$tid&hash=$formhash&inajax=1',
         headers: {
@@ -3618,36 +3847,19 @@ class KlpbbsApi {
         },
       );
 
-      // 3. 对照 comiis_viewthread.js 进行判定
-      if (html.contains('您已评价过本主题')) {
-        // 已评价过，自动调用克米取消点赞插件
-        await _get(
-          'plugin.php?id=comiis_app&comiis=re_recommend&tid=$tid&inajax=1',
-          headers: {
-            'X-Requested-With': 'XMLHttpRequest',
-            'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
-          },
-        );
-        if (pid != null && pid > 0) {
-          try {
-            await _get(
-              'plugin.php?id=comiis_app&comiis=re_hotreply&tid=$tid&pid=$pid&inajax=1',
-              headers: {
-                'X-Requested-With': 'XMLHttpRequest',
-                'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
-              },
-            );
-          } catch (_) {}
-        }
-        _clearCache(tid);
-        return (success: true, message: '已取消点赞');
+      // 3. 对照 Discuz 返回进行精准判定：若已评价过，绝不调用 re_recommend 误取消点赞！
+      if (html.contains('您已评价过本主题') || html.contains('已评价过')) {
+        final likedList = (prefs.getStringList('liked_tids') ?? []).toSet();
+        likedList.add('$tid');
+        await prefs.setStringList('liked_tids', likedList.toList());
+        return (success: true, message: '您已评价过本主题', isLiked: true);
       }
 
       if (html.contains('您不能评价自己的帖子') || html.contains('不能对自己的主题进行评价')) {
-        return (success: false, message: '不能点赞自己的帖子');
+        return (success: false, message: '不能点赞自己的帖子', isLiked: false);
       }
       if (html.contains('今日评价机会已用完')) {
-        return (success: false, message: '您今日的点赞机会已用完');
+        return (success: false, message: '您今日的点赞机会已用完', isLiked: false);
       }
 
       if (pid != null && pid > 0) {
@@ -3662,19 +3874,29 @@ class KlpbbsApi {
         } catch (_) {}
       }
 
+      final isSuccess = html.contains('succeed') ||
+          html.contains('成功') ||
+          !html.contains('alert_error');
+
+      if (isSuccess) {
+        final likedList = (prefs.getStringList('liked_tids') ?? []).toSet();
+        likedList.add('$tid');
+        await prefs.setStringList('liked_tids', likedList.toList());
+      }
+
       final serverMsg = _extractDiscuzResponseMessage(
         html,
-        defaultMsg: '点赞成功！',
+        defaultMsg: isSuccess ? '点赞成功！' : '点赞失败',
       );
       _clearCache(tid);
-      return (success: true, message: serverMsg);
+      return (success: isSuccess, message: serverMsg, isLiked: isSuccess);
     } catch (e) {
-      return (success: false, message: '网络请求异常：$e');
+      return (success: false, message: '网络请求异常：$e', isLiked: false);
     }
   }
 
-  /// 帖子/楼层回复点赞与取消点赞（严格对照 comiis_viewthread.js comiis_recommend 逻辑）
-  static Future<({bool success, String message})> likeFloor(
+  /// 帖子/楼层回复点赞与取消点赞（严格对照 Discuz 原生与克米移动端协议）
+  static Future<({bool success, String message, bool isLiked})> likeFloor(
     int tid,
     int pid, {
     bool isFirstFloor = false,
@@ -3684,7 +3906,7 @@ class KlpbbsApi {
       return recommendThread(tid, support: support, pid: pid > 0 ? pid : null);
     }
     if (!DioClient.isLoggedIn) {
-      return (success: false, message: '请先登录论坛账号后再进行点赞');
+      return (success: false, message: '请先登录论坛账号后再进行点赞', isLiked: false);
     }
     try {
       var formhash = _cachedFormhash;
@@ -3693,8 +3915,10 @@ class KlpbbsApi {
         formhash = _extractFormhash(page);
       }
       if (formhash == null || formhash.isEmpty) {
-        return (success: false, message: '未能获取点赞 FormHash，请重试');
+        return (success: false, message: '未能获取点赞 FormHash，请重试', isLiked: false);
       }
+
+      final prefs = await SharedPreferences.getInstance();
 
       // 1. 用户显式要求取消点赞 (support: false)
       if (!support) {
@@ -3706,12 +3930,15 @@ class KlpbbsApi {
               'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
             },
           );
+          final likedPids = (prefs.getStringList('liked_pids') ?? []).toList();
+          likedPids.remove('$pid');
+          await prefs.setStringList('liked_pids', likedPids);
           _clearCache(tid);
-          return (success: true, message: '已取消回帖点赞');
+          return (success: true, message: '已取消回帖点赞', isLiked: false);
         } catch (_) {}
       }
 
-      // 2. 发起楼层点赞请求
+      // 2. 发起楼层点赞请求 (support: true)
       final html = await _get(
         'forum.php?mod=misc&action=postreview&do=support&tid=$tid&pid=$pid&hash=$formhash&inajax=1',
         headers: {
@@ -3720,32 +3947,78 @@ class KlpbbsApi {
         },
       );
 
-      // 3. 对照 comiis_viewthread.js 检查响应
+      // 3. 对照 Discuz 返回进行精准判定：若已投票过，绝不调用 re_hotreply 误取消！
       if (html.contains('您已经对此回帖投过票了') || html.contains('已经对此回帖投过票')) {
-        await _get(
-          'plugin.php?id=comiis_app&comiis=re_hotreply&tid=$tid&pid=$pid&inajax=1',
-          headers: {
-            'X-Requested-With': 'XMLHttpRequest',
-            'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
-          },
-        );
-        _clearCache(tid);
-        return (success: true, message: '已取消回帖点赞');
+        final likedPids = (prefs.getStringList('liked_pids') ?? []).toSet();
+        likedPids.add('$pid');
+        await prefs.setStringList('liked_pids', likedPids.toList());
+        return (success: true, message: '您已经对此回帖投过票了', isLiked: true);
       }
 
-      if (html.contains('您不能对自己的回帖进行投票')) {
-        return (success: false, message: '您不能点赞自己的回帖');
+      if (html.contains('您不能对自己的回帖进行投票') || html.contains('不能对自己')) {
+        return (success: false, message: '您不能点赞自己的回帖', isLiked: false);
+      }
+
+      final isSuccess = html.contains('succeed') ||
+          html.contains('成功') ||
+          !html.contains('alert_error');
+
+      if (isSuccess) {
+        final likedPids = (prefs.getStringList('liked_pids') ?? []).toSet();
+        likedPids.add('$pid');
+        await prefs.setStringList('liked_pids', likedPids.toList());
       }
 
       final serverMsg = _extractDiscuzResponseMessage(
         html,
-        defaultMsg: '点赞成功！',
+        defaultMsg: isSuccess ? '点赞成功！' : '点赞失败',
       );
       _clearCache(tid);
-      return (success: true, message: serverMsg);
+      return (success: isSuccess, message: serverMsg, isLiked: isSuccess);
     } catch (e) {
-      return (success: false, message: '网络请求异常：$e');
+      return (success: false, message: '网络请求异常：$e', isLiked: false);
     }
+  }
+
+  /// 获取论坛帖子 AI 总结（对接 klpbbs_aisum 插件）
+  static Future<AiSummaryData?> fetchAiSummary(
+    int tid, {
+    String? streamUrl,
+    bool forceRefresh = false,
+  }) async {
+    final cacheKey = 'ai_summary_$tid';
+    if (!forceRefresh) {
+      final cached = PreloadService.instance.get<AiSummaryData>(cacheKey);
+      if (cached != null) return cached;
+    }
+
+    try {
+      String url = streamUrl ?? 'plugin.php?id=klpbbs_aisum:stream&tid=$tid';
+      if (!url.contains('mode=json')) {
+        url += url.contains('?') ? '&mode=json' : '?mode=json';
+      }
+      if (_cachedFormhash != null &&
+          _cachedFormhash!.isNotEmpty &&
+          !url.contains('formhash=')) {
+        url += '&formhash=$_cachedFormhash';
+      }
+
+      final resp = await DioClient.dio.get(url);
+      dynamic data = resp.data;
+      if (data is String) {
+        try {
+          data = jsonDecode(data);
+        } catch (_) {}
+      }
+      if (data is Map<String, dynamic>) {
+        final aiData = AiSummaryData.fromJson(data, streamUrl: url);
+        if (aiData.hasContent) {
+          PreloadService.instance.set(cacheKey, aiData);
+          return aiData;
+        }
+      }
+    } catch (_) {}
+    return null;
   }
 
   /// 打赏楼层（Discuz 评分 rating；klpbbs 铁粒=credit id 2 → score2）
@@ -5177,21 +5450,33 @@ class KlpbbsApi {
     }
 
     final isFirstFloor = subject.isNotEmpty || html.contains('name="subject"');
+    final threadSortInfo = ComiisParser.parseThreadSortInfo(html);
+    int? sortid = threadSortInfo?.sortid;
+    if (sortid == null || sortid <= 0) {
+      final m = RegExp(r'name="sortid"[^>]+value="(\d+)"').firstMatch(html) ??
+          RegExp(r"var\s+sortid\s*=\s*parseInt\('(\d+)'\)").firstMatch(html);
+      if (m != null) sortid = int.tryParse(m.group(1)!);
+    }
+
+    final editorAttributes = ComiisParser.parseNewThreadInfo(html).editorAttributes;
 
     return PostEditInfo(
       subject: subject,
       message: rawMessage,
       typeid: typeid,
+      sortid: sortid,
+      threadSortInfo: threadSortInfo,
       readperm: readperm,
       tags: tags,
       formhash: formhash,
       posttime: posttime,
       attachments: attachments,
       isFirstFloor: isFirstFloor,
+      editorAttributes: editorAttributes,
     );
   }
 
-  /// 编辑自己的帖子（先取编辑页 formhash，再提交，支持分类、权限、标签与附件关联）
+  /// 编辑自己的帖子（先取编辑页 formhash，再提交，支持分类、分类模板、权限、标签与附件关联）
   static Future<bool> editPost(
     int fid,
     int tid,
@@ -5199,9 +5484,14 @@ class KlpbbsApi {
     required String subject,
     required String message,
     int? typeid,
+    int? sortid,
+    Map<String, dynamic>? typeoptions,
     int? readPerm,
     List<String>? tags,
     List<int>? attachAids,
+    int? stickTopic,
+    int? addDigest,
+    bool? deletePost,
   }) async {
     var formhash = _cachedFormhash;
     try {
@@ -5223,10 +5513,27 @@ class KlpbbsApi {
       'editsubmit': 'yes',
       if (subject.isNotEmpty) 'subject': subject,
       'message': message,
+      if (stickTopic != null && stickTopic > 0) 'sticktopic': '$stickTopic',
+      if (addDigest != null && addDigest > 0) 'adddigest': '$addDigest',
+      if (deletePost == true) 'delete': '1',
     };
 
     if (typeid != null && typeid > 0) {
       editData['typeid'] = '$typeid';
+    }
+    if (sortid != null && sortid > 0) {
+      editData['sortid'] = '$sortid';
+      editData['selectsortid'] = '$sortid';
+      if (typeoptions != null && typeoptions.isNotEmpty) {
+        for (final entry in typeoptions.entries) {
+          final val = entry.value;
+          if (val is List) {
+            editData['typeoption[${entry.key}][]'] = val.map((e) => '$e').toList();
+          } else if (val != null && '$val'.isNotEmpty) {
+            editData['typeoption[${entry.key}]'] = '$val';
+          }
+        }
+      }
     }
     if (readPerm != null && readPerm > 0) {
       editData['readperm'] = '$readPerm';
@@ -5242,7 +5549,9 @@ class KlpbbsApi {
     };
     for (final aid in aids) {
       editData['attachnew[$aid][description]'] = '';
-      editData['unused[]'] = '$aid';
+    }
+    if (aids.isNotEmpty) {
+      editData['unused[]'] = aids.map((a) => '$a').toList();
     }
 
     final html = await _post(
@@ -6700,4 +7009,416 @@ class KlpbbsApi {
       return true;
     }
   }
+
+  // ================= 帕帕 AI 助手 (klpbbs_ai) 接口对接 =================
+
+  /// 初始化/拉取帕帕 AI 对话页上下文
+  static Future<PapaChatContext> fetchPapaChatContext({bool forceRefresh = false}) async {
+    try {
+      final html = await _get(
+        'plugin.php?id=klpbbs_ai:chat',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+        forceRefresh: forceRefresh,
+      );
+
+      final streamM = RegExp(r'data-stream="([^"]+)"').firstMatch(html);
+      final apiM = RegExp(r'data-api="([^"]+)"').firstMatch(html);
+      final inputMaxM = RegExp(r'data-inputmax="(\d+)"').firstMatch(html);
+      final chatOnM = RegExp(r'data-chaton="([^"]+)"').firstMatch(html);
+      final freeM = RegExp(r'data-kai-free[^>]*>(\d+)<').firstMatch(html);
+      final balM = RegExp(r'data-kai-balance[^>]*>(\d+)<').firstMatch(html);
+      final fhM = _extractFormhash(html);
+
+      Map<String, dynamic> panels = {};
+      final panelsM = RegExp(r'var\s+KAI_PANELS\s*=\s*(\{.*?\});', dotAll: true).firstMatch(html);
+      if (panelsM != null) {
+        try {
+          panels = jsonDecode(panelsM.group(1)!) as Map<String, dynamic>;
+        } catch (_) {}
+      }
+
+      List<Map<String, dynamic>> reports = [];
+      final reportsM = RegExp(r'var\s+KAI_REPORTS\s*=\s*(\[.*?\]);', dotAll: true).firstMatch(html);
+      if (reportsM != null) {
+        try {
+          final decoded = jsonDecode(reportsM.group(1)!) as List<dynamic>;
+          reports = decoded.whereType<Map<String, dynamic>>().toList();
+        } catch (_) {}
+      }
+
+      return PapaChatContext(
+        streamUrl: streamM?.group(1) ?? 'plugin.php?id=klpbbs_ai:stream',
+        apiUrl: apiM?.group(1) ?? 'plugin.php?id=klpbbs_ai:api',
+        formhash: fhM ?? '',
+        freeLeft: freeM != null ? int.tryParse(freeM.group(1)!) ?? 50 : 50,
+        balance: balM != null ? int.tryParse(balM.group(1)!) ?? 0 : 0,
+        chatOn: chatOnM?.group(1) != '0',
+        inputMax: inputMaxM != null ? int.tryParse(inputMaxM.group(1)!) ?? 1000 : 1000,
+        panels: panels,
+        reports: reports,
+      );
+    } catch (_) {
+      return const PapaChatContext();
+    }
+  }
+
+  /// 获取历史对话会话列表
+  static Future<List<PapaConversation>> getPapaConversations({String? apiUrl}) async {
+    try {
+      final ep = '${apiUrl ?? "plugin.php?id=klpbbs_ai:api"}&act=list';
+      final jsonStr = await _get(ep, forceRefresh: true, cacheTtl: Duration.zero);
+      final map = jsonDecode(jsonStr) as Map<String, dynamic>;
+      if (map['ok'] == true && map['list'] is List) {
+        final list = map['list'] as List;
+        return list.map((e) => PapaConversation.fromJson(e as Map<String, dynamic>)).toList();
+      }
+      return const [];
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// 加载指定会话的消息记录
+  static Future<({String title, List<PapaMessage> messages})> loadPapaConversation(int convId, {String? apiUrl}) async {
+    try {
+      final ep = '${apiUrl ?? "plugin.php?id=klpbbs_ai:api"}&act=load&convid=$convId';
+      final jsonStr = await _get(ep, forceRefresh: true, cacheTtl: Duration.zero);
+      final map = jsonDecode(jsonStr) as Map<String, dynamic>;
+      if (map['ok'] == true) {
+        final title = map['title'] as String? ?? '对话';
+        final rawMsgs = map['messages'] as List<dynamic>? ?? const [];
+        final messages = rawMsgs.map((e) => PapaMessage.fromJson(e as Map<String, dynamic>)).toList();
+        return (title: title, messages: messages);
+      }
+      return (title: '', messages: const <PapaMessage>[]);
+    } catch (_) {
+      return (title: '', messages: const <PapaMessage>[]);
+    }
+  }
+
+  /// 删除指定会话
+  static Future<bool> deletePapaConversation(int convId, {String? apiUrl}) async {
+    try {
+      final ep = '${apiUrl ?? "plugin.php?id=klpbbs_ai:api"}&act=del';
+      final res = await _post(
+        ep,
+        {'convid': convId.toString()},
+        headers: {'X-Requested-With': 'XMLHttpRequest'},
+      );
+      final map = jsonDecode(res) as Map<String, dynamic>;
+      return map['ok'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 发起帕帕 AI 对话并返回 SSE 流 (EventStream)
+  static Stream<({String event, dynamic data})> streamPapaChat({
+    String? streamUrl,
+    int? convId,
+    required String message,
+    String edition = 'auto',
+    String editionMode = 'auto',
+  }) async* {
+    final ep = streamUrl ?? 'plugin.php?id=klpbbs_ai:stream';
+    final body = {
+      'convid': (convId != null && convId > 0) ? convId.toString() : '0',
+      'message': message,
+      'edition': edition,
+      'edition_mode': editionMode,
+    };
+
+    Response<ResponseBody> response;
+    try {
+      response = await _dio.post<ResponseBody>(
+        _url(ep),
+        data: body,
+        options: Options(
+          responseType: ResponseType.stream,
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': _url('plugin.php?id=klpbbs_ai:chat'),
+            'User-Agent': AppConfig.pcUserAgent,
+          },
+        ),
+      );
+    } catch (e) {
+      yield (event: 'failed', data: {'message': '网络连接异常：$e'});
+      return;
+    }
+
+    final responseStream = response.data?.stream;
+    if (responseStream == null) {
+      yield (event: 'failed', data: {'message': '未获取到响应流'});
+      return;
+    }
+
+    String buffer = '';
+    await for (final chunk in responseStream) {
+      buffer += utf8.decode(chunk, allowMalformed: true);
+      final parts = buffer.split('\n\n');
+      buffer = parts.removeLast();
+
+      for (final p in parts) {
+        if (p.trim().isEmpty) continue;
+        String event = '';
+        String dataStr = '';
+        for (final line in p.split('\n')) {
+          final trimmed = line.trim();
+          if (trimmed.startsWith('event:')) {
+            event = trimmed.substring(6).trim();
+          } else if (trimmed.startsWith('data:')) {
+            dataStr += trimmed.substring(5).trim();
+          }
+        }
+        if (event.isNotEmpty) {
+          dynamic parsed;
+          try {
+            parsed = jsonDecode(dataStr);
+          } catch (_) {
+            parsed = {'raw': dataStr};
+          }
+          yield (event: event, data: parsed);
+        }
+      }
+    }
+
+    if (buffer.trim().isNotEmpty) {
+      String event = '';
+      String dataStr = '';
+      for (final line in buffer.split('\n')) {
+        final trimmed = line.trim();
+        if (trimmed.startsWith('event:')) {
+          event = trimmed.substring(6).trim();
+        } else if (trimmed.startsWith('data:')) {
+          dataStr += trimmed.substring(5).trim();
+        }
+      }
+      if (event.isNotEmpty) {
+        dynamic parsed;
+        try {
+          parsed = jsonDecode(dataStr);
+        } catch (_) {
+          parsed = {'raw': dataStr};
+        }
+        yield (event: event, data: parsed);
+      }
+    }
+  }
+
+  /// 获取报告列表
+  static Future<List<PapaReport>> getPapaReports({String? apiUrl}) async {
+    try {
+      final ep = '${apiUrl ?? "plugin.php?id=klpbbs_ai:api"}&act=reports';
+      final jsonStr = await _get(ep, forceRefresh: true, cacheTtl: Duration.zero);
+      final map = jsonDecode(jsonStr) as Map<String, dynamic>;
+      if (map['ok'] == true && map['list'] is List) {
+        final list = map['list'] as List;
+        return list.map((e) => PapaReport.fromJson(e as Map<String, dynamic>)).toList();
+      }
+      return const [];
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// 读取某一份具体报告详情
+  static Future<PapaReport?> loadPapaReport(int rid, {String? apiUrl}) async {
+    try {
+      final ep = '${apiUrl ?? "plugin.php?id=klpbbs_ai:api"}&act=report&rid=$rid';
+      final jsonStr = await _get(ep, forceRefresh: true, cacheTtl: Duration.zero);
+      final map = jsonDecode(jsonStr) as Map<String, dynamic>;
+      if (map['ok'] == true && map['report'] is Map<String, dynamic>) {
+        return PapaReport.fromJson(map['report'] as Map<String, dynamic>);
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 生成智能报告（SSE 流式）
+  static Stream<({String event, dynamic data})> streamPapaGenerateReport(
+    String streamUrl, {
+    bool regen = false,
+  }) async* {
+    final urlWithParams = '$streamUrl${regen ? "&regen=1" : ""}&_=${DateTime.now().millisecondsSinceEpoch}';
+    Response<ResponseBody> response;
+    try {
+      response = await _dio.get<ResponseBody>(
+        _url(urlWithParams),
+        options: Options(
+          responseType: ResponseType.stream,
+          headers: {
+            'Accept': 'text/event-stream',
+            'Referer': _url('plugin.php?id=klpbbs_ai:chat'),
+            'User-Agent': AppConfig.pcUserAgent,
+          },
+        ),
+      );
+    } catch (e) {
+      yield (event: 'failed', data: {'message': '网络连接异常：$e'});
+      return;
+    }
+
+    final responseStream = response.data?.stream;
+    if (responseStream == null) {
+      yield (event: 'failed', data: {'message': '未获取到响应流'});
+      return;
+    }
+
+    String buffer = '';
+    await for (final chunk in responseStream) {
+      buffer += utf8.decode(chunk, allowMalformed: true);
+      final parts = buffer.split('\n\n');
+      buffer = parts.removeLast();
+
+      for (final p in parts) {
+        if (p.trim().isEmpty) continue;
+        String event = '';
+        String dataStr = '';
+        for (final line in p.split('\n')) {
+          final trimmed = line.trim();
+          if (trimmed.startsWith('event:')) {
+            event = trimmed.substring(6).trim();
+          } else if (trimmed.startsWith('data:')) {
+            dataStr += trimmed.substring(5).trim();
+          }
+        }
+        if (event.isNotEmpty) {
+          dynamic parsed;
+          try {
+            parsed = jsonDecode(dataStr);
+          } catch (_) {
+            parsed = {'raw': dataStr};
+          }
+          yield (event: event, data: parsed);
+        }
+      }
+    }
+  }
+
+  /// 获取帕帕 AI 积分钱包数据
+  static Future<PapaWallet> getPapaWallet() async {
+    try {
+      final html = await _get(
+        'plugin.php?id=klpbbs_ai:wallet',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+        forceRefresh: true,
+      );
+
+      final freeM = RegExp(r'data-kai-free[^>]*>(\d+)<').firstMatch(html);
+      final freeTotalM = RegExp(r'/\s*(\d+)').firstMatch(html);
+      final balM = RegExp(r'data-kai-balance[^>]*>(\d+)<').firstMatch(html);
+      final exMinM = RegExp(r'id="kai-amount"[^>]*min="(\d+)"').firstMatch(html);
+
+      // 解析兑换比率
+      final rates = <PapaExchangeRate>[];
+      final optMatches = RegExp(r'<option\s+value="(\d+)"\s+data-rate="(\d+)"[^>]*>([^<]+)</option>').allMatches(html);
+      for (final m in optMatches) {
+        final src = int.tryParse(m.group(1)!) ?? 0;
+        final rate = int.tryParse(m.group(2)!) ?? 0;
+        final title = m.group(3)!.trim();
+        final haveM = RegExp(r'有\s*(\d+)').firstMatch(title);
+        final have = haveM != null ? int.tryParse(haveM.group(1)!) ?? 0 : 0;
+        rates.add(PapaExchangeRate(src: src, title: title, have: have, rate: rate));
+      }
+
+      // 解析计费表
+      final prices = <PapaPriceItem>[];
+      final priceMatches = RegExp(r'<div class="p"><span>([^<]+)</span><b>([^<]+)</b></div>').allMatches(html);
+      for (final m in priceMatches) {
+        prices.add(PapaPriceItem(name: m.group(1)!.trim(), price: m.group(2)!.trim()));
+      }
+
+      // 解析流水明细
+      final logs = <PapaCreditLog>[];
+      final doc = html_parser.parse(html);
+      final liElements = doc.querySelectorAll('.kai-flow li');
+      for (final li in liElements) {
+        final time = li.querySelector('.time')?.text.trim() ?? '';
+        final name = li.querySelector('.name')?.text.trim() ?? '';
+        final amt = li.querySelector('.amt')?.text.trim() ?? '';
+        final remark = li.querySelector('.remark')?.text.trim() ?? '';
+        final isPending = li.querySelector('.kai-chip.warn') != null;
+        if (time.isNotEmpty || name.isNotEmpty) {
+          logs.add(PapaCreditLog(
+            time: time,
+            name: name,
+            amount: amt,
+            isIncome: amt.startsWith('+'),
+            isPending: isPending,
+            remark: remark,
+          ));
+        }
+      }
+
+      return PapaWallet(
+        freeLeft: freeM != null ? int.tryParse(freeM.group(1)!) ?? 50 : 50,
+        freeTotal: freeTotalM != null ? int.tryParse(freeTotalM.group(1)!) ?? 50 : 50,
+        balance: balM != null ? int.tryParse(balM.group(1)!) ?? 0 : 0,
+        exchangeOn: html.contains('kai_exchangesubmit'),
+        exchangeMin: exMinM != null ? int.tryParse(exMinM.group(1)!) ?? 1 : 1,
+        rates: rates,
+        prices: prices,
+        logs: logs,
+      );
+    } catch (_) {
+      return const PapaWallet();
+    }
+  }
+
+  /// 兑换火药
+  static Future<({bool success, String message})> exchangePapaGunpowder({
+    required int srcCredit,
+    required int amount,
+    required String formhash,
+  }) async {
+    try {
+      final res = await _post(
+        'plugin.php?id=klpbbs_ai:wallet',
+        {
+          'formhash': formhash,
+          'kai_exchangesubmit': 'yes',
+          'srccredit': srcCredit.toString(),
+          'amount': amount.toString(),
+          'kai_exchange': 'true',
+        },
+        headers: {
+          'Referer': _url('plugin.php?id=klpbbs_ai:wallet'),
+          'User-Agent': AppConfig.pcUserAgent,
+        },
+      );
+      if (res.contains('成功') || res.contains('兑换成功')) {
+        return (success: true, message: '火药兑换成功！');
+      }
+      final msgM = RegExp(r'<div id="messagetext"[^>]*>.*?<p>([^<]+)</p>', dotAll: true).firstMatch(res);
+      final msg = msgM != null ? msgM.group(1)!.trim() : '兑换已提交';
+      return (success: true, message: msg);
+    } catch (e) {
+      return (success: false, message: '兑换失败：$e');
+    }
+  }
+
+  /// 清除 AI 记忆
+  static Future<({bool success, String message})> clearPapaMemory(String formhash) async {
+    try {
+      await _post(
+        'plugin.php?id=klpbbs_ai:wallet',
+        {
+          'formhash': formhash,
+          'kai_clear_memory': 'true',
+        },
+        headers: {
+          'Referer': _url('plugin.php?id=klpbbs_ai:wallet'),
+          'User-Agent': AppConfig.pcUserAgent,
+        },
+      );
+      return (success: true, message: '记忆已成功清除！');
+    } catch (e) {
+      return (success: false, message: '清除记忆失败：$e');
+    }
+  }
 }
+

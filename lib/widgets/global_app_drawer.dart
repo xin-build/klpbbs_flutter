@@ -15,6 +15,7 @@ import '../pages/magic_page.dart';
 import '../pages/modcp_page.dart';
 import '../models/user_role.dart';
 import '../pages/notice_page.dart';
+import '../pages/papa_ai_chat_page.dart';
 import '../pages/pm_inbox_page.dart';
 import '../pages/profile_settings_page.dart';
 import '../pages/ranklist_page.dart';
@@ -224,6 +225,14 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
                                   ],
                                 ),
                               ),
+                              IconButton(
+                                icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 22),
+                                tooltip: '关闭侧边栏',
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.all(4),
+                                constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                                onPressed: _closeDrawer,
+                              ),
                             ],
                           ),
                           const SizedBox(height: 12),
@@ -267,23 +276,33 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
                               child: const Icon(Icons.person_outline_rounded, color: Colors.white, size: 30),
                             ),
                             const SizedBox(width: 14),
-                            const Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  '点击登录账号',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.bold,
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '点击登录账号',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
-                                ),
-                                SizedBox(height: 2),
-                                Text(
-                                  '登录体验苦力怕论坛全功能',
-                                  style: TextStyle(color: Colors.white70, fontSize: 12),
-                                ),
-                              ],
+                                  SizedBox(height: 2),
+                                  Text(
+                                    '登录体验苦力怕论坛全功能',
+                                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 22),
+                              tooltip: '关闭侧边栏',
+                              visualDensity: VisualDensity.compact,
+                              padding: const EdgeInsets.all(4),
+                              constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                              onPressed: _closeDrawer,
                             ),
                           ],
                         ),
@@ -310,6 +329,13 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
                     title: '社区版块',
                     isSelected: curIdx == 1,
                     onTap: () => _switchRootTab(1),
+                  ),
+                  _buildNavItem(
+                    icon: Icons.smart_toy_outlined,
+                    selectedIcon: Icons.smart_toy_rounded,
+                    title: '帕帕 AI 助手',
+                    color: const Color(0xFF2E7D32),
+                    onTap: () => _pushPage(const PapaAiChatPage()),
                   ),
                   _buildNavItem(
                     icon: Icons.event_available_outlined,
@@ -362,21 +388,28 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
                   ListenableBuilder(
                     listenable: PushNotificationService.instance,
                     builder: (context, _) {
-                      final unread = PushNotificationService.instance.unreadCount;
+                      final unreadNotices = PushNotificationService.instance.unreadNotices;
                       return _buildNavItem(
                         icon: Icons.notifications_outlined,
                         selectedIcon: Icons.notifications_rounded,
                         title: '消息提醒',
-                        badgeCount: unread,
+                        badgeCount: unreadNotices,
                         onTap: () => _pushPage(const NoticePage()),
                       );
                     },
                   ),
-                  _buildNavItem(
-                    icon: Icons.mail_outline_rounded,
-                    selectedIcon: Icons.mail_rounded,
-                    title: '我的私信',
-                    onTap: () => _pushPage(const PmInboxPage()),
+                  ListenableBuilder(
+                    listenable: PushNotificationService.instance,
+                    builder: (context, _) {
+                      final unreadPm = PushNotificationService.instance.unreadPm;
+                      return _buildNavItem(
+                        icon: Icons.mail_outline_rounded,
+                        selectedIcon: Icons.mail_rounded,
+                        title: '我的私信',
+                        badgeCount: unreadPm,
+                        onTap: () => _pushPage(const PmInboxPage()),
+                      );
+                    },
                   ),
                   if (isLoggedIn) ...[
                     _buildNavItem(
@@ -441,7 +474,7 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
                       title: '退出登录',
                       color: Colors.redAccent,
                       onTap: () {
-                        Navigator.of(context).pop();
+                        _closeDrawer();
                         KlpbbsApi.logout().then((_) {
                           if (mounted) setState(() => _myUid = null);
                         });

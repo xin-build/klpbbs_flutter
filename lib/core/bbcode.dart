@@ -120,9 +120,9 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
     (m) => '<font face="${m[1]}">${m[2]}</font>',
   );
 
-  // [backcolor=颜色]...[/backcolor] → <span style="background-color:...">...</span>
+  // [backcolor=颜色] / [bg=颜色] / [bgcolor=颜色]...[/backcolor] → <span style="background-color:...">...</span>
   s = s.replaceAllMapped(
-    RegExp(r'\[backcolor=([^\]]+)\]([\s\S]*?)\[/backcolor\]', caseSensitive: false),
+    RegExp(r'\[(?:backcolor|bg|bgcolor)=([^\]]+)\]([\s\S]*?)\[/(?:backcolor|bg|bgcolor)\]', caseSensitive: false),
     (m) {
       final color = (m[1] ?? '').replaceAll(RegExp(r'''["']'''), '').trim();
       return '<span style="background-color:$color">${m[2]}</span>';
@@ -170,10 +170,18 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
     (m) => '<pre><code class="language-${m[1] ?? ''}">${m[2]}</code></pre>',
   );
 
-  // [quote]...[/quote]
+  // [quote]...[/quote] 与 [quote=author,...]...[/quote]
   s = s.replaceAllMapped(
-    RegExp(r'\[quote\]([\s\S]*?)\[/quote\]', caseSensitive: false),
-    (m) => '<blockquote>${m[1]}</blockquote>',
+    RegExp(r'\[quote(?:=([^\]]*))?\]([\s\S]*?)\[/quote\]', caseSensitive: false),
+    (m) {
+      final authorParam = m[1]?.trim() ?? '';
+      final inner = m[2] ?? '';
+      if (authorParam.isNotEmpty) {
+        final author = authorParam.split(',').first.trim();
+        return '<div class="quote"><blockquote><font size="2"><font color="#999999">$author 发表于：</font></font><br />$inner</blockquote></div>';
+      }
+      return '<div class="quote"><blockquote>$inner</blockquote></div>';
+    },
   );
 
   // [spoiler=标题]...[/spoiler] / [collapse] / [fold]
@@ -184,7 +192,7 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
 
   // [hide]...[/hide] 或 [hide=N]...[/hide]（回帖/积分可见）
   s = s.replaceAllMapped(
-    RegExp(r'\[hide(?:=([^\]]*))?\]([\s\S]*?)\[/hide\]', caseSensitive: false),
+    RegExp(r'\[(?:hide|reply)(?:=([^\]]*))?\]([\s\S]*?)\[/(?:hide|reply)\]', caseSensitive: false),
     (m) =>
         '<div class="locked_hide" style="padding:10px;margin:8px 0;background-color:#fff3cd;border:1px dashed #ffeeba;border-radius:6px;color:#856404;">🔒 <b>隐藏内容</b>（需回复或达到${m[1] != null && m[1]!.isNotEmpty ? '${m[1]}积分' : ''}可见）</div>',
   );
@@ -196,10 +204,10 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
         '<div class="password_block" style="padding:10px;margin:8px 0;background-color:#e2e3e5;border:1px dashed #d6d8db;border-radius:6px;color:#383d41;">🔑 <b>加密内容</b>（需输入密码查看）</div>',
   );
 
-  // [audio]...[/audio]
+  // [audio]...[/audio] 与 [audio=1]...[/audio]
   s = s.replaceAllMapped(
-    RegExp(r'\[audio\]([\s\S]*?)\[/audio\]', caseSensitive: false),
-    (m) => '<audio src="${m[1]}" controls></audio>',
+    RegExp(r'\[audio(?:=[^\]]*)?\]([\s\S]*?)\[/audio\]', caseSensitive: false),
+    (m) => '<audio src="${m[1]?.trim()}" controls></audio>',
   );
 
   // [music]id[/music] → 网易云音乐
@@ -212,13 +220,44 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
   // [media=x,w,h]...[/media] 与 [flash=w,h]...[/flash] / [swf]...[/swf]
   s = s.replaceAllMapped(
     RegExp(r'\[(?:media|flash|swf)(?:=[^\]]*)?\]([\s\S]*?)\[/(?:media|flash|swf)\]', caseSensitive: false),
-    (m) => '<a class="discuz_media" href="${m[1]}">🎬 查看视频/多媒体：${m[1]}</a>',
+    (m) => '<a class="discuz_media" href="${m[1]?.trim()}">🎬 查看视频/多媒体：${m[1]?.trim()}</a>',
   );
 
-  // [bilibili]...[/bilibili] 或 [bili]...[/bili]
+  // [bilibili]...[/bilibili] 或 [bili]...[/bili]（自动智能提取 BV / AV / AID）
   s = s.replaceAllMapped(
-    RegExp(r'\[(?:bilibili|bili)\]([\s\S]*?)\[/(?:bilibili|bili)\]', caseSensitive: false),
-    (m) => '<iframe src="https://player.bilibili.com/player.html?bvid=${m[1]?.trim() ?? ''}"></iframe>',
+    RegExp(r'\[(?:bilibili|bili)(?:=[^\]]*)?\]([\s\S]*?)\[/(?:bilibili|bili)\]', caseSensitive: false),
+    (m) {
+      final text = m[1]?.trim() ?? '';
+      final bvMatch = RegExp(r'(BV[a-zA-Z0-9]{10})', caseSensitive: false).firstMatch(text);
+      if (bvMatch != null) {
+        final bvid = bvMatch.group(1)!;
+        return '<iframe src="https://player.bilibili.com/player.html?bvid=$bvid" data-bvid="$bvid"></iframe>';
+      }
+      final avMatch = RegExp(r'(?:av|aid=?)(\d+)', caseSensitive: false).firstMatch(text);
+      if (avMatch != null) {
+        final aid = avMatch.group(1)!;
+        return '<iframe src="https://player.bilibili.com/player.html?aid=$aid" data-aid="$aid"></iframe>';
+      }
+      return '<iframe src="https://player.bilibili.com/player.html?bvid=$text" data-bvid="$text"></iframe>';
+    },
+  );
+
+  // [pan=网盘名]链接 密码[/pan] / [netdisk] / [down=名称] / [download]
+  s = s.replaceAllMapped(
+    RegExp(r'\[(?:pan|netdisk)(?:=([^\]]*))?\]([\s\S]*?)\[/(?:pan|netdisk)\]', caseSensitive: false),
+    (m) {
+      final panName = m[1]?.trim().isNotEmpty == true ? m[1]!.trim() : '网盘下载';
+      final content = m[2]?.trim() ?? '';
+      return '<div class="comiis_attach" style="padding:10px;margin:8px 0;background-color:#f0f9eb;border:1px solid #e1f3d8;border-radius:6px;"><b>💾 $panName:</b> $content</div>';
+    },
+  );
+  s = s.replaceAllMapped(
+    RegExp(r'\[(?:down|download)(?:=([^\]]*))?\]([\s\S]*?)\[/(?:down|download)\]', caseSensitive: false),
+    (m) {
+      final downName = m[1]?.trim().isNotEmpty == true ? m[1]!.trim() : '资源下载';
+      final content = m[2]?.trim() ?? '';
+      return '<div class="comiis_attach" style="padding:10px;margin:8px 0;background-color:#ecf5ff;border:1px solid #d9ecff;border-radius:6px;"><b>⬇️ $downName:</b> $content</div>';
+    },
   );
 
   // [free]...[/free]（免费内容）
@@ -317,6 +356,13 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
     (m) {
       if (m[1] == null || m[1]!.trim().isEmpty) return '<td>';
       final parts = m[1]!.split(',');
+      if (parts.length == 1) {
+        final val = parts[0].trim();
+        if (val.endsWith('%') || val.endsWith('px') || (int.tryParse(val) != null && int.parse(val) > 10)) {
+          return '<td width="$val">';
+        }
+        return '<td colspan="$val">';
+      }
       final colspan = parts.isNotEmpty && parts[0].trim().isNotEmpty ? ' colspan="${parts[0].trim()}"' : '';
       final rowspan = parts.length > 1 && parts[1].trim().isNotEmpty ? ' rowspan="${parts[1].trim()}"' : '';
       final width = parts.length > 2 && parts[2].trim().isNotEmpty ? ' width="${parts[2].trim()}"' : '';
@@ -355,7 +401,7 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
         final type = m[1]!.trim();
         var inner = m[2] ?? '';
         inner = inner.replaceAllMapped(
-          RegExp(r'\[\*\]([\s\S]*?)(?=\[\*\]|$)', caseSensitive: false),
+          RegExp(r'\[\*\]([\s\S]*?)(?:\[/\*\]|(?=\[\*\]|$))', caseSensitive: false),
           (item) => '<li>${item[1]?.trim() ?? ''}</li>',
         );
         return '<ol type="$type">$inner</ol>';
@@ -367,7 +413,7 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
       (m) {
         var inner = m[1] ?? '';
         inner = inner.replaceAllMapped(
-          RegExp(r'\[\*\]([\s\S]*?)(?=\[\*\]|$)', caseSensitive: false),
+          RegExp(r'\[\*\]([\s\S]*?)(?:\[/\*\]|(?=\[\*\]|$))', caseSensitive: false),
           (item) => '<li>${item[1]?.trim() ?? ''}</li>',
         );
         return '<ul>$inner</ul>';

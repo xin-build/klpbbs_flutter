@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
@@ -51,6 +51,7 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
     _fetch();
     if (_currentType == 'favorite') {
       _loadTags();
+      KlpbbsApi.syncFavorites(uid: widget.uid);
     }
   }
 
@@ -75,12 +76,14 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
         KlpbbsApi.getMyUid().then((myUid) async {
           if (myUid != null && myUid == widget.uid) {
             final prefs = await SharedPreferences.getInstance();
-            final list = (prefs.getStringList('fav_tids') ?? []).toSet();
-            bool changed = false;
-            for (final t in threads) {
-              if (list.add('${t.tid}')) changed = true;
+            final serverTids = threads.map((t) => '${t.tid}').toSet();
+            if (_page == 1) {
+              await prefs.setStringList('fav_tids', serverTids.toList());
+            } else {
+              final list = (prefs.getStringList('fav_tids') ?? []).toSet();
+              list.addAll(serverTids);
+              await prefs.setStringList('fav_tids', list.toList());
             }
-            if (changed) await prefs.setStringList('fav_tids', list.toList());
           }
         }).catchError((_) {});
         return threads;
@@ -272,8 +275,12 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
                 .replaceAll(' 的收藏', '')
                 .replaceAll('我', '');
             final filledThread = t.copyWith(
-              author: t.author.isNotEmpty ? t.author : fallbackAuthor,
-              uid: t.uid ?? widget.uid,
+              author: t.author.isNotEmpty
+                  ? t.author
+                  : (_currentType == 'favorite' ? '' : fallbackAuthor),
+              uid: _currentType == 'favorite'
+                  ? t.uid
+                  : (t.uid ?? widget.uid),
             );
             if (_currentType == 'reply') {
               return _buildReplyTimelineTile(filledThread, colorScheme);
@@ -286,7 +293,7 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
                         tid: filledThread.tid,
                         title: filledThread.title,
                         isFavorited: true,
-                        favid: filledThread.favid,
+                        favid: filledThread.favid ?? KlpbbsApi.getCachedFavid(filledThread.tid),
                       );
                       if (res == false && mounted) {
                         try {
@@ -321,7 +328,12 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
         }
 
         return RefreshIndicator(
-          onRefresh: () async => setState(() => _fetch()),
+          onRefresh: () async {
+            if (_currentType == 'favorite') {
+              await KlpbbsApi.syncFavorites(uid: widget.uid);
+            }
+            if (mounted) setState(() => _fetch());
+          },
           child: listView,
         );
       },
@@ -346,8 +358,10 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: Text(widget.title),
         actions: [
           if (widget.type == 'favorite')

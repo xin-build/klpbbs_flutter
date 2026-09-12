@@ -269,18 +269,23 @@ class BountyBlock extends PostBlock {
   String toString() => 'BountyBlock(price: $price $unit, solved: $isSolved)';
 }
 
-/// 帖子审核通过状态条
+/// 帖子管理/审核/提升状态条（.comiis_modact / .modact）
 class AuditStatusBlock extends PostBlock {
   final String auditor;
   final String timeText;
+  final String action;
+  final String? rawText;
 
   const AuditStatusBlock({
     required this.auditor,
     required this.timeText,
+    this.action = '审核通过',
+    this.rawText,
   });
 
   @override
-  String toString() => 'AuditStatusBlock(auditor: $auditor, time: $timeText)';
+  String toString() =>
+      'AuditStatusBlock(auditor: $auditor, time: $timeText, action: $action, rawText: $rawText)';
 }
 
 /// 投票选项模型

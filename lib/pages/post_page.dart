@@ -19,6 +19,7 @@ import '../core/forum_events.dart';
 import '../models/forum.dart';
 import '../models/post_floor.dart';
 import '../models/post_edit_info.dart';
+import '../models/thread_sort_model.dart';
 import '../models/smiley.dart';
 import '../widgets/discuz_post_renderer.dart';
 import '../widgets/global_app_drawer.dart';
@@ -128,6 +129,12 @@ class _PostPageState extends State<PostPage> {
   bool _replyEmailNotice = false;
   DateTime? _scheduledPublishTime;
 
+  // 管理用户组专属设置 (Discuz Web post_editor_extra.htm & post_editpost.htm)
+  int _stickTopic = 0;
+  int _addDigest = 0;
+  bool _closeThread = false;
+  bool _deletePost = false;
+
   // 投票扩展设置 (Discuz Web)
   bool _pollVisibility = false;
   bool _pollOvert = false;
@@ -150,6 +157,14 @@ class _PostPageState extends State<PostPage> {
 
   // 未使用的附件列表
   List<PostAttachmentItem> _unusedAttachments = const [];
+  String? _formhash;
+
+  // 分类信息发帖模板（ThreadSorts / sortid / typeoption）
+  ThreadSortInfo? _threadSortInfo;
+  int? _activeSortid;
+  bool _loadingSortTemplate = false;
+  final Map<String, dynamic> _typeOptionValues = {};
+  final Map<String, TextEditingController> _typeOptionCtrls = {};
 
   // 快捷回复预设
   String? _selectedQuickReply;
@@ -299,6 +314,17 @@ class _PostPageState extends State<PostPage> {
         _uploadedAttachments.addAll(info.attachments);
       }
       _isFirstFloorEdit = info.isFirstFloor;
+      _formhash = info.formhash;
+      if (info.threadSortInfo != null) {
+        _threadSortInfo = info.threadSortInfo;
+        _activeSortid = info.sortid ?? info.threadSortInfo?.sortid;
+        _initThreadSortFields(info.threadSortInfo);
+      }
+      if (info.editorAttributes != null) {
+        _editorAttributes = info.editorAttributes!;
+        _htmlOn = info.editorAttributes!.htmlOn.checked;
+        _useSig = info.editorAttributes!.useSig.checked;
+      }
     });
   }
 
@@ -566,7 +592,23 @@ class _PostPageState extends State<PostPage> {
         _typeOptions = info.typeOptions;
         _typeid = _typeOptions.any((t) => t.value == _typeid) ? _typeid : null;
         _forumPermissionError = info.errorMessage.isEmpty ? null : info.errorMessage;
+        _formhash = info.formhash;
         _unusedAttachments = info.unusedAttachments;
+        _threadSortInfo = info.threadSortInfo;
+        _activeSortid = info.threadSortInfo?.sortid;
+        _initThreadSortFields(info.threadSortInfo);
+
+        // 如果当前版块检测到分类模板但字段未在初始 HTML 中注入（如软件资源 fid=43），自动异步获取该模板的字段规格
+        if (info.threadSortInfo != null &&
+            info.threadSortInfo!.fields.isEmpty &&
+            info.threadSortInfo!.availableSorts.isNotEmpty) {
+          final targetSortid = info.threadSortInfo!.sortid > 0
+              ? info.threadSortInfo!.sortid
+              : info.threadSortInfo!.availableSorts.first.sortid;
+          if (targetSortid > 0) {
+            _switchThreadSort(targetSortid, force: true);
+          }
+        }
         _editorAttributes = info.editorAttributes;
         _useSig = info.editorAttributes.useSig.checked;
         _isAnonymous = info.editorAttributes.isAnonymous.checked;
@@ -597,6 +639,69 @@ class _PostPageState extends State<PostPage> {
       setState(() {
         _forumPermissionError = '权限获取失败';
       });
+    }
+  }
+
+  void _initThreadSortFields(ThreadSortInfo? sortInfo) {
+    _typeOptionValues.clear();
+    for (final c in _typeOptionCtrls.values) {
+      c.dispose();
+    }
+    _typeOptionCtrls.clear();
+    if (sortInfo == null) return;
+    for (final f in sortInfo.fields) {
+      if (f.isCheckbox) {
+        if (f.initialValue is List) {
+          _typeOptionValues[f.identifier] = (f.initialValue as List).map((e) => '$e').toSet();
+        } else {
+          _typeOptionValues[f.identifier] = <String>{};
+        }
+      } else if (f.isRadio || f.isSelect) {
+        _typeOptionValues[f.identifier] = f.initialValue?.toString() ?? '';
+      } else {
+        final textVal = f.initialValue?.toString() ?? '';
+        _typeOptionCtrls[f.identifier] = TextEditingController(text: textVal);
+        _typeOptionValues[f.identifier] = textVal;
+      }
+    }
+  }
+
+  Future<void> _switchThreadSort(int sortid, {bool force = false}) async {
+    if (_fid == null) return;
+    if (!force && _activeSortid == sortid && (_threadSortInfo != null && _threadSortInfo!.fields.isNotEmpty)) return;
+    setState(() {
+      _loadingSortTemplate = true;
+    });
+    try {
+      if (sortid == 0) {
+        setState(() {
+          _activeSortid = 0;
+          _threadSortInfo = _threadSortInfo != null
+              ? ThreadSortInfo(
+                  sortid: 0,
+                  name: _threadSortInfo!.name,
+                  sortrequired: _threadSortInfo!.sortrequired,
+                  availableSorts: _threadSortInfo!.availableSorts,
+                  fields: const [],
+                )
+              : null;
+          _initThreadSortFields(null);
+          _loadingSortTemplate = false;
+        });
+        return;
+      }
+      final newSortInfo = await KlpbbsApi.getThreadSortInfo(_fid!, sortid, asMobile: _asMobile);
+      if (!mounted) return;
+      setState(() {
+        _activeSortid = sortid;
+        _threadSortInfo = newSortInfo;
+        _initThreadSortFields(newSortInfo);
+        _loadingSortTemplate = false;
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() => _loadingSortTemplate = false);
+      }
     }
   }
 
@@ -675,6 +780,9 @@ class _PostPageState extends State<PostPage> {
     _affirmCtrl.dispose();
     _negaCtrl.dispose();
     _endTimeCtrl.dispose();
+    for (final c in _typeOptionCtrls.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -909,7 +1017,9 @@ class _PostPageState extends State<PostPage> {
                                     children: [
                                       FilledButton.tonal(
                                         onPressed: () {
-                                          Navigator.of(ctx).pop();
+                                          if (ctx.mounted) {
+                                            Navigator.of(ctx).pop();
+                                          }
                                           _loadDraft(d);
                                         },
                                         style: FilledButton.styleFrom(
@@ -1056,6 +1166,38 @@ class _PostPageState extends State<PostPage> {
         setState(() => _result = '请输入帖子标题');
         return;
       }
+      if (_activeSortid != null && _activeSortid! > 0 && _threadSortInfo != null && _threadSortInfo!.fields.isNotEmpty) {
+        final missing = <String>[];
+        for (final f in _threadSortInfo!.fields) {
+          if (!f.required) continue;
+          if (f.isCheckbox) {
+            final val = _typeOptionValues[f.identifier];
+            if (val == null || (val is Set && val.isEmpty) || (val is List && val.isEmpty)) {
+              missing.add(f.title);
+            }
+          } else if (f.isRadio || f.isSelect) {
+            final val = _typeOptionValues[f.identifier];
+            if (val == null || '$val'.trim().isEmpty) {
+              missing.add(f.title);
+            }
+          } else {
+            final ctrl = _typeOptionCtrls[f.identifier];
+            if (ctrl == null || ctrl.text.trim().isEmpty) {
+              missing.add(f.title);
+            }
+          }
+        }
+        if (missing.isNotEmpty) {
+          setState(() => _result = '请填写必填的分类信息：${missing.join('、')}');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('请填写必填的分类信息：${missing.join('、')}'),
+              backgroundColor: Colors.redAccent,
+            ),
+          );
+          return;
+        }
+      }
     }
     if (_forumPermissionError != null && _forumPermissionError!.isNotEmpty) {
       setState(() => _result = '当前版块发帖受限：$_forumPermissionError');
@@ -1078,6 +1220,33 @@ class _PostPageState extends State<PostPage> {
         }
       }
       final attachAids = _uploadedAttachments.map((a) => a.aid).toList();
+
+      // 组装分类信息提交参数
+      final submitSortid = (_activeSortid != null && _activeSortid! > 0) ? _activeSortid : null;
+      final Map<String, dynamic> typeoptions = {};
+      if (submitSortid != null && _threadSortInfo != null) {
+        for (final f in _threadSortInfo!.fields) {
+          if (f.isCheckbox) {
+            final val = _typeOptionValues[f.identifier];
+            if (val is Set && val.isNotEmpty) {
+              typeoptions[f.identifier] = val.toList();
+            } else if (val is List && val.isNotEmpty) {
+              typeoptions[f.identifier] = val;
+            }
+          } else if (f.isRadio || f.isSelect) {
+            final val = _typeOptionValues[f.identifier];
+            if (val != null && '$val'.isNotEmpty) {
+              typeoptions[f.identifier] = '$val';
+            }
+          } else {
+            final ctrl = _typeOptionCtrls[f.identifier];
+            if (ctrl != null && ctrl.text.trim().isNotEmpty) {
+              typeoptions[f.identifier] = ctrl.text.trim();
+            }
+          }
+        }
+      }
+
       final ok = _isEdit
           ? await KlpbbsApi.editPost(
               _fid ?? 2,
@@ -1086,12 +1255,17 @@ class _PostPageState extends State<PostPage> {
               subject: _subjectCtrl.text.trim(),
               message: finalContent,
               typeid: _typeid,
+              sortid: submitSortid,
+              typeoptions: (submitSortid != null && typeoptions.isNotEmpty) ? typeoptions : null,
               readPerm: int.tryParse(_readPermCtrl.text.trim()),
               tags: _tagCtrl.text
                   .split(RegExp(r'[,，\s]+'))
                   .where((s) => s.isNotEmpty)
                   .toList(),
               attachAids: attachAids,
+              stickTopic: _stickTopic > 0 ? _stickTopic : null,
+              addDigest: _addDigest > 0 ? _addDigest : null,
+              deletePost: _deletePost ? true : null,
             )
           : _isReply
           ? await KlpbbsApi.replyThread(
@@ -1121,6 +1295,8 @@ class _PostPageState extends State<PostPage> {
               _subjectCtrl.text.trim(),
               finalContent,
               typeid: _typeid,
+              sortid: submitSortid,
+              typeoptions: (submitSortid != null && typeoptions.isNotEmpty) ? typeoptions : null,
               special: _special,
               pollOptions: _special == 1 ? _pollOptions : null,
               pollDays: _special == 1
@@ -1149,6 +1325,9 @@ class _PostPageState extends State<PostPage> {
               smileyOff: _smileyOff,
               bbcodeOff: _bbcodeOff,
               replyEmailNotice: _replyEmailNotice,
+              stickTopic: _stickTopic > 0 ? _stickTopic : null,
+              addDigest: _addDigest > 0 ? _addDigest : null,
+              closed: _closeThread ? true : null,
               asMobile: _asMobile,
             );
 
@@ -2161,11 +2340,13 @@ class _PostPageState extends State<PostPage> {
     bool value,
     ValueChanged<bool> onChanged, {
     bool enabled = true,
+    Color? textColor,
   }) {
     final theme = Theme.of(context);
-    final color = enabled
-        ? theme.colorScheme.onSurface
-        : theme.colorScheme.onSurface.withAlpha(120);
+    final color = textColor ??
+        (enabled
+            ? theme.colorScheme.onSurface
+            : theme.colorScheme.onSurface.withAlpha(120));
     return InkWell(
       borderRadius: BorderRadius.circular(6),
       onTap: enabled ? () => onChanged(!value) : null,
@@ -2319,6 +2500,80 @@ class _PostPageState extends State<PostPage> {
                 ),
               ],
             ),
+            if (attr.hasManagementOptions) ...[
+              const Divider(height: 18),
+              Row(
+                children: [
+                  Icon(Icons.admin_panel_settings_outlined, size: 16, color: theme.colorScheme.primary),
+                  const SizedBox(width: 6),
+                  Text(
+                    '管理用户组专属选项 (Discuz Moderator)',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  if (attr.stickTopicOptions.isNotEmpty)
+                    SizedBox(
+                      width: 140,
+                      child: DropdownButtonFormField<int>(
+                        value: attr.stickTopicOptions.any((o) => o.value == _stickTopic) ? _stickTopic : 0,
+                        decoration: InputDecoration(
+                          labelText: '置顶设置',
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                        ),
+                        items: [
+                          for (final opt in attr.stickTopicOptions)
+                            DropdownMenuItem(value: opt.value, child: Text(opt.name, style: const TextStyle(fontSize: 12))),
+                        ],
+                        onChanged: (v) => setState(() => _stickTopic = v ?? 0),
+                      ),
+                    ),
+                  if (attr.addDigestOptions.isNotEmpty)
+                    SizedBox(
+                      width: 140,
+                      child: DropdownButtonFormField<int>(
+                        value: attr.addDigestOptions.any((o) => o.value == _addDigest) ? _addDigest : 0,
+                        decoration: InputDecoration(
+                          labelText: '加精设置',
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                        ),
+                        items: [
+                          for (final opt in attr.addDigestOptions)
+                            DropdownMenuItem(value: opt.value, child: Text(opt.name, style: const TextStyle(fontSize: 12))),
+                        ],
+                        onChanged: (v) => setState(() => _addDigest = v ?? 0),
+                      ),
+                    ),
+                  if (attr.canCloseThread)
+                    _checkboxTile(
+                      '锁定主题 (关闭回复)',
+                      _closeThread,
+                      (v) => setState(() => _closeThread = v),
+                    ),
+                  if (_isEdit && attr.canDeletePost)
+                    _checkboxTile(
+                      '删除本帖 (管理删帖)',
+                      _deletePost,
+                      (v) => setState(() => _deletePost = v),
+                      textColor: Colors.redAccent,
+                    ),
+                ],
+              ),
+            ],
           ],
         );
       case 1:
@@ -2448,7 +2703,7 @@ class _PostPageState extends State<PostPage> {
             ),
             const SizedBox(height: 8),
             Text(
-              '💡 发放回帖奖励将在发布帖子时扣除相应的铁粒，回复帖子的会员将按设置获得奖励。',
+              '发放回帖奖励将在发布帖子时扣除相应的铁粒，回复帖子的会员将按设置获得奖励。',
               style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
             ),
           ],
@@ -2783,9 +3038,9 @@ class _PostPageState extends State<PostPage> {
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.amber.withAlpha(20),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.amber.withAlpha(90)),
+        color: Colors.amber.withAlpha(25),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.amber.withAlpha(120)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2796,31 +3051,53 @@ class _PostPageState extends State<PostPage> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  '💡 您有 ${_unusedAttachments.length} 个未使用的附件（可直接插入正文）',
-                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                  '您有 ${_unusedAttachments.length} 个未使用的附件',
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
                 ),
               ),
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                ),
+                onPressed: _showUnusedAttachmentsDialog,
+                icon: const Icon(Icons.folder_open, size: 14),
+                label: const Text('管理/查看', style: TextStyle(fontSize: 11.5)),
+              ),
+              const SizedBox(width: 6),
               FilledButton.tonal(
                 style: FilledButton.styleFrom(
                   visualDensity: VisualDensity.compact,
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
                 ),
-                onPressed: () {
-                  final buf = StringBuffer();
-                  for (final a in _unusedAttachments) {
-                    final tag = a.isImage ? '[attachimg]${a.aid}[/attachimg]' : '[attach]${a.aid}[/attach]';
-                    if (!_contentCtrl.text.contains(tag)) {
-                      buf.writeln(tag);
-                    }
-                  }
-                  if (buf.isNotEmpty) {
-                    _insertText('\n${buf.toString()}');
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('已将 ${_unusedAttachments.length} 个未使用附件插入正文')),
-                    );
+                onPressed: _insertAllUnusedAttachments,
+                child: const Text('全部插入', style: TextStyle(fontSize: 11.5)),
+              ),
+              const SizedBox(width: 6),
+              IconButton(
+                icon: const Icon(Icons.delete_sweep_outlined, size: 18, color: Colors.redAccent),
+                tooltip: '全部删除',
+                visualDensity: VisualDensity.compact,
+                onPressed: () async {
+                  final confirm = await showDialog<bool>(
+                    context: context,
+                    builder: (c) => AlertDialog(
+                      title: const Text('删除所有未使用的附件'),
+                      content: Text('确定彻底删除全部 ${_unusedAttachments.length} 个未使用的附件吗？此操作无法撤销。'),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('取消')),
+                        FilledButton(
+                          style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+                          onPressed: () => Navigator.of(c).pop(true),
+                          child: const Text('确认删除'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (confirm == true) {
+                    await _deleteUnusedAttachments(_unusedAttachments.map((a) => a.aid).toList());
                   }
                 },
-                child: const Text('全部插入正文', style: TextStyle(fontSize: 11.5)),
               ),
             ],
           ),
@@ -2845,6 +3122,619 @@ class _PostPageState extends State<PostPage> {
           ),
         ],
       ),
+    );
+  }
+
+  void _insertAllUnusedAttachments() {
+    final buf = StringBuffer();
+    for (final a in _unusedAttachments) {
+      final tag = a.isImage ? '[attachimg]${a.aid}[/attachimg]' : '[attach]${a.aid}[/attach]';
+      if (!_contentCtrl.text.contains(tag)) {
+        buf.writeln(tag);
+      }
+    }
+    if (buf.isNotEmpty) {
+      _insertText('\n${buf.toString()}');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已将 ${_unusedAttachments.length} 个未使用附件插入正文')),
+      );
+    }
+  }
+
+  Future<void> _deleteUnusedAttachments(List<int> aids) async {
+    final fh = _formhash ?? KlpbbsApi.cachedFormhash ?? '';
+    if (fh.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('缺少发帖安全凭证，删除失败')),
+      );
+      return;
+    }
+    final ok = await KlpbbsApi.deleteUnusedAttachments(
+      aids,
+      formhash: fh,
+      tid: widget.tid,
+      pid: widget.pid,
+    );
+    if (!mounted) return;
+    if (ok) {
+      setState(() {
+        _unusedAttachments = _unusedAttachments.where((a) => !aids.contains(a.aid)).toList();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已删除 ${aids.length} 个未使用附件')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('删除附件失败，请稍后重试')),
+      );
+    }
+  }
+
+  Future<void> _showUnusedAttachmentsDialog() async {
+    if (_unusedAttachments.isEmpty) return;
+    final selectedAids = <int>{for (final a in _unusedAttachments) a.aid};
+    bool isDeletingBatch = false;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            final theme = Theme.of(dialogContext);
+            final allSelected = selectedAids.length == _unusedAttachments.length;
+            final noneSelected = selectedAids.isEmpty;
+
+            return Container(
+              height: MediaQuery.of(dialogContext).size.height * 0.72,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+              ),
+              child: Column(
+                children: [
+                  Center(
+                    child: Container(
+                      width: 36,
+                      height: 4,
+                      margin: const EdgeInsets.only(top: 8, bottom: 4),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.outlineVariant,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.attach_file, size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          '未使用的附件管理 (${_unusedAttachments.length})',
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(Icons.close),
+                          onPressed: () => Navigator.of(ctx).pop(),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    child: Row(
+                      children: [
+                        Checkbox(
+                          value: allSelected,
+                          tristate: !allSelected && !noneSelected,
+                          onChanged: (val) {
+                            setDialogState(() {
+                              if (allSelected) {
+                                selectedAids.clear();
+                              } else {
+                                selectedAids.addAll(_unusedAttachments.map((a) => a.aid));
+                              }
+                            });
+                          },
+                        ),
+                        InkWell(
+                          onTap: () {
+                            setDialogState(() {
+                              if (allSelected) {
+                                selectedAids.clear();
+                              } else {
+                                selectedAids.addAll(_unusedAttachments.map((a) => a.aid));
+                              }
+                            });
+                          },
+                          child: Text(
+                            allSelected
+                                ? '全选 (已选 ${selectedAids.length})'
+                                : '全选 (${selectedAids.length}/${_unusedAttachments.length})',
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        ),
+                        const Spacer(),
+                        TextButton.icon(
+                          icon: const Icon(Icons.playlist_add_check, size: 16),
+                          label: const Text('全部插入', style: TextStyle(fontSize: 12)),
+                          onPressed: () {
+                            _insertAllUnusedAttachments();
+                            Navigator.of(ctx).pop();
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: _unusedAttachments.isEmpty
+                        ? const Center(child: Text('暂无未使用的附件'))
+                        : ListView.separated(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            itemCount: _unusedAttachments.length,
+                            separatorBuilder: (_, __) => const Divider(height: 1),
+                            itemBuilder: (context, index) {
+                              final att = _unusedAttachments[index];
+                              final isSelected = selectedAids.contains(att.aid);
+
+                              return ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                leading: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Checkbox(
+                                      value: isSelected,
+                                      onChanged: (val) {
+                                        setDialogState(() {
+                                          if (val == true) {
+                                            selectedAids.add(att.aid);
+                                          } else {
+                                            selectedAids.remove(att.aid);
+                                          }
+                                        });
+                                      },
+                                    ),
+                                    ClipRRect(
+                                      borderRadius: BorderRadius.circular(6),
+                                      child: att.isImage
+                                          ? CachedNetworkImage(
+                                              imageUrl: att.previewUrl,
+                                              width: 44,
+                                              height: 44,
+                                              fit: BoxFit.cover,
+                                              errorWidget: (_, __, ___) => Container(
+                                                width: 44,
+                                                height: 44,
+                                                color: theme.colorScheme.surfaceContainerHighest,
+                                                child: const Icon(Icons.broken_image_outlined, size: 20),
+                                              ),
+                                            )
+                                          : Container(
+                                              width: 44,
+                                              height: 44,
+                                              color: theme.colorScheme.surfaceContainerHighest,
+                                              child: const Icon(Icons.insert_drive_file_outlined, size: 22),
+                                            ),
+                                    ),
+                                  ],
+                                ),
+                                title: Text(
+                                  att.filename,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                                ),
+                                subtitle: Text(
+                                  'AID: ${att.aid} · ${att.sizeText}',
+                                  style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
+                                ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      tooltip: '插入正文',
+                                      icon: const Icon(Icons.add_comment_outlined, size: 19),
+                                      onPressed: () {
+                                        final tag = att.isImage ? '[attachimg]${att.aid}[/attachimg]' : '[attach]${att.aid}[/attach]';
+                                        _insertText('\n$tag\n');
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(content: Text('已在光标处插入：$tag')),
+                                        );
+                                      },
+                                    ),
+                                    IconButton(
+                                      tooltip: '彻底删除',
+                                      icon: const Icon(Icons.delete_outline, size: 19, color: Colors.redAccent),
+                                      onPressed: () async {
+                                        final confirm = await showDialog<bool>(
+                                          context: context,
+                                          builder: (c) => AlertDialog(
+                                            title: const Text('删除附件'),
+                                            content: Text('确定彻底删除未使用的附件“${att.filename}”吗？此操作无法撤销。'),
+                                            actions: [
+                                              TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('取消')),
+                                              FilledButton(
+                                                style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+                                                onPressed: () => Navigator.of(c).pop(true),
+                                                child: const Text('确认删除'),
+                                              ),
+                                            ],
+                                          ),
+                                        );
+                                        if (confirm == true) {
+                                          await _deleteUnusedAttachments([att.aid]);
+                                          setDialogState(() {
+                                            selectedAids.remove(att.aid);
+                                          });
+                                          if (ctx.mounted && _unusedAttachments.isEmpty) {
+                                            Navigator.of(ctx).pop();
+                                          }
+                                        }
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surface,
+                      border: Border(top: BorderSide(color: theme.colorScheme.outlineVariant, width: 0.5)),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            icon: const Icon(Icons.delete_sweep_outlined, color: Colors.redAccent, size: 18),
+                            label: Text(
+                              '删除选中 (${selectedAids.length})',
+                              style: const TextStyle(color: Colors.redAccent, fontSize: 13),
+                            ),
+                            onPressed: selectedAids.isEmpty || isDeletingBatch
+                                ? null
+                                : () async {
+                                    final confirm = await showDialog<bool>(
+                                      context: context,
+                                      builder: (c) => AlertDialog(
+                                        title: const Text('批量删除附件'),
+                                        content: Text('确定彻底删除选中的 ${selectedAids.length} 个未使用的附件吗？此操作无法撤销。'),
+                                        actions: [
+                                          TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('取消')),
+                                          FilledButton(
+                                            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+                                            onPressed: () => Navigator.of(c).pop(true),
+                                            child: const Text('确认删除'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (confirm == true) {
+                                      setDialogState(() => isDeletingBatch = true);
+                                      await _deleteUnusedAttachments(selectedAids.toList());
+                                      setDialogState(() {
+                                        isDeletingBatch = false;
+                                        selectedAids.clear();
+                                      });
+                                      if (ctx.mounted && _unusedAttachments.isEmpty) {
+                                        Navigator.of(ctx).pop();
+                                      }
+                                    }
+                                  },
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: FilledButton.icon(
+                            icon: const Icon(Icons.input, size: 18),
+                            label: Text(
+                              '插入选中 (${selectedAids.length})',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                            onPressed: selectedAids.isEmpty
+                                ? null
+                                : () {
+                                    final selectedList = _unusedAttachments.where((a) => selectedAids.contains(a.aid)).toList();
+                                    final buf = StringBuffer();
+                                    for (final a in selectedList) {
+                                      final tag = a.isImage ? '[attachimg]${a.aid}[/attachimg]' : '[attach]${a.aid}[/attach]';
+                                      if (!_contentCtrl.text.contains(tag)) {
+                                        buf.writeln(tag);
+                                      }
+                                    }
+                                    if (buf.isNotEmpty) {
+                                      _insertText('\n${buf.toString()}');
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('已将 ${selectedList.length} 个附件插入正文')),
+                                      );
+                                    }
+                                    Navigator.of(ctx).pop();
+                                  },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildThreadSortCard(ThemeData theme) {
+    if (_threadSortInfo == null && _activeSortid == null) return const SizedBox.shrink();
+    final sortInfo = _threadSortInfo;
+    final availableSorts = sortInfo?.availableSorts ?? const [];
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withAlpha(40),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(90)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.assignment_outlined, size: 18, color: theme.colorScheme.primary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  sortInfo != null ? '分类信息模板：${sortInfo.name}' : '分类信息模板',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+              ),
+              if (sortInfo != null && sortInfo.sortrequired)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withAlpha(25),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: Colors.red.withAlpha(90)),
+                  ),
+                  child: const Text('必填模板', style: TextStyle(fontSize: 11, color: Colors.red, fontWeight: FontWeight.w600)),
+                ),
+            ],
+          ),
+          if (availableSorts.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (final item in availableSorts)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ChoiceChip(
+                        selected: _activeSortid == item.sortid,
+                        label: Text(item.name, style: const TextStyle(fontSize: 12)),
+                        onSelected: (selected) {
+                          if (selected) {
+                            _switchThreadSort(item.sortid);
+                          }
+                        },
+                      ),
+                    ),
+                  if (sortInfo != null && !sortInfo.sortrequired)
+                    ChoiceChip(
+                      selected: _activeSortid == 0,
+                      label: const Text('不使用模板', style: TextStyle(fontSize: 12)),
+                      onSelected: (selected) {
+                        if (selected) {
+                          _switchThreadSort(0);
+                        }
+                      },
+                    ),
+                ],
+              ),
+            ),
+          ],
+          if (_loadingSortTemplate)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            )
+          else if (sortInfo != null && sortInfo.fields.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            const Divider(height: 1),
+            const SizedBox(height: 12),
+            for (final f in sortInfo.fields) ...[
+              _buildSortFieldItem(f, theme),
+              const SizedBox(height: 12),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSortFieldItem(SortOptionField field, ThemeData theme) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            if (field.required)
+              const Text('* ', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 13)),
+            Text(
+              field.title,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+            if (field.unit.isNotEmpty)
+              Text(' (${field.unit})', style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
+            if (field.description.isNotEmpty) ...[
+              const SizedBox(width: 4),
+              Tooltip(
+                message: field.description,
+                child: Icon(Icons.help_outline, size: 14, color: theme.colorScheme.outline),
+              ),
+            ],
+          ],
+        ),
+        if (field.description.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 2, bottom: 4),
+            child: Text(
+              field.description,
+              style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
+            ),
+          ),
+        const SizedBox(height: 6),
+        if (field.isCheckbox)
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              for (final entry in field.choices.entries)
+                FilterChip(
+                  label: Text(entry.value, style: const TextStyle(fontSize: 12)),
+                  selected: (_typeOptionValues[field.identifier] as Set<String>?)?.contains(entry.key) ?? false,
+                  onSelected: (selected) {
+                    setState(() {
+                      var set = _typeOptionValues[field.identifier] as Set<String>?;
+                      if (set == null) {
+                        set = <String>{};
+                        _typeOptionValues[field.identifier] = set;
+                      }
+                      if (selected) {
+                        set.add(entry.key);
+                      } else {
+                        set.remove(entry.key);
+                      }
+                    });
+                  },
+                ),
+            ],
+          )
+        else if (field.isRadio)
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              for (final entry in field.choices.entries)
+                ChoiceChip(
+                  label: Text(entry.value, style: const TextStyle(fontSize: 12)),
+                  selected: _typeOptionValues[field.identifier] == entry.key,
+                  onSelected: (selected) {
+                    setState(() {
+                      _typeOptionValues[field.identifier] = selected ? entry.key : '';
+                    });
+                  },
+                ),
+            ],
+          )
+        else if (field.isSelect)
+          DropdownButtonFormField<String>(
+            value: (_typeOptionValues[field.identifier] as String?)?.isNotEmpty == true
+                ? _typeOptionValues[field.identifier] as String
+                : null,
+            hint: Text('请选择${field.title}', style: const TextStyle(fontSize: 13)),
+            decoration: InputDecoration(
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+            ),
+            items: [
+              for (final entry in field.choices.entries)
+                DropdownMenuItem(value: entry.key, child: Text(entry.value, style: const TextStyle(fontSize: 13))),
+            ],
+            onChanged: (val) {
+              setState(() {
+                _typeOptionValues[field.identifier] = val ?? '';
+              });
+            },
+          )
+        else if (field.isCalendar)
+          InkWell(
+            borderRadius: BorderRadius.circular(6),
+            onTap: () async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: DateTime.now(),
+                firstDate: DateTime(2010),
+                lastDate: DateTime(2035),
+              );
+              if (picked != null) {
+                final dateStr = '${picked.year}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}';
+                setState(() {
+                  _typeOptionCtrls[field.identifier]?.text = dateStr;
+                  _typeOptionValues[field.identifier] = dateStr;
+                });
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                border: Border.all(color: theme.colorScheme.outlineVariant),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.calendar_today_outlined, size: 16, color: theme.colorScheme.outline),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _typeOptionCtrls[field.identifier]?.text.isNotEmpty == true
+                          ? _typeOptionCtrls[field.identifier]!.text
+                          : '点击选择日期',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: _typeOptionCtrls[field.identifier]?.text.isNotEmpty == true
+                            ? theme.colorScheme.onSurface
+                            : theme.colorScheme.outline,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
+        else if (field.isTextarea)
+          TextField(
+            controller: _typeOptionCtrls[field.identifier],
+            maxLines: 3,
+            minLines: 2,
+            onChanged: (v) => _typeOptionValues[field.identifier] = v,
+            decoration: InputDecoration(
+              hintText: '请输入${field.title}',
+              isDense: true,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            ),
+          )
+        else
+          TextField(
+            controller: _typeOptionCtrls[field.identifier],
+            keyboardType: field.isNumber
+                ? TextInputType.number
+                : (field.type == 'url' ? TextInputType.url : TextInputType.text),
+            onChanged: (v) => _typeOptionValues[field.identifier] = v,
+            decoration: InputDecoration(
+              hintText: '请输入${field.title}',
+              isDense: true,
+              suffixText: field.unit.isNotEmpty ? field.unit : null,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            ),
+          ),
+      ],
     );
   }
 
@@ -2917,8 +3807,10 @@ class _PostPageState extends State<PostPage> {
       child: FocusScope(
         child: Scaffold(
           drawer: const GlobalAppDrawer(),
+          drawerEdgeDragWidth: 50.0,
           appBar: AppBar(
             leading: const GlobalNavLeading(),
+            leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
             title: Text(
           widget.replyToFloorText ??
               (_isEdit
@@ -2943,7 +3835,7 @@ class _PostPageState extends State<PostPage> {
               setState(() => _asMobile = !_asMobile);
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: Text(_asMobile ? '已切换发帖来源：📱 手机' : '已切换发帖来源：💻 电脑'),
+                  content: Text(_asMobile ? '已切换发帖来源：手机' : '已切换发帖来源：电脑'),
                   duration: const Duration(seconds: 2),
                 ),
               );
@@ -3239,6 +4131,10 @@ class _PostPageState extends State<PostPage> {
                   ),
                 const SizedBox(height: 10),
               ],
+
+              // 分类信息发帖模板卡片（threadsorts / sortid / typeoption）
+              if ((!_isReply && !_isEdit) || (_isEdit && _isFirstFloorEdit))
+                _buildThreadSortCard(theme),
 
               // 投票专用输入卡片 (special=1)
               if (_isPoll && !_isReply)

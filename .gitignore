@@ -81,3 +81,9 @@ tools/
 *.apk
 *.tar.gz
 *.ipa
+found_*.js
+*.sql
+*.xml
+*.htm
+plugin_ai_clean.txt
+report_funcs.txt

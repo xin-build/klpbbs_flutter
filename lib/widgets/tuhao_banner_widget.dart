@@ -296,7 +296,11 @@ class _TuhaoBannerWidgetState extends State<TuhaoBannerWidget> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          const Text('💰', style: TextStyle(fontSize: 13)),
+                          const Icon(
+                            Icons.monetization_on_rounded,
+                            size: 15,
+                            color: Color(0xFFC67D00),
+                          ),
                           const SizedBox(width: 4),
                           Text(
                             '土豪 $authorName 驾到',
@@ -308,7 +312,11 @@ class _TuhaoBannerWidgetState extends State<TuhaoBannerWidget> {
                             ),
                           ),
                           const SizedBox(width: 4),
-                          const Text('💰', style: TextStyle(fontSize: 13)),
+                          const Icon(
+                            Icons.monetization_on_rounded,
+                            size: 15,
+                            color: Color(0xFFC67D00),
+                          ),
                         ],
                       ),
                       const SizedBox(height: 6),
@@ -400,7 +408,11 @@ class _TuhaoBannerWidgetState extends State<TuhaoBannerWidget> {
   Widget _buildBag(double size, double opacity) {
     return Opacity(
       opacity: opacity,
-      child: Text('💰', style: TextStyle(fontSize: size)),
+      child: Icon(
+        Icons.monetization_on_rounded,
+        size: size,
+        color: const Color(0xFFC67D00),
+      ),
     );
   }
 

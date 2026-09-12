@@ -71,8 +71,10 @@ class _SettingsPageState extends State<SettingsPage> {
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('系统设置'),
         elevation: 0,
       ),

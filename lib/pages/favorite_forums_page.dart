@@ -46,8 +46,10 @@ class _FavoriteForumsPageState extends State<FavoriteForumsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('收藏版块'),
       ),
       body: FutureBuilder<List<Forum>>(

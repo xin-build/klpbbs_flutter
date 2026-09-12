@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
@@ -86,8 +86,10 @@ class _DarkroomPageState extends State<DarkroomPage> {
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
+        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: _isSearching
             ? TextField(
                 controller: _searchCtrl,

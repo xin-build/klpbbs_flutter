@@ -728,6 +728,9 @@ class DiscuzPostRenderer extends StatelessWidget {
 
   // 0. 审核通过状态条
   Widget _buildAuditStatusBlock(BuildContext context, ThemeData theme, AuditStatusBlock audit) {
+    final displayText = audit.rawText?.isNotEmpty == true
+        ? audit.rawText!
+        : '本主题由 ${audit.auditor} 于 ${audit.timeText} ${audit.action}';
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 6),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -736,7 +739,7 @@ class DiscuzPostRenderer extends StatelessWidget {
         borderRadius: BorderRadius.circular(4),
       ),
       child: Text(
-        '本主题由 ${audit.auditor} 于 ${audit.timeText} 审核通过',
+        displayText,
         style: TextStyle(
           fontSize: 12,
           color: theme.colorScheme.outline,
@@ -990,7 +993,7 @@ class DiscuzPostRenderer extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 5),
-          SelectableText.rich(
+          Text.rich(
             TextSpan(
               children: _htmlToSpans(contentHtml, theme, context: context),
             ),
@@ -1582,7 +1585,7 @@ class DiscuzPostRenderer extends StatelessWidget {
     return tableWidget;
   }
 
-  // 7. 视频 / Bilibili 内嵌播放卡片
+  // 7. 视频 / Bilibili 内嵌播放卡片（全面使用本地原生播放器实现）
   Widget _buildVideoBlock(
     BuildContext context,
     ThemeData theme,
@@ -1592,15 +1595,20 @@ class DiscuzPostRenderer extends StatelessWidget {
     String? aid, {
     String? align,
   }) {
+    // 优先探测是否有 BV 号或解构包装
+    final bvidFromSrc = RegExp(r'(BV[a-zA-Z0-9]{10})', caseSensitive: false).firstMatch(src)?.group(1);
+    final actualBvid = (bvid != null && bvid.isNotEmpty) ? bvid : bvidFromSrc;
+    final effectiveIsBili = isBilibili || actualBvid != null;
+
     final isNetEase = src.contains('music.163.com') || src.contains('163.com');
-    final title = isBilibili
-        ? (bvid != null ? '哔哩哔哩视频 ($bvid)' : '哔哩哔哩视频')
+    final title = effectiveIsBili
+        ? (actualBvid != null ? '哔哩哔哩视频 ($actualBvid)' : '哔哩哔哩视频')
         : isNetEase
         ? '网易云音乐'
         : '内嵌视频播放';
 
     Widget videoWidget;
-    if (isBilibili && bvid != null) {
+    if (effectiveIsBili && actualBvid != null) {
       videoWidget = Container(
         margin: const EdgeInsets.symmetric(vertical: 6),
         decoration: BoxDecoration(
@@ -1638,7 +1646,8 @@ class DiscuzPostRenderer extends StatelessWidget {
                     visualDensity: VisualDensity.compact,
                     onPressed: () => _openLink(
                       context,
-                      'https://www.bilibili.com/video/$bvid',
+                      'https://www.bilibili.com/video/$actualBvid',
+                      forceExternal: true,
                     ),
                     icon: Icon(
                       Icons.open_in_new,
@@ -1653,7 +1662,7 @@ class DiscuzPostRenderer extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(8),
-                child: BiliVideoPlayer(bvid: bvid),
+                child: BiliVideoPlayer(bvid: actualBvid),
               ),
             ),
           ],
@@ -1951,8 +1960,8 @@ class DiscuzPostRenderer extends StatelessWidget {
 
   // 内部 HTML TextSpan 解析
   /// 打开链接：站内帖子/版块/用户空间走应用内跳转，外部链接走系统浏览器
-  void _openLink(BuildContext? context, String link) {
-    UrlHelper.openLink(context, link);
+  void _openLink(BuildContext? context, String link, {bool forceExternal = false}) {
+    UrlHelper.openLink(context, link, forceExternal: forceExternal);
   }
 
   List<InlineSpan> _htmlToSpans(
@@ -2419,6 +2428,36 @@ class DiscuzPostRenderer extends StatelessWidget {
                       fit: BoxFit.contain,
                       errorWidget: (_, __, ___) =>
                           const SizedBox(width: size, height: size),
+                    ),
+                  ),
+                );
+              } else {
+                spans.add(
+                  WidgetSpan(
+                    alignment: PlaceholderAlignment.middle,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                          onTap: context != null
+                              ? () => _openLightbox(context, src)
+                              : null,
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxHeight: 280),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(6),
+                              child: CachedNetworkImage(
+                                imageUrl: src,
+                                httpHeaders: AppConfig.imageHeaders,
+                                fit: BoxFit.contain,
+                                errorWidget: (_, __, ___) =>
+                                    const Icon(Icons.broken_image_rounded, size: 28),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 );

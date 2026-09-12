@@ -335,9 +335,11 @@ class _MedalPageState extends State<MedalPage> with SingleTickerProviderStateMix
 
     return Scaffold(
       drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
       appBar: AppBar(
         automaticallyImplyLeading: !isDesktop,
         leading: (isDesktop && !canPop) ? null : const GlobalNavLeading(),
+        leadingWidth: (isDesktop && !canPop) ? null : GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('勋章中心', style: TextStyle(fontWeight: FontWeight.bold)),
         centerTitle: true,
         actions: [

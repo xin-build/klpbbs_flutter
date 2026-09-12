@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/app_config.dart';
 import '../core/bbcode.dart' as bbcode_lib;
+import '../models/ai_summary.dart';
 import '../models/credit_log.dart';
 import '../models/darkroom_entry.dart';
 import '../models/forum.dart';
@@ -26,6 +27,7 @@ import '../models/smiley.dart';
 import '../models/thread_summary.dart';
 import '../models/user_space.dart';
 import '../models/usergroup_comparison.dart';
+import '../models/thread_sort_model.dart';
 
 typedef ThreadDetailParsed = ({
   String title,
@@ -48,8 +50,12 @@ typedef ThreadDetailParsed = ({
   String? stampUrl,
   String? coverUrl,
   bool isFavorited,
+  bool hasExplicitFavState,
   bool isLiked,
   int? favid,
+  AiSummaryData? aiSummary,
+  bool isDescOrder,
+  int? targetOrdertype,
 });
 
 /// comiis_app（克米设计）手机模板 HTML 解析器
@@ -3298,44 +3304,77 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
   static List<Forum> parseFavoriteForums(String html) {
     if (html.isEmpty) return const [];
     final doc = html_parser.parse(html);
+
+    // 服务端明确展示「无收藏」时，直接返回空列表，绝不触发兜底误匹配
+    final hasNoFavTip = doc.querySelector('.comiis_notip, p.emp') != null ||
+        html.contains('您还没有收藏任何内容') ||
+        html.contains('没有找到相关收藏') ||
+        html.contains('no_favorite_yet');
+    if (hasNoFavTip) {
+      return const [];
+    }
+
     final result = <Forum>[];
     final seen = <int>{};
 
-    // 1. 从各容器条目（tr, li, div）中提取
+    // 1. 从各容器条目中提取（支持克米移动端 .comiis_mysclist 与 Discuz PC 端 #favorite_ul）
     final items = doc.querySelectorAll(
-      'ul#favorite_ul li, #ct table tr, #favoriteform li, #favoriteform tr, div[id^="fav_"], tr[id^="fav_"], li[id^="fav_"]',
+      '.comiis_mysclist li, li.mysclist_li, ul#favorite_ul li, #ct table tr, #favoriteform li, #favoriteform tr, div[id^="fav_"], tr[id^="fav_"], li[id^="fav_"]',
     );
     for (final el in items) {
-      final a = el.querySelector('a[href*="forum-"], a[href*="forumdisplay"], a[href*="fid="]');
-      if (a == null) continue;
-      final href = a.attributes['href'] ?? '';
-      final fm = RegExp(r'forum-(\d+)-\d+\.html|forumdisplay[^"]*fid=(\d+)|fid=(\d+)').firstMatch(href);
-      if (fm == null) continue;
-      final fid = int.tryParse(fm.group(1) ?? fm.group(2) ?? fm.group(3) ?? '');
+      // 提取 FID：优先通过 input[vid]（PC 端 Discuz 自带 vid="$value[id]"），再通过标题链接提取
+      int? fid;
+      final vidAttr = el.querySelector('input[vid]')?.attributes['vid'];
+      if (vidAttr != null) {
+        fid = int.tryParse(vidAttr);
+      }
+
+      final titleA = el.querySelector('h2 a[href*="fid="], h2 a[href*="forum-"], a[href*="forum-"], a[href*="forumdisplay"], a[href*="fid="]');
+      if (fid == null && titleA != null) {
+        final href = titleA.attributes['href'] ?? '';
+        final fm = RegExp(r'forum-(\d+)-\d+\.html|forumdisplay[^"]*fid=(\d+)|fid=(\d+)').firstMatch(href);
+        if (fm != null) {
+          fid = int.tryParse(fm.group(1) ?? fm.group(2) ?? fm.group(3) ?? '');
+        }
+      }
       if (fid == null || fid <= 0 || !seen.add(fid)) continue;
 
-      var name = _cleanTitle(a.text.trim());
+      var name = '';
+      if (titleA != null) {
+        final h2 = titleA.querySelector('h2') ?? el.querySelector('h2');
+        if (h2 != null) {
+          name = _cleanTitle(h2.text.trim());
+        } else {
+          name = _cleanTitle(titleA.text.trim());
+        }
+      }
       if (name.isEmpty) name = getForumNameByFid(fid) ?? '版块 $fid';
 
+      // 提取 FAV_ID（收藏项主键 ID）
       int? favid;
-      final inp = el.querySelector('input[name*="favorite"]');
-      if (inp != null) {
-        favid = int.tryParse(inp.attributes['value'] ?? '');
+      final delA = el.querySelector('a[href*="favid="]');
+      if (delA != null) {
+        final mDel = RegExp(r'favid=(\d+)').firstMatch(delA.attributes['href'] ?? '');
+        if (mDel != null) favid = int.tryParse(mDel.group(1)!);
+      }
+      if (favid == null || favid <= 0) {
+        final inp = el.querySelector('input[name*="favorite"]');
+        if (inp != null) {
+          favid = int.tryParse(inp.attributes['value'] ?? '');
+        }
       }
       if (favid == null || favid <= 0) {
         final idAttr = el.attributes['id'] ?? '';
         final mId = RegExp(r'fav_(\d+)').firstMatch(idAttr);
         if (mId != null) favid = int.tryParse(mId.group(1)!);
       }
-      if (favid == null || favid <= 0) {
-        final delA = el.querySelector('a[href*="favid="]');
-        if (delA != null) {
-          final mDel = RegExp(r'favid=(\d+)').firstMatch(delA.attributes['href'] ?? '');
-          if (mDel != null) favid = int.tryParse(mDel.group(1)!);
-        }
-      }
 
       final desc = el.querySelector('.xg1, .description, p')?.text.trim();
+      int threadCount = -1;
+      final countM = RegExp(r'主题[:：\s]*(\d+)').firstMatch(el.text);
+      if (countM != null) {
+        threadCount = int.tryParse(countM.group(1)!) ?? -1;
+      }
 
       registerForumName(fid, name);
       result.add(
@@ -3344,13 +3383,14 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           name: name,
           description: desc,
           favid: favid,
+          threadCount: threadCount,
         ),
       );
     }
 
-    // 2. 兜底通用匹配
-    if (result.isEmpty) {
-      for (final a in doc.querySelectorAll('a[href*="forum-"], a[href*="forumdisplay"]')) {
+    // 2. 仅在未发现任何条目且非明确空态时进行严格兜底
+    if (result.isEmpty && !hasNoFavTip) {
+      for (final a in doc.querySelectorAll('.comiis_mysclist a, #favorite_ul a, #favoriteform a')) {
         final href = a.attributes['href'] ?? '';
         final fm = RegExp(r'forum-(\d+)-\d+\.html|forumdisplay[^"]*fid=(\d+)').firstMatch(href);
         if (fm == null) continue;
@@ -3720,45 +3760,79 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
-    // 2. PC 端与通用 Discuz 结构：table.fl_tb 或 div.fl.bm 或 .bm.bmw.cl
+    // 2. PC 端与通用 Discuz 结构：严格按分区容器 div[id^="category_"], .bm.cbm_box 识别，杜绝子版块误升格
     if (groups.isEmpty) {
-      for (final block in doc.querySelectorAll('.bm.bmw.cl, table.fl_tb, div.fl')) {
-        final h2 = block.querySelector('.bm_h h2 a, .bm_h h2, h2 a, h2');
+      var catElements = doc.querySelectorAll('div[id^="category_"]');
+      if (catElements.isEmpty) {
+        catElements = doc.querySelectorAll('.bm.cbm_box, div.fl > div.bm');
+      }
+
+      for (final catEl in catElements) {
+        final parent = (catEl.localName == 'div' && (catEl.id).startsWith('category_'))
+            ? (catEl.parent ?? catEl)
+            : catEl;
+        final h2 = parent.querySelector('.bm_h h2 a, .bm_h h2, h2 a, h2');
         var name = _cleanTitle(h2?.text ?? '');
-        if (name.isEmpty || name == '论坛' || name.contains('小喇叭') || name.contains('关注')) continue;
-        final gidM = RegExp(r'gid=(\d+)').firstMatch(h2?.attributes['href'] ?? '');
-        final gid = gidM != null ? int.tryParse(gidM.group(1)!) ?? (groups.length + 1) : (groups.length + 1);
+        if (name.isEmpty ||
+            name == '论坛' ||
+            name.contains('小喇叭') ||
+            name.contains('关注') ||
+            name.contains('友情链接')) {
+          continue;
+        }
+
+        int gid = -1;
+        final catId = catEl.id;
+        final mGid = RegExp(r'category_(\d+)').firstMatch(catId);
+        if (mGid != null) {
+          gid = int.tryParse(mGid.group(1)!) ?? -1;
+        } else if (h2 != null) {
+          final h2Href = h2.attributes['href'] ?? h2.querySelector('a')?.attributes['href'] ?? '';
+          final mH2 = RegExp(r'gid=(\d+)').firstMatch(h2Href);
+          if (mH2 != null) {
+            gid = int.tryParse(mH2.group(1)!) ?? -1;
+          }
+        }
+
+        if (gid < 0) {
+          gid = groups.length + 1;
+        }
+
         if (standardGroupNames.containsKey(gid)) {
           name = standardGroupNames[gid]!;
         }
+
         if (!seenGids.add(gid)) continue;
 
         final forums = <Forum>[];
-        for (final item in block.querySelectorAll('td.fl_g, td.fl_icn, dt a, h2 a')) {
-          final a = item.localName == 'a' ? item : item.querySelector('dt a, h2 a, a[href*="forum-"], a[href*="fid="]');
-          if (a == null) continue;
-          final href = a.attributes['href'] ?? '';
-          final fm = RegExp(r'forum-(\d+)-\d+\.html|fid=(\d+)').firstMatch(href);
-          if (fm == null) continue;
-          final fid = int.tryParse(fm.group(1) ?? fm.group(2) ?? '');
-          if (fid == null || fid <= 0 || forums.any((f) => f.fid == fid)) continue;
+        final seenFids = <int>{};
+        final table = catEl.querySelector('table.fl_tb') ?? catEl;
 
-          final fname = _cleanTitle(a.text.trim());
-          if (fname.isEmpty) continue;
+        for (final item in table.querySelectorAll('td.fl_g, td.fl_icn, dt, td')) {
+          for (final a in item.querySelectorAll('h2 a[href*="forum-"], dt a[href*="forum-"], a[href*="forum-"], a[href*="fid="]')) {
+            final href = a.attributes['href'] ?? '';
+            final fm = RegExp(r'forum-(\d+)-\d+\.html|fid=(\d+)').firstMatch(href);
+            if (fm == null) continue;
+            final fid = int.tryParse(fm.group(1) ?? fm.group(2) ?? '');
+            if (fid == null || fid <= 0 || !seenFids.add(fid)) continue;
 
-          var today = -1;
-          final em = item.querySelector('em, span.xi1');
-          if (em != null) {
-            final emM = RegExp(r'(\d+)').firstMatch(em.text);
-            if (emM != null) today = int.tryParse(emM.group(1)!) ?? -1;
+            final fname = _cleanTitle(a.text.trim());
+            if (fname.isEmpty) continue;
+
+            var today = -1;
+            final em = item.querySelector('em, span.xi1');
+            if (em != null) {
+              final emM = RegExp(r'(\d+)').firstMatch(em.text);
+              if (emM != null) today = int.tryParse(emM.group(1)!) ?? -1;
+            }
+
+            forums.add(Forum(
+              fid: fid,
+              name: fname,
+              gid: gid,
+              todayCount: today,
+            ));
           }
-
-          forums.add(Forum(
-            fid: fid,
-            name: fname,
-            gid: gid,
-            todayCount: today,
-          ));
         }
 
         if (forums.isNotEmpty) {
@@ -3974,6 +4048,96 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         tribute: '0',
       ),
     ];
+  }
+
+  // ---------------------------------------------------------------------
+  // 论坛 AI 总结 (klpbbs_aisum)
+  // ---------------------------------------------------------------------
+  /// 解析论坛 AI 总结数据（支持预渲染 HTML 结构与流式初始态）
+  static AiSummaryData? parseAiSummary(String html, {html_dom.Document? doc}) {
+    if (!html.contains('klpai')) return null;
+    final d = doc ?? html_parser.parse(html);
+    final root = d.querySelector('.klpai');
+    if (root == null) return null;
+
+    final streamAttr = root.attributes['data-stream'] ?? '0';
+    var streamUrl = root.attributes['data-url'];
+    if (streamUrl == null || streamUrl.isEmpty) {
+      final scriptMatch = RegExp(r'''(?:fetch\s*\(\s*|streamUrl\s*=\s*|url:\s*)['"]([^'"]*klpbbs_aisum:stream[^'"]*)['"]''').firstMatch(html);
+      if (scriptMatch != null) {
+        streamUrl = scriptMatch.group(1);
+      }
+    }
+
+    final headline = root.querySelector('[data-role="headline"], .klpai__headline')?.text.trim() ?? '';
+    final summary = root.querySelector('[data-role="summary"], .klpai__panel--summary, .klpai__summary')?.text.trim() ?? '';
+    final metaText = root.querySelector('.klpai__time, [data-role="meta"]')?.text.trim() ??
+        root.querySelector('.klpai__meta')?.text.trim();
+    final statusText = root.querySelector('[data-role="status"], .klpai__loading, .klpai__status')?.text.trim();
+
+    final notices = <String>[];
+    for (final li in root.querySelectorAll('[data-panel="notices"] li, [data-role="noticelist"] li, .klpai__points li, .klpai__panel--notices li')) {
+      final t = li.text.trim();
+      if (t.isNotEmpty && !notices.contains(t)) {
+        notices.add(t);
+      }
+    }
+
+    final downloadSteps = <String>[];
+    for (final li in root.querySelectorAll('[data-panel="download"] [data-role="downloadlist"] li, [data-role="downloadwrap"] li, .klpai__panel--download ol li, .klpai__panel--download ul li')) {
+      final t = li.text.trim();
+      if (t.isNotEmpty && !downloadSteps.contains(t)) {
+        downloadSteps.add(t);
+      }
+    }
+
+    final links = <AiSummaryLink>[];
+    for (final a in root.querySelectorAll('[data-role="links"] a, a.klpai__file--link, .klpai__links a, a.klpai__link')) {
+      var href = a.attributes['data-href'] ?? a.attributes['href'] ?? '';
+      if (href.contains('url.php?url=')) {
+        try {
+          final m = RegExp(r'url=([A-Za-z0-9+/=_%-]+)').firstMatch(href);
+          if (m != null) {
+            final raw = Uri.decodeComponent(m.group(1)!).replaceAll('-', '+').replaceAll('_', '/');
+            final pad = (4 - (raw.length % 4)) % 4;
+            final padded = raw + ('=' * pad);
+            final decoded = utf8.decode(base64.decode(padded));
+            if (decoded.startsWith('http')) href = decoded;
+          }
+        } catch (_) {}
+      }
+      final name = a.querySelector('.klpai__filename')?.text.trim() ?? a.text.trim();
+      final meta = a.querySelector('.klpai__filemeta')?.text.trim() ?? '';
+      var service = '';
+      if (meta.contains('·')) {
+        service = meta.split('·').first.trim();
+      }
+      if (href.isNotEmpty) {
+        links.add(AiSummaryLink(url: href, label: name.isNotEmpty ? name : href, service: service));
+      }
+    }
+
+    if (headline.isNotEmpty ||
+        summary.isNotEmpty ||
+        notices.isNotEmpty ||
+        downloadSteps.isNotEmpty ||
+        links.isNotEmpty ||
+        streamAttr == '1' ||
+        (streamUrl != null && streamUrl.isNotEmpty) ||
+        (statusText != null && statusText.isNotEmpty)) {
+      return AiSummaryData(
+        headline: headline,
+        summary: summary,
+        notices: notices,
+        downloadSteps: downloadSteps,
+        links: links,
+        generatedTime: metaText,
+        statusText: statusText,
+        isStreaming: streamAttr == '1',
+        streamUrl: streamUrl,
+      );
+    }
+    return null;
   }
 
   // ---------------------------------------------------------------------
@@ -4454,9 +4618,13 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
       // 提取楼层标识（如「楼主」、「沙发」、「板凳」、「地板」、「5#」、「11#」、「来自 20#」等）
       var floorNumber = replyFloor.floorNumber;
+      if (floors.isEmpty && floorNumber.isEmpty) {
+        floorNumber = '楼主';
+        isThreadAuthor = true;
+      }
       if (floorNumber.isEmpty) {
         final floorEl = post.querySelector(
-          '.authi li.mtit span.y, .authi .mtit span.y, .authi span.y, a.node em, a[id^="postnum"] em, .pi strong a em, .postinfo strong a, .postinfo strong, .floor, .comiis_postli_top em.y',
+          '.comiis_postli_top h2 span.y, .comiis_postli_top span.f_d.y, .comiis_postli_top span.y, .authi li.mtit span.y, .authi .mtit span.y, .authi span.y, a.node em, a[id^="postnum"] em, a[id^="postnum"], .pi strong a em, .pi strong a, .pi strong, .postinfo strong a, .postinfo strong, .floor, .comiis_postli_top em.y',
         );
         if (floorEl != null) {
           final t = floorEl.text.trim();
@@ -4515,7 +4683,13 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       final likeBtn = post.querySelector(
         '.reply_liked, .supported, .comiis_yizan, a.voted, .km_recommend_on, a[class*="voted"], a[class*="liked"], a[id^="recommend"][class*="on"], a[id^="recommend"][class*="cur"], a[id^="reply_like_"][class*="on"], a[id^="reply_like_"][class*="cur"]',
       );
-      final floorIsLiked = likeBtn != null ||
+      final hotReplyBtn = post.querySelector('[id^="comiis_hotreply"]');
+      final isHotReplyLiked = hotReplyBtn != null &&
+          (hotReplyBtn.classes.contains('f_wb') ||
+           hotReplyBtn.innerHtml.contains('&#xe654;') ||
+           hotReplyBtn.innerHtml.contains('\ue654'));
+      final floorIsLiked = isHotReplyLiked ||
+          likeBtn != null ||
           (post.querySelector('a.reply_like, a.support, a[id^="reply_like_"]')?.text.contains('已赞') ?? false);
       // 处罚与警告状态解析（受到警告 / 屏蔽 / 禁言 / 审核中 / 锁定）
       final warnEl = post.querySelector(
@@ -4539,7 +4713,11 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       final bool isShielded = isBanned ||
           postAllText.contains('内容自动屏蔽') ||
           postAllText.contains('该帖被管理员或版主屏蔽') ||
-          post.querySelector('.locked, .shield, .comiis_shield') != null;
+          post.querySelector('.shield, .comiis_shield') != null ||
+          (post.querySelector('.locked') != null &&
+              (postAllText.contains('该帖被管理员或版主屏蔽') ||
+                  postAllText.contains('内容自动屏蔽') ||
+                  postAllText.contains('作者被禁止或删除')));
       var shieldText = '';
       if (isBanned) {
         shieldText = '提示: 作者被禁止或删除 内容自动屏蔽';
@@ -4635,6 +4813,56 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           canEdit: hasCanEdit,
         ),
       );
+    }
+
+    // 若未匹配到独立楼层容器，首先检测是否有 Discuz 系统提示/权限限制/审核/删除信息
+    if (floors.isEmpty) {
+      final msgEl = doc.querySelector(
+        '#messagetext, .alert_error, .jump_c, .comiis_tip, .tip_c, div.c.altw, .alert_info, .alert_notice',
+      );
+      if (msgEl != null) {
+        final alertText = (msgEl.querySelector('p, .alert_error, .jump_c')?.text.trim() ?? msgEl.text.trim())
+            .replaceAll(RegExp(r'\s+'), ' ');
+        if (alertText.isNotEmpty && !alertText.contains('欢迎') && !alertText.contains('Minecraft')) {
+          final isReview = alertText.contains('审核');
+          final isLocked = alertText.contains('权限') || alertText.contains('密码') || alertText.contains('登录');
+          floors.add(
+            PostFloor(
+              pid: 0,
+              uid: null,
+              author: '系统提示',
+              timeText: '',
+              contentHtml: '<p>$alertText</p>',
+              blocks: [
+                ShieldBlock(
+                  title: '系统提示',
+                  reason: alertText,
+                  iconType: isReview ? 'review' : (isLocked ? 'locked' : 'banned'),
+                ),
+              ],
+              images: const [],
+              comments: const [],
+              replyFloors: const [],
+              replyFloorCount: 0,
+              floorNumber: '1#',
+              faceUrl: '',
+              ipText: '',
+              levelText: '',
+              levelGid: null,
+              levelColor: '',
+              verifies: const [],
+              magicItems: const [],
+              isThreadAuthor: true,
+              rewardCount: '',
+              rewards: const [],
+              medals: const [],
+              embeds: const [],
+              signature: '',
+              isBestAnswer: false,
+            ),
+          );
+        }
+      }
     }
 
     // 若未匹配到独立楼层容器，执行全局文档级首楼保底提取
@@ -4975,6 +5203,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
     // 收藏与点赞状态（根据 Discuz 与 Comiis 真实 DOM/文本类识别）
     var isFavorited = false;
+    var hasExplicitFavState = false;
     final favElements = doc.querySelectorAll(
       '#k_favorite, #a_favorite, #comiis_favorite_a, a[href*="ac=favorite"], a[href*="delfav"], .thread_fav, .k_fav, a.favorite, a[id^="favorite_"]',
     );
@@ -4983,11 +5212,23 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       final title = el.attributes['title'] ?? '';
       final text = el.text.trim();
       final icon = el.querySelector('i');
+      final style = el.attributes['style'] ?? '';
 
+      // 明确被激活为已收藏
       final isFavEl = el.classes.contains('on') ||
           el.classes.contains('cur') ||
           el.classes.contains('fav_on') ||
-          (icon != null && (icon.classes.contains('on') || icon.classes.contains('cur'))) ||
+          el.classes.contains('f_a') ||
+          style.contains('#ffaa00') ||
+          (icon != null && (
+            icon.classes.contains('on') ||
+            icon.classes.contains('cur') ||
+            icon.classes.contains('fav_on') ||
+            icon.classes.contains('f_a') ||
+            icon.innerHtml.contains('&#xe64c;') ||
+            icon.innerHtml.contains('&#xe64c') ||
+            icon.innerHtml.contains('\ue64c')
+          )) ||
           href.contains('op=delete') ||
           href.contains('delfav') ||
           text.contains('已收藏') ||
@@ -4997,18 +5238,39 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
       if (isFavEl) {
         isFavorited = true;
+        hasExplicitFavState = true;
         break;
+      }
+
+      // 明确为未激活状态（克米手机版标准：f_b 灰色 或 &#xe617; 空心星）
+      final isUnfavEl = (icon != null && (
+            icon.classes.contains('f_b') ||
+            icon.innerHtml.contains('&#xe617;') ||
+            icon.innerHtml.contains('&#xe617') ||
+            icon.innerHtml.contains('\ue617')
+          )) ||
+          el.classes.contains('f_b');
+
+      if (isUnfavEl) {
+        hasExplicitFavState = true;
       }
     }
 
     if (!isFavorited) {
-      isFavorited = doc.querySelector(
-            '#k_favorite.on, #k_favorite.cur, #k_favorite.fav_on, #comiis_favorite_a.on, a[href*="ac=favorite"][class*="on"], a[href*="ac=favorite"][class*="cur"], a[href*="ac=favorite"][class*="fav_on"], a[href*="op=delete"][href*="favorite"], a[href*="delfav"], a.fav_on, a.k_fav.on',
-          ) !=
-          null;
+      final secondaryFav = doc.querySelector(
+        '#k_favorite.on, #k_favorite.cur, #k_favorite.fav_on, #comiis_favorite_a.on, a[href*="ac=favorite"][class*="on"], a[href*="ac=favorite"][class*="cur"], a[href*="ac=favorite"][class*="fav_on"], a[href*="op=delete"][href*="favorite"], a[href*="delfav"], a.fav_on, a.k_fav.on',
+      );
+      if (secondaryFav != null) {
+        isFavorited = true;
+        hasExplicitFavState = true;
+      }
     }
 
-    final isLiked = (floors.isNotEmpty && floors.first.isLiked) ||
+    final recColor = doc.querySelector('.comiis_recommend_color');
+    final isComiisRecLiked = (recColor != null && recColor.classes.contains('f_a')) ||
+        (recColor != null && (recColor.innerHtml.contains('&#xe654;') || recColor.innerHtml.contains('\ue654')));
+    final isLiked = isComiisRecLiked ||
+        (floors.isNotEmpty && floors.first.isLiked) ||
         doc.querySelector(
           '#recommendv_add.on, #recommend_add.on, .reply_liked, .supported, .comiis_yizan, a.voted, a.km_recommend_on, a[class*="voted"], a[class*="liked"], a[id^="recommend"][class*="on"], a[id^="recommend"][class*="cur"]',
         ) !=
@@ -5032,9 +5294,54 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
+    final aiSummary = parseAiSummary(html, doc: doc);
+
     // 发布日期（首楼时间）与最近回复日期（末楼时间）
     final publishDate = floors.isNotEmpty ? floors.first.timeText : '';
     final lastReplyDate = floors.isNotEmpty ? floors.last.timeText : '';
+    // 回帖排序方式识别（正序 / 倒序）
+    bool isDescOrder = false;
+    int? targetOrdertype;
+    final orderLink = doc.querySelector(
+      '.comiis_ordertype a[href*="ordertype"], a[href*="ordertype"]',
+    );
+    if (orderLink != null) {
+      final t = orderLink.text.trim();
+      final href = orderLink.attributes['href'] ?? '';
+      final om = RegExp(r'ordertype=(\d+)').firstMatch(href);
+      if (om != null) {
+        targetOrdertype = int.tryParse(om.group(1)!);
+      }
+      if (t.contains('正序')) {
+        // 按钮显示「正序」或「正序浏览」，说明当前处于【倒序】，点击该链接将切换为【正序】
+        isDescOrder = true;
+        targetOrdertype ??= 2;
+      } else if (t.contains('倒序')) {
+        // 按钮显示「倒序」或「倒序浏览」，说明当前处于【正序】，点击该链接将切换为【倒序】
+        isDescOrder = false;
+        targetOrdertype ??= 1;
+      }
+    }
+    // 保底推断：若无 ordertype 链接，但首个回复的楼层编号远大于后续回复或大于 2（例如 187635# 紧跟 187634#），判定为倒序
+    if (!isDescOrder && floors.length >= 2) {
+      final f1 = int.tryParse(RegExp(r'\d+').firstMatch(floors[1].floorNumber)?.group(0) ?? '');
+      if (f1 != null) {
+        if (floors.length >= 3) {
+          final f2 = int.tryParse(RegExp(r'\d+').firstMatch(floors[2].floorNumber)?.group(0) ?? '');
+          if (f2 != null && f1 > f2) {
+            isDescOrder = true;
+            targetOrdertype ??= 2;
+          } else if (f1 > 2) {
+            isDescOrder = true;
+            targetOrdertype ??= 2;
+          }
+        } else if (f1 > 2) {
+          isDescOrder = true;
+          targetOrdertype ??= 2;
+        }
+      }
+    }
+
     return (
       title: title,
       floors: floors,
@@ -5056,8 +5363,12 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       stampUrl: stampUrl,
       coverUrl: coverUrl,
       isFavorited: isFavorited,
+      hasExplicitFavState: hasExplicitFavState,
       isLiked: isLiked,
       favid: favid,
+      aiSummary: aiSummary,
+      isDescOrder: isDescOrder,
+      targetOrdertype: targetOrdertype,
     );
   }
 
@@ -5071,48 +5382,75 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         ? (String outer) => outer.contains('fid=$id') || outer.contains('forum-$id-') || outer.contains('id=$id')
         : (String outer) => outer.contains('tid=$id') || outer.contains('thread-$id-') || outer.contains('id=$id');
 
-    // 1. 直接检索 delete 链接中的 favid
-    for (final a in doc.querySelectorAll('a[href*="ac=favorite"][href*="op=delete"]')) {
-      final href = a.attributes['href'] ?? '';
-      if (pattern1(href) || (a.parent != null && pattern2(a.parent!.outerHtml))) {
-        final m = RegExp(r'favid=(\d+)').firstMatch(href);
-        if (m != null) {
-          final fId = int.tryParse(m.group(1)!);
-          if (fId != null) return fId;
-        }
-      }
-    }
-    // 2. 在包含当前 id 的容器节点（tr, li, div）中检索
-    for (final container in doc.querySelectorAll('tr, li, div[id^="fav_"]')) {
+    // 1. 在包含当前 id 的容器节点（克米 .comiis_mysclist li, li.mysclist_li, tr, li, div[id^="fav_"]）中检索
+    for (final container in doc.querySelectorAll('.comiis_mysclist li, li.mysclist_li, #favorite_ul li, tr, li, div[id^="fav_"]')) {
       final outer = container.outerHtml;
       if (pattern2(outer)) {
-        final idAttr = container.attributes['id'] ?? '';
-        final mId = RegExp(r'fav_(\d+)').firstMatch(idAttr);
-        if (mId != null) {
-          final fId = int.tryParse(mId.group(1)!);
-          if (fId != null) return fId;
+        for (final a in container.querySelectorAll('a[href*="favid="], a[href*="op=delete"]')) {
+          final href = a.attributes['href'] ?? '';
+          final m = RegExp(r'favid=(\d+)').firstMatch(href);
+          if (m != null) {
+            final fId = int.tryParse(m.group(1)!);
+            if (fId != null && fId > 0) return fId;
+          }
         }
         for (final inp in container.querySelectorAll('input[name*="favorite"]')) {
           final val = inp.attributes['value'] ?? '';
           final fId = int.tryParse(val);
           if (fId != null && fId > 0) return fId;
         }
-        for (final a in container.querySelectorAll('a[href*="favid="]')) {
-          final href = a.attributes['href'] ?? '';
-          final m = RegExp(r'favid=(\d+)').firstMatch(href);
-          if (m != null) {
-            final fId = int.tryParse(m.group(1)!);
-            if (fId != null) return fId;
-          }
+        final idAttr = container.attributes['id'] ?? '';
+        final mId = RegExp(r'fav_(\d+)').firstMatch(idAttr);
+        if (mId != null) {
+          final fId = int.tryParse(mId.group(1)!);
+          if (fId != null && fId > 0) return fId;
         }
       }
     }
-    // 3. 全局正则保底
-    final reg = type == 'forum'
+
+    // 2. 直接检索 delete 链接中的 favid
+    for (final a in doc.querySelectorAll('a[href*="ac=favorite"][href*="op=delete"], a[href*="favid="]')) {
+      final href = a.attributes['href'] ?? '';
+      if (pattern1(href) || (a.parent != null && pattern2(a.parent!.outerHtml))) {
+        final m = RegExp(r'favid=(\d+)').firstMatch(href);
+        if (m != null) {
+          final fId = int.tryParse(m.group(1)!);
+          if (fId != null && fId > 0) return fId;
+        }
+      }
+    }
+
+    // 3. 匹配 PC 表单中的 input[name*="favorite"] 与紧随其后的目标 a 链接
+    final regInput = type == 'forum'
+        ? RegExp('(?:value|vid)=["\'](\\d+)["\'][^<]*<a[^>]*href=["\'][^"\']*(?:fid=$id|forum-$id-)', dotAll: true).firstMatch(html)
+        : RegExp('(?:value|vid)=["\'](\\d+)["\'][^<]*<a[^>]*href=["\'][^"\']*(?:tid=$id|thread-$id-)', dotAll: true).firstMatch(html);
+    if (regInput != null) {
+      final fidVal = int.tryParse(regInput.group(1) ?? '');
+      if (fidVal != null && fidVal > 0) return fidVal;
+    }
+
+    // 3. 全局正则保底（双向匹配：favid 在前或在后）
+    final reg1 = type == 'forum'
+        ? RegExp('favid=(\\d+)[^"\'<]*?(?:forum-$id-|fid=$id)', dotAll: true).firstMatch(html)
+        : RegExp('favid=(\\d+)[^"\'<]*?(?:thread-$id-|tid=$id)', dotAll: true).firstMatch(html);
+    if (reg1 != null) {
+      final fidVal = int.tryParse(reg1.group(1) ?? '');
+      if (fidVal != null && fidVal > 0) return fidVal;
+    }
+
+    final reg2 = type == 'forum'
+        ? RegExp('(?:forum-$id-|fid=$id)[^"\'<]*?favid=(\\d+)', dotAll: true).firstMatch(html)
+        : RegExp('(?:thread-$id-|tid=$id)[^"\'<]*?favid=(\\d+)', dotAll: true).firstMatch(html);
+    if (reg2 != null) {
+      final fidVal = int.tryParse(reg2.group(1) ?? '');
+      if (fidVal != null && fidVal > 0) return fidVal;
+    }
+
+    final reg3 = type == 'forum'
         ? RegExp('id=["\']fav_(\\d+)["\'].*?(?:forum-$id-|fid=$id)', dotAll: true).firstMatch(html)
         : RegExp('id=["\']fav_(\\d+)["\'].*?(?:thread-$id-|tid=$id)', dotAll: true).firstMatch(html);
-    if (reg != null) {
-      return int.tryParse(reg.group(1) ?? '');
+    if (reg3 != null) {
+      return int.tryParse(reg3.group(1) ?? '');
     }
     return null;
   }
@@ -5237,11 +5575,14 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     bool isSignedToday = false;
     final fontEl = doc.querySelector('.paiming .font, .qdleft .font, .font, .sign_btn, .btn_sign');
     final fontText = fontEl?.text.trim() ?? '';
-    if (fontText.contains('还没有签到') ||
+    final hasUnsignedClues = fontText.contains('还没有签到') ||
         fontText.contains('未签到') ||
         fontText.contains('点我签到') ||
+        fontText.contains('立即签到') ||
         html.contains('您今天还没有签到') ||
-        html.contains('点我签到')) {
+        html.contains('点我签到');
+
+    if (hasUnsignedClues) {
       isSignedToday = false;
     } else if (fontText.contains('今日已签') ||
         fontText.contains('已经签过到') ||
@@ -5254,7 +5595,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         html.contains('今日已打卡') ||
         (mySignRank != null && mySignRank > 0)) {
       isSignedToday = true;
-    } else if (doc.querySelector('.btn-signed, .signed, a.btn_v, .btn_v, .btn_have, .JD_sign, .had_sign') != null ||
+    } else if (doc.querySelector('.btn-signed, .signed, a.btn_v.signed, .btn_have, .had_sign') != null ||
         html.contains('k_misign:tdyq') ||
         html.contains('k_misign:signed')) {
       isSignedToday = true;
@@ -6567,6 +6908,61 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         )
         .forEach((e) => e.remove());
 
+    // 0. 优先检测 Discuz 空间收藏列表模式（#favorite_ul li, .fav_list li, li[id^="fav_"], .comiis_mysclist li）
+    final favItems = cleanDoc.querySelectorAll(
+      '#favorite_ul > li, ul#favorite_ul li, .fav_list li, #delform ul li, li[id^="fav_"], .comiis_mysclist li, li.mysclist_li',
+    );
+    if (favItems.isNotEmpty) {
+      for (final li in favItems) {
+        final delA = li.querySelector('a[href*="op=delete"], a[href*="delfav"], a[id^="a_delete_"]');
+        final allAs = li.querySelectorAll('a');
+        html_dom.Element? titleA;
+        for (final a in allAs) {
+          if (a == delA) continue;
+          final href = a.attributes['href'] ?? '';
+          if (href.contains('thread-') || href.contains('viewthread') || href.contains('tid=')) {
+            titleA = a;
+            break;
+          }
+        }
+        if (titleA == null) continue;
+
+        final href = titleA.attributes['href'] ?? '';
+        final inputVid = li.querySelector('input[vid]')?.attributes['vid'];
+        final tid = int.tryParse(inputVid ?? '') ?? _tidFromHref(href);
+        if (tid == null || tid <= 0 || !seen.add(tid)) continue;
+
+        final title = _cleanTitle(titleA.text);
+        if (title.isEmpty) continue;
+
+        final timeText = li.querySelector('.xg1, .date, .time, span.time')?.text.trim() ?? '';
+        final excerptEl = li.querySelector('blockquote#quote_preview, blockquote, .quote, .description, p');
+        final excerpt = excerptEl?.text.replaceAll('\n', ' ').trim();
+
+        final mId = RegExp(r'fav_(\d+)').firstMatch(li.attributes['id'] ?? '') ??
+            RegExp(r'favid=(\d+)').firstMatch(li.innerHtml);
+        final inputFav = li.querySelector('input[name*="favorite"]')?.attributes['value'];
+        final favid = (inputFav != null && int.tryParse(inputFav) != null)
+            ? int.parse(inputFav)
+            : (mId != null ? int.tryParse(mId.group(1)!) : null);
+
+        final cover = _coverFromScope(li);
+
+        result.add(
+          ThreadSummary(
+            tid: tid,
+            uid: null,
+            author: '',
+            title: title,
+            timeText: timeText,
+            excerpt: excerpt?.isNotEmpty == true ? excerpt : null,
+            coverUrl: cover,
+            favid: favid,
+          ),
+        );
+      }
+    }
+
     // 1. KLPBBS C-Style 空间列表模式（.c_threadlist ul li 或 .c_threadlist li）
     final cThreadItems = cleanDoc.querySelectorAll('.c_threadlist li');
     if (cThreadItems.isNotEmpty) {
@@ -7578,12 +7974,292 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     );
   }
 
+  /// 解析发帖/编辑页中的分类信息与发帖模板（threadsorts / sortid / typeoption）
+  static ThreadSortInfo? parseThreadSortInfo(String html) {
+    if (!html.contains('sortid') && !html.contains('typeoption') && !html.contains('forum_optionlist')) {
+      return null;
+    }
+
+    final doc = html_parser.parse(html);
+
+    // 1. 查找所有可用的模板 Tab（如：模组发布 / 地图发布 / 插件发布）
+    final availableSorts = <SortTabItem>[];
+    for (final a in doc.querySelectorAll('a')) {
+      final onclick = a.attributes['onclick'] ?? '';
+      final href = a.attributes['href'] ?? '';
+      final m = RegExp(r'sortid=(\d+)').firstMatch('$onclick $href');
+      if (m != null) {
+        final sid = int.tryParse(m.group(1)!) ?? 0;
+        final name = a.text.trim();
+        if (sid > 0 && name.isNotEmpty && !availableSorts.any((s) => s.sortid == sid)) {
+          availableSorts.add(SortTabItem(sortid: sid, name: name));
+        }
+      }
+    }
+
+    // 亦可从 select[name="sortid"] 中寻找
+    final sortSel = doc.querySelector('select[name="sortid"]');
+    if (sortSel != null) {
+      for (final opt in sortSel.querySelectorAll('option')) {
+        final sid = int.tryParse(opt.attributes['value'] ?? '') ?? 0;
+        final name = opt.text.trim();
+        if (sid > 0 && name.isNotEmpty && !availableSorts.any((s) => s.sortid == sid)) {
+          availableSorts.add(SortTabItem(sortid: sid, name: name));
+        }
+      }
+    }
+
+    // 2. 确定当前激活的 sortid
+    int currentSortid = 0;
+    final hiddenSort = doc.querySelector('input[name="sortid"]') ?? doc.querySelector('input[name="selectsortid"]');
+    if (hiddenSort != null) {
+      currentSortid = int.tryParse(hiddenSort.attributes['value'] ?? '') ?? 0;
+    }
+    if (currentSortid <= 0) {
+      final m = RegExp(r"var\s+sortid\s*=\s*parseInt\('(\d+)'\)").firstMatch(html);
+      if (m != null) {
+        currentSortid = int.tryParse(m.group(1)!) ?? 0;
+      }
+    }
+    if (currentSortid <= 0 && availableSorts.isNotEmpty) {
+      currentSortid = availableSorts.first.sortid;
+    }
+
+    // 是否为版块强制必填（sortrequired = 1）
+    bool sortrequired = false;
+    final reqM = RegExp(r"var\s+sortrequired\s*=\s*parseInt\('(\d+)'\)").firstMatch(html);
+    if (reqM != null) {
+      sortrequired = reqM.group(1) == '1';
+    }
+
+    String sortName = '';
+    final activeTab = availableSorts.where((s) => s.sortid == currentSortid).firstOrNull;
+    if (activeTab != null) {
+      sortName = activeTab.name;
+    } else {
+      sortName = '分类信息';
+    }
+
+    // 3. 解析字段列表（主：XML 解析；备：DOM 解析）
+    final fields = <SortOptionField>[];
+
+    // 3.1 尝试从 XML 结构中解析
+    final xmlM = RegExp(r"var\s+forum_optionlist\s*=\s*'([^']+)'").firstMatch(html);
+    if (xmlM != null) {
+      try {
+        final xmlStr = xmlM.group(1)!;
+        final frag = html_parser.parseFragment(xmlStr);
+        final optionList = frag.querySelector('forum_optionlist');
+        final nodes = optionList?.children ?? frag.children;
+        for (final node in nodes) {
+          if (!node.localName!.startsWith('s') || node.localName == 'span') continue;
+          final identifier = node.querySelector('sidentifier')?.text.trim() ?? '';
+          if (identifier.isEmpty) continue;
+
+          final title = node.querySelector('stitle')?.text.trim() ?? identifier;
+          final type = node.querySelector('stype')?.text.trim().toLowerCase() ?? 'text';
+          final required = node.querySelector('srequired')?.text.trim() == '1';
+          final description = node.querySelector('sdescription')?.text.trim() ?? '';
+          final unit = node.querySelector('sunit')?.text.trim() ?? '';
+          final maxLen = int.tryParse(node.querySelector('smaxlength')?.text.trim() ?? '');
+          final defaultVal = node.querySelector('sdefaultvalue')?.text.trim();
+
+          final choices = <String, String>{};
+          final choicesNode = node.querySelector('schoices');
+          if (choicesNode != null) {
+            for (final c in choicesNode.children) {
+              final ctag = c.localName ?? '';
+              final key = ctag.startsWith('s') ? ctag.substring(1) : ctag;
+              choices[key] = c.text.trim();
+            }
+          }
+
+          // 从当前页面 DOM 中读取已填写的初始值
+          dynamic initialValue = defaultVal;
+          if (type == 'checkbox') {
+            final checkedVals = <String>[];
+            for (final inp in doc.querySelectorAll('input[name="typeoption[$identifier][]"]')) {
+              if (inp.attributes.containsKey('checked')) {
+                checkedVals.add(inp.attributes['value'] ?? '');
+              }
+            }
+            if (checkedVals.isNotEmpty) {
+              initialValue = checkedVals;
+            }
+          } else if (type == 'radio') {
+            for (final inp in doc.querySelectorAll('input[name="typeoption[$identifier]"]')) {
+              if (inp.attributes.containsKey('checked')) {
+                initialValue = inp.attributes['value'];
+                break;
+              }
+            }
+          } else if (type == 'select') {
+            final sel = doc.querySelector('select[name="typeoption[$identifier]"]');
+            final selOpt = sel?.querySelector('option[selected]');
+            if (selOpt != null) {
+              initialValue = selOpt.attributes['value'];
+            }
+          } else if (type == 'textarea') {
+            final ta = doc.querySelector('textarea[name="typeoption[$identifier]"]');
+            if (ta != null && ta.text.trim().isNotEmpty) {
+              initialValue = ta.text.trim();
+            }
+          } else {
+            final inp = doc.querySelector('input[name="typeoption[$identifier]"]');
+            if (inp != null && (inp.attributes['value'] ?? '').isNotEmpty) {
+              initialValue = inp.attributes['value'];
+            }
+          }
+
+          fields.add(SortOptionField(
+            identifier: identifier,
+            title: title,
+            type: type,
+            required: required,
+            description: description,
+            unit: unit,
+            maxlength: maxLen,
+            choices: choices,
+            initialValue: initialValue,
+          ));
+        }
+      } catch (_) {}
+    }
+
+    // 3.2 备用方案：如果 XML 为空但 DOM 中有 table.tfm 或 #threadsorts
+    if (fields.isEmpty) {
+      for (final row in doc.querySelectorAll('tr, div.p_opt')) {
+        final inputs = row.querySelectorAll('input[name^="typeoption["], select[name^="typeoption["], textarea[name^="typeoption["]');
+        if (inputs.isEmpty) continue;
+
+        final firstInput = inputs.first;
+        final nameAttr = firstInput.attributes['name'] ?? '';
+        final idM = RegExp(r'typeoption\[([a-zA-Z0-9_]+)\]').firstMatch(nameAttr);
+        if (idM == null) continue;
+        final identifier = idM.group(1)!;
+        if (fields.any((f) => f.identifier == identifier)) continue;
+
+        final th = row.querySelector('th, span.p_title, label');
+        var title = th?.text.replaceAll('*', '').trim() ?? identifier;
+        final required = th?.querySelector('.rq') != null || (th?.text.contains('*') ?? false);
+        final descEl = row.querySelector('.xg2, span[id^="check"], p.xg2');
+        final description = descEl?.text.trim() ?? '';
+
+        final tag = firstInput.localName;
+        final itype = firstInput.attributes['type']?.toLowerCase() ?? '';
+        String fieldType = 'text';
+        final choices = <String, String>{};
+        dynamic initialValue;
+
+        if (tag == 'select') {
+          fieldType = 'select';
+          for (final opt in firstInput.querySelectorAll('option')) {
+            final v = opt.attributes['value'] ?? '';
+            final t = opt.text.trim();
+            if (v.isNotEmpty) {
+              choices[v] = t;
+              if (opt.attributes.containsKey('selected')) {
+                initialValue = v;
+              }
+            }
+          }
+        } else if (tag == 'textarea') {
+          fieldType = 'textarea';
+          initialValue = firstInput.text.trim();
+        } else if (itype == 'radio') {
+          fieldType = 'radio';
+          for (final inp in inputs) {
+            final v = inp.attributes['value'] ?? '';
+            final lbl = inp.parent?.text.trim() ?? v;
+            choices[v] = lbl;
+            if (inp.attributes.containsKey('checked')) {
+              initialValue = v;
+            }
+          }
+        } else if (itype == 'checkbox') {
+          fieldType = 'checkbox';
+          final checkedVals = <String>[];
+          for (final inp in inputs) {
+            final v = inp.attributes['value'] ?? '';
+            final lbl = inp.parent?.text.trim() ?? v;
+            choices[v] = lbl;
+            if (inp.attributes.containsKey('checked')) {
+              checkedVals.add(v);
+            }
+          }
+          if (checkedVals.isNotEmpty) {
+            initialValue = checkedVals;
+          }
+        } else {
+          if (row.text.contains('年') && row.text.contains('月') && row.text.contains('日') || firstInput.attributes['id']?.contains('calendar') == true) {
+            fieldType = 'calendar';
+          } else if (nameAttr.contains('url') || nameAttr.contains('dz') || firstInput.attributes['id']?.contains('url') == true) {
+            fieldType = 'url';
+          } else {
+            fieldType = 'text';
+          }
+          initialValue = firstInput.attributes['value'] ?? '';
+        }
+
+        fields.add(SortOptionField(
+          identifier: identifier,
+          title: title,
+          type: fieldType,
+          required: required,
+          description: description,
+          choices: choices,
+          initialValue: initialValue,
+        ));
+      }
+    }
+
+    if (currentSortid <= 0 && fields.isEmpty && availableSorts.isEmpty) {
+      return null;
+    }
+
+    return ThreadSortInfo(
+      sortid: currentSortid,
+      name: sortName,
+      sortrequired: sortrequired,
+      availableSorts: availableSorts,
+      fields: fields,
+    );
+  }
+
+  static PostOptionAttribute _parseOptionAttr(
+    html_dom.Document doc,
+    String name, {
+    bool defaultChecked = false,
+    bool defaultDisabled = false,
+  }) {
+    final el = doc.querySelector('input[name="$name"], input#$name');
+    if (el == null) {
+      return PostOptionAttribute(
+        available: false,
+        checked: defaultChecked,
+        disabled: defaultDisabled,
+      );
+    }
+    final isChecked = el.attributes.containsKey('checked') ||
+        el.attributes['checked'] == 'checked' ||
+        el.attributes['checked'] == 'true';
+    final isDisabled = el.attributes.containsKey('disabled') ||
+        el.attributes['disabled'] == 'disabled' ||
+        el.attributes['disabled'] == 'true';
+    return PostOptionAttribute(
+      available: true,
+      checked: isChecked,
+      disabled: isDisabled,
+    );
+  }
+
   /// 解析发帖页（forum.php?mod=post&action=newthread）的 formhash、可用的特殊主题类型与权限错误。
   /// Discuz 允许的特殊主题通过 switchpost('...&special=N') 菜单暴露；无菜单时仅普通帖。
   static ({
     String formhash,
     Set<int> allowedSpecials,
     List<({int value, String name})> typeOptions,
+    ThreadSortInfo? threadSortInfo,
     List<PostAttachmentItem> unusedAttachments,
     String errorMessage,
     PostEditorAttributes editorAttributes,
@@ -7616,6 +8292,9 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
+    // 分类信息发帖模板解析（threadsorts / sortid / typeoption）
+    final threadSortInfo = parseThreadSortInfo(html);
+
     // 1. 特殊主题识别：switchpost('forum.php?mod=post&action=newthread&special=X')
     for (final m in RegExp(
       r'''switchpost\(['"][^'"]*?(?:&|\?[?&])special=(\d+)['"]''',
@@ -7641,16 +8320,24 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     }
 
     // 2. 未使用的附件解析（未插入正文的上传附件）
-    for (final el in doc.querySelectorAll('tr[id^="unused_"], div[id^="unused_"], #unusedlist tr, #unusedattachlist tr')) {
+    for (final el in doc.querySelectorAll('tr[id^="unused_"], div[id^="unused_"], table[id^="unused_"], #unusedlist tr, #unusedattachlist tr, #unusedimgattachlist tr, #unusedlist_attach tr, #unusedlist_img tr')) {
       final input = el.querySelector('input[name="unused[]"], input[name^="attachnew"]');
-      final aid = int.tryParse(input?.attributes['value'] ?? '') ?? 0;
-      if (aid > 0) {
+      var aid = int.tryParse(input?.attributes['value'] ?? '') ?? 0;
+      if (aid == 0) {
+        final idAttr = el.attributes['id'] ?? '';
+        final idM = RegExp(r'unused_(\d+)').firstMatch(idAttr);
+        if (idM != null) {
+          aid = int.tryParse(idM.group(1)!) ?? 0;
+        }
+      }
+      if (aid > 0 && !unusedAttachments.any((a) => a.aid == aid)) {
         final name = el.querySelector('a, span.filename, .xw1')?.text.trim() ?? '附件 $aid';
         final isImage = name.toLowerCase().endsWith('.png') ||
             name.toLowerCase().endsWith('.jpg') ||
             name.toLowerCase().endsWith('.jpeg') ||
             name.toLowerCase().endsWith('.gif') ||
-            name.toLowerCase().endsWith('.webp');
+            name.toLowerCase().endsWith('.webp') ||
+            el.querySelector('img') != null;
         unusedAttachments.add(PostAttachmentItem(
           aid: aid,
           filename: name,
@@ -7679,71 +8366,65 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     if (formhash.isNotEmpty ||
         error.contains('发表帖子') ||
         error.contains('发布主题') ||
-        error.contains('发帖') ||
-        error.contains('苦力怕论坛') ||
-        error.contains('Minecraft')) {
-      if (!error.contains('抱歉') &&
-          !error.contains('无权') &&
-          !error.contains('登录') &&
-          !error.contains('限制') &&
-          !error.contains('error')) {
-        error = '';
-      }
+        error.contains('新帖')) {
+      error = '';
     }
 
-    // 4. 解析发帖/回复附加选项与权限特性（100% 实时对齐 Web 端 post_editor_attribute.htm）
-    PostOptionAttribute parseCheckbox(
-      String selector, {
-      bool defaultChecked = false,
-      bool defaultDisabled = false,
-    }) {
-      final el = doc.querySelector(selector);
-      if (el == null) {
-        return PostOptionAttribute(
-          available: false,
-          checked: defaultChecked,
-          disabled: defaultDisabled,
-        );
-      }
-      final isChecked = el.attributes.containsKey('checked') ||
-          el.attributes['checked'] == 'checked' ||
-          el.attributes['checked'] == 'true';
-      final isDisabled = el.attributes.containsKey('disabled') ||
-          el.attributes['disabled'] == 'disabled' ||
-          el.attributes['disabled'] == 'true';
-      return PostOptionAttribute(
-        available: true,
-        checked: isChecked,
-        disabled: isDisabled,
-      );
-    }
+    // 4. 网页端附加选项与权限实时解析 (Web post_editor_attribute.htm)
+    final usesig = _parseOptionAttr(doc, 'usesig', defaultChecked: true);
+    final isanonymous = _parseOptionAttr(doc, 'isanonymous', defaultChecked: false);
+    final hiddenreplies = _parseOptionAttr(doc, 'hiddenreplies', defaultChecked: false);
+    final ordertype = _parseOptionAttr(doc, 'ordertype', defaultChecked: false);
+    final allownoticeauthor = _parseOptionAttr(doc, 'allownoticeauthor', defaultChecked: true);
 
-    final usesig = parseCheckbox('input[name="usesig"], input#usesig', defaultChecked: true);
-    final isanonymous = parseCheckbox('input[name="isanonymous"], input#isanonymous', defaultChecked: false);
-    final hiddenreplies = parseCheckbox('input[name="hiddenreplies"], input#hiddenreplies', defaultChecked: false);
-    final ordertype = parseCheckbox('input[name="ordertype"], input#ordertype', defaultChecked: false);
-    final allownoticeauthor = parseCheckbox('input[name="allownoticeauthor"], input#allownoticeauthor', defaultChecked: true);
+    final htmlon = _parseOptionAttr(doc, 'htmlon', defaultChecked: false);
+    final allowimgcode = _parseOptionAttr(doc, 'allowimgcode', defaultChecked: true);
+    final allowimgurl = _parseOptionAttr(doc, 'allowimgurl', defaultChecked: true);
+    final parseurloff = _parseOptionAttr(doc, 'parseurloff', defaultChecked: false);
+    final smileyoff = _parseOptionAttr(doc, 'smileyoff', defaultChecked: false);
+    final bbcodeoff = _parseOptionAttr(doc, 'bbcodeoff', defaultChecked: false);
+    final imgcontent = _parseOptionAttr(doc, 'imgcontent', defaultChecked: false);
 
-    final htmlon = parseCheckbox('input[name="htmlon"], input#htmlon', defaultChecked: false, defaultDisabled: true);
-    final allowimgcode = parseCheckbox('input[name="allowimgcode"], input#allowimgcode', defaultChecked: true, defaultDisabled: true);
-    final allowimgurl = parseCheckbox('input[name="allowimgurl"], input#allowimgurl', defaultChecked: true);
-    final parseurloff = parseCheckbox('input[name="parseurloff"], input#parseurloff', defaultChecked: false);
-    final smileyoff = parseCheckbox('input[name="smileyoff"], input#smileyoff', defaultChecked: false);
-    final bbcodeoff = parseCheckbox('input[name="bbcodeoff"], input#bbcodeoff', defaultChecked: false);
-    final imgcontent = parseCheckbox('input[name="imgcontent"], input#imgcontent', defaultChecked: false, defaultDisabled: true);
-
-    // 解析用户组阅读权限选项 select[name="readperm"]
+    // 用户组阅读权限下拉 (select[name="readperm"])
     final readPermOptions = <({int value, String name})>[];
-    final readPermSel = doc.querySelector('select[name="readperm"], select#readperm');
+    final readPermSel = doc.querySelector('select[name="readperm"]');
     if (readPermSel != null) {
       for (final opt in readPermSel.querySelectorAll('option')) {
         final v = int.tryParse(opt.attributes['value'] ?? '') ?? 0;
-        final name = opt.text.trim();
-        if (v > 0 && name.isNotEmpty) {
-          readPermOptions.add((value: v, name: name));
+        final n = opt.text.trim();
+        if (n.isNotEmpty) {
+          readPermOptions.add((value: v, name: n));
         }
       }
     }
+
+    // 5. 管理用户组专属发帖特性解析 (Discuz post_editor_extra.htm & post_editpost.htm)
+    final stickTopicOptions = <({int value, String name})>[];
+    final stickSel = doc.querySelector('select[name="sticktopic"], select#sticktopic');
+    if (stickSel != null) {
+      for (final opt in stickSel.querySelectorAll('option')) {
+        final v = int.tryParse(opt.attributes['value'] ?? '') ?? 0;
+        final n = opt.text.trim();
+        if (n.isNotEmpty) {
+          stickTopicOptions.add((value: v, name: n));
+        }
+      }
+    }
+
+    final addDigestOptions = <({int value, String name})>[];
+    final digestSel = doc.querySelector('select[name="adddigest"], select#adddigest');
+    if (digestSel != null) {
+      for (final opt in digestSel.querySelectorAll('option')) {
+        final v = int.tryParse(opt.attributes['value'] ?? '') ?? 0;
+        final n = opt.text.trim();
+        if (n.isNotEmpty) {
+          addDigestOptions.add((value: v, name: n));
+        }
+      }
+    }
+
+    final canCloseThread = doc.querySelector('input[name="closed"], input#closed') != null;
+    final canDeletePost = doc.querySelector('input[name="delete"], input#delete') != null;
 
     final editorAttributes = PostEditorAttributes(
       useSig: usesig,
@@ -7759,12 +8440,17 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       bbcodeOff: bbcodeoff,
       imgContent: imgcontent,
       readPermOptions: readPermOptions,
+      stickTopicOptions: stickTopicOptions,
+      addDigestOptions: addDigestOptions,
+      canCloseThread: canCloseThread,
+      canDeletePost: canDeletePost,
     );
 
     return (
       formhash: formhash,
       allowedSpecials: allowed,
       typeOptions: typeOptions,
+      threadSortInfo: threadSortInfo,
       unusedAttachments: unusedAttachments,
       errorMessage: error,
       editorAttributes: editorAttributes,
@@ -7899,6 +8585,60 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     return compute(_parseStructuredBlocksCompute, html);
   }
 
+  /// 解析与解构视频链接，全面剥离 klpbbs web 播放器包装 (player.klpbbs.com)，
+  /// 提取纯净的 B 站 BV 号 / AV 号 / 直链视频地址
+  static ({String resolvedSrc, bool isBilibili, String? bvid, String? aid}) _resolveVideoMedia(String rawSrc) {
+    var src = rawSrc.trim();
+    if (src.isEmpty) {
+      return (resolvedSrc: '', isBilibili: false, bvid: null, aid: null);
+    }
+
+    String? bvid;
+    String? aid;
+    bool isBili = false;
+
+    // 1. 如果是 player.klpbbs.com 包装的播放器，全面解构其 query 参数，不依赖其外部网页播放器
+    if (src.contains('player.klpbbs.com')) {
+      try {
+        final uri = Uri.parse(src);
+        final urlParam = uri.queryParameters['url'] ?? '';
+        final isBiliParam = uri.queryParameters['bili'] == 'true';
+        if (urlParam.isNotEmpty) {
+          if (urlParam.startsWith('BV') || urlParam.startsWith('bv')) {
+            bvid = urlParam;
+            isBili = true;
+          } else if (urlParam.startsWith('av') || urlParam.startsWith('AV')) {
+            aid = urlParam.substring(2);
+            isBili = true;
+          } else if (urlParam.startsWith('http://') || urlParam.startsWith('https://')) {
+            src = Uri.decodeComponent(urlParam);
+          }
+        }
+        if (isBiliParam) {
+          isBili = true;
+        }
+      } catch (_) {}
+    }
+
+    // 2. 全局探测 B 站 BV 号 (BV1xxxxxxxxx) 与 aid
+    final bvidM = RegExp(r'(BV[a-zA-Z0-9]{10})', caseSensitive: false).firstMatch(src);
+    if (bvidM != null) {
+      bvid = bvidM.group(1);
+      isBili = true;
+    }
+    final aidM = RegExp(r'(?:aid=|/av)(\d+)').firstMatch(src);
+    if (aidM != null) {
+      aid = aidM.group(1);
+      isBili = true;
+    }
+
+    if (src.contains('bilibili.com') || src.contains('b23.tv')) {
+      isBili = true;
+    }
+
+    return (resolvedSrc: src, isBilibili: isBili, bvid: bvid, aid: aid);
+  }
+
   /// 将 HTML 字符串解析为结构化区块（编辑器 BBCode 预览、折叠块等场景）
   static List<PostBlock> parseStructuredBlocksFromHtml(String html) {
     final doc = html_parser.parseFragment(html);
@@ -7994,16 +8734,24 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           continue;
         }
 
-        // 0. 审核通过状态条 (.comiis_modact)
+        // 0. 管理/审核状态条 (.comiis_modact / .modact)
         if (node.classes.contains('comiis_modact') ||
-            (node.classes.contains('modact') && innerText.contains('审核通过'))) {
-          final text = innerText.replaceAll('&nbsp;', ' ');
+            (node.classes.contains('modact') && (innerText.contains('由') || innerText.contains('于')))) {
+          final text = innerText.replaceAll('&nbsp;', ' ').trim();
           final match = RegExp(
-            r'由\s*([^\s]+)\s*于\s*([^于]+?)\s*审核通过',
+            r'由\s*([^\s]+)\s*于\s*([^于]+?)\s*([^\s<]+)$',
           ).firstMatch(text);
-          final auditor = match?.group(1) ?? 'System';
-          final time = match?.group(2) ?? '不久前';
-          blocks.add(AuditStatusBlock(auditor: auditor, timeText: time));
+          final auditor = match?.group(1) ?? '';
+          final time = match?.group(2) ?? '';
+          final action = match?.group(3) ?? '审核通过';
+          blocks.add(
+            AuditStatusBlock(
+              auditor: auditor.isNotEmpty ? auditor : '管理人员',
+              timeText: time.isNotEmpty ? time : '近期',
+              action: action,
+              rawText: text,
+            ),
+          );
           continue;
         }
 
@@ -8012,8 +8760,8 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
             node.classes.contains('comiis_poll_list') ||
             node.classes.contains('poll') ||
             node.classes.contains('pcht') ||
-            tag == 'form' && (node.id == 'poll' || node.attributes['action']?.contains('votepoll') == true) ||
-            node.querySelector('form#poll, .comiis_poll_list, .pcht') != null) {
+            (tag == 'form' && (node.id == 'poll' || node.attributes['action']?.contains('votepoll') == true)) ||
+            (tag == 'div' && node.id == 'poll')) {
           var title =
               node.querySelector('.comiis_poll_top h2, .pinf strong, h2')?.text.trim() ??
               '投票';
@@ -8157,11 +8905,16 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         }
 
         // 1. 引用块优先匹配 (.comiis_quote, blockquote, .quote, .flw_quote)
-        final isQuoteNode = tag == 'blockquote' ||
-            node.classes.contains('quote') ||
-            node.classes.contains('comiis_quote') ||
-            node.classes.contains('flw_quote') ||
-            node.querySelector('blockquote') != null;
+        final isQuoteNode = tag != 'table' &&
+            (tag == 'blockquote' ||
+                node.classes.contains('quote') ||
+                node.classes.contains('comiis_quote') ||
+                node.classes.contains('flw_quote') ||
+                (tag == 'div' &&
+                    node.children.length == 1 &&
+                    (node.children.first.localName == 'blockquote' ||
+                        node.children.first.classes.contains('quote') ||
+                        node.children.first.classes.contains('comiis_quote'))));
 
         if (isQuoteNode) {
           var author = '引用';
@@ -8258,7 +9011,17 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
             r'language-([a-zA-Z0-9+#]+)',
           ).firstMatch(rawClass);
           final language = langM?.group(1) ?? '';
-          blocks.add(CodeBlock(code: innerText, language: language, align: nodeAlign));
+
+          final cloned = node.clone(true);
+          cloned.querySelectorAll('em, .copycode, a.copy, span.copy').forEach((e) => e.remove());
+          final lis = cloned.querySelectorAll('li');
+          String codeText;
+          if (lis.isNotEmpty) {
+            codeText = lis.map((e) => e.text).join('\n');
+          } else {
+            codeText = cloned.text.trim();
+          }
+          blocks.add(CodeBlock(code: codeText, language: language, align: nodeAlign));
           continue;
         }
 
@@ -8449,19 +9212,13 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
               continue;
             }
 
-            final isBili =
-                src.contains('bilibili.com') || src.contains('b23.tv');
-            final bvidM = RegExp(
-              r'(BV[a-zA-Z0-9]{10})',
-              caseSensitive: false,
-            ).firstMatch(src);
-            final aidM = RegExp(r'aid=(\d+)').firstMatch(src);
+            final mediaInfo = _resolveVideoMedia(src);
             blocks.add(
               VideoBlock(
-                src: src,
-                isBilibili: isBili,
-                bvid: bvidM?.group(1),
-                aid: aidM?.group(1),
+                src: mediaInfo.resolvedSrc,
+                isBilibili: mediaInfo.isBilibili,
+                bvid: mediaInfo.bvid,
+                aid: mediaInfo.aid,
                 align: nodeAlign,
               ),
             );
@@ -8525,10 +9282,16 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         }
 
         // 7.1 隐藏内容提示
-        if (node.classes.contains('locked') ||
+        final isDedicatedHide = node.classes.contains('locked') ||
             node.classes.contains('comiis_hide') ||
-            innerText.contains('回复可见') ||
-            innerText.contains('隐藏的内容')) {
+            node.classes.contains('locked_hide');
+        final isShortTextHide = (node.children.isEmpty || node.children.length == 1) &&
+            innerText.length < 120 &&
+            (innerText.contains('回复可见') ||
+                innerText.contains('隐藏的内容') ||
+                innerText.contains('查看本帖隐藏内容请回复'));
+
+        if (isDedicatedHide || isShortTextHide) {
           blocks.add(
             HideBlock(
               reason: innerText.isNotEmpty ? innerText : '本帖隐藏的内容需要回复才可以浏览',
@@ -8647,28 +9410,63 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
             node.querySelector('.comiis_attach, .attach_tit, .tattl, .attnm, .attach_size') != null ||
             node.querySelector('a[href*="mod=attachment"], a[href*="attachment.php"], a[href*="aid="], a[href*="klpbbs_download"], a[href*="download.php"]') != null;
 
-        final imgEl = (!isAttachContainer)
-            ? (tag == 'img'
-                ? node
-                : ((tag == 'ignore_js_op' ||
-                            node.querySelector('ignore_js_op') != null ||
-                            tag == 'div' ||
-                            tag == 'span' ||
-                            tag == 'p' ||
-                            tag == 'center') &&
-                        node.querySelector('img') != null &&
-                        (innerText.isEmpty ||
-                            node.children.every((c) =>
-                                c.localName == 'img' ||
-                                c.localName == 'br' ||
-                                c.localName == 'a' ||
-                                c.localName == 'ignore_js_op' ||
-                                c.localName == 'div' ||
-                                c.classes.contains('tip') ||
-                                c.classes.contains('aimg_tip')))
-                    ? node.querySelector('img')
-                    : null))
-            : null;
+        // 核心安全防御：复合容器（包含音视频/表格/代码/折叠/引用/多张图片）严禁作为单一图片容器直接截断，必须交由后方通用容器展开递归解析
+        final hasOtherRichMedia = node.querySelector(
+          'audio, video, iframe, embed, table, .spoiler, .collapse, .showhide, blockquote, .quote, pre, code, .blockcode, .comiis_blockcode, hr',
+        ) != null;
+
+        final contentImages = node.querySelectorAll('img').where((img) {
+          final src = img.attributes['src'] ??
+              img.attributes['file'] ??
+              img.attributes['zoomfile'] ??
+              img.attributes['comiis_loadimages'] ??
+              '';
+          final isSmiley = src.contains('static/image/smiley/') ||
+              src.contains('post/smile') ||
+              img.attributes.containsKey('smilieid');
+          final isFileTypeIcon = src.contains('/filetype/') ||
+              src.contains('static/image/filetype') ||
+              src.contains('image/filetype') ||
+              src.contains('/common/none.gif') ||
+              src.contains('/common/attach');
+          return !isSmiley && !isFileTypeIcon;
+        }).toList();
+
+        html_dom.Element? imgEl;
+        if (!isAttachContainer) {
+          if (tag == 'img') {
+            imgEl = node;
+          } else if ((tag == 'ignore_js_op' ||
+                  node.querySelector('ignore_js_op') != null ||
+                  tag == 'div' ||
+                  tag == 'span' ||
+                  tag == 'p' ||
+                  tag == 'center') &&
+              !hasOtherRichMedia &&
+              contentImages.length == 1) {
+            final isSimpleWrapper = innerText.isEmpty ||
+                innerText.length < 100 ||
+                node.children.every((c) {
+                  if (c.localName == 'img' ||
+                      c.localName == 'br' ||
+                      c.localName == 'a' ||
+                      c.localName == 'ignore_js_op' ||
+                      c.classes.contains('tip') ||
+                      c.classes.contains('aimg_tip')) {
+                    return true;
+                  }
+                  if (c.localName == 'div') {
+                    if (c.classes.contains('tip') || c.classes.contains('aimg_tip')) return true;
+                    return c.children.every((gc) =>
+                        gc.localName == 'img' || gc.localName == 'a' || gc.localName == 'ignore_js_op');
+                  }
+                  return false;
+                });
+            if (isSimpleWrapper) {
+              imgEl = contentImages.first;
+            }
+          }
+        }
         if (imgEl != null) {
           var rawSrc = imgEl.attributes['comiis_loadimages'] ?? '';
           if (rawSrc.isEmpty ||
@@ -8750,7 +9548,7 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
           );
         }
 
-        // 如果内部包含独立 iframe/video/embed，拆成视频区块
+        // 如果内部包含独立 iframe/video/embed，拆成视频/音频区块
         final subMedias = node.querySelectorAll('iframe, video, embed');
         if (subMedias.isNotEmpty && node.text.trim().isEmpty) {
           for (final media in subMedias) {
@@ -8760,19 +9558,31 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
                 ) ??
                 '';
             if (src.isEmpty) continue;
-            final isBili =
-                src.contains('bilibili.com') || src.contains('b23.tv');
-            final bvidM = RegExp(
-              r'(BV[a-zA-Z0-9]{10})',
-              caseSensitive: false,
-            ).firstMatch(src);
-            final aidM = RegExp(r'aid=(\d+)').firstMatch(src);
+            final isAudioStream = src.contains('.mp3') ||
+                src.contains('.m4a') ||
+                src.contains('.wav') ||
+                src.contains('.ogg') ||
+                src.contains('.flac') ||
+                src.contains('.aac');
+            final isNetEase =
+                src.contains('music.163.com') || src.contains('163.com');
+            if (isAudioStream || isNetEase) {
+              blocks.add(
+                AudioBlock(
+                  src: src,
+                  title: isNetEase ? '网易云音乐' : '音频文件',
+                  align: nodeAlign,
+                ),
+              );
+              continue;
+            }
+            final mediaInfo = _resolveVideoMedia(src);
             blocks.add(
               VideoBlock(
-                src: src,
-                isBilibili: isBili,
-                bvid: bvidM?.group(1),
-                aid: aidM?.group(1),
+                src: mediaInfo.resolvedSrc,
+                isBilibili: mediaInfo.isBilibili,
+                bvid: mediaInfo.bvid,
+                aid: mediaInfo.aid,
                 align: nodeAlign,
               ),
             );

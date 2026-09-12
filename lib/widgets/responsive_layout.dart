@@ -655,6 +655,7 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
       key: widget.scaffoldKey,
       appBar: widget.appBar,
       drawer: widget.drawer,
+      drawerEdgeDragWidth: 50.0,
       body: mobileBody,
       floatingActionButton: widget.floatingActionButton,
       bottomNavigationBar: useSideRail
