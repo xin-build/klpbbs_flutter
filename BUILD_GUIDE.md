@@ -1,6 +1,6 @@
 # 苦力怕论坛客户端（KLPBBS App）全平台编译与发布指南
 
-> **适用版本**：v1.0.10+  
+> **适用版本**：v1.1.0+  
 > **文档目标**：标准化多平台（Android、Windows、macOS、iOS、Linux）编译规范、签名规则、CI/CD 自动化发布流程与常见错误避坑手册，供后续开发与自动化构建长期参考。
 
 > [!IMPORTANT]
@@ -188,11 +188,11 @@ powershell -Command "Compress-Archive -Path 'build\windows\x64\runner\Release\*'
 每次发布新版本时，严格执行以下标准流程：
 
 1. **版本号双向同步递增**：
-   - 在 [`pubspec.yaml`](file:///f:/klpbbs/pubspec.yaml) 中更新版本号（例如 `version: 1.0.10+11`）。
+   - 在 [`pubspec.yaml`](file:///f:/klpbbs/pubspec.yaml) 中更新版本号（例如 `version: 1.1.0+12`）。
    - 在应用内部配置 [`lib/core/app_config.dart`](file:///f:/klpbbs/lib/core/app_config.dart) 中同步更新：
      ```dart
-     static const String appVersion = '1.0.10';
-     static const String buildNumber = '11';
+     static const String appVersion = '1.1.0';
+     static const String buildNumber = '12';
      ```
 2. **本地静态分析检查**：
    运行 `dart analyze lib`，确保 **0 error, 0 warning**。
@@ -201,16 +201,16 @@ powershell -Command "Compress-Archive -Path 'build\windows\x64\runner\Release\*'
 4. **提交与推送代码**：
    ```bash
    git add .
-   git commit -m "feat: 变更说明 (v1.0.10)"
+   git commit -m "feat: 变更说明 (v1.1.0)"
    ```
 5. **打 Tag 并同步推送触发云端编译**：
    ```bash
-   git tag -fa v1.0.10 -m "Release v1.0.10"
+   git tag -fa v1.1.0 -m "Release v1.1.0"
    git push origin master -f
    git push origin master:main -f
-   git push origin v1.0.10 -f
+   git push origin v1.1.0 -f
    ```
 6. **监控 GitHub Actions**：
    推送 Tag 后，GitHub Actions 自动触发 `Build Multi-Platform Releases` 工作流，并在云端完成 Android APK、Windows、macOS、iOS、Linux 5 大平台产物的并行编译与自动签名打包。
 7. **验证 GitHub Release**：
-   访问 `https://github.com/xin-build/klpbbs_flutter/releases/tag/v1.0.10` 确认 5 个平台的安装包全部编译并发布就绪。
+   访问 `https://github.com/xin-build/klpbbs_flutter/releases/tag/v1.1.0` 确认 5 个平台的安装包全部编译并发布就绪。

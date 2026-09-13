@@ -1225,11 +1225,12 @@ class KlpbbsApi {
     SignHeaderInfo bestResult = const SignHeaderInfo();
 
     // 优先请求 PC 端全量页面（含今日之星、连续天数、全天统计与准确打卡状态），失败再降级请求手机端
+    final ts = DateTime.now().millisecondsSinceEpoch;
     final endpoints = [
-      ('plugin.php?id=k_misign:sign&mobile=no', {'User-Agent': AppConfig.pcUserAgent}),
-      ('plugin.php?id=k_misign:sign&mobile=2', <String, String>{}),
-      ('k_misign-sign.html', {'User-Agent': AppConfig.pcUserAgent}),
-      ('plugin.php?id=k_misign:sign', <String, String>{}),
+      ('plugin.php?id=k_misign:sign&mobile=no&_t=$ts', {'User-Agent': AppConfig.pcUserAgent}),
+      ('k_misign-sign.html?_t=$ts', {'User-Agent': AppConfig.pcUserAgent}),
+      ('plugin.php?id=k_misign:sign&mobile=2&_t=$ts', <String, String>{}),
+      ('plugin.php?id=k_misign:sign&_t=$ts', <String, String>{}),
     ];
 
     for (final (path, headers) in endpoints) {
@@ -4133,19 +4134,29 @@ class KlpbbsApi {
   static Future<List<CreditLogEntry>> getCreditLogs({
     int page = 1,
     String subop = '',
+    bool forceRefresh = false,
   }) async {
     try {
+      if (forceRefresh) {
+        clearQuickCache('home.php?mod=spacecp&ac=credit&op=log');
+      }
       final param = subop.isNotEmpty ? '&subop=$subop' : '';
+      final ts = forceRefresh ? '&_t=${DateTime.now().millisecondsSinceEpoch}' : '';
       // 1. 移动端 (mobile=2)
       final mobHtml = await _get(
-        'home.php?mod=spacecp&ac=credit&op=log$param&page=$page&mobile=2',
+        'home.php?mod=spacecp&ac=credit&op=log$param&page=$page&mobile=2$ts',
+        forceRefresh: forceRefresh,
+        cacheTtl: forceRefresh ? Duration.zero : const Duration(seconds: 15),
       );
       final mobList = ComiisParser.parseCreditLogs(mobHtml);
       if (mobList.isNotEmpty) return mobList;
 
       // 2. PC 端
       final pcHtml = await _get(
-        'home.php?mod=spacecp&ac=credit&op=log$param&page=$page',
+        'home.php?mod=spacecp&ac=credit&op=log$param&page=$page$ts',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+        forceRefresh: forceRefresh,
+        cacheTtl: forceRefresh ? Duration.zero : const Duration(seconds: 15),
       );
       final pcList = ComiisParser.parseCreditLogs(pcHtml);
       if (pcList.isNotEmpty) return pcList;
@@ -4153,13 +4164,18 @@ class KlpbbsApi {
       // 3. 回退默认全部变动记录 (不带 subop)
       if (subop.isNotEmpty) {
         final fallbackMob = await _get(
-          'home.php?mod=spacecp&ac=credit&op=log&page=$page&mobile=2',
+          'home.php?mod=spacecp&ac=credit&op=log&page=$page&mobile=2$ts',
+          forceRefresh: forceRefresh,
+          cacheTtl: forceRefresh ? Duration.zero : const Duration(seconds: 15),
         );
         final fbMobList = ComiisParser.parseCreditLogs(fallbackMob);
         if (fbMobList.isNotEmpty) return fbMobList;
 
         final fallbackPc = await _get(
-          'home.php?mod=spacecp&ac=credit&op=log&page=$page',
+          'home.php?mod=spacecp&ac=credit&op=log&page=$page$ts',
+          headers: {'User-Agent': AppConfig.pcUserAgent},
+          forceRefresh: forceRefresh,
+          cacheTtl: forceRefresh ? Duration.zero : const Duration(seconds: 15),
         );
         return ComiisParser.parseCreditLogs(fallbackPc);
       }
@@ -4953,9 +4969,10 @@ class KlpbbsApi {
       return _cachedSignFormhash;
     }
     String? formhash;
+    final ts = DateTime.now().millisecondsSinceEpoch;
     try {
       final signPageHtml = await _get(
-        'plugin.php?id=k_misign:sign&mobile=no',
+        'plugin.php?id=k_misign:sign&mobile=no&_t=$ts',
         headers: {'User-Agent': AppConfig.pcUserAgent},
         forceRefresh: true,
         cacheTtl: Duration.zero,
@@ -4966,7 +4983,8 @@ class KlpbbsApi {
     if (formhash == null) {
       try {
         final signPageHtml = await _get(
-          'k_misign-sign.html',
+          'k_misign-sign.html?_t=$ts',
+          headers: {'User-Agent': AppConfig.pcUserAgent},
           forceRefresh: true,
           cacheTtl: Duration.zero,
         );
@@ -5002,7 +5020,7 @@ class KlpbbsApi {
       int? continuousDays,
     })
   >
-  signIn({String? formhash}) async {
+  signIn({String? formhash, bool fastMode = false}) async {
     if (!AppConfig.allowWrite) {
       return (
         success: false,
@@ -5025,7 +5043,7 @@ class KlpbbsApi {
     }
 
     // 1. 获取/复用 FormHash（全实时拉取最新凭证）
-    String? fh = formhash ?? _cachedSignFormhash;
+    String? fh = formhash ?? _cachedSignFormhash ?? _cachedFormhash;
     if (fh == null || fh.isEmpty) {
       fh = await getSignFormhash(forceRefresh: true);
     }
@@ -5041,38 +5059,52 @@ class KlpbbsApi {
       );
     }
 
-    // 2. 依次尝试签到端点（全实时直接请求，零缓存）
+    // 2. 依次尝试签到端点（全实时直接请求，零缓存，带时间戳防 CDN 缓存）
     String html = '';
-    final endpoints = [
-      ('plugin.php?id=k_misign:sign&operation=qiandao&format=button&formhash=$fh', <String, String>{
-        'User-Agent': AppConfig.pcUserAgent,
-        'X-Requested-With': 'XMLHttpRequest',
-        'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
-      }),
-      ('plugin.php?id=k_misign:sign&operation=qiandao&format=empty&formhash=$fh', <String, String>{
-        'User-Agent': AppConfig.pcUserAgent,
-        'X-Requested-With': 'XMLHttpRequest',
-        'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
-      }),
-      ('plugin.php?id=k_misign:sign&operation=qiandao&formhash=$fh', <String, String>{
-        'User-Agent': AppConfig.pcUserAgent,
-        'X-Requested-With': 'XMLHttpRequest',
-        'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
-      }),
-      ('plugin.php?id=k_misign:sign&operation=qiandao&mobile=2&formhash=$fh', <String, String>{
-        'X-Requested-With': 'XMLHttpRequest',
-        'Referer': '${AppConfig.baseUrl}plugin.php?id=k_misign:sign&mobile=2',
-      }),
-      ('plugin.php?id=k_misign:sign&operation=qiandao&format=text&formhash=$fh', <String, String>{
-        'X-Requested-With': 'XMLHttpRequest',
-        'Referer': '${AppConfig.baseUrl}plugin.php?id=k_misign:sign&mobile=2',
-      }),
-      ('plugin.php?id=k_misign:sign&operation=qiandao&infloat=yes&handlekey=qiandao&formhash=$fh', <String, String>{
-        'User-Agent': AppConfig.pcUserAgent,
-        'X-Requested-With': 'XMLHttpRequest',
-        'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
-      }),
-    ];
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final endpoints = fastMode
+        ? [
+            ('plugin.php?id=k_misign:sign&operation=qiandao&format=button&formhash=$fh&_t=$ts', <String, String>{
+              'User-Agent': AppConfig.pcUserAgent,
+              'X-Requested-With': 'XMLHttpRequest',
+              'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
+            }),
+          ]
+        : [
+            ('plugin.php?id=k_misign:sign&operation=qiandao&format=button&formhash=$fh&_t=$ts', <String, String>{
+              'User-Agent': AppConfig.pcUserAgent,
+              'X-Requested-With': 'XMLHttpRequest',
+              'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
+            }),
+            ('k_misign-sign.html?operation=qiandao&format=button&formhash=$fh&_t=$ts', <String, String>{
+              'User-Agent': AppConfig.pcUserAgent,
+              'X-Requested-With': 'XMLHttpRequest',
+              'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
+            }),
+            ('plugin.php?id=k_misign:sign&operation=qiandao&format=empty&formhash=$fh&_t=$ts', <String, String>{
+              'User-Agent': AppConfig.pcUserAgent,
+              'X-Requested-With': 'XMLHttpRequest',
+              'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
+            }),
+            ('plugin.php?id=k_misign:sign&operation=qiandao&formhash=$fh&_t=$ts', <String, String>{
+              'User-Agent': AppConfig.pcUserAgent,
+              'X-Requested-With': 'XMLHttpRequest',
+              'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
+            }),
+            ('plugin.php?id=k_misign:sign&operation=qiandao&mobile=2&formhash=$fh&_t=$ts', <String, String>{
+              'X-Requested-With': 'XMLHttpRequest',
+              'Referer': '${AppConfig.baseUrl}plugin.php?id=k_misign:sign&mobile=2',
+            }),
+            ('plugin.php?id=k_misign:sign&operation=qiandao&format=text&formhash=$fh&_t=$ts', <String, String>{
+              'X-Requested-With': 'XMLHttpRequest',
+              'Referer': '${AppConfig.baseUrl}plugin.php?id=k_misign:sign&mobile=2',
+            }),
+            ('plugin.php?id=k_misign:sign&operation=qiandao&infloat=yes&handlekey=qiandao&formhash=$fh&_t=$ts', <String, String>{
+              'User-Agent': AppConfig.pcUserAgent,
+              'X-Requested-With': 'XMLHttpRequest',
+              'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
+            }),
+          ];
 
     for (final (ep, headers) in endpoints) {
       try {
@@ -5086,12 +5118,14 @@ class KlpbbsApi {
           html = resp;
           if (html.contains('签到成功') ||
               html.contains('恭喜您签到成功') ||
+              html.contains('获得随机奖励') ||
               html.contains('已签到') ||
               html.contains('今日已签') ||
               html.contains('您今天已经签过到了') ||
               html.contains('k_misign:tdyq') ||
               html.contains('k_misign:signed') ||
               html.contains('signsuccess') ||
+              html.contains('btnvisted') ||
               html.contains('已打卡')) {
             break;
           }
@@ -5099,17 +5133,7 @@ class KlpbbsApi {
       } catch (_) {}
     }
 
-    final success =
-        html.contains('签到成功') ||
-        html.contains('恭喜您签到成功') ||
-        html.contains('已签到') ||
-        html.contains('今日已签') ||
-        html.contains('您今天已经签过到了') ||
-        html.contains('k_misign:tdyq') ||
-        html.contains('k_misign:signed') ||
-        html.contains('signsuccess');
-
-    // 3. 解析铁粒与经验
+    // 3. 解析铁粒与经验、排名、连续天数
     String? rewardIron;
     String? rewardExp;
     int? rank;
@@ -5117,6 +5141,7 @@ class KlpbbsApi {
 
     final ironM =
         RegExp(r'(?:获得|奖励|铁粒\s*[+]?)\s*(\d+)\s*(?:粒)?铁粒').firstMatch(html) ??
+        RegExp(r'获得随机奖励\s*(\d+)\s*(?:粒)?铁粒').firstMatch(html) ??
         RegExp(r'(\d+)\s*粒?铁粒').firstMatch(html);
     if (ironM != null) rewardIron = ironM.group(1);
 
@@ -5128,6 +5153,10 @@ class KlpbbsApi {
     if (expM != null) rewardExp = expM.group(1);
 
     final rankM =
+        RegExp(r'''id=["']qiandaobtnnum["'][^>]*value=["']?(\d+)["']?''', caseSensitive: false).firstMatch(html) ??
+        RegExp(r'''value=["']?(\d+)["']?[^>]*id=["']qiandaobtnnum["']''', caseSensitive: false).firstMatch(html) ??
+        RegExp(r'''class=["'][^"']*hidnum[^"']*["'][^>]*value=["']?(\d+)["']?''', caseSensitive: false).firstMatch(html) ??
+        RegExp(r'''(?:今日签到|排名)\s*[:：]?\s*(\d+)''').firstMatch(html) ??
         RegExp(r'id="qiandaobtnnum"[^>]*>(\d+)<').firstMatch(html) ??
         RegExp(r'qiandaobtnnum">(\d+)<').firstMatch(html) ??
         RegExp(r'第\s*(\d+)\s*(?:个|位|名)?签到').firstMatch(html) ??
@@ -5141,12 +5170,67 @@ class KlpbbsApi {
         RegExp('id="lxdays"[^>]*>(\\d+)<').firstMatch(html);
     if (daysM != null) continuousDays = int.tryParse(daysM.group(1)!);
 
-    String message = '签到成功';
+    final hasUnsignedClues = html.contains('还没有签到') ||
+        html.contains('未签到') ||
+        html.contains('点我签到') ||
+        html.contains('立即签到');
+
+    bool success = false;
+    if (rank != null && rank > 0) {
+      // 捕获到确凿的当日签到排名（如第 1 名），100% 确认签到成功
+      success = true;
+    } else if (html.contains('签到成功') ||
+        html.contains('恭喜您签到成功') ||
+        html.contains('获得随机奖励')) {
+      // 捕获到明确的发奖成功提示
+      success = true;
+    } else if (!hasUnsignedClues) {
+      if (!fastMode &&
+          (html.contains('btnvisted') ||
+              html.contains('已签到') ||
+              html.contains('今日已签') ||
+              html.contains('您今天已经签过到了') ||
+              html.contains('k_misign:tdyq') ||
+              html.contains('k_misign:signed') ||
+              html.contains('signsuccess') ||
+              html.contains('已打卡'))) {
+        success = true;
+      }
+    }
+
+    // 核心权威双重核验（仅在常规模式执行，fastMode 冲榜时跳过 27KB 慢请求）：
+    // 强制与服务端网页 signHeaderInfo 实时状态对齐！
+    if (!fastMode) {
+      try {
+        final headerInfo = await getSignHeaderInfo(forceRefresh: true);
+        if (headerInfo.isSignedToday) {
+          success = true;
+          if (headerInfo.rewardIron.isNotEmpty) {
+            rewardIron ??= headerInfo.rewardIron;
+          }
+          if (headerInfo.continuousDays > 0) {
+            continuousDays ??= headerInfo.continuousDays;
+          }
+          if (headerInfo.mySignRank != null && headerInfo.mySignRank! > 0) {
+            rank ??= headerInfo.mySignRank;
+          }
+        } else if (!html.contains('恭喜您签到成功') && !html.contains('获得随机奖励')) {
+          // 服务端网页权威判定今日尚未签到，强制修正 success = false
+          success = false;
+        }
+      } catch (_) {}
+    }
+
+    String message = success ? '签到成功' : '签到未完成';
     if (html.contains('k_misign:tdyq') ||
         html.contains('今日已签') ||
         html.contains('已签到') ||
         html.contains('您今天已经签过到了')) {
       message = '今日已签到，无需重复签到';
+    } else if (rank != null && rank > 0) {
+      message = '签到成功（今日第 $rank 名）';
+    } else if (success) {
+      message = '签到成功';
     } else if (!success) {
       if (html.contains('需要先登录') || html.contains('请先登录')) {
         message = '登录状态已失效，请重新登录';
@@ -5157,8 +5241,10 @@ class KlpbbsApi {
         message =
             alertM?.group(1)?.replaceAll(RegExp(r'<[^>]+>'), '').trim() ??
             '签到失败';
+      } else if (hasUnsignedClues) {
+        message = '今日尚未签到';
       } else {
-        message = '签到请求已提交';
+        message = '签到请求已提交，等待论坛确认';
       }
     }
 
@@ -5175,7 +5261,7 @@ class KlpbbsApi {
     return (
       success: success,
       message: message,
-      rewardIron: rewardIron ?? '10',
+      rewardIron: rewardIron,
       rewardExp: rewardExp,
       rank: rank,
       continuousDays: continuousDays,

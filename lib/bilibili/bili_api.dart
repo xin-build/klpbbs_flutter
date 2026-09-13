@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
@@ -113,6 +114,7 @@ abstract final class BiliApi {
       return BiliVideoInfo(
         bvid: bvid,
         cid: (data['cid'] as num?)?.toInt() ?? 0,
+        aid: (data['aid'] as num?)?.toInt() ?? 0,
         title: data['title']?.toString() ?? '',
         cover: data['pic']?.toString() ?? '',
       );
@@ -199,5 +201,171 @@ abstract final class BiliApi {
     } catch (_) {
       return null;
     }
+  }
+
+  /// 获取 B 站视频多语言与 AI 字幕列表
+  static Future<List<BiliSubtitleMeta>> fetchSubtitles(int aid, int cid) async {
+    final list = <BiliSubtitleMeta>[];
+    try {
+      // 优先从 dm/view 接口获取全部字幕（包括 AI 识别字幕）
+      final resp = await _dio.get(
+        '/x/v2/dm/view',
+        queryParameters: {
+          'aid': aid,
+          'oid': cid,
+          'type': 1,
+        },
+      );
+      final subtitleData = resp.data?['data']?['subtitle'];
+      if (subtitleData is Map) {
+        final subs = subtitleData['subtitles'] as List? ?? const [];
+        for (final s in subs) {
+          if (s is Map) {
+            var url = s['subtitle_url']?.toString() ?? '';
+            if (url.startsWith('//')) url = 'https:$url';
+            if (url.isNotEmpty) {
+              list.add(
+                BiliSubtitleMeta(
+                  id: (s['id'] as num?)?.toInt() ?? 0,
+                  lan: s['lan']?.toString() ?? '',
+                  lanDoc: s['lan_doc']?.toString() ?? '',
+                  subtitleUrl: url,
+                  type: (s['type'] as num?)?.toInt() ?? 0,
+                  aiType: (s['ai_type'] as num?)?.toInt() ?? 0,
+                  aiStatus: (s['ai_status'] as num?)?.toInt() ?? 0,
+                ),
+              );
+            }
+          }
+        }
+      }
+    } catch (_) {}
+    return list;
+  }
+
+  /// 获取特定语言的逐句字幕数据
+  static Future<List<BiliSubtitleLine>> fetchSubtitleContent(String url) async {
+    final list = <BiliSubtitleLine>[];
+    try {
+      var fetchUrl = url;
+      if (fetchUrl.startsWith('//')) fetchUrl = 'https:$fetchUrl';
+      final resp = await _dio.get(fetchUrl);
+      var data = resp.data;
+      if (data is String) {
+        try {
+          data = jsonDecode(data);
+        } catch (_) {}
+      }
+      if (data is Map) {
+        final body = data['body'] as List? ?? const [];
+        for (final item in body) {
+          if (item is Map) {
+            final from = (item['from'] as num?)?.toDouble() ?? 0.0;
+            final to = (item['to'] as num?)?.toDouble() ?? 0.0;
+            final content = item['content']?.toString() ?? '';
+            if (content.trim().isNotEmpty) {
+              list.add(BiliSubtitleLine(from: from, to: to, content: content.trim()));
+            }
+          }
+        }
+      }
+    } catch (_) {}
+    return list;
+  }
+
+  /// 获取实时弹幕列表（免登录极速 XML 通道）
+  static Future<List<BiliDanmakuItem>> fetchDanmaku(int cid) async {
+    final list = <BiliDanmakuItem>[];
+    try {
+      final resp = await _dio.get<List<int>>(
+        'https://comment.bilibili.com/$cid.xml',
+        options: Options(
+          responseType: ResponseType.bytes,
+          headers: {'Accept-Encoding': 'deflate, gzip'},
+        ),
+      );
+      final bytes = resp.data;
+      if (bytes == null || bytes.isEmpty) return list;
+
+      List<int> unpacked;
+      try {
+        unpacked = ZLibDecoder(raw: true).convert(bytes);
+      } catch (_) {
+        try {
+          unpacked = zlib.decode(bytes);
+        } catch (_) {
+          try {
+            unpacked = gzip.decode(bytes);
+          } catch (_) {
+            unpacked = bytes;
+          }
+        }
+      }
+
+      String xmlStr;
+      try {
+        xmlStr = utf8.decode(unpacked);
+      } catch (_) {
+        xmlStr = String.fromCharCodes(unpacked);
+      }
+
+      final matches = RegExp(r'<d p="([^"]+)">([^<]*)</d>').allMatches(xmlStr);
+      for (final m in matches) {
+        final p = m.group(1)?.split(',') ?? [];
+        if (p.length >= 5) {
+          final time = double.tryParse(p[0]) ?? 0.0;
+          final mode = int.tryParse(p[1]) ?? 1;
+          final size = int.tryParse(p[2]) ?? 25;
+          final color = int.tryParse(p[3]) ?? 0xFFFFFF;
+          final dmid = p.length > 7 ? p[7] : '';
+          final text = m.group(2)?.trim() ?? '';
+          if (text.isNotEmpty) {
+            list.add(
+              BiliDanmakuItem(
+                time: time,
+                mode: mode,
+                size: size,
+                color: color,
+                text: text,
+                dmid: dmid,
+              ),
+            );
+          }
+        }
+      }
+      list.sort((a, b) => a.time.compareTo(b.time));
+    } catch (_) {}
+    return list;
+  }
+
+  static final Map<String, String> _transCache = {};
+
+  /// 字幕在线自动翻译（Google GTX 通道 + 内存缓存）
+  static Future<String?> translateText(String text, {String targetLang = 'zh-CN'}) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return null;
+    final cacheKey = '$targetLang:$trimmed';
+    if (_transCache.containsKey(cacheKey)) return _transCache[cacheKey];
+
+    try {
+      final url =
+          'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=$targetLang&dt=t&q=${Uri.encodeComponent(trimmed)}';
+      final resp = await _dio.get(url);
+      final data = resp.data;
+      if (data is List && data.isNotEmpty && data[0] is List) {
+        final buffer = StringBuffer();
+        for (final item in data[0] as List) {
+          if (item is List && item.isNotEmpty) {
+            buffer.write(item[0]?.toString() ?? '');
+          }
+        }
+        final result = buffer.toString().trim();
+        if (result.isNotEmpty) {
+          _transCache[cacheKey] = result;
+          return result;
+        }
+      }
+    } catch (_) {}
+    return null;
   }
 }

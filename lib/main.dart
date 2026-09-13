@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/cupertino.dart';
@@ -9,6 +10,7 @@ import 'package:media_kit/media_kit.dart';
 
 import 'api/klpbbs_api.dart';
 import 'core/app_config.dart';
+import 'core/cache_manager.dart';
 import 'core/dio_client.dart';
 import 'core/main_tab_controller.dart';
 import 'core/write_confirm.dart';
@@ -26,6 +28,7 @@ import 'pages/notice_page.dart';
 import 'pages/sign_rank_page.dart';
 import 'pages/user_center_page.dart';
 import 'services/auto_sign_service.dart';
+import 'services/clipboard_jump_service.dart';
 import 'services/download_service.dart';
 import 'services/push_notification_service.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -44,6 +47,12 @@ bool isWebView2Available = false;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 全局防御：拦截局部 Widget 渲染异常，防止 Release 模式下显示 0xF0C0C0C0 灰色大方块遮盖界面
+  ErrorWidget.builder = (FlutterErrorDetails details) {
+    debugPrint('全局 Widget 渲染异常捕获: ${details.exception}');
+    return const SizedBox.shrink();
+  };
 
   // 初始化 Windows 平台 WebView2 环境（设定独立可写用户数据目录，避免黑屏与权限异常）
   if (!kIsWeb && Platform.isWindows) {
@@ -90,11 +99,13 @@ void main() async {
   };
   await KlpbbsApi.initUserProfileCache();
   await KlpbbsApi.sanitizeFavoriteCache();
+  unawaited(KlpbbsCacheManager.purgeCorruptedCache());
   await DownloadManager.instance.init();
   await RgbThemeService.instance.init();
   await PushNotificationService.instance.init();
   await TrayService.instance.init();
   await AutoSignService.instance.init();
+  await ClipboardJumpService.instance.init();
 
   PushNotificationService.instance.onOpenNoticeCallback = () {
     TrayService.instance.showWindow();

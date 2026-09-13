@@ -1662,7 +1662,10 @@ class DiscuzPostRenderer extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(8),
-                child: BiliVideoPlayer(bvid: actualBvid),
+                child: BiliVideoPlayer(
+                  key: ValueKey('bili_$actualBvid'),
+                  bvid: actualBvid,
+                ),
               ),
             ),
           ],
@@ -1674,18 +1677,29 @@ class DiscuzPostRenderer extends StatelessWidget {
       if (nid != null) {
         videoWidget = Container(
           margin: const EdgeInsets.symmetric(vertical: 6),
-          child: NetEaseMusicPlayer(songId: nid),
+          child: NetEaseMusicPlayer(
+            key: ValueKey('netease_$nid'),
+            songId: nid,
+          ),
         );
       } else {
         videoWidget = Container(
           margin: const EdgeInsets.symmetric(vertical: 6),
-          child: GeneralVideoPlayer(src: src, title: title),
+          child: GeneralVideoPlayer(
+            key: ValueKey('gvideo_$src'),
+            src: src,
+            title: title,
+          ),
         );
       }
     } else {
       videoWidget = Container(
         margin: const EdgeInsets.symmetric(vertical: 6),
-        child: GeneralVideoPlayer(src: src, title: title),
+        child: GeneralVideoPlayer(
+          key: ValueKey('gvideo_$src'),
+          src: src,
+          title: title,
+        ),
       );
     }
 
@@ -1713,18 +1727,29 @@ class DiscuzPostRenderer extends StatelessWidget {
       if (nid != null) {
         audioWidget = Container(
           margin: const EdgeInsets.symmetric(vertical: 6),
-          child: NetEaseMusicPlayer(songId: nid),
+          child: NetEaseMusicPlayer(
+            key: ValueKey('netease_$nid'),
+            songId: nid,
+          ),
         );
       } else {
         audioWidget = Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
-          child: GeneralAudioPlayer(src: src, title: title),
+          child: GeneralAudioPlayer(
+            key: ValueKey('gaudio_$src'),
+            src: src,
+            title: title,
+          ),
         );
       }
     } else {
       audioWidget = Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
-        child: GeneralAudioPlayer(src: src, title: title),
+        child: GeneralAudioPlayer(
+          key: ValueKey('gaudio_$src'),
+          src: src,
+          title: title,
+        ),
       );
     }
 
@@ -3947,11 +3972,50 @@ class _SmoothGalleryViewer extends StatefulWidget {
   State<_SmoothGalleryViewer> createState() => _SmoothGalleryViewerState();
 }
 
+enum _GalleryBgMode {
+  dark,
+  light,
+  checkerboard,
+}
+
+class _CheckerboardPainter extends CustomPainter {
+  static const double squareSize = 16.0;
+  static const Color color1 = Color(0xFFF0F0F0);
+  static const Color color2 = Color(0xFFD8D8D8);
+
+  const _CheckerboardPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint1 = Paint()..color = color1;
+    final paint2 = Paint()..color = color2;
+
+    final cols = (size.width / squareSize).ceil();
+    final rows = (size.height / squareSize).ceil();
+
+    for (int i = 0; i < cols; i++) {
+      for (int j = 0; j < rows; j++) {
+        final rect = Rect.fromLTWH(
+          i * squareSize,
+          j * squareSize,
+          squareSize,
+          squareSize,
+        );
+        canvas.drawRect(rect, (i + j) % 2 == 0 ? paint1 : paint2);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CheckerboardPainter oldDelegate) => false;
+}
+
 class _SmoothGalleryViewerState extends State<_SmoothGalleryViewer> {
   late final PageController _pageController;
   late int _currentIndex;
   final Map<int, TransformationController> _transformControllers = {};
   bool _isZoomed = false;
+  _GalleryBgMode _bgMode = _GalleryBgMode.dark;
 
   @override
   void initState() {
@@ -3993,6 +4057,16 @@ class _SmoothGalleryViewerState extends State<_SmoothGalleryViewer> {
     }
   }
 
+  void _cycleBgMode() {
+    setState(() {
+      _bgMode = switch (_bgMode) {
+        _GalleryBgMode.dark => _GalleryBgMode.light,
+        _GalleryBgMode.light => _GalleryBgMode.checkerboard,
+        _GalleryBgMode.checkerboard => _GalleryBgMode.dark,
+      };
+    });
+  }
+
   @override
   void dispose() {
     _pageController.dispose();
@@ -4002,12 +4076,47 @@ class _SmoothGalleryViewerState extends State<_SmoothGalleryViewer> {
     super.dispose();
   }
 
+  Widget _buildTopButton({
+    required Widget icon,
+    required String tooltip,
+    required VoidCallback onPressed,
+  }) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 3),
+      decoration: BoxDecoration(
+        color: Colors.black.withAlpha(130),
+        shape: BoxShape.circle,
+      ),
+      child: IconButton(
+        icon: icon,
+        tooltip: tooltip,
+        color: Colors.white,
+        visualDensity: VisualDensity.compact,
+        onPressed: onPressed,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    Widget bgWidget;
+    switch (_bgMode) {
+      case _GalleryBgMode.dark:
+        bgWidget = Container(color: Colors.black.withAlpha(245));
+      case _GalleryBgMode.light:
+        bgWidget = Container(color: Colors.white);
+      case _GalleryBgMode.checkerboard:
+        bgWidget = const CustomPaint(
+          size: Size.infinite,
+          painter: _CheckerboardPainter(),
+        );
+    }
+
     return Dialog.fullscreen(
-      backgroundColor: Colors.black.withAlpha(240),
+      backgroundColor: Colors.transparent,
       child: Stack(
         children: [
+          Positioned.fill(child: bgWidget),
           PageView.builder(
             itemCount: widget.images.length,
             controller: _pageController,
@@ -4072,7 +4181,7 @@ class _SmoothGalleryViewerState extends State<_SmoothGalleryViewer> {
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                         decoration: BoxDecoration(
-                          color: Colors.black.withAlpha(120),
+                          color: Colors.black.withAlpha(130),
                           borderRadius: BorderRadius.circular(16),
                         ),
                         child: Text(
@@ -4085,8 +4194,24 @@ class _SmoothGalleryViewerState extends State<_SmoothGalleryViewer> {
                         ),
                       ),
                     const Spacer(),
-                    IconButton(
-                      icon: const Icon(Icons.copy_rounded, color: Colors.white),
+                    _buildTopButton(
+                      icon: Icon(
+                        switch (_bgMode) {
+                          _GalleryBgMode.dark => Icons.dark_mode_rounded,
+                          _GalleryBgMode.light => Icons.light_mode_rounded,
+                          _GalleryBgMode.checkerboard => Icons.grid_on_rounded,
+                        },
+                        size: 20,
+                      ),
+                      tooltip: switch (_bgMode) {
+                        _GalleryBgMode.dark => '底色：深色 (点击切白底)',
+                        _GalleryBgMode.light => '底色：白底 (点击切棋盘)',
+                        _GalleryBgMode.checkerboard => '底色：棋盘 (点击切黑底)',
+                      },
+                      onPressed: _cycleBgMode,
+                    ),
+                    _buildTopButton(
+                      icon: const Icon(Icons.copy_rounded, size: 19),
                       tooltip: '复制图片直链',
                       onPressed: () {
                         Clipboard.setData(ClipboardData(text: widget.images[_currentIndex]));
@@ -4095,8 +4220,8 @@ class _SmoothGalleryViewerState extends State<_SmoothGalleryViewer> {
                         );
                       },
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.close_rounded, color: Colors.white),
+                    _buildTopButton(
+                      icon: const Icon(Icons.close_rounded, size: 20),
                       tooltip: '关闭 (Esc)',
                       onPressed: () => Navigator.of(context).pop(),
                     ),

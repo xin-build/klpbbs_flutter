@@ -68,6 +68,9 @@ capture/
 diskao_*
 tmp_*
 jt.png
+/*.png
+/*.jpg
+/*.jpeg
 klpbbs_app/
 local-env/
 mock-server/

@@ -350,48 +350,80 @@ class ComiisParser {
       final text = el.text.trim();
       if (text.isEmpty || text.length < 5) continue;
 
-      // 必须包含有效变动时间
-      final tm = RegExp(r'(\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?)').firstMatch(text);
-      if (tm == null) continue;
-      final timeText = tm.group(1)!;
-
+      String timeText = '';
+      String operation = '';
+      String detail = '';
       String creditType = '铁粒';
       String amount = '';
-      final leftEl = el.querySelector('.span_0, .span_1, .kmimg, .kmleft, div:first-child, span:first-child');
-      if (leftEl != null) {
-        final lt = leftEl.text.replaceAll('\n', ' ').trim();
+
+      // 1.1 变动数值与积分类型（支持 .cre_mun, .span_0, .span_1 等）
+      final creMun = el.querySelector('.cre_mun, .span_0, .span_1, .kmimg, .kmleft, div:first-child, span:first-child');
+      if (creMun != null) {
+        final lt = creMun.text.replaceAll('\n', ' ').trim();
         final typeM = RegExp(r'(铁粒|金粒|绿宝石|贡献|人气|威望|金币|经验|积分)').firstMatch(lt);
         if (typeM != null) creditType = typeM.group(1)!;
         final valM = RegExp(r'([+-]?\d+)').firstMatch(lt);
         if (valM != null) amount = valM.group(1)!;
       }
+
+      // 1.2 Comiis 手机版标题与时间（如 <h2><span class="f_d y">2026-09-13 00:00</span><span class="f_d">每日签到</span></h2>）
+      final h2 = el.querySelector('h2');
+      if (h2 != null) {
+        final timeSpan = h2.querySelector('span.y, span.f_d.y');
+        if (timeSpan != null) {
+          timeText = timeSpan.text.trim();
+        }
+        final opSpan = h2.querySelector('span:not(.y)');
+        if (opSpan != null && opSpan.text.trim().isNotEmpty) {
+          operation = opSpan.text.trim();
+        } else {
+          final clonedH2 = h2.clone(true);
+          clonedH2.querySelectorAll('span.y').forEach((e) => e.remove());
+          if (clonedH2.text.trim().isNotEmpty) {
+            operation = clonedH2.text.trim();
+          }
+        }
+      }
+
+      final pDesc = el.querySelector('p.f_b, p.desc');
+      if (pDesc != null && pDesc.text.trim().isNotEmpty) {
+        detail = pDesc.text.trim();
+      }
+
+      // 1.3 通用段落（.kmcon 等）兜底提取
+      if (operation.isEmpty) {
+        final conEl = el.querySelector('.kmcon, .km_con, .flex, div:nth-child(2)');
+        if (conEl != null) {
+          final pTags = conEl.querySelectorAll('p, h3, h4, strong, div, .f14, .f16');
+          if (pTags.isNotEmpty) {
+            operation = pTags.first.text.trim();
+            if (pTags.length > 1) detail = pTags[1].text.trim();
+          } else {
+            operation = conEl.text.trim();
+          }
+        }
+      }
+
+      if (timeText.isEmpty) {
+        final tm = RegExp(r'(\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?)').firstMatch(text);
+        if (tm != null) timeText = tm.group(1)!;
+      }
+      if (timeText.isEmpty) continue;
+
       if (amount.isEmpty) {
         final am = RegExp(r'([+-]\d+)').firstMatch(text) ?? RegExp(r'([+-]?\d+)').firstMatch(text);
         if (am != null) amount = am.group(1)!;
-      }
-
-      String operation = '';
-      String detail = '';
-      final conEl = el.querySelector('.kmcon, .km_con, .flex, div:nth-child(2)');
-      if (conEl != null) {
-        final pTags = conEl.querySelectorAll('p, h3, h4, strong, div, .f14, .f16');
-        if (pTags.isNotEmpty) {
-          operation = pTags.first.text.trim();
-          if (pTags.length > 1) detail = pTags[1].text.trim();
-        } else {
-          operation = conEl.text.trim();
-        }
       }
 
       if (operation.isEmpty || operation == text) {
         final lines = text
             .split('\n')
             .map((s) => s.trim())
-            .where((s) => s.isNotEmpty && s != timeText && s != creditType && s != amount && s != '$creditType$amount')
+            .where((s) => s.isNotEmpty && s != timeText && s != creditType && s != amount && s != '$creditType$amount' && !s.contains(timeText))
             .toList();
         if (lines.isNotEmpty) {
           operation = lines.first;
-          if (lines.length > 1) detail = lines.sublist(1).join(' ');
+          if (lines.length > 1 && detail.isEmpty) detail = lines.sublist(1).join(' ');
         }
       }
 
@@ -5469,15 +5501,42 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
   }
 
   static int _parseFloorLikes(html_dom.Element post) {
-    for (final sel in [
+    // 1. 克隆楼层元素并剔除非操作栏区域（正文、用户信息、楼层标志等），
+    // 彻底防止正文字符（如“必须支持”）与楼层号（如“20#”）连缀被误识别为点赞数
+    final cleanPost = post.clone(true);
+    for (final sel in const [
+      '.pct',
+      '.pcb',
+      '.t_fsz',
+      '.t_f',
+      '[id^="postmessage_"]',
+      '.pi',
+      '.pti',
+      '.authi',
+      '[id^="postnum"]',
+      '.replyfloor_box',
+      '.replyfloor_tail_floor',
+      '.sign',
+      '[id^="authorposton"]',
+      '.pls',
+      '.favatar',
+      '.userinfo',
+      '.modact',
+      '.psth',
+    ]) {
+      cleanPost.querySelectorAll(sel).forEach((e) => e.remove());
+    }
+
+    // 2. 针对点赞按钮及专属容器进行精准解析
+    for (final sel in const [
+      'a.replyadd',
+      'a.reply_like',
+      'a.support',
+      '.postreview a.support',
       'span[id^="comiis_recommend"]',
       'span[id^="post_support_"]',
       'span[id^="support_"]',
-      'a[id^="support_"] span',
-      'a[id^="support_"]',
       'span[id^="review_support_"]',
-      '.postreview a.support',
-      'a[id^="postreview_"] span',
       '.support_num',
       'em.support',
       'span[id^="recommendv_add"]',
@@ -5491,29 +5550,28 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       'a[href*="action=support"] span',
       'a[href*="action=support"]',
     ]) {
-      final el = post.querySelector(sel);
-      if (el != null) {
-        final m = RegExp(r'\d+').firstMatch(el.text);
+      for (final el in cleanPost.querySelectorAll(sel)) {
+        final txt = el.text.trim();
+        if (txt.isEmpty) continue;
+        final m = RegExp(r'^(?:支持|赞|顶)?\s*[(（]?\s*(\d+)\s*[)）]?$').firstMatch(txt) ??
+            RegExp(r'(?:支持|赞|顶)\s*[:：]?\s*[(（]?\s*(\d+)\s*[)）]?').firstMatch(txt);
         if (m != null) {
-          final count = int.tryParse(m.group(0)!);
+          final count = int.tryParse(m.group(1)!);
+          if (count != null && count > 0) return count;
+        } else if (RegExp(r'^\d+$').hasMatch(txt)) {
+          final count = int.tryParse(txt);
           if (count != null && count > 0) return count;
         }
       }
     }
 
-    final postHtml = post.outerHtml;
+    // 3. 针对特定 ID 节点在 HTML 中的数字提取（如 id="review_support_11128108">2<）
+    final postHtml = cleanPost.outerHtml;
     final idMatch = RegExp(
-      r'''id=["'](?:comiis_recommend|post_support_|support_)(\d+)["'][^>]*>(\d+)<''',
+      r'''id=["'](?:comiis_recommend|post_support_|support_|review_support_)(\d+)["'][^>]*>\s*(\d+)\s*<''',
     ).firstMatch(postHtml);
     if (idMatch != null) {
       final count = int.tryParse(idMatch.group(2)!);
-      if (count != null && count > 0) return count;
-    }
-
-    final sm = RegExp(r'''(?:支持|赞)[:：\s]*<[^>]*>(\d+)<''').firstMatch(postHtml) ??
-        RegExp(r'''(?:支持|赞)\s+(\d+)''').firstMatch(post.text);
-    if (sm != null) {
-      final count = int.tryParse(sm.group(1)!);
       if (count != null && count > 0) return count;
     }
 
@@ -5582,26 +5640,23 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         html.contains('您今天还没有签到') ||
         html.contains('点我签到');
 
-    if (hasUnsignedClues) {
-      isSignedToday = false;
-    } else if (fontText.contains('今日已签') ||
+    if (mySignRank != null && mySignRank > 0) {
+      // 权威：一旦从 DOM 抓取到我的排名编号（qiandaobtnnum），100% 确认今日已签到！
+      isSignedToday = true;
+    } else if (doc.querySelector('.btnvisted, span.btnvisted, .btn-signed, .signed, a.btn_v.signed, .btn_have, .had_sign') != null ||
+        html.contains('btnvisted') ||
+        fontText.contains('今日已签') ||
         fontText.contains('已经签过到') ||
-        fontText.contains('已签到') ||
-        fontText.contains('已打卡') ||
-        fontText.contains('已签') ||
         html.contains('您今天已经签过到了') ||
-        html.contains('今日已签到') ||
-        html.contains('您今日已签到') ||
-        html.contains('今日已打卡') ||
-        (mySignRank != null && mySignRank > 0)) {
-      isSignedToday = true;
-    } else if (doc.querySelector('.btn-signed, .signed, a.btn_v.signed, .btn_have, .had_sign') != null ||
         html.contains('k_misign:tdyq') ||
-        html.contains('k_misign:signed')) {
+        html.contains('k_misign:signed') ||
+        html.contains('signsuccess')) {
       isSignedToday = true;
-    }
-
-    if (!isSignedToday) {
+    } else if (hasUnsignedClues) {
+      isSignedToday = false;
+      mySignRank = null;
+    } else {
+      isSignedToday = false;
       mySignRank = null;
     }
 

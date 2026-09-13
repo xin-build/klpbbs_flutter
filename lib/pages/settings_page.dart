@@ -20,7 +20,7 @@ enum SettingsCategory {
   layout('排版与多端模式', '宽屏双栏、导航布局', Icons.devices_outlined, Icons.devices_rounded),
   download('下载与存储管理', '并发线程、路径配置', Icons.download_outlined, Icons.download_rounded),
   performance('性能与 GPU 加速', '硬件加速、渲染引擎、图片缓存', Icons.speed_outlined, Icons.speed_rounded),
-  forum('论坛与阅读偏好', '屏蔽黑名单、阅读细节', Icons.forum_outlined, Icons.forum_rounded),
+  forum('论坛与阅读偏好', '剪贴板识别、阅读浏览、黑名单', Icons.forum_outlined, Icons.forum_rounded),
   about('关于与系统诊断', '版本信息、系统诊断、检查更新', Icons.info_outline, Icons.info_rounded);
 
   final String label;
@@ -1132,147 +1132,325 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
   final _uidCtrl = TextEditingController();
 
   @override
+  void dispose() {
+    _keywordCtrl.dispose();
+    _uidCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       children: [
-        _buildSectionHeader('阅读与浏览'),
-        Card(
-          child: Column(
-            children: [
-              SwitchListTile(
-                title: const Text('帖子列表显示图片预览'),
-                subtitle: const Text('在版块与搜索列表中显示最多3张附图预览（单图16:9裁剪，多图1:1方形裁剪）'),
-                value: AppConfig.showThreadListImages,
+        // 1. 智能剪贴板跳转
+        _buildSectionHeader(
+          '智能剪贴板识别',
+          subtitle: '从其他应用切换回论坛时，自动识别剪贴板中的链接并跳转',
+        ),
+        _buildSettingCard(
+          context: context,
+          children: [
+            _buildSettingSwitchTile(
+              context: context,
+              title: '切换窗口时检测剪贴板',
+              subtitle: '切回应用或窗口获得焦点时，自动读取剪贴板中的论坛链接',
+              icon: Icons.content_paste_go_rounded,
+              value: AppConfig.clipboardJumpEnabled,
+              onChanged: (v) {
+                AppConfig.setClipboardJumpEnabled(v);
+                setState(() {});
+              },
+            ),
+            if (AppConfig.clipboardJumpEnabled) ...[
+              Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+              _buildSettingSwitchTile(
+                context: context,
+                title: '识别帖子链接',
+                subtitle: '检测 thread-xxx 与 tid=xxx 格式，跳转至帖子详情',
+                icon: Icons.article_outlined,
+                iconBgColor: colorScheme.secondaryContainer.withAlpha(90),
+                iconColor: colorScheme.secondary,
+                value: AppConfig.clipboardJumpThreadEnabled,
                 onChanged: (v) {
-                  AppConfig.setShowThreadListImages(v);
+                  AppConfig.setClipboardJumpThreadEnabled(v);
                   setState(() {});
                 },
               ),
-              const Divider(height: 1),
-              SwitchListTile(
-                title: const Text('显示楼层个性签名档'),
-                subtitle: const Text('在帖子详情楼层底部渲染用户签名'),
-                value: AppConfig.showFloorSignature,
+              Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+              _buildSettingSwitchTile(
+                context: context,
+                title: '识别站内搜索链接',
+                subtitle: '检测 search.php 链接并提取关键词，跳转至搜索页面',
+                icon: Icons.search_rounded,
+                iconBgColor: colorScheme.tertiaryContainer.withAlpha(90),
+                iconColor: colorScheme.tertiary,
+                value: AppConfig.clipboardJumpSearchEnabled,
                 onChanged: (v) {
-                  AppConfig.setShowFloorSignature(v);
+                  AppConfig.setClipboardJumpSearchEnabled(v);
                   setState(() {});
                 },
               ),
-              const Divider(height: 1),
-              ListTile(
-                title: const Text('默认启动页'),
-                trailing: DropdownButton<int>(
-                  value: AppConfig.defaultStartTab,
-                  underline: const SizedBox(),
-                  items: const [
-                    DropdownMenuItem(value: 0, child: Text('首页推荐')),
-                    DropdownMenuItem(value: 1, child: Text('导读中心')),
-                    DropdownMenuItem(value: 2, child: Text('签到排行')),
-                    DropdownMenuItem(value: 3, child: Text('封神榜')),
-                    DropdownMenuItem(value: 4, child: Text('论坛搜索')),
-                  ],
-                  onChanged: (v) =>
-                      v != null ? AppConfig.setDefaultStartTab(v) : null,
-                ),
+              Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+              _buildSettingSwitchTile(
+                context: context,
+                title: '跳转前弹窗确认',
+                subtitle: '弹出提示卡片确认后再跳转，防止打断当前阅读或编辑',
+                icon: Icons.help_outline_rounded,
+                iconBgColor: colorScheme.surfaceContainerHighest,
+                iconColor: colorScheme.onSurfaceVariant,
+                value: AppConfig.clipboardJumpConfirm,
+                onChanged: (v) {
+                  AppConfig.setClipboardJumpConfirm(v);
+                  setState(() {});
+                },
               ),
             ],
-          ),
+          ],
         ),
         const SizedBox(height: 16),
-        _buildSectionHeader('屏蔽黑名单 (关键词 & 用户)'),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _keywordCtrl,
-                        decoration: const InputDecoration(
-                          hintText: '添加屏蔽关键词...',
-                          isDense: true,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    FilledButton(
-                      onPressed: () {
-                        if (_keywordCtrl.text.trim().isNotEmpty) {
-                          AppConfig.addBlockedKeyword(_keywordCtrl.text.trim());
-                          _keywordCtrl.clear();
-                          setState(() {});
-                        }
-                      },
-                      child: const Text('添加'),
-                    ),
-                  ],
-                ),
-                if (AppConfig.blockedKeywords.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: AppConfig.blockedKeywords.map((kw) {
-                      return Chip(
-                        label: Text(kw),
-                        onDeleted: () {
-                          AppConfig.removeBlockedKeyword(kw);
-                          setState(() {});
-                        },
-                      );
-                    }).toList(),
-                  ),
-                ],
-                const Divider(height: 24),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _uidCtrl,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                          hintText: '添加屏蔽 UID (作者编号)...',
-                          isDense: true,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    FilledButton(
-                      onPressed: () {
-                        final uid = int.tryParse(_uidCtrl.text.trim()) ?? 0;
-                        if (uid > 0) {
-                          AppConfig.addBlockedUid(uid);
-                          _uidCtrl.clear();
-                          setState(() {});
-                        }
-                      },
-                      child: const Text('屏蔽'),
-                    ),
-                  ],
-                ),
-                if (AppConfig.blockedUids.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: AppConfig.blockedUids.map((uid) {
-                      return Chip(
-                        label: Text('UID: $uid'),
-                        onDeleted: () {
-                          AppConfig.removeBlockedUid(uid);
-                          setState(() {});
-                        },
-                      );
-                    }).toList(),
-                  ),
-                ],
-              ],
+
+        // 2. 阅读与浏览
+        _buildSectionHeader(
+          '阅读与浏览偏好',
+          subtitle: '论坛界面图文展示、楼层签名与起始页面',
+        ),
+        _buildSettingCard(
+          context: context,
+          children: [
+            _buildSettingSwitchTile(
+              context: context,
+              title: '帖子列表显示图片预览',
+              subtitle: '在版块与搜索列表中显示最多 3 张附图预览（单图 16:9，多图 1:1）',
+              icon: Icons.image_outlined,
+              value: AppConfig.showThreadListImages,
+              onChanged: (v) {
+                AppConfig.setShowThreadListImages(v);
+                setState(() {});
+              },
             ),
-          ),
+            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+            _buildSettingSwitchTile(
+              context: context,
+              title: '显示楼层个性签名档',
+              subtitle: '在帖子详情楼层底部渲染用户个性化签名',
+              icon: Icons.draw_outlined,
+              value: AppConfig.showFloorSignature,
+              onChanged: (v) {
+                AppConfig.setShowFloorSignature(v);
+                setState(() {});
+              },
+            ),
+            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              leading: Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: colorScheme.primaryContainer.withAlpha(90),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(Icons.launch_rounded, color: colorScheme.primary, size: 20),
+              ),
+              title: const Text(
+                '默认启动页',
+                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5),
+              ),
+              subtitle: Text(
+                '应用启动时默认激活的主功能标签',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: colorScheme.onSurfaceVariant.withAlpha(190),
+                ),
+              ),
+              trailing: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerHighest.withAlpha(120),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: colorScheme.outlineVariant.withAlpha(50), width: 0.8),
+                ),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<int>(
+                    value: AppConfig.defaultStartTab,
+                    borderRadius: BorderRadius.circular(12),
+                    items: const [
+                      DropdownMenuItem(value: 0, child: Text('首页推荐')),
+                      DropdownMenuItem(value: 1, child: Text('导读中心')),
+                      DropdownMenuItem(value: 2, child: Text('签到排行')),
+                      DropdownMenuItem(value: 3, child: Text('封神榜')),
+                      DropdownMenuItem(value: 4, child: Text('论坛搜索')),
+                    ],
+                    onChanged: (v) {
+                      if (v != null) {
+                        AppConfig.setDefaultStartTab(v);
+                        setState(() {});
+                      }
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+
+        // 3. 屏蔽黑名单 (关键词 & 用户)
+        _buildSectionHeader(
+          '屏蔽黑名单',
+          subtitle: '过滤指定关键词标题或特定作者 UID 发布的内容',
+        ),
+        _buildSettingCard(
+          context: context,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '关键词屏蔽',
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w600,
+                      color: colorScheme.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _keywordCtrl,
+                          decoration: InputDecoration(
+                            hintText: '输入屏蔽关键词...',
+                            isDense: true,
+                            prefixIcon: const Icon(Icons.block_rounded, size: 18),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          onSubmitted: (_) {
+                            if (_keywordCtrl.text.trim().isNotEmpty) {
+                              AppConfig.addBlockedKeyword(_keywordCtrl.text.trim());
+                              _keywordCtrl.clear();
+                              setState(() {});
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        ),
+                        onPressed: () {
+                          if (_keywordCtrl.text.trim().isNotEmpty) {
+                            AppConfig.addBlockedKeyword(_keywordCtrl.text.trim());
+                            _keywordCtrl.clear();
+                            setState(() {});
+                          }
+                        },
+                        icon: const Icon(Icons.add_rounded, size: 18),
+                        label: const Text('添加'),
+                      ),
+                    ],
+                  ),
+                  if (AppConfig.blockedKeywords.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: AppConfig.blockedKeywords.map((kw) {
+                        return Chip(
+                          label: Text(kw),
+                          deleteIcon: const Icon(Icons.close_rounded, size: 16),
+                          onDeleted: () {
+                            AppConfig.removeBlockedKeyword(kw);
+                            setState(() {});
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                  const Divider(height: 28),
+                  Text(
+                    '作者 UID 屏蔽',
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w600,
+                      color: colorScheme.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _uidCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: InputDecoration(
+                            hintText: '输入屏蔽作者编号 (UID)...',
+                            isDense: true,
+                            prefixIcon: const Icon(Icons.person_off_outlined, size: 18),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          onSubmitted: (_) {
+                            final uid = int.tryParse(_uidCtrl.text.trim()) ?? 0;
+                            if (uid > 0) {
+                              AppConfig.addBlockedUid(uid);
+                              _uidCtrl.clear();
+                              setState(() {});
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        ),
+                        onPressed: () {
+                          final uid = int.tryParse(_uidCtrl.text.trim()) ?? 0;
+                          if (uid > 0) {
+                            AppConfig.addBlockedUid(uid);
+                            _uidCtrl.clear();
+                            setState(() {});
+                          }
+                        },
+                        icon: const Icon(Icons.shield_outlined, size: 18),
+                        label: const Text('屏蔽'),
+                      ),
+                    ],
+                  ),
+                  if (AppConfig.blockedUids.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: AppConfig.blockedUids.map((uid) {
+                        return Chip(
+                          avatar: const Icon(Icons.person_off_rounded, size: 16),
+                          label: Text('UID: $uid'),
+                          deleteIcon: const Icon(Icons.close_rounded, size: 16),
+                          onDeleted: () {
+                            AppConfig.removeBlockedUid(uid);
+                            setState(() {});
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
         ),
       ],
     );
@@ -1878,7 +2056,7 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                           items: BurstStrategy.values.map((s) {
                             return DropdownMenuItem(
                               value: s,
-                              child: Text(s == BurstStrategy.statusPolling ? '探测抢签 (推荐)' : '高频冲刺'),
+                              child: Text(s == BurstStrategy.statusPolling ? '高频探测抢签 (单路极速)' : '多路并发冲刺 (暴力冲第1)'),
                             );
                           }).toList(),
                           onChanged: (v) => v != null ? sign.setBurstStrategy(v) : null,
@@ -1923,11 +2101,11 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                           spacing: 8,
                           runSpacing: 8,
                           children: [
-                            _buildIntervalChip(sign, '极限 100ms', 100),
-                            _buildIntervalChip(sign, '极速 200ms (推荐)', 200),
+                            _buildIntervalChip(sign, '极限 50ms (抢第1推荐)', 50),
+                            _buildIntervalChip(sign, '极速 100ms', 100),
+                            _buildIntervalChip(sign, '高速 200ms', 200),
                             _buildIntervalChip(sign, '平衡 300ms', 300),
                             _buildIntervalChip(sign, '稳健 500ms', 500),
-                            _buildIntervalChip(sign, '安全 1000ms', 1000),
                           ],
                         ),
                       ),
@@ -2361,34 +2539,121 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
   }
 }
 
-Widget _buildSectionHeader(String title) {
+Widget _buildSectionHeader(String title, {String? subtitle}) {
   return Builder(
     builder: (context) {
-      final colorScheme = Theme.of(context).colorScheme;
+      final theme = Theme.of(context);
+      final colorScheme = theme.colorScheme;
       return Padding(
         padding: const EdgeInsets.fromLTRB(4, 16, 4, 8),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 3.5,
-              height: 14,
-              margin: const EdgeInsets.only(right: 8),
-              decoration: BoxDecoration(
-                color: colorScheme.primary,
-                borderRadius: BorderRadius.circular(2),
-              ),
+            Row(
+              children: [
+                Container(
+                  width: 3.5,
+                  height: 14,
+                  margin: const EdgeInsets.only(right: 8),
+                  decoration: BoxDecoration(
+                    color: colorScheme.primary,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                Text(
+                  title,
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    color: colorScheme.primary,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
             ),
-            Text(
-              title,
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                color: colorScheme.primary,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.3,
+            if (subtitle != null && subtitle.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.only(left: 11.5, top: 3),
+                child: Text(
+                  subtitle,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: colorScheme.onSurfaceVariant.withAlpha(160),
+                  ),
+                ),
               ),
-            ),
+            ],
           ],
         ),
       );
     },
+  );
+}
+
+Widget _buildSettingCard({
+  required BuildContext context,
+  required List<Widget> children,
+}) {
+  final colorScheme = Theme.of(context).colorScheme;
+  return Container(
+    decoration: BoxDecoration(
+      color: colorScheme.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(
+        color: colorScheme.outlineVariant.withAlpha(50),
+        width: 0.8,
+      ),
+    ),
+    clipBehavior: Clip.antiAlias,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: children,
+    ),
+  );
+}
+
+Widget _buildSettingSwitchTile({
+  required BuildContext context,
+  required String title,
+  required String subtitle,
+  required IconData icon,
+  required bool value,
+  required ValueChanged<bool> onChanged,
+  Color? iconColor,
+  Color? iconBgColor,
+}) {
+  final colorScheme = Theme.of(context).colorScheme;
+  return SwitchListTile(
+    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+    secondary: Container(
+      width: 38,
+      height: 38,
+      decoration: BoxDecoration(
+        color: iconBgColor ?? colorScheme.primaryContainer.withAlpha(90),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Icon(
+        icon,
+        color: iconColor ?? colorScheme.primary,
+        size: 20,
+      ),
+    ),
+    title: Text(
+      title,
+      style: const TextStyle(
+        fontWeight: FontWeight.w600,
+        fontSize: 14.5,
+      ),
+    ),
+    subtitle: Text(
+      subtitle,
+      style: TextStyle(
+        fontSize: 12,
+        color: colorScheme.onSurfaceVariant.withAlpha(190),
+        height: 1.3,
+      ),
+    ),
+    value: value,
+    onChanged: onChanged,
   );
 }

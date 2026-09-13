@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart' as url_launcher;
 import '../main.dart';
 import '../pages/papa_ai_chat_page.dart';
 import '../pages/papa_ai_wallet_page.dart';
+import '../pages/search_page.dart';
 import '../pages/thread_detail_page.dart';
 import '../pages/thread_list_page.dart';
 import '../pages/user_space_page.dart';
@@ -197,9 +198,43 @@ class UrlHelper {
           return true;
         }
       }
+
+      // 4. 站内搜索链接跳转 (search.php 或 /search)
+      if (trimmed.contains('search.php') || trimmed.contains('/search')) {
+        final uri = Uri.tryParse(trimmed);
+        String? kw;
+        if (uri != null) {
+          kw = uri.queryParameters['srchtxt'] ??
+              uri.queryParameters['keyword'] ??
+              uri.queryParameters['kw'] ??
+              uri.queryParameters['q'];
+        }
+        if (kw == null) {
+          final kwM = RegExp(r'(?:srchtxt|keyword|kw|q)=([^&\s]+)').firstMatch(trimmed);
+          if (kwM != null) {
+            try {
+              kw = Uri.decodeQueryComponent(kwM.group(1)!);
+            } catch (_) {
+              try {
+                kw = Uri.decodeComponent(kwM.group(1)!);
+              } catch (_) {
+                kw = kwM.group(1);
+              }
+            }
+          }
+        }
+        if (targetContext != null && targetContext.mounted) {
+          Navigator.of(targetContext).push(
+            MaterialPageRoute(
+              builder: (_) => SearchPage(initialKeyword: kw),
+            ),
+          );
+          return true;
+        }
+      }
     }
 
-    // 4. 系统外部应用/浏览器打开（站外链接或未匹配到的站内页面）
+    // 5. 系统外部应用/浏览器打开（站外链接或未匹配到的站内页面）
     Uri? uri = Uri.tryParse(trimmed);
     if (uri == null || !uri.hasScheme) {
       uri = Uri.tryParse(Uri.encodeFull(trimmed));

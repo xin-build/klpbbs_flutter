@@ -94,8 +94,8 @@ class AppConfig extends ChangeNotifier {
   AppConfig._();
 
   // ================= 应用版本信息 =================
-  static const String appVersion = '1.0.10';
-  static const String buildNumber = '11';
+  static const String appVersion = '1.1.0';
+  static const String buildNumber = '12';
   static const String versionDisplay = 'v$appVersion (Build $buildNumber)';
 
   // ================= 论坛环境与网络 =================
@@ -117,6 +117,9 @@ class AppConfig extends ChangeNotifier {
     'User-Agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   };
+
+  /// 获取会话 Cookie 请求头回调（解耦 DioClient 避免循环依赖）
+  static String Function()? getCookieHeader;
 
   /// 根据图片 URL 动态生成防盗链与 UA 标头（针对 B站、Wiki、Loli计数器与第三方图床智能分流）
   static Map<String, String> imageHeadersFor(String url) {
@@ -152,11 +155,16 @@ class AppConfig extends ChangeNotifier {
     }
     // 3. Moe-Counter 等萌系计数器与论坛内部图片
     if (host.endsWith('count.getloli.com') || host.endsWith('getloli.com') || host.endsWith('klpbbs.com') || host == 'localhost' || host == '127.0.0.1' || host.isEmpty) {
-      return {
+      final headers = <String, String>{
         'Referer': 'https://klpbbs.com/',
         'User-Agent': pcUserAgent,
         'Accept': imageAccept,
       };
+      final cookies = getCookieHeader?.call();
+      if (cookies != null && cookies.isNotEmpty) {
+        headers['Cookie'] = cookies;
+      }
+      return headers;
     }
     // 4. 第三方外链图床（路过图床/sm.ms/微博/图虫/imgbb等）：不发送跨域 Referer 避免 403
     return {
@@ -176,17 +184,24 @@ class AppConfig extends ChangeNotifier {
     return '$avatarHost/avatar.php?uid=$uid&size=$size';
   }
 
-  /// 将低清缩略图自动提升为高清原图 URL（去除 Discuz .thumb.jpg、&thumb=yes 等低清压缩参数）
+  /// 将低清缩略图自动提升为高清原图 URL（去除 Discuz .thumb.jpg、&thumb=yes 等低清压缩参数，并规避 Discuz 动态图 0 字节缺陷）
   static String? toHighResImageUrl(String? url) {
     if (url == null || url.trim().isEmpty) return null;
     var clean = url.trim();
 
-    // 1. 去除 Discuz 缩略图后缀：xxx.jpg.thumb.jpg -> xxx.jpg, xxx.png.thumb.png -> xxx.png, xxx.thumb.jpg -> xxx.jpg
-    clean = clean.replaceAll(RegExp(r'\.(?:thumb|small|middle)\.(?:jpg|png|webp|jpeg)$', caseSensitive: false), '');
+    // 1. 对于 forum.php?mod=image 的 Discuz 动态缩略图请求：
+    // 其 key 参数为 Discuz 服务端根据 aid/size/type 计算的 HMAC 签名校验值，
+    // 严禁添加或篡改任何 query 参数（如 &type=fixnone），否则签名校验失败 Discuz 会直接 exit 输出 0 字节！
+    if (clean.contains('mod=image')) {
+      return clean;
+    }
+
+    // 2. 去除 Discuz 缩略图双后缀（仅当前面已有图片真实格式扩展名时才去除 .thumb.xxx，如 xxx.jpg.thumb.jpg -> xxx.jpg，严禁误伤 xxx.thumb.jpg）
     clean = clean.replaceAll(RegExp(r'(\.(?:jpg|png|webp|jpeg|gif))\.thumb\.(?:jpg|png|webp|jpeg)$', caseSensitive: false), r'$1');
+    clean = clean.replaceAll(RegExp(r'(\.(?:jpg|png|webp|jpeg|gif))\.(?:small|middle)\.(?:jpg|png|webp|jpeg)$', caseSensitive: false), r'$1');
     clean = clean.replaceAll(RegExp(r'_(?:thumb|small|middle)\.(?:jpg|png|webp|jpeg)$', caseSensitive: false), '.jpg');
 
-    // 2. 去除 URL query 中的 thumb 参数：&thumb=yes, &thumb=1, &thumb=2
+    // 3. 去除 URL query 中的 thumb 参数：&thumb=yes, &thumb=1, &thumb=2
     if (clean.contains('thumb=')) {
       clean = clean.replaceAll(RegExp(r'[?&]thumb=(?:yes|1|2|true)', caseSensitive: false), '');
       if (clean.contains('?') && !clean.contains('=')) {
@@ -194,7 +209,7 @@ class AppConfig extends ChangeNotifier {
       }
     }
 
-    // 3. 处理 thumb.php 代理链接：pic/thumb.php?w=200&h=150&src=http... -> 提取 src
+    // 4. 处理 thumb.php 代理链接：pic/thumb.php?w=200&h=150&src=http... -> 提取 src
     if (clean.contains('thumb.php') && clean.contains('src=')) {
       final m = RegExp(r'[?&]src=([^&]+)').firstMatch(clean);
       if (m != null) {
@@ -288,6 +303,12 @@ class AppConfig extends ChangeNotifier {
   static int defaultStartTab = 0;
   static List<String> blockedKeywords = [];
   static List<int> blockedUids = [];
+
+  // 剪贴板跳转设置
+  static bool clipboardJumpEnabled = true;
+  static bool clipboardJumpThreadEnabled = true;
+  static bool clipboardJumpSearchEnabled = true;
+  static bool clipboardJumpConfirm = true;
 
   // 下载与存储管理
   static String downloadPath = '';
@@ -420,6 +441,12 @@ class AppConfig extends ChangeNotifier {
           .map((e) => int.tryParse(e) ?? 0)
           .where((uid) => uid > 0)
           .toList();
+
+      // 剪贴板跳转
+      clipboardJumpEnabled = sp.getBool('clipboard_jump_enabled') ?? true;
+      clipboardJumpThreadEnabled = sp.getBool('clipboard_jump_thread_enabled') ?? true;
+      clipboardJumpSearchEnabled = sp.getBool('clipboard_jump_search_enabled') ?? true;
+      clipboardJumpConfirm = sp.getBool('clipboard_jump_confirm') ?? true;
 
       // 下载与存储管理
       downloadPath = sp.getString('download_path') ?? '';
@@ -711,6 +738,34 @@ class AppConfig extends ChangeNotifier {
       'blocked_uids',
       blockedUids.map((e) => e.toString()).toList(),
     );
+    instance.notifyListeners();
+  }
+
+  static Future<void> setClipboardJumpEnabled(bool enable) async {
+    clipboardJumpEnabled = enable;
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool('clipboard_jump_enabled', enable);
+    instance.notifyListeners();
+  }
+
+  static Future<void> setClipboardJumpThreadEnabled(bool enable) async {
+    clipboardJumpThreadEnabled = enable;
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool('clipboard_jump_thread_enabled', enable);
+    instance.notifyListeners();
+  }
+
+  static Future<void> setClipboardJumpSearchEnabled(bool enable) async {
+    clipboardJumpSearchEnabled = enable;
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool('clipboard_jump_search_enabled', enable);
+    instance.notifyListeners();
+  }
+
+  static Future<void> setClipboardJumpConfirm(bool confirm) async {
+    clipboardJumpConfirm = confirm;
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool('clipboard_jump_confirm', confirm);
     instance.notifyListeners();
   }
 

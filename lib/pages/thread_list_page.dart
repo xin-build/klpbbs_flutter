@@ -12,8 +12,12 @@ import '../models/thread_summary.dart';
 import '../widgets/desktop_shortcuts.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/forum_header_widget.dart';
+import '../widgets/bili_video_player.dart';
+import '../widgets/general_audio_player.dart';
+import '../widgets/general_video_player.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
+import '../widgets/netease_music_player.dart';
 import '../widgets/pagination_control.dart';
 import '../widgets/responsive_layout.dart';
 import '../widgets/skeleton_list.dart';
@@ -66,6 +70,11 @@ class _ThreadListPageState extends State<ThreadListPage> {
 
   @override
   void dispose() {
+    // 退出版块列表页时，停止所有内嵌媒体播放器
+    BiliVideoPlayer.stopAll();
+    NetEaseMusicPlayer.stopAll();
+    GeneralAudioPlayer.stopAll();
+    GeneralVideoPlayer.stopAll();
     _scrollController.dispose();
     ForumFavoriteNotifier.instance.removeListener(_onFavEvent);
     super.dispose();
@@ -262,7 +271,14 @@ class _ThreadListPageState extends State<ThreadListPage> {
   void _openThread(int tid) {
     if (ResponsiveBreakpoints.isDesktop(context) &&
         AppConfig.isMasterDetailEnabled) {
-      setState(() => _selectedTid = tid);
+      if (_selectedTid != tid) {
+        // 切换不同帖子时停止旧帖播放器
+        BiliVideoPlayer.stopAll();
+        NetEaseMusicPlayer.stopAll();
+        GeneralAudioPlayer.stopAll();
+        GeneralVideoPlayer.stopAll();
+        setState(() => _selectedTid = tid);
+      }
     } else {
       Navigator.of(
         context,
@@ -539,6 +555,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
                         key: ValueKey(_selectedTid),
                         tid: _selectedTid!,
                         showBackButton: false,
+                        stopPlayersOnDispose: false,
                       ),
               ),
             ),

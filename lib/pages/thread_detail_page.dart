@@ -40,12 +40,14 @@ class ThreadDetailPage extends StatefulWidget {
   final int tid;
   final int? fid;
   final bool showBackButton;
+  final bool stopPlayersOnDispose;
 
   const ThreadDetailPage({
     super.key,
     required this.tid,
     this.fid,
     this.showBackButton = true,
+    this.stopPlayersOnDispose = true,
   });
 
   @override
@@ -223,11 +225,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   @override
   void dispose() {
     AppConfig.instance.removeListener(_onConfigChanged);
-    // 退出帖子页时停止 B站/网易云/通用音频与视频内嵌播放器
-    BiliVideoPlayer.stopAll();
-    NetEaseMusicPlayer.stopAll();
-    GeneralAudioPlayer.stopAll();
-    GeneralVideoPlayer.stopAll();
+    // 退出帖子页时停止 B站/网易云/通用音频与视频内嵌播放器（若由外层管理生命周期则不盲目停止）
+    if (widget.stopPlayersOnDispose) {
+      BiliVideoPlayer.stopAll();
+      NetEaseMusicPlayer.stopAll();
+      GeneralAudioPlayer.stopAll();
+      GeneralVideoPlayer.stopAll();
+    }
     _scrollCtrl.dispose();
     super.dispose();
   }

@@ -1,5 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../core/app_config.dart';
 import '../core/cache_manager.dart';
@@ -137,6 +138,11 @@ class _RetryImageState extends State<RetryImage> {
                 ),
               ),
       errorWidget: (ctx, url, err) {
+        // 关键自愈：只要图片解码或加载发生错误，立即从缓存管理器中剔除该 URL 对应的本地损坏/空文件，
+        // 杜绝 0 字节或坏块长期盘踞本地导致后续所有重试均反复读取脏缓存！
+        KlpbbsCacheManager.instance.removeFile(effectiveUrl).catchError((_) {});
+        DefaultCacheManager().removeFile(effectiveUrl).catchError((_) {});
+
         if (_attempt < widget.maxAttempts) {
           Future.delayed(Duration(milliseconds: 350 * (_attempt + 1)), () {
             if (mounted) setState(() => _attempt++);

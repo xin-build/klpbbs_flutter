@@ -231,7 +231,10 @@ class _SignRankPageState extends State<SignRankPage>
                       const SizedBox(width: 10),
                       Text('基础铁粒奖励', style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13.5)),
                       const Spacer(),
-                      Text('+${iron ?? "5~15"} 粒', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.amber, fontSize: 16)),
+                      Text(
+                        (iron != null && iron.isNotEmpty) ? '+$iron 粒' : '5~15 粒 (随机)',
+                        style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.amber, fontSize: 16),
+                      ),
                     ],
                   ),
                   if (exp != null && exp.isNotEmpty) ...[
@@ -596,7 +599,13 @@ class _SignRankPageState extends State<SignRankPage>
     final messenger = ScaffoldMessenger.of(context);
     try {
       final res = await KlpbbsApi.signIn();
-      if (res.success || res.message.contains('已签到') || res.message.contains('签过到')) {
+      bool isReallySigned = res.success || (res.rank != null && res.rank! > 0);
+      if (!isReallySigned) {
+        // 二次通过服务端权威页面状态核查
+        final header = await KlpbbsApi.getSignHeaderInfo(forceRefresh: true);
+        if (header.isSignedToday) isReallySigned = true;
+      }
+      if (isReallySigned) {
         await _recordSignDay();
         await AutoSignService.instance.markSignedToday();
         final today = DateTime.now().day;
@@ -621,8 +630,12 @@ class _SignRankPageState extends State<SignRankPage>
           }
         }
         _showSignSuccessDialog(
-          message: res.message.contains('已签到') || res.message.contains('签过到') ? '今日已签到' : res.message,
-          iron: res.rewardIron,
+          message: res.message.contains('已签到') || res.message.contains('签过到') || res.message.contains('今日已签')
+              ? '今日已签到'
+              : res.message,
+          iron: (res.rewardIron != null && res.rewardIron!.isNotEmpty)
+              ? res.rewardIron
+              : (_headerInfo.rewardIron.isNotEmpty ? _headerInfo.rewardIron : null),
           exp: res.rewardExp,
           rank: res.rank ?? _headerInfo.mySignRank,
           days: res.continuousDays ?? _headerInfo.continuousDays,

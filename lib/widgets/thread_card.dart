@@ -433,7 +433,16 @@ class _ThreadCardState extends State<ThreadCard> {
                   ),
                 ),
               ),
-              errorWidget: (_, __, ___) => const SizedBox.shrink(),
+              errorWidget: (_, __, ___) => Container(
+                color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                child: Center(
+                  child: Icon(
+                    Icons.image_outlined,
+                    color: colorScheme.outlineVariant.withAlpha(120),
+                    size: 28,
+                  ),
+                ),
+              ),
             ),
           ),
         ),
@@ -459,7 +468,16 @@ class _ThreadCardState extends State<ThreadCard> {
                     placeholder: (_, __) => Container(
                       color: colorScheme.surfaceContainerHighest.withAlpha(80),
                     ),
-                    errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                    errorWidget: (_, __, ___) => Container(
+                      color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                      child: Center(
+                        child: Icon(
+                          Icons.image_outlined,
+                          color: colorScheme.outlineVariant.withAlpha(120),
+                          size: 24,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -479,7 +497,16 @@ class _ThreadCardState extends State<ThreadCard> {
                     placeholder: (_, __) => Container(
                       color: colorScheme.surfaceContainerHighest.withAlpha(80),
                     ),
-                    errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                    errorWidget: (_, __, ___) => Container(
+                      color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                      child: Center(
+                        child: Icon(
+                          Icons.image_outlined,
+                          color: colorScheme.outlineVariant.withAlpha(120),
+                          size: 24,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -509,7 +536,16 @@ class _ThreadCardState extends State<ThreadCard> {
                     placeholder: (_, __) => Container(
                       color: colorScheme.surfaceContainerHighest.withAlpha(80),
                     ),
-                    errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                    errorWidget: (_, __, ___) => Container(
+                      color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                      child: Center(
+                        child: Icon(
+                          Icons.image_outlined,
+                          color: colorScheme.outlineVariant.withAlpha(120),
+                          size: 20,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -624,7 +660,7 @@ class _ThreadCardState extends State<ThreadCard> {
     );
   }
 
-  /// 网格/桌面卡片布局
+  /// 网格/桌面卡片布局（优化排版：信息强制对齐置底，规整严谨）
   Widget _buildGridLayout(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
@@ -632,70 +668,84 @@ class _ThreadCardState extends State<ThreadCard> {
     final images = _cardImages;
     final hasCover = images.isNotEmpty;
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (hasCover) ...[
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: SizedBox(
-              width: 112,
-              height: 86,
-              child: RetryImage(
-                imageUrl: images.first,
-                fit: BoxFit.cover,
-                alignment: Alignment.center,
-                filterQuality: FilterQuality.medium,
-                memCacheWidth: 340,
-                placeholder: (_, __) => Container(
-                  color: colorScheme.surfaceContainerHighest.withAlpha(60),
-                  child: Center(
-                    child: Icon(
-                      Icons.image_outlined,
-                      color: colorScheme.outlineVariant.withAlpha(120),
-                      size: 24,
-                    ),
-                  ),
-                ),
-                errorWidget: (_, __, ___) => Container(
-                  color: colorScheme.surfaceContainerHighest.withAlpha(60),
-                  child: Center(
-                    child: Icon(
-                      Icons.image_outlined,
-                      color: colorScheme.outlineVariant.withAlpha(120),
-                      size: 24,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final hasBoundedHeight = constraints.hasBoundedHeight;
+
+        return Row(
+          crossAxisAlignment: hasBoundedHeight
+              ? CrossAxisAlignment.stretch
+              : CrossAxisAlignment.start,
+          children: [
+            if (hasCover) ...[
+              Align(
+                alignment: Alignment.topLeft,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: SizedBox(
+                    width: 116,
+                    height: 88,
+                    child: RetryImage(
+                      imageUrl: images.first,
+                      fit: BoxFit.cover,
+                      alignment: Alignment.center,
+                      filterQuality: FilterQuality.medium,
+                      memCacheWidth: 340,
+                      placeholder: (_, __) => Container(
+                        color: colorScheme.surfaceContainerHighest.withAlpha(60),
+                        child: Center(
+                          child: Icon(
+                            Icons.image_outlined,
+                            color: colorScheme.outlineVariant.withAlpha(120),
+                            size: 24,
+                          ),
+                        ),
+                      ),
+                      errorWidget: (_, __, ___) => Container(
+                        color: colorScheme.surfaceContainerHighest.withAlpha(60),
+                        child: Center(
+                          child: Icon(
+                            Icons.image_outlined,
+                            color: colorScheme.outlineVariant.withAlpha(120),
+                            size: 24,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ),
-          const SizedBox(width: 12),
-        ],
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildTitle(theme, maxLines: 2),
-              if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
-                const SizedBox(height: 3),
-                Text(
-                  thread.excerpt!,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant.withAlpha(220),
-                    fontSize: 11.5,
-                    height: 1.25,
-                  ),
-                ),
-              ],
-              const SizedBox(height: 4),
-              _buildFooter(theme),
+              const SizedBox(width: 12),
             ],
-          ),
-        ),
-      ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildTitle(theme, maxLines: 2),
+                  if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      thread.excerpt!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant.withAlpha(220),
+                        fontSize: 11.5,
+                        height: 1.25,
+                      ),
+                    ),
+                  ],
+                  if (hasBoundedHeight)
+                    const Spacer()
+                  else
+                    const SizedBox(height: 6),
+                  _buildFooter(theme),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 

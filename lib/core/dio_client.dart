@@ -137,6 +137,7 @@ class DioClient {
   }
 
   static Dio _build() {
+    AppConfig.getCookieHeader = () => allCookiesHeader;
     final d = Dio(
       BaseOptions(
         baseUrl: AppConfig.baseUrl,
