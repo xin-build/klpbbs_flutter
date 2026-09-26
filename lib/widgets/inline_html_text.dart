@@ -60,12 +60,18 @@ class InlineHtmlText extends StatelessWidget {
   ) {
     if (rawHtml.isEmpty) return const [];
 
-    final clean = rawHtml
+    var clean = rawHtml
         .replaceAll('&nbsp;', ' ')
         .replaceAll('&lt;', '<')
         .replaceAll('&gt;', '>')
         .replaceAll('&amp;', '&')
         .replaceAll('&quot;', '"');
+
+    // 将 ahome_horn 插件表情码 [s:0]~[s:23] 替换为标准表情图片，防止被纯文本截断
+    clean = clean.replaceAllMapped(RegExp(r'\[s:(\d+)\]'), (m) {
+      final idx = m.group(1)!;
+      return '<img src="${AppConfig.baseUrl}source/plugin/ahome_horn/image/smiles/$idx.png" smilieid="$idx" border="0" />';
+    });
 
     final doc = html_parser.parseFragment(clean);
 
@@ -75,51 +81,53 @@ class InlineHtmlText extends StatelessWidget {
         if (n.nodeType == html_dom.Node.TEXT_NODE) {
           final text = _cleanContentText(n.text ?? '');
           if (text.isNotEmpty) {
-            if (insideLink && linkHref != null && linkHref.isNotEmpty) {
+            // 检查文本是否包含「💰 土豪」或「[💰 土豪]」
+            final bossRegex = RegExp(r'\[?💰\s*土豪\]?');
+            final bossMatch = bossRegex.firstMatch(text);
+            if (bossMatch != null) {
+              final before = text.substring(0, bossMatch.start);
+              final after = text.substring(bossMatch.end);
+              if (before.isNotEmpty) {
+                spans.addAll(_processTextWithUrls(context, before, currentStyle, theme, insideLink: insideLink, linkHref: linkHref));
+              }
               spans.add(
-                TextSpan(
-                  text: text,
-                  style: currentStyle,
-                  recognizer: TapGestureRecognizer()
-                    ..onTap = () => _openLink(context, linkHref),
+                WidgetSpan(
+                  alignment: PlaceholderAlignment.middle,
+                  child: _buildTuhaoBadge(theme),
                 ),
               );
-            } else {
-              // 自动识别文本中的 URL
-              final urlRegex = RegExp(r'(https?://[^\s<>"，。]+|www\.[^\s<>"，。]+)', caseSensitive: false);
-              final matches = urlRegex.allMatches(text);
-              if (matches.isNotEmpty) {
-                int lastEnd = 0;
-                for (final m in matches) {
-                  if (m.start > lastEnd) {
-                    spans.add(TextSpan(text: text.substring(lastEnd, m.start), style: currentStyle));
-                  }
-                  final matchedUrl = m.group(0)!;
-                  final linkStyle = currentStyle.copyWith(
-                    color: theme.colorScheme.primary,
-                    decoration: TextDecoration.underline,
-                  );
-                  spans.add(
-                    TextSpan(
-                      text: matchedUrl,
-                      style: linkStyle,
-                      recognizer: TapGestureRecognizer()
-                        ..onTap = () => _openLink(context, matchedUrl),
-                    ),
-                  );
-                  lastEnd = m.end;
-                }
-                if (lastEnd < text.length) {
-                  spans.add(TextSpan(text: text.substring(lastEnd), style: currentStyle));
-                }
-              } else {
-                spans.add(TextSpan(text: text, style: currentStyle));
+              if (after.isNotEmpty) {
+                spans.addAll(_processTextWithUrls(context, after, currentStyle, theme, insideLink: insideLink, linkHref: linkHref));
               }
+              continue;
             }
+
+            spans.addAll(_processTextWithUrls(context, text, currentStyle, theme, insideLink: insideLink, linkHref: linkHref));
           }
         } else if (n.nodeType == html_dom.Node.ELEMENT_NODE) {
           final el = n as html_dom.Element;
           final tag = el.localName?.toLowerCase() ?? '';
+
+          // 拦截「土豪」或「土豪霸屏」徽章元素（1:1 还原网页端金黄徽章，杜绝灰色背景块）
+          final trimmedText = el.text.trim();
+          final isBossEl = el.classes.contains('boss') ||
+              el.classes.contains('ahorn_boss') ||
+              el.classes.contains('tuhao') ||
+              (el.attributes['style']?.contains('ahorn') ?? false) ||
+              trimmedText == '💰 土豪' ||
+              trimmedText == '💰土豪' ||
+              trimmedText == '[💰 土豪]' ||
+              trimmedText == '[💰土豪]';
+          if (isBossEl) {
+            spans.add(
+              WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: _buildTuhaoBadge(theme),
+              ),
+            );
+            continue;
+          }
+
           TextStyle? style = currentStyle;
 
           // 样式解析
@@ -216,7 +224,10 @@ class InlineHtmlText extends StatelessWidget {
               final src = _absolute(rawSrc);
               final isSmiley = el.attributes['smilieid'] != null ||
                   src.contains('smiley') ||
-                  src.contains('post/smile');
+                  src.contains('post/smile') ||
+                  src.contains('smiles') ||
+                  src.contains('ahome_horn') ||
+                  src.contains('image/smiles');
 
               if (isSmiley) {
                 final size = emojiSize ?? 18.0;
@@ -300,6 +311,102 @@ class InlineHtmlText extends StatelessWidget {
     return walk(doc, base);
   }
 
+  /// 1:1 对齐 Discuz 网页版小喇叭「💰 土豪」徽章
+  Widget _buildTuhaoBadge(ThemeData theme) {
+    final isDark = theme.brightness == Brightness.dark;
+    return Container(
+      margin: const EdgeInsets.only(left: 6, right: 3, top: 1, bottom: 1),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0x33FFA000) : const Color(0xFFFFF8E1),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(
+          color: isDark ? const Color(0xFFFFB300) : const Color(0xFFFFC107),
+          width: 0.9,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          const Text('💰', style: TextStyle(fontSize: 11, height: 1.0)),
+          const SizedBox(width: 3),
+          Text(
+            '土豪',
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.bold,
+              color: isDark ? const Color(0xFFFFD54F) : const Color(0xFFD97706),
+              height: 1.0,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 处理文本中的 URL 自动识别与点击跳转
+  List<InlineSpan> _processTextWithUrls(
+    BuildContext context,
+    String text,
+    TextStyle currentStyle,
+    ThemeData theme, {
+    bool insideLink = false,
+    String? linkHref,
+  }) {
+    final spans = <InlineSpan>[];
+    if (insideLink && linkHref != null && linkHref.isNotEmpty) {
+      spans.add(
+        TextSpan(
+          text: text,
+          style: currentStyle,
+          recognizer: TapGestureRecognizer()
+            ..onTap = () => _openLink(context, linkHref),
+        ),
+      );
+    } else {
+      final urlRegex = RegExp(r'(https?://[^\s<>"，。]+|www\.[^\s<>"，。]+)', caseSensitive: false);
+      final matches = urlRegex.allMatches(text);
+      if (matches.isNotEmpty) {
+        int lastEnd = 0;
+        for (final m in matches) {
+          if (m.start > lastEnd) {
+            spans.add(TextSpan(text: text.substring(lastEnd, m.start), style: currentStyle));
+          }
+          var matchedUrl = m.group(0)!;
+          var trailingPunct = '';
+          while (matchedUrl.isNotEmpty &&
+              RegExp(r'[)）\]】}>》;；,，.。!！?？:：]$').hasMatch(matchedUrl)) {
+            trailingPunct = matchedUrl[matchedUrl.length - 1] + trailingPunct;
+            matchedUrl = matchedUrl.substring(0, matchedUrl.length - 1);
+          }
+          final linkStyle = currentStyle.copyWith(
+            color: theme.colorScheme.primary,
+            decoration: TextDecoration.underline,
+          );
+          spans.add(
+            TextSpan(
+              text: matchedUrl,
+              style: linkStyle,
+              recognizer: TapGestureRecognizer()
+                ..onTap = () => _openLink(context, matchedUrl),
+            ),
+          );
+          if (trailingPunct.isNotEmpty) {
+            spans.add(TextSpan(text: trailingPunct, style: currentStyle));
+          }
+          lastEnd = m.end;
+        }
+        if (lastEnd < text.length) {
+          spans.add(TextSpan(text: text.substring(lastEnd), style: currentStyle));
+        }
+      } else {
+        spans.add(TextSpan(text: text, style: currentStyle));
+      }
+    }
+    return spans;
+  }
+
   String _cleanContentText(String text) {
     return text.replaceAll(RegExp(r'[-​‎‏﻿]'), '');
   }
@@ -380,7 +487,7 @@ class InlineHtmlText extends StatelessWidget {
         'white': Colors.white,
         'black': Colors.black,
       };
-      baseColor = colorMap[clean] ?? Colors.grey;
+      baseColor = colorMap[clean] ?? (isBackground ? Colors.transparent : Colors.grey);
     }
 
     if (!isBackground && brightness != null) {

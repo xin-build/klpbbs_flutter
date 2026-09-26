@@ -81,6 +81,37 @@ class FloorReward {
     required this.reason,
     this.dateline = '',
   });
+
+  /// 解析出的数字金额（正数或负数）
+  int get numericAmount {
+    final match = RegExp(r'([+\-]?\d+)').firstMatch(amount.replaceAll(' ', ''));
+    if (match != null) {
+      return int.tryParse(match.group(1)!) ?? 0;
+    }
+    return 0;
+  }
+
+  /// 币种/积分类型（例如 "铁粒"、"贡献"、"人气"、"金粒"）
+  String get currency {
+    if (amount.contains('铁粒')) return '铁粒';
+    if (amount.contains('贡献')) return '贡献';
+    if (amount.contains('人气')) return '人气';
+    if (amount.contains('金粒')) return '金粒';
+    final parts = amount.replaceAll(RegExp(r'[+\-\d\s]'), '').trim();
+    return parts.isNotEmpty ? parts : '积分';
+  }
+
+  /// 是否为正向加分
+  bool get isPositive => !amount.contains('-');
+
+  /// 搜索匹配（模糊搜索用户名、理由或金额）
+  bool matches(String query) {
+    if (query.trim().isEmpty) return true;
+    final q = query.trim().toLowerCase();
+    return username.toLowerCase().contains(q) ||
+        reason.toLowerCase().contains(q) ||
+        amount.toLowerCase().contains(q);
+  }
 }
 
 /// 帖子详情页的一层（楼主 / 回帖）

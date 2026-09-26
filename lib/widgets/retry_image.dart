@@ -26,7 +26,7 @@ class RetryImage extends StatefulWidget {
     this.height,
     this.fit,
     this.alignment = Alignment.center,
-    this.filterQuality = FilterQuality.medium,
+    this.filterQuality = FilterQuality.low,
     this.memCacheWidth,
     this.memCacheHeight,
     this.placeholder,
@@ -107,13 +107,15 @@ class _RetryImageState extends State<RetryImage> {
     }
 
     final dpr = MediaQuery.maybeOf(context)?.devicePixelRatio ?? 2.0;
-    // 关键防拉伸机制：仅计算单边最大内存缓存尺寸（保持原图宽高比解码，彻底杜绝强行挤压拉伸变形）
-    final int? calculatedMemWidth = widget.memCacheWidth ??
+    // 关键防拉伸与GPU显存暴涨防御：
+    // 1. 仅计算单边最大内存缓存尺寸，保持原图宽高比解码，彻底杜绝变形
+    // 2. 为未指定尺寸的正文插图增加 1440px 安全上限，防止手机端原图 4K/8K 解码占用几十兆显存造成卡顿与发热
+    final int calculatedMemWidth = widget.memCacheWidth ??
         (widget.width != null && widget.width! > 0
-            ? (widget.width! * dpr).clamp(160, 2048).toInt()
+            ? (widget.width! * dpr).clamp(32, 1440).toInt()
             : (widget.height != null && widget.height! > 0
-                ? (widget.height! * dpr * 2.0).clamp(160, 2048).toInt()
-                : null));
+                ? (widget.height! * dpr * 1.5).clamp(48, 1440).toInt()
+                : (1080 * dpr).clamp(720, 1440).toInt()));
 
     return CachedNetworkImage(
       key: ValueKey('$effectiveUrl#$_attempt'),

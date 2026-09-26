@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/dio_client.dart';
+import 'tray_service.dart';
 
 /// 应用内浮动横幅通知数据模型
 class InAppNotificationMessage {
@@ -116,7 +117,14 @@ class PushNotificationService extends ChangeNotifier {
             appName: '苦力怕论坛',
             shortcutPolicy: ShortcutPolicy.requireCreate,
           );
-        } catch (_) {}
+        } catch (_) {
+          try {
+            await localNotifier.setup(
+              appName: '苦力怕论坛',
+              shortcutPolicy: ShortcutPolicy.ignore,
+            );
+          } catch (_) {}
+        }
       }
 
       if (_enabled && _interval.seconds > 0) {
@@ -259,6 +267,7 @@ class PushNotificationService extends ChangeNotifier {
         );
 
         notification.onClick = () {
+          TrayService.instance.showWindow();
           onOpenNoticeCallback?.call();
         };
 
@@ -307,9 +316,10 @@ class PushNotificationService extends ChangeNotifier {
           body: body,
           silent: !_sound,
         );
-        if (onTap != null) {
-          notification.onClick = onTap;
-        }
+        notification.onClick = () {
+          TrayService.instance.showWindow();
+          onTap?.call();
+        };
         await notification.show();
       } catch (_) {}
     }

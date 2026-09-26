@@ -10,7 +10,11 @@ import '../services/push_notification_service.dart';
 import '../services/rgb_theme_service.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
+import '../widgets/mobile_home_customizer.dart';
 import '../widgets/responsive_layout.dart';
+import '../widgets/visual_grid_canvas.dart';
+import '../core/cache_manager.dart';
+import '../core/preload_service.dart';
 import 'download_manager_page.dart';
 
 enum SettingsCategory {
@@ -32,7 +36,8 @@ enum SettingsCategory {
 
 /// 高度自定义设置中心（支持 PC 宽屏双栏与移动端层级视图）
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key});
+  final SettingsCategory? initialCategory;
+  const SettingsPage({super.key, this.initialCategory});
 
   static Widget buildCategoryView(SettingsCategory category) {
     switch (category) {
@@ -60,7 +65,32 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  SettingsCategory _selectedCategory = SettingsCategory.appearance;
+  late SettingsCategory _selectedCategory;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedCategory = widget.initialCategory ?? SettingsCategory.appearance;
+    if (widget.initialCategory != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final isDesktop = ResponsiveBreakpoints.isDesktop(context) &&
+            MediaQuery.sizeOf(context).width >= 600.0;
+        if (!isDesktop) {
+          final cat = widget.initialCategory!;
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => Scaffold(
+                appBar: AppBar(title: Text(cat.label)),
+                body: SettingsPage.buildCategoryView(cat),
+              ),
+            ),
+          );
+        }
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -774,12 +804,39 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
 }
 
 /// 2. 排版与多端模式
-class _LayoutSettingsView extends StatelessWidget {
+class _LayoutSettingsView extends StatefulWidget {
+  @override
+  State<_LayoutSettingsView> createState() => _LayoutSettingsViewState();
+}
+
+class _LayoutSettingsViewState extends State<_LayoutSettingsView> {
+  void _openStudio(String pageCategory) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => VisualGridCanvas(
+          pageCategory: pageCategory,
+          initialLayout: pageCategory == 'home'
+              ? AppConfig.homeDashboardLayout
+              : (pageCategory == 'thread' ? AppConfig.threadDashboardLayout : AppConfig.guideDashboardLayout),
+          onExit: () => Navigator.of(context).pop(),
+          onSave: (saved) {
+            setState(() {});
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // ================= 1. 设备排版模式 =================
         _buildSectionHeader('设备排版模式'),
         Card(
           child: Column(
@@ -788,42 +845,221 @@ class _LayoutSettingsView extends StatelessWidget {
                 title: Text(mode.label),
                 value: mode,
                 groupValue: AppConfig.layoutMode,
-                onChanged: (v) => AppConfig.setLayoutMode(v!),
+                onChanged: (v) {
+                  if (v != null) {
+                    AppConfig.setLayoutMode(v);
+                    setState(() {});
+                  }
+                },
               );
             }).toList(),
           ),
         ),
-        const SizedBox(height: 16),
-        _buildSectionHeader('桌面 PC 宽屏配置'),
-        Card(
-          child: Column(
-            children: [
-              ListTile(
-                title: const Text('宽屏网格列数'),
-                subtitle: const Text('在 PC 桌面或平板横屏下帖子流的分列排版'),
-                trailing: DropdownButton<int>(
-                  value: AppConfig.desktopGridColumns,
-                  underline: const SizedBox(),
-                  items: const [
-                    DropdownMenuItem(value: 0, child: Text('自动适应')),
-                    DropdownMenuItem(value: 2, child: Text('双列 (2 列)')),
-                    DropdownMenuItem(value: 3, child: Text('三列 (3 列)')),
-                    DropdownMenuItem(value: 4, child: Text('四列 (4 列)')),
-                  ],
-                  onChanged: (v) =>
-                      v != null ? AppConfig.setDesktopGridColumns(v) : null,
-                ),
+
+        // ================= 2. 桌面 PC 端专属：自由画布工作台与宽屏双栏配置 =================
+        if (isDesktop) ...[
+          const SizedBox(height: 16),
+          _buildSectionHeader('界面排版与 DIY 定制中心 (桌面端专属)'),
+          Card(
+            elevation: 1,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: colorScheme.primary.withAlpha(80), width: 1.2),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: colorScheme.primary.withAlpha(25),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(Icons.dashboard_customize_rounded, color: colorScheme.primary, size: 24),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              '🎨 界面自定义排版中枢',
+                              style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              '提供轻量列表排序配置与 2D 可视化自由网格拖拽两层深度定制',
+                              style: TextStyle(fontSize: 11, color: colorScheme.outline),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  const Divider(height: 1),
+                  const SizedBox(height: 12),
+
+                  // 界面排版与自由画布工坊（彻底整合）
+                  Row(
+                    children: [
+                      Icon(Icons.dashboard_customize_rounded, size: 18, color: colorScheme.primary),
+                      const SizedBox(width: 8),
+                      const Text(
+                        '界面排版与自由画布工坊',
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '进入全图形化 12 列蓝图画布，自由拖放卡片、拉伸尺寸与吸附对齐，深度调谐工作台参数与信息流组件排序',
+                    style: TextStyle(fontSize: 11.5, color: colorScheme.outline),
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      FilledButton.tonalIcon(
+                        onPressed: () => _openStudio('home'),
+                        icon: const Icon(Icons.home_outlined, size: 16),
+                        label: const Text('首页自由画布'),
+                      ),
+                      FilledButton.tonalIcon(
+                        onPressed: () => _openStudio('guide'),
+                        icon: const Icon(Icons.explore_outlined, size: 16),
+                        label: const Text('导读工作台画布'),
+                      ),
+                      FilledButton.tonalIcon(
+                        onPressed: () => _openStudio('thread'),
+                        icon: const Icon(Icons.article_outlined, size: 16),
+                        label: const Text('帖子工作台画布'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  const Divider(height: 1),
+                  const SizedBox(height: 12),
+
+                  // 主页内容最小保护宽度滑块
+                  Text(
+                    '主页/正文内容最小保护宽度: ${AppConfig.mainContentMinWidth.toInt()} px',
+                    style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '无论添加多少卡片，确保主要信息流保留此最小宽度，窄屏下自动自适应折叠，防止被卡片占满',
+                    style: TextStyle(fontSize: 11, color: colorScheme.outline),
+                  ),
+                  Slider(
+                    value: AppConfig.mainContentMinWidth.clamp(400.0, 1000.0),
+                    min: 400.0,
+                    max: 1000.0,
+                    divisions: 12,
+                    label: '${AppConfig.mainContentMinWidth.toInt()} px',
+                    onChanged: (v) {
+                      setState(() {});
+                      AppConfig.setMainContentMinWidth(v);
+                    },
+                  ),
+
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton.icon(
+                        onPressed: () async {
+                          await AppConfig.resetAllDashboards();
+                          setState(() {});
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('已将所有页面布局重置为官方推荐默认方案')),
+                            );
+                          }
+                        },
+                        icon: const Icon(Icons.restore_rounded, size: 16),
+                        label: const Text('恢复全部页面默认布局', style: TextStyle(fontSize: 11.5)),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-              const Divider(height: 1),
-              SwitchListTile(
-                title: const Text('版块双栏主从视图 (Master-Detail)'),
-                subtitle: const Text('宽屏下左侧展示帖子列表，右侧直接展示详情'),
-                value: AppConfig.isMasterDetailEnabled,
-                onChanged: (v) => AppConfig.setIsMasterDetailEnabled(v),
-              ),
-            ],
+            ),
           ),
-        ),
+          const SizedBox(height: 16),
+          _buildSectionHeader('桌面 PC 宽屏配置'),
+          Card(
+            child: Column(
+              children: [
+                ListTile(
+                  title: const Text('宽屏网格列数'),
+                  subtitle: const Text('在 PC 桌面或平板横屏下帖子流的分列排版'),
+                  trailing: DropdownButton<int>(
+                    value: AppConfig.desktopGridColumns,
+                    underline: const SizedBox(),
+                    items: const [
+                      DropdownMenuItem(value: 0, child: Text('自动适应')),
+                      DropdownMenuItem(value: 2, child: Text('双列 (2 列)')),
+                      DropdownMenuItem(value: 3, child: Text('三列 (3 列)')),
+                      DropdownMenuItem(value: 4, child: Text('四列 (4 列)')),
+                    ],
+                    onChanged: (v) =>
+                        v != null ? AppConfig.setDesktopGridColumns(v) : null,
+                  ),
+                ),
+                const Divider(height: 1),
+                SwitchListTile(
+                  title: const Text('版块双栏主从视图 (Master-Detail)'),
+                  subtitle: const Text('宽屏下左侧展示帖子列表，右侧直接展示详情'),
+                  value: AppConfig.isMasterDetailEnabled,
+                  onChanged: (v) => AppConfig.setIsMasterDetailEnabled(v),
+                ),
+              ],
+            ),
+          ),
+        ],
+
+        // ================= 3. 移动端视图专属：移动端首页板块与快捷入口定制 =================
+        if (!isDesktop) ...[
+          const SizedBox(height: 16),
+          _buildSectionHeader('移动端首页布局与功能定制'),
+          Card(
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(
+                color: colorScheme.outlineVariant.withAlpha(50),
+              ),
+            ),
+            child: ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              leading: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: colorScheme.primaryContainer.withAlpha(90),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(Icons.tune_rounded, color: colorScheme.primary, size: 22),
+              ),
+              title: const Text(
+                '移动端首页板块与快捷入口定制',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+              subtitle: const Text(
+                '自定义公告小喇叭、数据统计、快捷金刚区、版块导航与精华推荐流的显隐及排序',
+                style: TextStyle(fontSize: 12),
+              ),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () => MobileHomeCustomizer.show(context),
+            ),
+          ),
+        ],
+
+        // ================= 4. 移动端导航布局 =================
         const SizedBox(height: 16),
         _buildSectionHeader('移动端导航布局'),
         Card(
@@ -833,7 +1069,12 @@ class _LayoutSettingsView extends StatelessWidget {
                 title: Text(l.label),
                 value: l,
                 groupValue: AppConfig.navLayout,
-                onChanged: (v) => AppConfig.setNavLayout(v!),
+                onChanged: (v) {
+                  if (v != null) {
+                    AppConfig.setNavLayout(v);
+                    setState(() {});
+                  }
+                },
               );
             }).toList(),
           ),
@@ -1014,107 +1255,338 @@ class _DownloadSettingsViewState extends State<_DownloadSettingsView> {
   }
 }
 
-/// 4. 性能与 GPU 加速
-class _PerformanceSettingsView extends StatelessWidget {
+/// 6. 性能与 GPU 加速 / 缓存生命周期管理
+class _PerformanceSettingsView extends StatefulWidget {
+  @override
+  State<_PerformanceSettingsView> createState() => _PerformanceSettingsViewState();
+}
+
+class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
+  String _cacheSizeStr = '计算中...';
+  bool _isCalculating = false;
+  bool _isClearing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshCacheSize();
+  }
+
+  Future<void> _refreshCacheSize() async {
+    if (!mounted) return;
+    setState(() => _isCalculating = true);
+    try {
+      final bytes = await KlpbbsCacheManager.calculateTotalCacheBytes();
+      if (mounted) {
+        setState(() {
+          _cacheSizeStr = KlpbbsCacheManager.formatBytes(bytes);
+          _isCalculating = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _isCalculating = false);
+    }
+  }
+
+  Future<void> _clearCache() async {
+    setState(() => _isClearing = true);
+    try {
+      final freedBytes = await KlpbbsCacheManager.clearEntireCache();
+      PreloadService.instance.clear();
+      KlpbbsApi.clearQuickCache();
+      KlpbbsApi.clearFavoriteCaches();
+
+      if (mounted) {
+        setState(() {
+          _cacheSizeStr = '0.0 MB';
+          _isClearing = false;
+        });
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('已深度彻底清理本地缓存，释放 ${KlpbbsCacheManager.formatBytes(freedBytes)} 空间'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isClearing = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('清理缓存时发生异常：$e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       children: [
-        _buildSectionHeader('硬件加速与渲染引擎'),
-        Card(
-          child: Column(
-            children: [
-              SwitchListTile(
-                title: const Text('GPU 硬件加速渲染 (Hardware Acceleration)'),
-                subtitle: const Text('启用 Vulkan / Direct3D 纹理硬件合成加速，降低 CPU 占用'),
-                value: AppConfig.gpuAcceleration,
-                onChanged: (v) => AppConfig.setGpuAcceleration(v),
-              ),
-              const Divider(height: 1),
-              SwitchListTile(
-                title: const Text('120Hz / 高刷帧率解除限制'),
-                subtitle: const Text('支持高刷新率显示屏流畅动画渲染'),
-                value: AppConfig.highRefreshRate,
-                onChanged: (v) => AppConfig.setHighRefreshRate(v),
-              ),
-              const Divider(height: 1),
-              SwitchListTile(
-                title: const Text('阻尼平滑惯性滚动 (Smooth Scrolling)'),
-                subtitle: const Text('优化鼠标滚轮与触摸滑动平滑物理曲线'),
-                value: AppConfig.smoothScrollPhysics,
-                onChanged: (v) => AppConfig.setSmoothScrollPhysics(v),
-              ),
-              const Divider(height: 1),
-              SwitchListTile(
-                title: const Text('后台多线程并发解析引擎 (Isolate Engine)'),
-                subtitle: const Text('利用多核 CPU 后台多线程解析帖子 HTML 与 BBCode，彻底消除主线程掉帧与卡顿'),
-                value: AppConfig.enableMultiThreadParsing,
-                onChanged: (v) => AppConfig.setMultiThreadParsing(v),
-              ),
-              const Divider(height: 1),
-              SwitchListTile(
-                title: const Text('GPU 硬件加速与图层缓存 (Layer Raster Cache)'),
-                subtitle: const Text('启用 GPU 独立图层缓存与重绘边界隔离，显著降低复杂图文滚动时的 CPU 占用'),
-                value: AppConfig.enableGpuAcceleratedRendering,
-                onChanged: (v) => AppConfig.setGpuAcceleratedRendering(v),
-              ),
-            ],
-          ),
+        // 1. 硬件加速与渲染引擎
+        _buildSectionHeader(
+          '硬件加速与渲染引擎',
+          subtitle: '调节图形合成管线、高刷新率渲染与后台并发计算',
+        ),
+        _buildSettingCard(
+          context: context,
+          children: [
+            _buildSettingSwitchTile(
+              context: context,
+              title: 'GPU 硬件加速渲染 (Hardware Acceleration)',
+              subtitle: '启用 Vulkan / Direct3D 纹理硬件合成加速，降低 CPU 占用',
+              icon: Icons.speed_rounded,
+              value: AppConfig.gpuAcceleration,
+              onChanged: (v) {
+                AppConfig.setGpuAcceleration(v);
+                setState(() {});
+              },
+            ),
+            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+            _buildSettingSwitchTile(
+              context: context,
+              title: '120Hz / 高刷帧率解除限制',
+              subtitle: '支持高刷新率显示屏流畅动画渲染',
+              icon: Icons.flare_rounded,
+              value: AppConfig.highRefreshRate,
+              onChanged: (v) {
+                AppConfig.setHighRefreshRate(v);
+                setState(() {});
+              },
+            ),
+            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+            _buildSettingSwitchTile(
+              context: context,
+              title: '阻尼平滑惯性滚动 (Smooth Scrolling)',
+              subtitle: '优化鼠标滚轮与触摸滑动平滑物理曲线',
+              icon: Icons.swap_vert_circle_outlined,
+              value: AppConfig.smoothScrollPhysics,
+              onChanged: (v) {
+                AppConfig.setSmoothScrollPhysics(v);
+                setState(() {});
+              },
+            ),
+            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+            _buildSettingSwitchTile(
+              context: context,
+              title: '后台多线程并发解析引擎 (Isolate Engine)',
+              subtitle: '利用多核 CPU 后台多线程解析帖子 HTML 与 BBCode，彻底消除主线程掉帧与卡顿',
+              icon: Icons.memory_rounded,
+              value: AppConfig.enableMultiThreadParsing,
+              onChanged: (v) {
+                AppConfig.setMultiThreadParsing(v);
+                setState(() {});
+              },
+            ),
+            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+            _buildSettingSwitchTile(
+              context: context,
+              title: 'GPU 独立图层光栅缓存 (Layer Raster Cache)',
+              subtitle: '启用 GPU 独立图层缓存与重绘边界隔离，显著降低复杂图文滚动时的 GPU/CPU 综合功耗',
+              icon: Icons.layers_outlined,
+              value: AppConfig.enableGpuAcceleratedRendering,
+              onChanged: (v) {
+                AppConfig.setGpuAcceleratedRendering(v);
+                setState(() {});
+              },
+            ),
+          ],
         ),
         const SizedBox(height: 16),
-        _buildSectionHeader('图片与缓存策略'),
-        Card(
-          child: Column(
-            children: [
-              ListTile(
-                title: const Text('图片加载质量'),
-                trailing: DropdownButton<ImageQuality>(
-                  value: AppConfig.imageQuality,
-                  underline: const SizedBox(),
-                  items: ImageQuality.values
-                      .map(
-                        (q) => DropdownMenuItem(value: q, child: Text(q.label)),
-                      )
-                      .toList(),
-                  onChanged: (v) =>
-                      v != null ? AppConfig.setImageQuality(v) : null,
+
+        // 2. 图片质量与内存上限
+        _buildSectionHeader(
+          '图片质量与渲染',
+          subtitle: '配置网络图片下载清晰度与运行时图片解码上限',
+        ),
+        _buildSettingCard(
+          context: context,
+          children: [
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              leading: Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: colorScheme.secondaryContainer.withAlpha(90),
+                  borderRadius: BorderRadius.circular(10),
                 ),
+                child: Icon(Icons.image_outlined, color: colorScheme.secondary, size: 20),
               ),
-              const Divider(height: 1),
-              ListTile(
-                title: const Text('最大缓存容量'),
-                subtitle: Text('${AppConfig.imageCacheMaxMb} MB'),
-                trailing: DropdownButton<int>(
-                  value: AppConfig.imageCacheMaxMb,
-                  underline: const SizedBox(),
-                  items: const [
-                    DropdownMenuItem(value: 100, child: Text('100 MB')),
-                    DropdownMenuItem(value: 250, child: Text('250 MB')),
-                    DropdownMenuItem(value: 500, child: Text('500 MB')),
-                    DropdownMenuItem(value: 1024, child: Text('1024 MB (1GB)')),
+              title: const Text('图片加载质量', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+              subtitle: Text('控制帖子插图与附件下载清晰度', style: TextStyle(fontSize: 12, color: colorScheme.outline)),
+              trailing: DropdownButton<ImageQuality>(
+                value: AppConfig.imageQuality,
+                underline: const SizedBox(),
+                borderRadius: BorderRadius.circular(12),
+                items: ImageQuality.values
+                    .map((q) => DropdownMenuItem(value: q, child: Text(q.label)))
+                    .toList(),
+                onChanged: (v) {
+                  if (v != null) {
+                    AppConfig.setImageQuality(v);
+                    setState(() {});
+                  }
+                },
+              ),
+            ),
+            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              leading: Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: colorScheme.primaryContainer.withAlpha(90),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(Icons.pie_chart_outline_rounded, color: colorScheme.primary, size: 20),
+              ),
+              title: const Text('运行时图片内存配额', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+              subtitle: Text('当前设置: ${AppConfig.imageCacheMaxMb} MB', style: TextStyle(fontSize: 12, color: colorScheme.outline)),
+              trailing: DropdownButton<int>(
+                value: AppConfig.imageCacheMaxMb,
+                underline: const SizedBox(),
+                borderRadius: BorderRadius.circular(12),
+                items: const [
+                  DropdownMenuItem(value: 100, child: Text('100 MB')),
+                  DropdownMenuItem(value: 250, child: Text('250 MB')),
+                  DropdownMenuItem(value: 500, child: Text('500 MB')),
+                  DropdownMenuItem(value: 1024, child: Text('1024 MB (1GB)')),
+                ],
+                onChanged: (v) {
+                  if (v != null) {
+                    AppConfig.setImageCacheMaxMb(v);
+                    setState(() {});
+                  }
+                },
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+
+        // 3. 智能缓存生命周期与磁盘管理
+        _buildSectionHeader(
+          '多级缓存与存储管理',
+          subtitle: '兼顾离线秒开体验与原站实时权威数据对齐',
+        ),
+        _buildSettingCard(
+          context: context,
+          children: [
+            // 缓存空间探测栏
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              leading: Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: colorScheme.tertiaryContainer.withAlpha(90),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(Icons.storage_rounded, color: colorScheme.tertiary, size: 20),
+              ),
+              title: const Text('已占用本地磁盘缓存', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+              subtitle: Text(
+                '包含头像、勋章、附件、表情与网络快速缓存',
+                style: TextStyle(fontSize: 12, color: colorScheme.outline),
+              ),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      _cacheSizeStr,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: colorScheme.primary,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    icon: _isCalculating
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.refresh_rounded, size: 19),
+                    tooltip: '重新计算缓存容量',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _isCalculating ? null : _refreshCacheSize,
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+
+            // 缓存生命周期说明
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerHighest.withAlpha(100),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.info_outline_rounded, size: 16, color: colorScheme.primary),
+                        const SizedBox(width: 6),
+                        const Text(
+                          '智能双层缓存策略',
+                          style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '• 静态资源长期持久化：头像、表情、勋章、图章与附件长期保存在本地磁盘缓存中（90天TTL），支持离线秒开，节约网络流量。\n'
+                      '• 帖子与动态短期内存流转：帖子列表、详情、全站统计等在内存高效流转；关闭应用自动清空，点击刷新或下拉刷新即刻从原站抓取最新数据。',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: colorScheme.onSurfaceVariant.withAlpha(200),
+                        height: 1.45,
+                      ),
+                    ),
                   ],
-                  onChanged: (v) =>
-                      v != null ? AppConfig.setImageCacheMaxMb(v) : null,
                 ),
               ),
-              const Divider(height: 1),
-              ListTile(
-                title: const Text('清理图片与数据缓存'),
-                subtitle: const Text('释放本地存储与内存缓存'),
-                trailing: FilledButton.tonal(
-                  onPressed: () {
-                    PaintingBinding.instance.imageCache.clear();
-                    PaintingBinding.instance.imageCache.clearLiveImages();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('已清除应用图片与运行时缓存')),
-                    );
-                  },
-                  child: const Text('立即清理'),
-                ),
+            ),
+            Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+
+            // 一键深度清空缓存
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              title: const Text('彻底清除应用缓存', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+              subtitle: const Text('清空所有磁盘持久化图片、临时目录、内存图片解码与运行时网络缓存', style: TextStyle(fontSize: 12)),
+              trailing: FilledButton.tonalIcon(
+                icon: _isClearing
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.delete_sweep_rounded, size: 17),
+                label: Text(_isClearing ? '清理中...' : '立即清理'),
+                onPressed: _isClearing ? null : _clearCache,
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ],
     );
@@ -2180,7 +2652,99 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
             ),
             const SizedBox(height: 18),
 
-            // 4. 后台防杀与常驻保活设置
+            // 4. 故障自愈与 502 宕机恢复即签
+            _buildSectionHeader('故障自愈与 502 宕机恢复即签'),
+            Card(
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
+              ),
+              child: Column(
+                children: [
+                  SwitchListTile(
+                    secondary: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withAlpha(25),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.healing_rounded, color: Colors.amber, size: 20),
+                    ),
+                    title: const Text('502/宕机静默探测与恢复即签', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+                    subtitle: const Text('当论坛出现 502 Bad Gateway / 网关超时 / 503 等异常时，进入静默轻量探测，一旦服务器恢复立即自动打卡', style: TextStyle(fontSize: 12)),
+                    value: sign.serverRecoverySignEnabled,
+                    onChanged: (val) => sign.setServerRecoverySignEnabled(val),
+                  ),
+                  if (sign.serverRecoverySignEnabled) ...[
+                    Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(
+                                sign.isProbingRecovery ? Icons.radar_rounded : Icons.check_circle_outline_rounded,
+                                size: 16,
+                                color: sign.isProbingRecovery ? Colors.amber.shade700 : Colors.teal.shade600,
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  sign.isProbingRecovery
+                                      ? '当前正在实时探测论坛恢复状态 (已探 ${sign.recoveryProbeCount} 次)'
+                                      : '当前探测状态：待命中（无活跃故障）',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13,
+                                    color: sign.isProbingRecovery ? Colors.amber.shade900 : Colors.teal.shade800,
+                                  ),
+                                ),
+                              ),
+                              if (sign.isProbingRecovery)
+                                FilledButton.tonal(
+                                  style: FilledButton.styleFrom(
+                                    visualDensity: VisualDensity.compact,
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                                  ),
+                                  onPressed: () => sign.startRecoveryProbeLoop(),
+                                  child: const Text('立即探针', style: TextStyle(fontSize: 11)),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            sign.isProbingRecovery
+                                ? '自适应递增退避间隔 (2s -> 3s -> 5s -> 10s)，采用超轻量 HEAD/GET 探针，零负担捕捉服务器恢复上升沿。'
+                                : '若启动检测、定时打卡或手动点击遇到 502/503 网关故障，系统会自动切换至高频探测通道，服务器恢复的第 1 秒内为您完成补签并推送通知。',
+                            style: TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant, height: 1.4),
+                          ),
+                          if (sign.lastOutageInfo != null) ...[
+                            const SizedBox(height: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: colorScheme.surfaceContainerHighest.withAlpha(60),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                '最近捕获异常：HTTP ${sign.lastOutageInfo?.statusCode} (${sign.lastOutageInfo?.title})',
+                                style: TextStyle(fontSize: 11, color: colorScheme.outline),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+
+            // 5. 后台防杀与常驻保活设置
             _buildSectionHeader('后台防杀与常驻保活指南'),
             Card(
               elevation: 0,
@@ -2441,6 +3005,40 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                                 },
                           icon: const Icon(Icons.flash_on_rounded, size: 18, color: Colors.amber),
                           label: const Text('立即运行高频冲刺实测'),
+                        ),
+                        FilledButton.tonalIcon(
+                          style: FilledButton.styleFrom(
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          onPressed: () async {
+                            final report = await sign.runRecoveryDiagnosticProbe();
+                            if (context.mounted) {
+                              showDialog(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Row(
+                                    children: [
+                                      Icon(Icons.radar_rounded, color: Colors.teal),
+                                      SizedBox(width: 8),
+                                      Text('502 探针与恢复诊断', style: TextStyle(fontSize: 16)),
+                                    ],
+                                  ),
+                                  content: SelectableText(
+                                    report,
+                                    style: const TextStyle(fontSize: 13, height: 1.4),
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(ctx),
+                                      child: const Text('关闭'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }
+                          },
+                          icon: const Icon(Icons.radar_rounded, size: 18, color: Colors.teal),
+                          label: const Text('测试 502 探针与服务器健康度'),
                         ),
                         OutlinedButton.icon(
                           style: OutlinedButton.styleFrom(

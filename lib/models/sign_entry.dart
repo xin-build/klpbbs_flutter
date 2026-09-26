@@ -60,6 +60,9 @@ class SignHeaderInfo {
   final String signLevel;
   final String rewardIron;
   final int totalDays;
+  final int? retroSignBid;
+  final int retroSignDays;
+  final String retroSignTip;
 
   const SignHeaderInfo({
     this.starUsername = '',
@@ -74,6 +77,9 @@ class SignHeaderInfo {
     this.signLevel = '',
     this.rewardIron = '',
     this.totalDays = 0,
+    this.retroSignBid,
+    this.retroSignDays = 0,
+    this.retroSignTip = '',
   });
 
   SignHeaderInfo copyWith({
@@ -89,6 +95,9 @@ class SignHeaderInfo {
     String? signLevel,
     String? rewardIron,
     int? totalDays,
+    int? retroSignBid,
+    int? retroSignDays,
+    String? retroSignTip,
   }) {
     return SignHeaderInfo(
       starUsername: starUsername ?? this.starUsername,
@@ -103,6 +112,9 @@ class SignHeaderInfo {
       signLevel: signLevel ?? this.signLevel,
       rewardIron: rewardIron ?? this.rewardIron,
       totalDays: totalDays ?? this.totalDays,
+      retroSignBid: retroSignBid ?? this.retroSignBid,
+      retroSignDays: retroSignDays ?? this.retroSignDays,
+      retroSignTip: retroSignTip ?? this.retroSignTip,
     );
   }
 }

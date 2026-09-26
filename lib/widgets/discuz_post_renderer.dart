@@ -30,6 +30,7 @@ class DiscuzPostRenderer extends StatelessWidget {
   final int tid;
   final VoidCallback? onQuoteReply;
   final VoidCallback? onQuickReply;
+  final VoidCallback? onPollVoted;
 
   const DiscuzPostRenderer({
     super.key,
@@ -37,6 +38,7 @@ class DiscuzPostRenderer extends StatelessWidget {
     this.tid = 0,
     this.onQuoteReply,
     this.onQuickReply,
+    this.onPollVoted,
   });
 
   static final _urlRegex = RegExp(
@@ -68,6 +70,7 @@ class DiscuzPostRenderer extends StatelessWidget {
     caseSensitive: false,
   );
   static final _nonNumericRegex = RegExp(r'[^0-9.]');
+  static final _spoilerBlocksCache = Expando<List<PostBlock>>();
 
   @override
   Widget build(BuildContext context) {
@@ -184,11 +187,10 @@ class DiscuzPostRenderer extends StatelessWidget {
           language: language,
           align: align,
         ),
-      SpoilerBlock(:final title, :final contentHtml) => _buildSpoilerBlock(
+      SpoilerBlock block => _buildSpoilerBlock(
         context,
         theme,
-        title,
-        contentHtml,
+        block,
       ),
       TableBlock(:final headers, :final rows, :final align) =>
         _buildTableBlock(
@@ -607,7 +609,7 @@ class DiscuzPostRenderer extends StatelessWidget {
 
   // 0. 投票帖专属卡片（支持单选/多选交互、倒计时、选项列表、投票提交、投票数与占比进度条）
   Widget _buildPollBlock(BuildContext context, ThemeData theme, PollBlock poll) {
-    return _InteractivePollCard(poll: poll, tid: tid);
+    return _InteractivePollCard(poll: poll, tid: tid, onPollVoted: onPollVoted);
   }
 
   // 0. 回帖奖励专属卡片（红包/金币袋视觉，深浅主题自适应）
@@ -1406,10 +1408,11 @@ class DiscuzPostRenderer extends StatelessWidget {
   Widget _buildSpoilerBlock(
     BuildContext context,
     ThemeData theme,
-    String title,
-    String contentHtml,
+    SpoilerBlock block,
   ) {
-    final subBlocks = ComiisParser.parseStructuredBlocksFromHtml(contentHtml);
+    final title = block.title;
+    final contentHtml = block.contentHtml;
+    final subBlocks = _spoilerBlocksCache[block] ??= ComiisParser.parseStructuredBlocksFromHtml(contentHtml);
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 6),
@@ -2211,6 +2214,35 @@ class DiscuzPostRenderer extends StatelessWidget {
             continue;
           }
 
+          // Discuz 附件容器（.comiis_attach / .attach_nopermission / dl.tattl）
+          // 防御性渲染：若富文本/降级兜底模式中直接包含附件容器，转为 AttachmentCardWidget 渲染
+          if (n.classes.contains('comiis_attach') ||
+              n.classes.contains('attach_nopermission') ||
+              (tag == 'dl' && n.classes.contains('tattl'))) {
+            final parsedBlocks = ComiisParser.parseStructuredBlocks(n);
+            final attachBlock = parsedBlocks.whereType<AttachmentBlock>().firstOrNull;
+            if (attachBlock != null) {
+              spans.add(
+                WidgetSpan(
+                  alignment: PlaceholderAlignment.middle,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: _AttachmentCardWidget(
+                      name: attachBlock.name,
+                      url: attachBlock.url,
+                      sizeText: attachBlock.sizeText,
+                      priceText: attachBlock.priceText,
+                      iconUrl: attachBlock.iconUrl,
+                      uploadTime: attachBlock.uploadTime,
+                      downloadCount: attachBlock.downloadCount,
+                    ),
+                  ),
+                ),
+              );
+              continue;
+            }
+          }
+
           if (tag == 'table') {
             final directTrs = <html_dom.Element>[];
             for (final child in n.children) {
@@ -2437,6 +2469,14 @@ class DiscuzPostRenderer extends StatelessWidget {
                 !rawSrc.contains('none.png') &&
                 !rawSrc.contains('spacer.gif')) {
               final src = _absolute(rawSrc);
+              if (src.isEmpty) continue;
+              final isFileTypeIcon = src.contains('/filetype/') ||
+                  src.contains('image/filetype') ||
+                  src.contains('/common/none.gif') ||
+                  src.contains('/common/attach');
+              if (isFileTypeIcon) {
+                continue;
+              }
               final isEmoji =
                   src.contains('static/image/smiley/') ||
                   n.attributes.containsKey('smilieid');
@@ -3412,14 +3452,16 @@ class _AttachmentCardWidgetState extends State<_AttachmentCardWidget> {
   }
 }
 
-/// 交互式投票卡片（支持单选/多选交互、选项状态切换与投票提交）
+/// 交互式投票卡片（支持单选/多选交互、选项状态切换与投票提交、即时百分比与票数自增更新）
 class _InteractivePollCard extends StatefulWidget {
   final PollBlock poll;
   final int tid;
+  final VoidCallback? onPollVoted;
 
   const _InteractivePollCard({
     required this.poll,
     this.tid = 0,
+    this.onPollVoted,
   });
 
   @override
@@ -3429,7 +3471,9 @@ class _InteractivePollCard extends StatefulWidget {
 class _InteractivePollCardState extends State<_InteractivePollCard> {
   final Set<int> _selectedIds = {};
   bool _submitting = false;
-  bool _isVoted = false;
+  late bool _isVoted;
+  late List<PollOption> _options;
+  late int _votersCount;
 
   static const List<Color> _defaultBarColors = [
     Color(0xFFE92725), // 红色
@@ -3457,12 +3501,24 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
   void initState() {
     super.initState();
     _isVoted = widget.poll.isVoted;
+    _options = List<PollOption>.from(widget.poll.options);
+    _votersCount = widget.poll.votersCount;
     for (var i = 0; i < widget.poll.options.length; i++) {
       final opt = widget.poll.options[i];
       if (opt.isChecked) {
         final optId = int.tryParse(opt.id) ?? (i + 1);
         _selectedIds.add(optId);
       }
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _InteractivePollCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.poll != widget.poll) {
+      _isVoted = widget.poll.isVoted;
+      _options = List<PollOption>.from(widget.poll.options);
+      _votersCount = widget.poll.votersCount;
     }
   }
 
@@ -3505,11 +3561,47 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
     if (!mounted) return;
     setState(() {
       _submitting = false;
-      if (ok) _isVoted = true;
+      if (ok) {
+        _isVoted = true;
+        _votersCount += 1;
+        // 乐观立即刷新选项票数与百分比 (0ms 即时反馈)
+        for (var i = 0; i < _options.length; i++) {
+          final opt = _options[i];
+          final optId = int.tryParse(opt.id) ?? (i + 1);
+          if (_selectedIds.contains(optId)) {
+            _options[i] = PollOption(
+              id: opt.id,
+              label: opt.label,
+              votes: opt.votes + 1,
+              percent: opt.percent,
+              colorHex: opt.colorHex,
+              isChecked: true,
+            );
+          }
+        }
+        final sumVotes = _options.fold<int>(0, (s, o) => s + o.votes);
+        if (sumVotes > 0) {
+          for (var i = 0; i < _options.length; i++) {
+            final opt = _options[i];
+            final newPct = (opt.votes / sumVotes) * 100.0;
+            _options[i] = PollOption(
+              id: opt.id,
+              label: opt.label,
+              votes: opt.votes,
+              percent: double.parse(newPct.toStringAsFixed(2)),
+              colorHex: opt.colorHex,
+              isChecked: opt.isChecked,
+            );
+          }
+        }
+      }
     });
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(ok ? '投票成功！' : '投票失败，可能已过期或权限不足')),
+      SnackBar(content: Text(ok ? '投票成功！投票数据已即时更新' : '投票失败，可能已过期或权限不足')),
     );
+    if (ok) {
+      widget.onPollVoted?.call();
+    }
   }
 
   @override
@@ -3517,7 +3609,7 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final poll = widget.poll;
-    final showResults = _isVoted || poll.isClosed || !poll.canVote || poll.options.any((o) => o.votes > 0 || o.percent > 0);
+    final showResults = _isVoted || poll.isClosed || !poll.canVote || _options.any((o) => o.votes > 0 || o.percent > 0);
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 10),
@@ -3570,7 +3662,7 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        '共有 ${poll.votersCount} 人参与投票${poll.isMultiple ? ' (多选, 最多可选 ${poll.maxChoices} 项)' : ''}',
+                        '共有 $_votersCount 人参与投票${poll.isMultiple ? ' (多选, 最多可选 ${poll.maxChoices} 项)' : ''}',
                         style: TextStyle(
                           fontSize: 12,
                           color: colorScheme.outline,
@@ -3606,10 +3698,10 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             padding: const EdgeInsets.symmetric(vertical: 8),
-            itemCount: poll.options.length,
+            itemCount: _options.length,
             separatorBuilder: (_, __) => const SizedBox(height: 4),
             itemBuilder: (ctx, i) {
-              final opt = poll.options[i];
+              final opt = _options[i];
               final optId = int.tryParse(opt.id) ?? (i + 1);
               final isSelected = _selectedIds.contains(optId);
               final barColor = _parseBarColor(opt.colorHex, i);

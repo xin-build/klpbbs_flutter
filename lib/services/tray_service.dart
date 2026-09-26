@@ -28,6 +28,12 @@ class TrayService with TrayListener, WindowListener {
       // 设置窗口关闭时拦截（挂起后台到托盘）
       await windowManager.setPreventClose(true);
 
+      // 确保应用启动时前台窗口正确可见与对焦
+      try {
+        await windowManager.show();
+        await windowManager.focus();
+      } catch (_) {}
+
       // 设置托盘图标与提示
       await _updateTray();
 
@@ -100,12 +106,14 @@ class TrayService with TrayListener, WindowListener {
         await windowManager.show();
       }
       await windowManager.focus();
+      RgbThemeService.instance.resume();
     } catch (_) {}
   }
 
   Future<void> hideToTray() async {
     if (!isSupported) return;
     try {
+      RgbThemeService.instance.pause();
       await windowManager.hide();
     } catch (_) {}
   }

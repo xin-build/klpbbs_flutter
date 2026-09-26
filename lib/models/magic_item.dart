@@ -74,6 +74,18 @@ class MagicBagInfo {
     this.totalCapacity = 500,
     this.ironCount = 0,
   });
+
+  MagicBagInfo copyWith({
+    int? usedCapacity,
+    int? totalCapacity,
+    int? ironCount,
+  }) {
+    return MagicBagInfo(
+      usedCapacity: usedCapacity ?? this.usedCapacity,
+      totalCapacity: totalCapacity ?? this.totalCapacity,
+      ironCount: ironCount ?? this.ironCount,
+    );
+  }
 }
 
 /// 道具流水记录模型

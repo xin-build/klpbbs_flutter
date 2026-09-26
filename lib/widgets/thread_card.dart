@@ -6,6 +6,8 @@ import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/cache_manager.dart';
 import '../models/thread_summary.dart';
+import 'facemall_frame_widget.dart';
+import 'interactive_animations.dart';
 import 'retry_image.dart';
 
 /// 自定义形状头像组件
@@ -43,17 +45,9 @@ class UserAvatarWidget extends StatelessWidget {
   static String? sanitizeFaceUrl(String? rawUrl) {
     if (rawUrl == null || rawUrl.trim().isEmpty) return null;
     var url = rawUrl.trim();
+    if (url.isEmpty || url == 'none' || url == '0' || url == 'null' || url == 'false') return null;
 
-    // 关键安全过滤：用户头像 URL（avatar/noavatar/jpg/jpeg/avatar.php）绝不是挂件！
-    if (url.contains('/avatar/') ||
-        url.contains('noavatar') ||
-        url.contains('_avatar_') ||
-        url.contains('avatar.php') ||
-        url.toLowerCase().endsWith('.jpg') ||
-        url.toLowerCase().endsWith('.jpeg')) {
-      return null;
-    }
-
+    // 1. 优先提取 ##SJ## 挂件分隔符后方内容（Discuz sunju_facemall 插件规范：avatar_middle.jpg##SJ##fm_1.png）
     if (url.contains('##SJ##')) {
       final parts = url.split('##SJ##');
       if (parts.length > 1 && parts[1].trim().isNotEmpty) {
@@ -62,9 +56,9 @@ class UserAvatarWidget extends StatelessWidget {
         return null;
       }
     }
-    if (url.isEmpty || url == 'none' || url == '0') return null;
+    if (url.isEmpty || url == 'none' || url == '0' || url == 'null' || url == 'false') return null;
 
-    // 再次过滤分片提取后残留的头像路径
+    // 2. 挂件安全过滤：用户纯头像 URL（avatar/noavatar/jpg/jpeg/avatar.php）绝不是挂件！
     if (url.contains('/avatar/') ||
         url.contains('noavatar') ||
         url.contains('_avatar_') ||
@@ -74,7 +68,7 @@ class UserAvatarWidget extends StatelessWidget {
       return null;
     }
 
-    // 智能映射：苦力怕论坛 sunju_facemall 挂件真实存储路径为 data/attachment/sunju_facemall/...
+    // 3. 智能映射：苦力怕论坛 sunju_facemall 挂件真实存储路径为 data/attachment/sunju_facemall/...
     if (url.contains('keishi_klp_') || url.contains('sunju_facemall/')) {
       if (!url.startsWith('http://') && !url.startsWith('https://')) {
         final base = AppConfig.baseUrl.endsWith('/') ? AppConfig.baseUrl : '${AppConfig.baseUrl}/';
@@ -83,18 +77,68 @@ class UserAvatarWidget extends StatelessWidget {
       return url;
     }
 
-    final m = RegExp(r'(?:template/img/|img/|fm_)?(\d+)\.png$', caseSensitive: false).firstMatch(url);
-    if (m != null) {
-      final id = m.group(1)!;
+    // 4. 支持纯数字 ID（如 '1', '2'）或 fm_{id}（如 'fm_1', 'fm_1.png'）
+    final numMatch = RegExp(r'^(?:template/img/|img/|fm_)?(\d+)(?:\.png)?$', caseSensitive: false).firstMatch(url);
+    if (numMatch != null) {
+      final id = numMatch.group(1)!;
       return '${AppConfig.baseUrl}data/attachment/sunju_facemall/fm_$id.png';
     }
 
-    // 仅当包含 attachment 或 facemall 且以 .png 结尾时才允许作为自定义挂件
+    // 5. 支持内置官方挂件名称标识（供 FacemallFrameWidget 矢量直接绘制）
+    final lower = url.toLowerCase();
+    if (lower.contains('killer_seven') ||
+        lower.contains('seven') ||
+        lower.contains('yotsuba') ||
+        lower.contains('christmas') ||
+        lower.contains('xueba') ||
+        lower.contains('aotu') ||
+        lower.contains('brother_take') ||
+        lower.contains('girls_frontline') ||
+        lower.contains('experiment_family') ||
+        lower.contains('haruhara') ||
+        lower.contains('melon') ||
+        lower.contains('creeper') ||
+        lower.contains('myanee') ||
+        lower.contains('diamond') ||
+        lower.contains('dragon') ||
+        lower.contains('netherite') ||
+        lower.contains('wither') ||
+        lower.contains('klee') ||
+        lower.contains('cat') ||
+        lower.contains('galaxy') ||
+        lower.contains('刺客伍六七') ||
+        lower.contains('中野四叶') ||
+        lower.contains('圣诞节快乐') ||
+        lower.contains('圣诞') ||
+        lower.contains('学霸') ||
+        lower.contains('凹凸世界') ||
+        lower.contains('快把我哥带走') ||
+        lower.contains('少女前线') ||
+        lower.contains('实验品家庭') ||
+        lower.contains('春原庄') ||
+        lower.contains('吃瓜') ||
+        lower.contains('苦力怕') ||
+        lower.contains('喵内') ||
+        lower.contains('钻石剑') ||
+        lower.contains('末影龙') ||
+        lower.contains('下界合金') ||
+        lower.contains('凋灵') ||
+        lower.contains('可莉') ||
+        lower.contains('猫耳') ||
+        lower.contains('星空')) {
+      return url;
+    }
+
+    // 6. 仅当包含 attachment 或 facemall 且以 .png 结尾时才允许作为自定义挂件
     if ((url.contains('attachment') || url.contains('facemall')) && url.toLowerCase().endsWith('.png')) {
       if (!url.startsWith('http://') && !url.startsWith('https://')) {
         final base = AppConfig.baseUrl.endsWith('/') ? AppConfig.baseUrl : '${AppConfig.baseUrl}/';
         return '$base${url.startsWith('/') ? url.substring(1) : url}';
       }
+      return url;
+    }
+
+    if ((url.startsWith('http://') || url.startsWith('https://')) && url.toLowerCase().endsWith('.png')) {
       return url;
     }
 
@@ -121,7 +165,7 @@ class UserAvatarWidget extends StatelessWidget {
         width: size,
         height: size,
         fit: BoxFit.cover,
-        filterQuality: FilterQuality.medium,
+        filterQuality: FilterQuality.low,
         memCacheWidth: avatarMemSize,
         memCacheHeight: avatarMemSize,
         placeholder: (_, __) => Container(
@@ -169,29 +213,40 @@ class UserAvatarWidget extends StatelessWidget {
       );
     }
 
+    final clipMode = size <= 28 ? Clip.hardEdge : Clip.antiAlias;
     Widget avatar;
     switch (AppConfig.avatarShape) {
       case AvatarShape.circle:
-        avatar = ClipOval(child: imageContent);
+        avatar = ClipOval(clipBehavior: clipMode, child: imageContent);
         break;
       case AvatarShape.roundedRect:
         avatar = ClipRRect(
+          clipBehavior: clipMode,
           borderRadius: BorderRadius.circular(size * 0.25),
           child: imageContent,
         );
         break;
       case AvatarShape.hexagon:
         avatar = ClipRRect(
+          clipBehavior: clipMode,
           borderRadius: BorderRadius.circular(size * 0.35),
           child: imageContent,
         );
         break;
     }
 
-    // 解析挂件有效 URL（若组件未直接传入且为「我」，则自动使用全局设置的挂件）
-    final cleanUrl = sanitizeFaceUrl(
-      faceUrl ?? (author == '我' ? AppConfig.myFaceUrl : null),
-    );
+    // 解析挂件有效 URL（若组件未直接传入且为当前登录用户，则自动使用全局设置的挂件）
+    final myUid = KlpbbsApi.currentCachedMyUid;
+    final myUsername = KlpbbsApi.currentCachedMyUsername;
+    final isMe = author == '我' ||
+        (uid != null && uid! > 0 && myUid != null && uid == myUid) ||
+        (author.isNotEmpty && myUsername != null && author == myUsername);
+
+    final rawFace = (faceUrl != null && faceUrl!.isNotEmpty)
+        ? faceUrl
+        : (isMe ? (AppConfig.myFaceUrl ?? KlpbbsApi.cachedSpace?.faceUrl) : null);
+
+    final cleanUrl = sanitizeFaceUrl(rawFace);
 
     final Widget? onlineBadge = (showOnlineBadge && isOnline == true)
         ? Positioned(
@@ -226,6 +281,33 @@ class UserAvatarWidget extends StatelessWidget {
     // 头像挂件（sunju_facemall）与在线状态角标
     if (hasDecoration) {
       final faceSize = size * 1.75;
+      Widget? pendantWidget;
+      if (cleanUrl != null && cleanUrl.isNotEmpty) {
+        if (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')) {
+          pendantWidget = CachedNetworkImage(
+            imageUrl: cleanUrl,
+            cacheManager: KlpbbsCacheManager.instance,
+            httpHeaders: AppConfig.imageHeaders,
+            width: faceSize,
+            height: faceSize,
+            fit: BoxFit.contain,
+            placeholder: (_, __) => FacemallFrameWidget(
+              frameIdOrUrl: cleanUrl,
+              size: faceSize,
+            ),
+            errorWidget: (_, __, ___) => FacemallFrameWidget(
+              frameIdOrUrl: cleanUrl,
+              size: faceSize,
+            ),
+          );
+        } else {
+          pendantWidget = FacemallFrameWidget(
+            frameIdOrUrl: cleanUrl,
+            size: faceSize,
+          );
+        }
+      }
+
       result = SizedBox(
         width: size,
         height: size,
@@ -234,22 +316,11 @@ class UserAvatarWidget extends StatelessWidget {
           alignment: Alignment.center,
           children: [
             avatar,
-            if (cleanUrl != null && cleanUrl.isNotEmpty)
+            if (pendantWidget != null)
               Positioned(
                 width: faceSize,
                 height: faceSize,
-                child: IgnorePointer(
-                  child: CachedNetworkImage(
-                    imageUrl: cleanUrl,
-                    cacheManager: KlpbbsCacheManager.instance,
-                    httpHeaders: AppConfig.imageHeaders,
-                    width: faceSize,
-                    height: faceSize,
-                    fit: BoxFit.contain,
-                    placeholder: (_, __) => const SizedBox.shrink(),
-                    errorWidget: (_, __, ___) => const SizedBox.shrink(),
-                  ),
-                ),
+                child: IgnorePointer(child: pendantWidget),
               ),
             if (onlineBadge != null) onlineBadge,
           ],
@@ -286,8 +357,17 @@ class ThreadCard extends StatefulWidget {
 }
 
 class _ThreadCardState extends State<ThreadCard> {
-  bool _isHovered = false;
   String? _resolvedForum;
+  List<(String, Color, Color)>? _cachedTags;
+  int? _cachedTagsTid;
+  String? _cachedTagsForum;
+  Brightness? _cachedTagsBrightness;
+
+  static final _tagUnicodeRegExp = RegExp(
+    r'[\uE000-\uF8FF\uFFF0-\uFFFF\u{F0000}-\u{10FFFF}]',
+    unicode: true,
+  );
+  static final _tagBracketRegExp = RegExp(r'^[\[【\s]+|[\]】\s]+$');
 
   @override
   void initState() {
@@ -313,8 +393,10 @@ class _ThreadCardState extends State<ThreadCard> {
       title: widget.thread.title,
       typeName: widget.thread.typeName,
     );
-    if (_resolvedForum == null && widget.thread.tid > 0) {
-      // 方案 C：异步轻量补全版块
+    if (_resolvedForum == null &&
+        widget.thread.tid > 0 &&
+        (widget.thread.forumName == null || widget.thread.forumName!.isEmpty)) {
+      // 方案 C：异步轻量补全版块（仅在真正缺失且未推断时触发）
       KlpbbsApi.resolveThreadForumAsync(widget.thread.tid).then((res) {
         if (mounted && res != null && res.isNotEmpty && res != _resolvedForum) {
           setState(() {
@@ -343,38 +425,40 @@ class _ThreadCardState extends State<ThreadCard> {
       }
     }
 
-    return RepaintBoundary(
-      child: MouseRegion(
-        onEnter: (_) => setState(() => _isHovered = true),
-        onExit: (_) => setState(() => _isHovered = false),
-        child: Card(
-          margin: widget.isGrid
-              ? EdgeInsets.zero
-              : const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-          color: _isHovered
-              ? colorScheme.surfaceContainerHigh
-              : colorScheme.surfaceContainerLowest,
-          elevation: _isHovered ? 2 : 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-            side: BorderSide(
-              color: _isHovered
-                  ? colorScheme.primary.withAlpha(120)
-                  : colorScheme.outlineVariant.withAlpha(45),
-              width: _isHovered ? 1.2 : 0.8,
-            ),
-          ),
-          child: InkWell(
-            onTap: widget.onTap,
-            borderRadius: BorderRadius.circular(14),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: _buildCardContent(context, cardStyle),
-            ),
-          ),
+    final cardWidget = Card(
+      margin: widget.isGrid
+          ? EdgeInsets.zero
+          : const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+      color: colorScheme.surfaceContainerLowest,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(
+          color: colorScheme.outlineVariant.withAlpha(45),
+          width: 0.8,
+        ),
+      ),
+      child: InkWell(
+        onTap: widget.onTap,
+        borderRadius: BorderRadius.circular(14),
+        hoverColor: colorScheme.surfaceContainerHigh,
+        splashColor: colorScheme.primary.withAlpha(25),
+        highlightColor: colorScheme.primary.withAlpha(12),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: _buildCardContent(context, cardStyle),
         ),
       ),
     );
+
+    if (widget.onTap != null) {
+      return HoverScaleElevationEffect(
+        translateY: -2.0,
+        duration: const Duration(milliseconds: 160),
+        child: cardWidget,
+      );
+    }
+    return cardWidget;
   }
 
   Widget _buildCardContent(BuildContext context, CardStyle style) {
@@ -385,6 +469,12 @@ class _ThreadCardState extends State<ThreadCard> {
         return _buildGridLayout(context);
       case CardStyle.largeCover:
         return _buildLargeCoverLayout(context);
+      case CardStyle.minimal:
+        return _buildMinimalLayout(context);
+      case CardStyle.magazine:
+        return _buildMagazineLayout(context);
+      case CardStyle.modernCard:
+        return _buildModernCardLayout(context);
     }
   }
 
@@ -421,7 +511,7 @@ class _ThreadCardState extends State<ThreadCard> {
               imageUrl: images[0],
               fit: BoxFit.cover,
               alignment: Alignment.center,
-              filterQuality: FilterQuality.medium,
+              filterQuality: FilterQuality.low,
               memCacheWidth: 720,
               placeholder: (_, __) => Container(
                 color: colorScheme.surfaceContainerHighest.withAlpha(80),
@@ -463,7 +553,7 @@ class _ThreadCardState extends State<ThreadCard> {
                     imageUrl: images[0],
                     fit: BoxFit.cover,
                     alignment: Alignment.center,
-                    filterQuality: FilterQuality.medium,
+                    filterQuality: FilterQuality.low,
                     memCacheWidth: 400,
                     placeholder: (_, __) => Container(
                       color: colorScheme.surfaceContainerHighest.withAlpha(80),
@@ -492,7 +582,7 @@ class _ThreadCardState extends State<ThreadCard> {
                     imageUrl: images[1],
                     fit: BoxFit.cover,
                     alignment: Alignment.center,
-                    filterQuality: FilterQuality.medium,
+                    filterQuality: FilterQuality.low,
                     memCacheWidth: 400,
                     placeholder: (_, __) => Container(
                       color: colorScheme.surfaceContainerHighest.withAlpha(80),
@@ -531,7 +621,7 @@ class _ThreadCardState extends State<ThreadCard> {
                     imageUrl: images[i],
                     fit: BoxFit.cover,
                     alignment: Alignment.center,
-                    filterQuality: FilterQuality.medium,
+                    filterQuality: FilterQuality.low,
                     memCacheWidth: 320,
                     placeholder: (_, __) => Container(
                       color: colorScheme.surfaceContainerHighest.withAlpha(80),
@@ -628,9 +718,11 @@ class _ThreadCardState extends State<ThreadCard> {
               height: 68,
               child: RetryImage(
                 imageUrl: images.first,
+                width: 92,
+                height: 68,
                 fit: BoxFit.cover,
                 alignment: Alignment.center,
-                filterQuality: FilterQuality.medium,
+                filterQuality: FilterQuality.low,
                 memCacheWidth: 280,
                 placeholder: (_, __) => Container(
                   color: colorScheme.surfaceContainerHighest.withAlpha(60),
@@ -660,96 +752,493 @@ class _ThreadCardState extends State<ThreadCard> {
     );
   }
 
-  /// 网格/桌面卡片布局（优化排版：信息强制对齐置底，规整严谨）
+  /// 网格/桌面卡片布局（优化排版：信息强制对齐置底，规整严谨，移除高开销 LayoutBuilder 避免布局嵌套延迟）
   Widget _buildGridLayout(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final thread = widget.thread;
     final images = _cardImages;
     final hasCover = images.isNotEmpty;
+    final hasBoundedHeight = widget.isGrid;
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final hasBoundedHeight = constraints.hasBoundedHeight;
-
-        return Row(
-          crossAxisAlignment: hasBoundedHeight
-              ? CrossAxisAlignment.stretch
-              : CrossAxisAlignment.start,
-          children: [
-            if (hasCover) ...[
-              Align(
-                alignment: Alignment.topLeft,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: SizedBox(
-                    width: 116,
-                    height: 88,
-                    child: RetryImage(
-                      imageUrl: images.first,
-                      fit: BoxFit.cover,
-                      alignment: Alignment.center,
-                      filterQuality: FilterQuality.medium,
-                      memCacheWidth: 340,
-                      placeholder: (_, __) => Container(
-                        color: colorScheme.surfaceContainerHighest.withAlpha(60),
-                        child: Center(
-                          child: Icon(
-                            Icons.image_outlined,
-                            color: colorScheme.outlineVariant.withAlpha(120),
-                            size: 24,
-                          ),
-                        ),
+    return Row(
+      crossAxisAlignment: hasBoundedHeight
+          ? CrossAxisAlignment.stretch
+          : CrossAxisAlignment.start,
+      children: [
+        if (hasCover) ...[
+          Align(
+            alignment: Alignment.topLeft,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: SizedBox(
+                width: 116,
+                height: 88,
+                child: RetryImage(
+                  imageUrl: images.first,
+                  width: 116,
+                  height: 88,
+                  fit: BoxFit.cover,
+                  alignment: Alignment.center,
+                  filterQuality: FilterQuality.low,
+                  memCacheWidth: 340,
+                  placeholder: (_, __) => Container(
+                    color: colorScheme.surfaceContainerHighest.withAlpha(60),
+                    child: Center(
+                      child: Icon(
+                        Icons.image_outlined,
+                        color: colorScheme.outlineVariant.withAlpha(120),
+                        size: 24,
                       ),
-                      errorWidget: (_, __, ___) => Container(
-                        color: colorScheme.surfaceContainerHighest.withAlpha(60),
-                        child: Center(
-                          child: Icon(
-                            Icons.image_outlined,
-                            color: colorScheme.outlineVariant.withAlpha(120),
-                            size: 24,
-                          ),
-                        ),
+                    ),
+                  ),
+                  errorWidget: (_, __, ___) => Container(
+                    color: colorScheme.surfaceContainerHighest.withAlpha(60),
+                    child: Center(
+                      child: Icon(
+                        Icons.image_outlined,
+                        color: colorScheme.outlineVariant.withAlpha(120),
+                        size: 24,
                       ),
                     ),
                   ),
                 ),
               ),
-              const SizedBox(width: 12),
+            ),
+          ),
+          const SizedBox(width: 12),
+        ],
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildTitle(theme, maxLines: 2),
+              if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
+                const SizedBox(height: 3),
+                Text(
+                  thread.excerpt!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant.withAlpha(220),
+                    fontSize: 11.5,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+              if (hasBoundedHeight)
+                const Spacer()
+              else
+                const SizedBox(height: 6),
+              _buildFooter(theme),
             ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 极简风卡片布局（去繁就简、通透留白、精致小标）
+  Widget _buildMinimalLayout(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final thread = widget.thread;
+    final images = _cardImages;
+    final hasThumbnail = images.isNotEmpty;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 顶部小作者与时间微标签
+        Row(
+          children: [
+            UserAvatarWidget(
+              uid: thread.uid,
+              author: thread.author,
+              size: 18,
+              faceUrl: thread.faceUrl,
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                thread.author,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 11.5,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            if (thread.timeText != null && thread.timeText!.isNotEmpty)
+              Text(
+                formatThreadTime(thread.timeText!),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontSize: 10.5,
+                  color: colorScheme.outline,
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 6),
+
+        // 标题与缩略图（若有缩略图则右侧放置精致 68x68 方图）
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _buildTitle(theme, maxLines: 2),
                   if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
-                    const SizedBox(height: 3),
+                    const SizedBox(height: 4),
                     Text(
                       thread.excerpt!,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.bodySmall?.copyWith(
-                        color: colorScheme.onSurfaceVariant.withAlpha(220),
+                        color: colorScheme.onSurfaceVariant.withAlpha(200),
                         fontSize: 11.5,
-                        height: 1.25,
                       ),
                     ),
                   ],
-                  if (hasBoundedHeight)
-                    const Spacer()
-                  else
-                    const SizedBox(height: 6),
-                  _buildFooter(theme),
+                ],
+              ),
+            ),
+            if (hasThumbnail) ...[
+              const SizedBox(width: 10),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: SizedBox(
+                  width: 68,
+                  height: 68,
+                  child: RetryImage(
+                    imageUrl: images.first,
+                    fit: BoxFit.cover,
+                    memCacheWidth: 200,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 8),
+
+        // 极简底部状态：点赞、浏览与回复
+        Row(
+          children: [
+            if (thread.views > 0) ...[
+              Icon(Icons.visibility_outlined, size: 12, color: colorScheme.outline),
+              const SizedBox(width: 3),
+              Text('${thread.views}', style: TextStyle(fontSize: 10.5, color: colorScheme.outline)),
+              const SizedBox(width: 10),
+            ],
+            Icon(Icons.chat_bubble_outline_rounded, size: 11.5, color: colorScheme.outline),
+            const SizedBox(width: 3),
+            Text('${thread.replies}', style: TextStyle(fontSize: 10.5, color: colorScheme.outline)),
+            if (thread.recommendCount > 0) ...[
+              const SizedBox(width: 10),
+              Icon(Icons.thumb_up_outlined, size: 11.5, color: colorScheme.outline),
+              const SizedBox(width: 3),
+              Text('${thread.recommendCount}', style: TextStyle(fontSize: 10.5, color: colorScheme.outline)),
+            ],
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// 画报杂志风卡片布局（全景焦点大图、视觉冲击力排版与悬浮标签）
+  Widget _buildMagazineLayout(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final thread = widget.thread;
+    final images = _cardImages;
+    final hasCover = images.isNotEmpty;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (hasCover) ...[
+          // 杂志全景头图 + 悬浮类型胶囊
+          Stack(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: AspectRatio(
+                  aspectRatio: 2.1,
+                  child: RetryImage(
+                    imageUrl: images.first,
+                    fit: BoxFit.cover,
+                    memCacheWidth: 800,
+                  ),
+                ),
+              ),
+              if (_getTags(theme).isNotEmpty)
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withAlpha(160),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      _getTags(theme).first.$1,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+        ],
+
+        // 醒目杂志字阶标题
+        Text(
+          thread.title,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.w800,
+            fontSize: 15.5,
+            letterSpacing: -0.2,
+            height: 1.3,
+          ),
+        ),
+
+        if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
+          const SizedBox(height: 5),
+          Text(
+            thread.excerpt!,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: colorScheme.onSurfaceVariant.withAlpha(220),
+              height: 1.35,
+              fontSize: 12.5,
+            ),
+          ),
+        ],
+
+        const SizedBox(height: 10),
+        // 杂志作者栏
+        Row(
+          children: [
+            UserAvatarWidget(
+              uid: thread.uid,
+              author: thread.author,
+              size: 24,
+              faceUrl: thread.faceUrl,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              thread.author,
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+            if (thread.timeText != null && thread.timeText!.isNotEmpty) ...[
+              Text(' · ', style: TextStyle(color: colorScheme.outline)),
+              Text(
+                formatThreadTime(thread.timeText!),
+                style: TextStyle(fontSize: 11, color: colorScheme.outline),
+              ),
+            ],
+            const Spacer(),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                color: colorScheme.primaryContainer.withAlpha(70),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.chat_bubble_rounded, size: 11, color: colorScheme.primary),
+                  const SizedBox(width: 3),
+                  Text(
+                    '${thread.replies}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: colorScheme.primary,
+                    ),
+                  ),
                 ],
               ),
             ),
           ],
-        );
-      },
+        ),
+      ],
+    );
+  }
+
+  /// 现代微质感卡片布局（圆角 16、立体微阴影、主题侧彩带与彩色徽章）
+  Widget _buildModernCardLayout(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final thread = widget.thread;
+    final images = _cardImages;
+
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 左侧彩色指示条
+          Container(
+            width: 3.5,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  thread.isSticky ? Colors.red : colorScheme.primary,
+                  thread.isDigest ? Colors.amber.shade700 : colorScheme.secondary,
+                ],
+              ),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // 作者信息与版块
+                Row(
+                  children: [
+                    UserAvatarWidget(
+                      uid: thread.uid,
+                      author: thread.author,
+                      size: 20,
+                      faceUrl: thread.faceUrl,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        thread.author,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    if (thread.timeText != null)
+                      Text(
+                        formatThreadTime(thread.timeText!),
+                        style: TextStyle(fontSize: 10.5, color: colorScheme.outline),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+
+                _buildTitle(theme, maxLines: 2),
+
+                if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    thread.excerpt!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant.withAlpha(200),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+
+                if (images.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  _buildImagesPreview(context, colorScheme),
+                ],
+
+                const SizedBox(height: 8),
+                // 现代胶囊状态
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: colorScheme.surfaceContainerHigh,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.comment_outlined, size: 11, color: colorScheme.onSurfaceVariant),
+                          const SizedBox(width: 3),
+                          Text('${thread.replies}', style: TextStyle(fontSize: 10.5, color: colorScheme.onSurfaceVariant)),
+                        ],
+                      ),
+                    ),
+                    if (thread.views > 0) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: colorScheme.surfaceContainerHigh,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.visibility_outlined, size: 11, color: colorScheme.onSurfaceVariant),
+                            const SizedBox(width: 3),
+                            Text('${thread.views}', style: TextStyle(fontSize: 10.5, color: colorScheme.onSurfaceVariant)),
+                          ],
+                        ),
+                      ),
+                    ],
+                    if (thread.recommendCount > 0) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.withAlpha(25),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.thumb_up_rounded, size: 10.5, color: Colors.orange.shade800),
+                            const SizedBox(width: 3),
+                            Text('${thread.recommendCount}', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.orange.shade800)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
   List<(String, Color, Color)> _getTags(ThemeData theme) {
+    final forumToDisplay = _resolvedForum ??
+        ComiisParser.resolveForumName(
+          tid: widget.thread.tid,
+          fid: widget.thread.fid,
+          rawForumName: widget.thread.forumName,
+          title: widget.thread.title,
+          typeName: widget.thread.typeName,
+        );
+
+    if (_cachedTags != null &&
+        _cachedTagsTid == widget.thread.tid &&
+        _cachedTagsForum == forumToDisplay &&
+        _cachedTagsBrightness == theme.brightness) {
+      return _cachedTags!;
+    }
+
     final colorScheme = theme.colorScheme;
     final thread = widget.thread;
     final tags = <(String, Color, Color)>[];
@@ -758,14 +1247,8 @@ class _ThreadCardState extends State<ThreadCard> {
     void addTag(String? rawLabel, Color fg, Color bg) {
       if (rawLabel == null || rawLabel.isEmpty) return;
       final clean = rawLabel
-          .replaceAll(
-            RegExp(
-              r'[\uE000-\uF8FF\uFFF0-\uFFFF\u{F0000}-\u{10FFFF}]',
-              unicode: true,
-            ),
-            '',
-          )
-          .replaceAll(RegExp(r'^[\[【\s]+|[\]】\s]+$'), '')
+          .replaceAll(_tagUnicodeRegExp, '')
+          .replaceAll(_tagBracketRegExp, '')
           .replaceAll('来自', '')
           .trim();
       if (clean.isEmpty) return;
@@ -812,15 +1295,6 @@ class _ThreadCardState extends State<ThreadCard> {
       addTag('热', Colors.white, const Color(0xFFF97316));
     }
 
-    final forumToDisplay = _resolvedForum ??
-        ComiisParser.resolveForumName(
-          tid: thread.tid,
-          fid: thread.fid,
-          rawForumName: thread.forumName,
-          title: thread.title,
-          typeName: thread.typeName,
-        );
-
     if (forumToDisplay != null && forumToDisplay.isNotEmpty) {
       addTag(
         forumToDisplay,
@@ -845,6 +1319,10 @@ class _ThreadCardState extends State<ThreadCard> {
       );
     }
 
+    _cachedTags = tags;
+    _cachedTagsTid = thread.tid;
+    _cachedTagsForum = forumToDisplay;
+    _cachedTagsBrightness = theme.brightness;
     return tags;
   }
 
@@ -864,7 +1342,6 @@ class _ThreadCardState extends State<ThreadCard> {
                 decoration: BoxDecoration(
                   color: bg,
                   borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: fg.withAlpha(45), width: 0.5),
                 ),
                 child: Text(
                   cleanLabel,
@@ -984,7 +1461,7 @@ class _ThreadCardState extends State<ThreadCard> {
         ],
         if (thread.timeText != null && thread.timeText!.isNotEmpty)
           Text(
-            _formatThreadTime(thread.timeText!),
+            formatThreadTime(thread.timeText!),
             style: theme.textTheme.bodySmall?.copyWith(
               color: colorScheme.onSurfaceVariant.withAlpha(200),
               fontSize: 11.5,
@@ -994,7 +1471,7 @@ class _ThreadCardState extends State<ThreadCard> {
     );
   }
 
-  static String _formatThreadTime(String raw) {
+  static String formatThreadTime(String raw) {
     if (raw.isEmpty) return '';
     final trimmed = raw.trim();
     if (trimmed.contains('前') ||
@@ -1004,14 +1481,19 @@ class _ThreadCardState extends State<ThreadCard> {
         trimmed == '近期') {
       return trimmed;
     }
-    // 匹配类似 2026-2-21 或 2026-02-21 或 2026-2-21 15:30
+    final now = DateTime.now();
+    // 1. 匹配类似 2026-2-21 或 2026-02-21 或 2026-2-21 15:30
     final fullMatch = RegExp(r'^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}:\d{2}))?').firstMatch(trimmed);
     if (fullMatch != null) {
       final y = int.tryParse(fullMatch.group(1)!) ?? 0;
       final m = int.tryParse(fullMatch.group(2)!) ?? 0;
       final d = int.tryParse(fullMatch.group(3)!) ?? 0;
       final hm = fullMatch.group(4);
-      final now = DateTime.now();
+      final targetDate = DateTime(y, m, d);
+      // 提升卡导致未来时间戳：统一规范显示为【已提升】
+      if (targetDate.isAfter(now.add(const Duration(minutes: 5)))) {
+        return '已提升';
+      }
       if (y == now.year && m == now.month && d == now.day) {
         return hm != null ? '今天 $hm' : '今天';
       }
@@ -1024,16 +1506,45 @@ class _ThreadCardState extends State<ThreadCard> {
       }
       return hm != null ? '$y-$m-$d $hm' : '$y-$m-$d';
     }
+    // 2. 匹配短格式 11-4 或 11-04 15:30
     final shortMatch = RegExp(r'^(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}:\d{2}))?$').firstMatch(trimmed);
     if (shortMatch != null) {
       final m = int.tryParse(shortMatch.group(1)!) ?? 0;
       final d = int.tryParse(shortMatch.group(2)!) ?? 0;
       final hm = shortMatch.group(3);
-      final now = DateTime.now();
+      final targetDate = DateTime(now.year, m, d);
+      // 提升卡导致未来时间戳：统一规范显示为【已提升】
+      if (targetDate.isAfter(now.add(const Duration(minutes: 5)))) {
+        return '已提升';
+      }
       if (m == now.month && d == now.day) {
         return hm != null ? '今天 $hm' : '今天';
       }
       return hm != null ? '$m月$d日 $hm' : '$m月$d日';
+    }
+    // 3. 匹配中文格式 11月4日 或 2026年11月4日
+    final cnMatch = RegExp(r'^(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日(?:\s+(\d{1,2}:\d{2}))?').firstMatch(trimmed);
+    if (cnMatch != null) {
+      final y = int.tryParse(cnMatch.group(1) ?? '') ?? now.year;
+      final m = int.tryParse(cnMatch.group(2)!) ?? 0;
+      final d = int.tryParse(cnMatch.group(3)!) ?? 0;
+      final hm = cnMatch.group(4);
+      final targetDate = DateTime(y, m, d);
+      // 提升卡导致未来时间戳：统一规范显示为【已提升】
+      if (targetDate.isAfter(now.add(const Duration(minutes: 5)))) {
+        return '已提升';
+      }
+      if (y == now.year && m == now.month && d == now.day) {
+        return hm != null ? '今天 $hm' : '今天';
+      }
+      final yesterday = now.subtract(const Duration(days: 1));
+      if (y == yesterday.year && m == yesterday.month && d == yesterday.day) {
+        return hm != null ? '昨天 $hm' : '昨天';
+      }
+      if (y == now.year) {
+        return hm != null ? '$m月$d日 $hm' : '$m月$d日';
+      }
+      return hm != null ? '$y-$m-$d $hm' : '$y-$m-$d';
     }
     return trimmed;
   }

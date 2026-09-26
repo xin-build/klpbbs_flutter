@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/dio_client.dart';
+import '../models/server_outage_info.dart';
 import '../models/sign_entry.dart';
 import 'push_notification_service.dart';
 
@@ -36,6 +37,7 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
   static const String _keyNotifyResult = 'auto_sign_notify_result';
   static const String _keyLastSuccessDate = 'auto_sign_last_success_date';
   static const String _keyLastNotifiedDate = 'auto_sign_last_notified_date';
+  static const String _keyRecoverySignEnabled = 'auto_sign_recovery_on_502';
 
   // Config States
   bool _autoSignOnLaunch = false;
@@ -51,10 +53,21 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
   int _burstPostSeconds = 20; // 跨天延后区间（00:00:20 结束），防服务器时钟比本地慢
   bool _notifyOnResult = true;
 
+  // 502 / 网关宕机故障实时静默探测与恢复即签机制
+  bool _serverRecoverySignEnabled = true;
+  bool _isServerOutage = false;
+  bool _isProbingRecovery = false;
+  int _recoveryProbeCount = 0;
+  DateTime? _outageStartTime;
+  ServerOutageInfo? _lastOutageInfo;
+  Timer? _recoveryProbeTimer;
+
   // Runtime States
   String _lastSuccessDate = '';
   String _lastNotifiedDate = '';
-  int _lastDay = DateTime.now().day;
+  int _continuousDays = 0;
+  int _lastRank = 0;
+  int _lastDay = DateTime.now().toUtc().add(const Duration(hours: 8)).day;
   bool _isRunning = false;
   DateTime? _runningStartTime; // 看门狗计时，防止卡死
   bool _isSnipingActive = false; // 是否处于 23:59 准备/冲刺阶段
@@ -63,8 +76,22 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
   DateTime? _lastFallbackCheckTime;
   DateTime? _lastCheckTime;
 
+  int _serverClockOffsetMs = 0; // 服务端时钟与本地时钟毫秒级偏差 (server - local)
+
   // Getters
   bool get autoSignOnLaunch => _autoSignOnLaunch;
+  int get serverClockOffsetMs => _serverClockOffsetMs;
+  /// 论坛官方服务端当前精准时间（以东八区北京时间为基准，叠加毫秒级网络偏差校准）
+  DateTime get estimatedServerNow {
+    final utc = DateTime.now().toUtc().add(Duration(milliseconds: _serverClockOffsetMs));
+    return utc.add(const Duration(hours: 8));
+  }
+
+  /// 论坛服务端当前的自然日日期字符串（YYYY-MM-DD，锚定东八区北京时间）
+  String get serverTodayStr {
+    final sn = estimatedServerNow;
+    return '${sn.year}-${sn.month.toString().padLeft(2, '0')}-${sn.day.toString().padLeft(2, '0')}';
+  }
   bool get scheduledSignEnabled => _scheduledSignEnabled;
   int get scheduledHour => _scheduledHour;
   int get scheduledMinute => _scheduledMinute;
@@ -86,31 +113,151 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
   String get statusMessage => _statusMessage;
   String get lastSuccessDate => _lastSuccessDate;
   String get lastNotifiedDate => _lastNotifiedDate;
+  int get continuousDays => _continuousDays;
+  int get lastRank => _lastRank;
 
-  /// 判断今日是否已成功签到
+  // 故障恢复探测状态 Getters
+  bool get serverRecoverySignEnabled => _serverRecoverySignEnabled;
+  bool get isServerOutage => _isServerOutage;
+  bool get isProbingRecovery => _isProbingRecovery;
+  int get recoveryProbeCount => _recoveryProbeCount;
+  ServerOutageInfo? get lastOutageInfo => _lastOutageInfo;
+  DateTime? get outageStartTime => _outageStartTime;
+
+  /// 判断今日是否已成功签到（以论坛官方服务器时间及本地多重时区映射为准）
+  /// 检查今日是否已完成签到（严格锚定论坛东八区北京时间与目标自然日，杜绝海外设备时区错位死锁）
   bool isSignedToday() {
-    final now = DateTime.now();
-    final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-    return _lastSuccessDate == todayStr;
+    final sToday = serverTodayStr;
+    return _lastSuccessDate == sToday;
   }
 
-  /// 标记今日签到成功（持久化保存）
-  Future<void> markSignedToday() async {
-    final now = DateTime.now();
-    final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+  /// 手动触发签到
+  Future<void> signIn() => checkAndAutoSignIn(triggerSource: '手动点击打卡', force: true);
+
+  /// 标记今日签到成功（持久化保存并同步本地缓存与日历，支持同步服务端最新名次与连续天数，默认静默不打扰用户）
+  Future<void> markSignedToday({
+    int? rank,
+    int? continuousDays,
+    String? rewardIron,
+    String? rewardExp,
+    bool notify = false,
+  }) async {
+    final todayStr = serverTodayStr;
+    final bool wasAlreadySigned = _lastSuccessDate == todayStr;
+    final rankText = (rank != null && rank > 0) ? ' (第 $rank 名)' : '';
+    final daysText = (continuousDays != null && continuousDays > 0) ? ' | 连续 $continuousDays 天' : '';
+    final newStatus = (rankText.isNotEmpty || daysText.isNotEmpty)
+        ? '今日已完成签到$rankText$daysText'
+        : '今日已完成签到';
+
+    if (wasAlreadySigned && _statusMessage == newStatus && rank == null && continuousDays == null) {
+      // 状态完全一致无变更，阻断重复磁盘写入与下游监听器级联风暴
+      return;
+    }
+
     _lastSuccessDate = todayStr;
-    _lastNotifiedDate = todayStr;
+    _statusMessage = newStatus;
+
     final sp = await SharedPreferences.getInstance();
     await sp.setString(_keyLastSuccessDate, todayStr);
-    await sp.setString(_keyLastNotifiedDate, todayStr);
+    if (continuousDays != null && continuousDays > 0) {
+      _continuousDays = continuousDays;
+      await sp.setInt('auto_sign_continuous_days', continuousDays);
+    }
+    if (rank != null && rank > 0) {
+      _lastRank = rank;
+      await sp.setInt('auto_sign_last_rank', rank);
+    }
+    await KlpbbsApi.clearSignLocalCache();
+    await KlpbbsApi.recordSignDateToLocalCalendar();
+
+    _cancelRecoveryProbe();
     notifyListeners();
+
+    final savedNotifiedDate = sp.getString(_keyLastNotifiedDate) ?? '';
+    final alreadyNotified = savedNotifiedDate == todayStr;
+
+    if (notify && !alreadyNotified && !wasAlreadySigned && _notifyOnResult) {
+      _lastNotifiedDate = todayStr;
+      await sp.setString(_keyLastNotifiedDate, todayStr);
+      String rewardSummary = '';
+      if (rewardIron != null && rewardIron.isNotEmpty) {
+        rewardSummary = (rewardExp != null && rewardExp.isNotEmpty)
+            ? '铁粒 +$rewardIron, 经验 +$rewardExp'
+            : '铁粒 +$rewardIron';
+      } else if (rewardExp != null && rewardExp.isNotEmpty) {
+        rewardSummary = '经验 +$rewardExp';
+      } else {
+        rewardSummary = '今日已完成签到打卡';
+      }
+      _pushSignResultNotification(
+        rank: rank,
+        continuousDays: continuousDays,
+        rewardSummary: rewardSummary,
+      );
+    }
+  }
+
+  /// 标记今日未签到（清除本地伪签到缓存；默认保护通知防重标记不被破坏）
+  Future<void> markUnsignedToday({bool resetNotification = false}) async {
+    final sToday = serverTodayStr;
+    final now = DateTime.now();
+    final localToday = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+
+    final wasSigned = _lastSuccessDate == sToday || _lastSuccessDate == localToday;
+    if (!wasSigned && _statusMessage == '今日尚未签到' && !resetNotification) {
+      // 状态已是未签到，阻断冗余 notifyListeners 级联触发
+      return;
+    }
+
+    if (_lastSuccessDate == sToday || _lastSuccessDate == localToday) {
+      _lastSuccessDate = '';
+    }
+    final sp = await SharedPreferences.getInstance();
+    await sp.remove(_keyLastSuccessDate);
+
+    if (resetNotification) {
+      if (_lastNotifiedDate == sToday || _lastNotifiedDate == localToday) {
+        _lastNotifiedDate = '';
+      }
+      await sp.remove(_keyLastNotifiedDate);
+    }
+
+    // 从本地日历缓存中移除今日
+    final sn = estimatedServerNow;
+    final monthKey = 'sign_dates_${sn.year}${sn.month.toString().padLeft(2, '0')}';
+    final list = sp.getStringList(monthKey);
+    if (list != null && list.contains('${sn.day}')) {
+      final updated = list.where((d) => d != '${sn.day}').toList();
+      await sp.setStringList(monthKey, updated);
+    }
+    _statusMessage = '今日尚未签到';
+    notifyListeners();
+  }
+
+  /// 切换账号时重置签到状态并重新与服务端同步
+  Future<void> onAccountSwitched() async {
+    _lastSuccessDate = '';
+    _lastNotifiedDate = '';
+    _lastCheckTime = null;
+    _lastFallbackCheckTime = null;
+    _statusMessage = '账号已切换，正在与服务端对齐签到状态...';
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.remove(_keyLastSuccessDate);
+      await sp.remove(_keyLastNotifiedDate);
+    } catch (_) {}
+    notifyListeners();
+    if (DioClient.isLoggedIn) {
+      _syncAndVerifyWithServer(serverTodayStr);
+    }
   }
 
   /// 初始化自动签到引擎
   Future<void> init() async {
     try {
       final sp = await SharedPreferences.getInstance();
-      _autoSignOnLaunch = sp.getBool(_keyAutoLaunch) ?? sp.getBool('auto_checkin') ?? false;
+      _autoSignOnLaunch = sp.getBool(_keyAutoLaunch) ?? sp.getBool('auto_checkin') ?? true;
       _scheduledSignEnabled = sp.getBool(_keyScheduledEnabled) ?? false;
       _scheduledHour = sp.getInt(_keyScheduledHour) ?? 0;
       _scheduledMinute = sp.getInt(_keyScheduledMinute) ?? 0;
@@ -126,8 +273,19 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
       _burstPostSeconds = sp.getInt(_keyBurstPostSeconds) ?? 20;
 
       _notifyOnResult = sp.getBool(_keyNotifyResult) ?? true;
+      // 净化旧版本提前写入 _keyLastNotifiedDate 导致今日通知被静默吞没的脏数据
+      final hasNotifySanitized = sp.getBool('sign_notify_sanitized_v3') ?? false;
+      if (!hasNotifySanitized) {
+        await sp.remove(_keyLastNotifiedDate);
+        _lastNotifiedDate = '';
+        await sp.setBool('sign_notify_sanitized_v3', true);
+      } else {
+        _lastNotifiedDate = sp.getString(_keyLastNotifiedDate) ?? '';
+      }
       _lastSuccessDate = sp.getString(_keyLastSuccessDate) ?? '';
-      _lastNotifiedDate = sp.getString(_keyLastNotifiedDate) ?? '';
+      _continuousDays = sp.getInt('auto_sign_continuous_days') ?? 0;
+      _lastRank = sp.getInt('auto_sign_last_rank') ?? 0;
+      _serverRecoverySignEnabled = sp.getBool(_keyRecoverySignEnabled) ?? true;
 
       // 注册应用生命周期监听
       try {
@@ -137,16 +295,37 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
       // 启动 1 秒高精度心跳调度器
       _startHeartbeat();
 
-      // 启动时自动检测打卡与状态同步：只要开启了任何自动签到相关功能（启动签到 / 定时签到 / 零点冲榜），与服务端同步状态并保底
-      final isAnyAutoEnabled = _autoSignOnLaunch || _scheduledSignEnabled || _burstModeEnabled || AppConfig.autoCheckin;
-      if (isAnyAutoEnabled) {
-        Future.delayed(const Duration(seconds: 3), () {
-          final now = DateTime.now();
-          final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-          _syncAndVerifyWithServer(todayStr);
-        });
-      }
+      // 启动时直接抓取网页实时数据（PC UA）进行同步与自动打卡闭环
+      Future.delayed(const Duration(milliseconds: 600), () {
+        checkOnAppLaunch();
+      });
     } catch (_) {}
+  }
+
+  /// 应用启动时直接抓取网页实时数据检测签到状态，若未签到直接签到
+  Future<void> checkOnAppLaunch() async {
+    if (!DioClient.isLoggedIn || _isRunning) return;
+    try {
+      // 1. 抓取网页实时数据（统一使用 PC UA，强刷无缓存）
+      final info = await KlpbbsApi.getSignHeaderInfo(forceRefresh: true);
+      if (info.isSignedToday) {
+        await markSignedToday(
+          rank: info.mySignRank,
+          continuousDays: info.continuousDays,
+          rewardIron: info.rewardIron,
+          notify: _notifyOnResult,
+        );
+      } else {
+        await markUnsignedToday();
+        // 2. 网页显示未签到，直接触发自动打卡闭环！
+        await checkAndAutoSignIn(triggerSource: '启动检测未签直接打卡', force: true);
+      }
+    } catch (e) {
+      final outage = ServerOutageInfo.tryParse(e);
+      if (outage != null) {
+        notifyServerOutage(outage, source: '启动签到检测');
+      }
+    }
   }
 
   @override
@@ -158,21 +337,60 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _onAppResumed() {
+    _handleAppResumed();
+  }
+
+  Future<void> _handleAppResumed() async {
+    final todayStr = serverTodayStr;
+    final serverDay = estimatedServerNow.day;
+
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final savedSuccess = sp.getString(_keyLastSuccessDate) ?? '';
+      final savedNotified = sp.getString(_keyLastNotifiedDate) ?? '';
+
+      bool stateChanged = false;
+
+      if (serverDay != _lastDay) {
+        _lastDay = serverDay;
+        _lastCheckTime = null;
+        _lastFallbackCheckTime = null;
+        if (savedSuccess == todayStr) {
+          if (_lastSuccessDate != todayStr) stateChanged = true;
+          _lastSuccessDate = todayStr;
+        } else {
+          if (_lastSuccessDate.isNotEmpty) stateChanged = true;
+          _lastSuccessDate = '';
+        }
+        if (savedNotified == todayStr) {
+          _lastNotifiedDate = todayStr;
+        } else {
+          _lastNotifiedDate = '';
+        }
+      } else {
+        if (savedSuccess == todayStr && _lastSuccessDate != todayStr) {
+          _lastSuccessDate = todayStr;
+          stateChanged = true;
+        }
+        if (savedNotified == todayStr && _lastNotifiedDate != todayStr) {
+          _lastNotifiedDate = todayStr;
+        }
+      }
+      if (stateChanged) {
+        notifyListeners();
+      }
+    } catch (_) {}
+
+    // 若未登录，直接终止后续网络请求
     if (!DioClient.isLoggedIn) return;
 
-    final now = DateTime.now();
-    final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-
-    if (now.day != _lastDay) {
-      _lastDay = now.day;
-      _lastCheckTime = null;
-      _lastFallbackCheckTime = null;
-      _lastSuccessDate = '';
-      _lastNotifiedDate = '';
+    final now = estimatedServerNow;
+    // 若今日已完成签到且未到 23:58 次日预备期，全天彻底静默休眠，严禁发起任何后台网络请求
+    if (isSignedToday() && !(now.hour == 23 && now.minute >= 58)) {
+      return;
     }
 
-    final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch || AppConfig.autoCheckin;
-    if (isAnyAutoEnabled && !_isRunning) {
+    if (!_isRunning) {
       _syncAndVerifyWithServer(todayStr);
     }
   }
@@ -256,6 +474,16 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
     await sp.setBool(_keyNotifyResult, val);
   }
 
+  Future<void> setServerRecoverySignEnabled(bool val) async {
+    _serverRecoverySignEnabled = val;
+    if (!val) {
+      _cancelRecoveryProbe();
+    }
+    notifyListeners();
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool(_keyRecoverySignEnabled, val);
+  }
+
   // ================= 核心调度引擎 =================
 
   void _startHeartbeat() {
@@ -268,18 +496,28 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
       _onHeartbeatTick();
     }
     final delay = _resolveNextHeartbeatDuration();
-    _heartbeatTimer = Timer(delay, () {
-      _onHeartbeatTick();
+    _heartbeatTimer = Timer(delay, () async {
+      await _onHeartbeatTick();
       _scheduleNextHeartbeat();
     });
   }
 
-  /// 计算下一次心跳周期：处于冲刺临界、跨天切换或定时签到临界期保持 1 秒高精度，平时 30 秒休眠省电
+  /// 计算下一次心跳周期：处于冲刺临界、跨天切换或定时签到临界期保持 1 秒高精度，平时 30~60 秒休眠省电
   Duration _resolveNextHeartbeatDuration() {
     if (_isRunning) {
       return const Duration(seconds: 1);
     }
-    final now = DateTime.now();
+    // 故障恢复探测期间：保持 2 秒高频调度警戒
+    if (_isProbingRecovery) {
+      return const Duration(seconds: 2);
+    }
+    final now = estimatedServerNow;
+
+    // 签到后全天彻底静默：若今日已签到成功且未到 23:58 预备期，心跳进入 60 秒纯休眠，不发起任何网络请求
+    if (isSignedToday() && !(now.hour == 23 && now.minute >= 58)) {
+      return const Duration(seconds: 60);
+    }
+
     final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch || AppConfig.autoCheckin;
 
     // 零点跨天保护守护：只要开启任何自动化，23:59:40 ~ 00:00:30 全程保持 1 秒高频，确保 00:00:01 准点触发
@@ -296,81 +534,107 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
         return const Duration(seconds: 1);
       }
     }
-    // 定时签到临界期：目标小时内且距离目标分钟 <= 1 分钟
-    if (_scheduledSignEnabled) {
-      if (now.hour == _scheduledHour) {
-        if (now.minute == _scheduledMinute || (now.minute == _scheduledMinute - 1 && now.second >= 45)) {
-          return const Duration(seconds: 1);
-        }
+    // 定时签到临界期：目标签到时间前 15 秒 ~ 容差探测区间内，保持 1 秒高精度调度
+    if (_scheduledSignEnabled && !isSignedToday()) {
+      final scheduledToday = DateTime(now.year, now.month, now.day, _scheduledHour, _scheduledMinute);
+      final diffSeconds = scheduledToday.difference(now).inSeconds;
+      if (diffSeconds >= -_scheduledWindowSec && diffSeconds <= 15) {
+        return const Duration(seconds: 1);
       }
     }
     return const Duration(seconds: 30);
   }
 
-  void _onHeartbeatTick() {
-    // 看门狗保护：若运行状态超过 45 秒未解开，强制重置
-    if (_isRunning && _runningStartTime != null) {
-      if (DateTime.now().difference(_runningStartTime!).inSeconds > 45) {
-        _isRunning = false;
-        _runningStartTime = null;
-        notifyListeners();
-      }
-    }
-
-    if (!DioClient.isLoggedIn) return;
-
-    final now = DateTime.now();
-    final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-    final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch || AppConfig.autoCheckin;
-
-    // 0. 日历跨天秒级响应器 (Midnight Calendar Rollover Trigger)
-    // 只要日期跳变为新的一天，立即重置跨天频控，启动凌晨自动打卡
-    if (now.day != _lastDay) {
-      _lastDay = now.day;
-      _lastCheckTime = null; // 解除防抖
-      _lastFallbackCheckTime = null;
-      if (_lastSuccessDate != todayStr) {
-        _lastSuccessDate = ''; // 重置跨天标记，但保留若刚由零点冲榜标记的今日成功
-        _lastNotifiedDate = '';
-        SharedPreferences.getInstance().then((sp) {
-          sp.remove(_keyLastSuccessDate);
-          sp.remove(_keyLastNotifiedDate);
-        }).catchError((_) {});
-      }
-      _statusMessage = '检测到零点跨天 ($todayStr)，启动今日凌晨自动签到...';
-      notifyListeners();
-
-      if (isAnyAutoEnabled && !_isRunning && _lastSuccessDate != todayStr) {
-        if (_burstModeEnabled) {
-          _startMidnightSnipeLoop(todayStr);
-        } else if (_scheduledSignEnabled && _scheduledHour == 0 && _scheduledMinute == 0) {
-          _executeScheduledSign();
-        } else {
-          checkAndAutoSignIn(triggerSource: '凌晨跨天自动打卡', force: true);
+  bool _isTicking = false;
+  Future<void> _onHeartbeatTick() async {
+    if (_isTicking) return;
+    _isTicking = true;
+    try {
+      // 看门狗保护：若运行状态超过 45 秒未解开，强制重置
+      if (_isRunning && _runningStartTime != null) {
+        if (DateTime.now().difference(_runningStartTime!).inSeconds > 45) {
+          _isRunning = false;
+          _runningStartTime = null;
+          notifyListeners();
         }
       }
-    }
 
-    // 1. 零点冲榜模式调度（在 23:59 开启准备、校准、预热 FormHash 与时间区间探测）
+      if (!DioClient.isLoggedIn) return;
+
+      final now = estimatedServerNow;
+      final todayStr = serverTodayStr;
+      final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch || AppConfig.autoCheckin;
+
+      // 0. 日历跨天秒级响应器 (Midnight Calendar Rollover Trigger)
+      // 只要日期跳变为新的一天，立即重置跨天频控，启动凌晨自动打卡
+      if (now.day != _lastDay) {
+        _lastDay = now.day;
+        _lastCheckTime = null; // 解除防抖
+        _lastFallbackCheckTime = null;
+        if (_lastSuccessDate != todayStr) {
+          _lastSuccessDate = '';
+          _lastNotifiedDate = '';
+          try {
+            final sp = await SharedPreferences.getInstance();
+            final savedSuccess = sp.getString(_keyLastSuccessDate) ?? '';
+            final savedNotified = sp.getString(_keyLastNotifiedDate) ?? '';
+            if (savedSuccess == todayStr) {
+              _lastSuccessDate = todayStr;
+            } else {
+              await sp.remove(_keyLastSuccessDate);
+            }
+            if (savedNotified == todayStr) {
+              _lastNotifiedDate = todayStr;
+            } else {
+              await sp.remove(_keyLastNotifiedDate);
+            }
+          } catch (_) {}
+        }
+
+        if (_lastSuccessDate != todayStr && !_isRunning) {
+          _statusMessage = '检测到零点跨天 ($todayStr)，启动今日凌晨自动签到...';
+          notifyListeners();
+
+          if (isAnyAutoEnabled) {
+            if (_burstModeEnabled) {
+              _startMidnightSnipeLoop(todayStr);
+            } else if (_scheduledSignEnabled && _scheduledHour == 0 && _scheduledMinute == 0) {
+              _executeScheduledSign();
+            } else {
+              checkAndAutoSignIn(triggerSource: '凌晨跨天自动打卡', force: true);
+            }
+          }
+        }
+      }
+
+    // 1. 零点冲榜模式调度（在 23:58~23:59 开启准备、对齐精准时钟、预热 FormHash 与时间区间探测）
     if (_burstModeEnabled) {
-      if (now.hour == 23 && now.minute == 59) {
-        // 23:59 冲刺的目标为次日签到
-        final targetDate = now.add(const Duration(minutes: 2));
+      if (now.hour == 23 && (now.minute == 58 || now.minute == 59)) {
+        // 23:58 / 23:59 冲刺的目标为次日签到
+        final targetDate = now.add(const Duration(minutes: 3));
         final targetDateStr = '${targetDate.year}-${targetDate.month.toString().padLeft(2, '0')}-${targetDate.day.toString().padLeft(2, '0')}';
+
+        // 纠偏保护：23:58 绝不可能提前完成明天的签到。如果本地留存了明天的伪成功标记，立即纠偏清除！
+        if (_lastSuccessDate == targetDateStr) {
+          _lastSuccessDate = '';
+          SharedPreferences.getInstance().then((sp) => sp.remove(_keyLastSuccessDate)).catchError((_) => false);
+        }
 
         if (_lastSuccessDate != targetDateStr) {
           if (!_isSnipingActive) {
             _isSnipingActive = true;
-            _statusMessage = '23:59 冲榜就绪状态已激活，正在校准服务器时钟与预热 FormHash...';
+            _statusMessage = '23:58 冲榜就绪状态已激活，正在对齐服务器精准时钟与预热 FormHash...';
             notifyListeners();
             _calibrateServerTime();
             KlpbbsApi.getSignFormhash(forceRefresh: true);
           }
 
           // 倒计时进入设定的提前区间（例如 23:59:45），开跑探测/发包，防止服务器时钟比本地快
-          final startSecond = (60 - _burstPreSeconds).clamp(0, 59);
-          if (now.second >= startSecond && !_isRunning) {
-            _startMidnightSnipeLoop(targetDateStr);
+          if (now.minute == 59) {
+            final startSecond = (60 - _burstPreSeconds).clamp(0, 59);
+            if (now.second >= startSecond && !_isRunning) {
+              _startMidnightSnipeLoop(targetDateStr);
+            }
           }
         }
       } else if (now.hour == 0 && now.minute == 0 && now.second <= _burstPostSeconds) {
@@ -378,11 +642,16 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
         if (!_isRunning && _lastSuccessDate != todayStr) {
           _startMidnightSnipeLoop(todayStr);
         }
-      } else if (_isSnipingActive && now.minute >= 2) {
+      } else if (_isSnipingActive && (now.hour != 23 || now.minute < 58)) {
         // 跨天窗口完全结束，重置就绪标记
         _isSnipingActive = false;
         notifyListeners();
       }
+    }
+
+    // 核心守护：若今日已完成签到且不在 23:58~23:59 次日冲榜预备期，彻底静默！严禁发起任何后台网络请求！
+    if (isSignedToday() && !(now.hour == 23 && now.minute >= 58)) {
+      return;
     }
 
     // 2. 日常定时签到调度（准点执行 + 错峰补签保障）
@@ -396,30 +665,177 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    // 3. 全天后台持续状态同步与自动签到保底机制
-    // 只要开启了任一自动签到功能，每 15 分钟持续向论坛网页刷新校验真实签到状态：
-    // 如果网页显示未签到，立即触发自动签到；如果网页已签到，同步本地状态与天数/排名
-    if (isAnyAutoEnabled && !_isRunning) {
+    // 3. 全天后台持续状态同步与自动签到保底机制（仅在今日未签到时工作）
+    if (isAnyAutoEnabled && !_isRunning && _lastSuccessDate != todayStr) {
       if (_lastFallbackCheckTime == null || now.difference(_lastFallbackCheckTime!).inMinutes >= 15) {
         _lastFallbackCheckTime = now;
         _syncAndVerifyWithServer(todayStr);
       }
     }
+    } finally {
+      _isTicking = false;
+    }
   }
 
-  /// 校准论坛服务端时钟
+  // ================= 502 / 网关故障实时静默探测与恢复即签引擎 =================
+
+  /// 静默检测到 502 等网关/服务器异常状态，立刻进入后台实时探测与恢复即签机制
+  void notifyServerOutage(ServerOutageInfo? info, {String source = '签到服务'}) {
+    if (!_serverRecoverySignEnabled) return;
+    if (isSignedToday()) return; // 今日已签，无须启动探测
+
+    _isServerOutage = true;
+    _lastOutageInfo = info;
+    _outageStartTime ??= DateTime.now();
+
+    final codeStr = info != null ? '${info.statusCode} ${info.title}' : '502 网关故障';
+    _statusMessage = '⚠️ 检测到论坛异常 ($codeStr)，已启动后台静默实时探测，恢复后将立即签到...';
+    notifyListeners();
+
+    startRecoveryProbeLoop(source: source);
+  }
+
+  /// 启动后台实时探测循环（自适应轻量级探针，服务器一旦恢复立马毫秒级补签）
+  void startRecoveryProbeLoop({String source = '探测调度'}) {
+    if (_isProbingRecovery) return;
+    if (!_serverRecoverySignEnabled) return;
+    if (isSignedToday()) {
+      _cancelRecoveryProbe();
+      notifyListeners();
+      return;
+    }
+
+    _isProbingRecovery = true;
+    _isServerOutage = true;
+    _recoveryProbeCount = 0;
+    _outageStartTime ??= DateTime.now();
+    notifyListeners();
+
+    _scheduleNextRecoveryProbeTick();
+  }
+
+  void _cancelRecoveryProbe() {
+    _recoveryProbeTimer?.cancel();
+    _recoveryProbeTimer = null;
+    _isProbingRecovery = false;
+    _isServerOutage = false;
+    _outageStartTime = null;
+  }
+
+  void _scheduleNextRecoveryProbeTick() {
+    _recoveryProbeTimer?.cancel();
+    if (!_isProbingRecovery || !_serverRecoverySignEnabled || isSignedToday()) {
+      _cancelRecoveryProbe();
+      notifyListeners();
+      return;
+    }
+
+    final elapsed = DateTime.now().difference(_outageStartTime ?? DateTime.now());
+    // 自适应低开销探测退避阶梯：
+    // 0~30s (刚宕机黄金恢复期): 每 2 秒探测一次
+    // 30s~2m: 每 3 秒探测一次
+    // 2m~10m: 每 5 秒探测一次
+    // 10m+: 每 10 秒探测一次
+    final int delaySec = elapsed.inSeconds < 30
+        ? 2
+        : (elapsed.inSeconds < 120 ? 3 : (elapsed.inSeconds < 600 ? 5 : 10));
+
+    _recoveryProbeTimer = Timer(Duration(seconds: delaySec), () async {
+      await _onRecoveryProbeTick();
+    });
+  }
+
+  Future<void> _onRecoveryProbeTick() async {
+    if (!_isProbingRecovery || !_serverRecoverySignEnabled || isSignedToday()) {
+      _cancelRecoveryProbe();
+      notifyListeners();
+      return;
+    }
+
+    _recoveryProbeCount++;
+    final code = _lastOutageInfo?.statusCode ?? 502;
+    _statusMessage = '⚠️ 论坛异常 ($code)，后台静默探测中 (第 $_recoveryProbeCount 次)...';
+    notifyListeners();
+
+    try {
+      final isAlive = await KlpbbsApi.probeServerRecovery();
+      if (isAlive) {
+        // 核心高光点：服务器恢复正常！立马执行签到！
+        _statusMessage = '🟢 探测到论坛服务器已恢复正常！正在毫秒级执行自动补签...';
+        _isServerOutage = false;
+        _isProbingRecovery = false;
+        _recoveryProbeTimer?.cancel();
+        _recoveryProbeTimer = null;
+        notifyListeners();
+
+        await _executeRecoverySignIn();
+        return;
+      }
+    } catch (_) {}
+
+    // 若仍未恢复，继续下一轮探测调度
+    _scheduleNextRecoveryProbeTick();
+  }
+
+  /// 服务器恢复后立即执行抢签闭环
+  Future<void> _executeRecoverySignIn() async {
+    if (!DioClient.isLoggedIn || isSignedToday()) return;
+
+    try {
+      // 1. 刷新最新可用 FormHash
+      final fh = await KlpbbsApi.getSignFormhash(forceRefresh: true);
+      // 2. 毫秒级极速发包签到
+      final res = await KlpbbsApi.signIn(formhash: fh, fastMode: true);
+
+      final isAlready = res.message.contains('已签到') ||
+          res.message.contains('签过到') ||
+          res.message.contains('今日已签') ||
+          res.message.contains('无需重复签到') ||
+          res.message.contains('k_misign:tdyq') ||
+          res.message.contains('k_misign:signed') ||
+          res.message.contains('已打卡');
+
+      if (res.success || (res.rank != null && res.rank! > 0) || isAlready) {
+        final todayStr = serverTodayStr;
+        await _recordSuccess(todayStr, res);
+        _statusMessage = '🎉 服务器故障已恢复，已自动完成今日签到！';
+        notifyListeners();
+
+        // 专门推送故障恢复自动补签成功的通知
+        PushNotificationService.instance.pushCustomNotification(
+          title: '🎉 论坛故障恢复 · 自动补签成功！',
+          body: '苦力怕论坛已从 502/网关故障 中恢复！已毫秒级为您完成今日打卡！${res.rank != null && res.rank! > 0 ? "排名: 第 ${res.rank} 名" : ""}',
+        );
+      } else if (res.message.contains('502') || res.message.contains('异常') || res.message.contains('网关')) {
+        // 若偶发抖动再次报 502，无缝重新进入探测循环，绝不抛弃用户
+        _isServerOutage = true;
+        startRecoveryProbeLoop(source: '补签时再次遇故障');
+      } else {
+        _statusMessage = '恢复打卡结果：${res.message}';
+        notifyListeners();
+      }
+    } catch (e) {
+      final outage = ServerOutageInfo.tryParse(e);
+      if (outage != null) {
+        _isServerOutage = true;
+        startRecoveryProbeLoop(source: '补签异常重新探测');
+      }
+    }
+  }
+
+  /// 对齐论坛服务端精准时钟（通过 HTTP Date 头部毫秒级计算偏差）
   Future<void> _calibrateServerTime() async {
     try {
-      final startTime = DateTime.now().millisecondsSinceEpoch;
-      final info = await KlpbbsApi.getSignHeaderInfo(forceRefresh: true);
-      final endTime = DateTime.now().millisecondsSinceEpoch;
-      final rtt = (endTime - startTime) ~/ 2;
-      _statusMessage = '时钟校准完成 (RTT: ${rtt * 2}ms)，当前状态: ${info.isSignedToday ? "已签" : "待刷新"}';
-      notifyListeners();
+      final offset = await KlpbbsApi.pingServerTime();
+      if (offset != null) {
+        _serverClockOffsetMs = offset.clamp(-600000, 600000);
+        _statusMessage = '时钟对齐完成 (服务端时钟偏差: ${_serverClockOffsetMs >= 0 ? "+$_serverClockOffsetMs" : "$_serverClockOffsetMs"}ms)';
+        notifyListeners();
+      }
     } catch (_) {}
   }
 
-  /// 零点极速冲榜循环（核心：支持 50ms 流水线多路并发与高频探测翻转，确保 100% 抢占第 1 名）
+  /// 零点极速冲榜循环（核心：支持 50ms 流水线多路并发与高频探测翻转，确保 100% 抢占第 1 名，成功后微秒级绝对停机）
   Future<void> _startMidnightSnipeLoop(String targetDateStr) async {
     if (_isRunning) return;
     _isRunning = true;
@@ -429,6 +845,7 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
 
     final totalWindowDuration = Duration(seconds: _burstPreSeconds + _burstPostSeconds + 5);
     final deadline = DateTime.now().add(totalWindowDuration);
+    bool isFinished = false;
 
     try {
       // 预先获取 FormHash 避免每次请求阻塞
@@ -441,13 +858,11 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
       bool refreshedAtMidnight = false;
-      bool isFinished = false;
-      bool isVerifying = false;
       int inFlight = 0;
       const maxInFlight = 5; // 管道并发度，多路并发保持极高发包密度
 
       while (DateTime.now().isBefore(deadline) && _isRunning && !isFinished) {
-        final now = DateTime.now();
+        final now = estimatedServerNow;
 
         // 刚跨入 00:00 时在后台静默异步刷新一次 FormHash
         if (now.hour == 0 && !refreshedAtMidnight) {
@@ -459,7 +874,6 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
 
         // ================= 模式 1：多路并发冲刺 (Burst Spam) =================
         if (_burstStrategy == BurstStrategy.burstSpam) {
-          // 在 23:59 提前预热阶段（距离零点 > 4 秒）进行轻量探路
           final isCriticalWindow = (now.hour == 23 && now.minute == 59 && now.second >= 56) ||
               (now.hour == 0 && now.minute == 0 && now.second <= _burstPostSeconds);
 
@@ -475,51 +889,75 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
                 return;
               }
 
+              // 跨入 00:00 瞬间异步刷新一次最新 FormHash，防止旧 hash 失效
+              final currentServer = estimatedServerNow;
+              if (currentServer.hour == 0 && !refreshedAtMidnight) {
+                refreshedAtMidnight = true;
+                KlpbbsApi.getSignFormhash(forceRefresh: true).then((newFh) {
+                  if (newFh != null && newFh.isNotEmpty) fh = newFh;
+                }).catchError((_) {});
+              }
+
               if (inFlight >= maxInFlight) return;
               inFlight++;
 
-              final dispatchTime = DateTime.now();
+              final dispatchTime = estimatedServerNow;
 
               KlpbbsApi.signIn(formhash: fh, fastMode: true).then((res) async {
                 inFlight--;
                 if (isFinished) return;
 
-                final currentNow = DateTime.now();
-                // 1. 若成功解析出当日名次，100% 确认新一天签到成功并斩获名次！
-                if (res.rank != null && res.rank! > 0) {
+                if (res.message.contains('请先登录') || res.message.contains('需要登录')) {
                   isFinished = true;
                   burstTimer?.cancel();
+                  _isRunning = false;
+                  _statusMessage = '冲榜终止：登录状态已失效，请重新登录';
+                  if (!completer.isCompleted) completer.complete();
+                  notifyListeners();
+                  return;
+                }
+
+                final isAlreadySigned = res.message.contains('已签到') ||
+                    res.message.contains('签过到') ||
+                    res.message.contains('今日已签') ||
+                    res.message.contains('无需重复签到') ||
+                    res.message.contains('k_misign:tdyq') ||
+                    res.message.contains('k_misign:signed') ||
+                    res.message.contains('已打卡');
+
+                // 核心保护：在 23:59 冲刺窗口期内（dispatchTime.hour == 23 或 estimatedServerNow.hour == 23），
+                // 如果收到“今日已签到”或旧的排名数据，说明服务器尚未真正跨天翻转！
+                // 严禁当作次日签到成功处理，必须继续等待零点翻转！
+                final isStillBeforeMidnight = dispatchTime.hour == 23 || estimatedServerNow.hour == 23;
+                if (isStillBeforeMidnight && (isAlreadySigned || !res.success)) {
+                  final currentNow = estimatedServerNow;
+                  final timeStr = '${currentNow.hour.toString().padLeft(2, '0')}:${currentNow.minute.toString().padLeft(2, '0')}:${currentNow.second.toString().padLeft(2, '0')}';
+                  _statusMessage = '零点前探测排队中 ($timeStr，服务器尚未翻转跨天)...';
+                  notifyListeners();
+                  return;
+                }
+
+                // 微秒级绝对停机熔断 (Instant Kill Switch)：
+                // 只有拿到服务器跨天后真正颁发的全新签到成功回包（isFreshSuccess）才算冲榜成功！
+                // 绝不可将服务器尚未跨天时的旧日排名（如 121 名）或“今日已签到”误当作次日冲刺完成！
+                final isFreshSuccess = res.success && !isAlreadySigned;
+                if (isFreshSuccess) {
+                  isFinished = true;
+                  burstTimer?.cancel();
+                  _isRunning = false;
                   await _recordSuccess(targetDateStr, res);
                   if (!completer.isCompleted) completer.complete();
                   return;
                 }
 
-                // 2. 00:00 之后发出的请求返回了明确成功或已签到
-                final isAlreadySigned = res.message.contains('已签到') ||
-                    res.message.contains('签过到') ||
-                    res.message.contains('今日已签');
-
-                if (dispatchTime.hour == 0 && (res.success || isAlreadySigned)) {
-                  // 异步双重核验，不阻塞并发流水线发包
-                  if (!isVerifying) {
-                    isVerifying = true;
-                    KlpbbsApi.getSignHeaderInfo(forceRefresh: true).then((info) async {
-                      if (info.isSignedToday && !isFinished) {
-                        isFinished = true;
-                        burstTimer?.cancel();
-                        await _recordSuccess(targetDateStr, res, headerInfo: info);
-                        if (!completer.isCompleted) completer.complete();
-                      } else {
-                        isVerifying = false;
-                      }
-                    }).catchError((_) {
-                      isVerifying = false;
-                    });
-                  }
-                } else if (dispatchTime.hour == 23) {
-                  _statusMessage = '多路并发极限冲刺中 (${currentNow.hour.toString().padLeft(2, '0')}:${currentNow.minute.toString().padLeft(2, '0')}:${currentNow.second.toString().padLeft(2, '0')}，5 路流水线连发抢第 1 名)...';
-                  notifyListeners();
+                final currentNow = estimatedServerNow;
+                final timeStr = '${currentNow.hour.toString().padLeft(2, '0')}:${currentNow.minute.toString().padLeft(2, '0')}:${currentNow.second.toString().padLeft(2, '0')}';
+                if (dispatchTime.hour == 23) {
+                  _statusMessage = '零点前多路并发抢跑中 ($timeStr，5 路流水线全速开火)...';
+                } else {
+                  _statusMessage = '零点正点多路极速爆发中 ($timeStr，5 路流水线抢占第 1 名)...';
                 }
+                notifyListeners();
               }).catchError((_) {
                 inFlight--;
               });
@@ -529,96 +967,170 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
             burstTimer = Timer.periodic(Duration(milliseconds: intervalMs), (_) => triggerFire());
             triggerFire();
 
-            final waitDuration = deadline.difference(DateTime.now());
-            await Future.any([
-              completer.future,
-              Future.delayed(waitDuration > Duration.zero ? waitDuration : const Duration(seconds: 5)),
-            ]);
-            burstTimer.cancel();
+            try {
+              final waitDuration = deadline.difference(DateTime.now());
+              await Future.any([
+                completer.future,
+                Future.delayed(waitDuration > Duration.zero ? waitDuration : const Duration(seconds: 5)),
+              ]);
+            } finally {
+              burstTimer.cancel();
+            }
             if (isFinished) break;
           } else {
             // 23:59 提前预热阶段：快速轻量探测
             final res = await KlpbbsApi.signIn(formhash: fh, fastMode: true);
-            if (res.rank != null && res.rank! > 0) {
+            if (res.message.contains('请先登录') || res.message.contains('需要登录')) {
+              isFinished = true;
+              _isRunning = false;
+              _statusMessage = '冲榜终止：登录状态已失效，请重新登录';
+              break;
+            }
+
+            final isAlreadySigned = res.message.contains('已签到') ||
+                res.message.contains('签过到') ||
+                res.message.contains('今日已签') ||
+                res.message.contains('无需重复签到') ||
+                res.message.contains('k_misign:tdyq') ||
+                res.message.contains('k_misign:signed') ||
+                res.message.contains('已打卡');
+
+            final isStillBeforeMidnight = now.hour == 23 || estimatedServerNow.hour == 23;
+            if (isStillBeforeMidnight && (isAlreadySigned || !res.success)) {
+              // 零点前服务器尚未翻转，继续等待
+            } else if (res.success && !isAlreadySigned) {
+              isFinished = true;
+              _isRunning = false;
               await _recordSuccess(targetDateStr, res);
               break;
             }
-            _statusMessage = '并发冲刺预热中 (${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}，时钟校准完成，准备多路并发)...';
+            final timeStr = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+            _statusMessage = '并发冲刺预热中 ($timeStr，时钟对齐完成，准备多路并发)...';
             notifyListeners();
             await Future.delayed(Duration(milliseconds: _burstIntervalMs.clamp(50, 300)));
           }
         } else {
           // ================= 模式 2：高频探测抢签 (Status Polling) =================
-          // 极速高频单路探测 69B 状态，服务端跨天翻转微秒级响应并拿下第 1 名
-          final dispatchTime = DateTime.now();
+          // 极速高频单路探测状态，服务端跨天翻转微秒级响应并拿下第 1 名
           final res = await KlpbbsApi.signIn(formhash: fh, fastMode: true);
+          if (res.message.contains('请先登录') || res.message.contains('需要登录')) {
+            isFinished = true;
+            _isRunning = false;
+            _statusMessage = '冲榜终止：登录状态已失效，请重新登录';
+            break;
+          }
 
-          // 1. 若探测包返回名次，说明本探测包正好作为新一天第一枪打穿入库！
-          if (res.rank != null && res.rank! > 0) {
+          final isAlreadySigned = res.message.contains('已签到') ||
+              res.message.contains('签过到') ||
+              res.message.contains('今日已签') ||
+              res.message.contains('无需重复签到') ||
+              res.message.contains('k_misign:tdyq') ||
+              res.message.contains('k_misign:signed') ||
+              res.message.contains('已打卡');
+
+          final isStillBeforeMidnight = now.hour == 23 || estimatedServerNow.hour == 23;
+          if (isStillBeforeMidnight && (isAlreadySigned || !res.success)) {
+            // 零点前服务器尚未翻转，保持高频探测翻转点
+          } else if (res.success && !isAlreadySigned) {
+            isFinished = true;
+            _isRunning = false;
             await _recordSuccess(targetDateStr, res);
             break;
           }
 
-          // 2. 若发包在 00:00 之后且已签到，核验并记录
-          final isAlreadySigned = res.message.contains('已签到') ||
-              res.message.contains('签过到') ||
-              res.message.contains('今日已签');
-
-          if (dispatchTime.hour == 0 && (res.success || isAlreadySigned)) {
-            try {
-              final info = await KlpbbsApi.getSignHeaderInfo(forceRefresh: true);
-              if (info.isSignedToday) {
-                await _recordSuccess(targetDateStr, res, headerInfo: info);
-                break;
-              }
-            } catch (_) {}
+          final timeStr = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+          if (now.hour == 23) {
+            _statusMessage = '零点前高频探测抢跑中 ($timeStr，回包锁定，等待翻转)...';
           } else {
-            _statusMessage = '高频状态探测中 (${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}，回包 69B 锁定，等待翻转)...';
-            notifyListeners();
+            _statusMessage = '零点正点高频抢签中 ($timeStr，争夺第 1 名)...';
           }
+          notifyListeners();
 
           await Future.delayed(Duration(milliseconds: _burstIntervalMs.clamp(30, 300)));
         }
       }
     } catch (e) {
       _statusMessage = '冲榜异常：$e';
+      final outage = ServerOutageInfo.tryParse(e);
+      if (outage != null) {
+        notifyServerOutage(outage, source: '零点冲榜');
+      }
     } finally {
       _isRunning = false;
       _runningStartTime = null;
+      if (!isFinished && _lastSuccessDate != targetDateStr) {
+        _statusMessage = '冲榜窗口已结束，转入后台状态核验与错峰补签...';
+        if (_isServerOutage) {
+          startRecoveryProbeLoop(source: '零点冲榜遇故障');
+        } else {
+          // 在后台轻量核验一次服务端真实签到状态（若网页已签到则同步记录，但不擅自弹窗）
+          unawaited(KlpbbsApi.getSignHeaderInfo(forceRefresh: true).then((header) {
+            if (header.isSignedToday) {
+              markSignedToday(
+                rank: header.mySignRank,
+                continuousDays: header.continuousDays,
+                rewardIron: header.rewardIron,
+                notify: false,
+              );
+            }
+          }).catchError((_) {}));
+        }
+      }
       notifyListeners();
     }
   }
 
   /// 执行日常定时签到（带容差区间状态探测）
   Future<void> _executeScheduledSign() async {
-    if (_isRunning) return;
+    if (_isRunning || isSignedToday()) return;
     _isRunning = true;
     _runningStartTime = DateTime.now();
-    _statusMessage = '正在执行定时自动签到 (高频时间区间持续探测)...';
+    _statusMessage = '正在执行定时自动签到...';
     notifyListeners();
 
-    final now = DateTime.now();
-    final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    final todayStr = serverTodayStr;
     final deadline = DateTime.now().add(Duration(seconds: _scheduledWindowSec));
 
     try {
       final fh = await KlpbbsApi.getSignFormhash();
       while (DateTime.now().isBefore(deadline) && _isRunning) {
+        if (!DioClient.isLoggedIn) {
+          _statusMessage = '定时签到未完成：请先登录论坛账号';
+          break;
+        }
         final res = await KlpbbsApi.signIn(formhash: fh, fastMode: true);
-        if (res.rank != null && res.rank! > 0) {
+        if (res.message.contains('请先登录') || res.message.contains('需要登录')) {
+          _statusMessage = '定时签到未完成：登录状态已失效，请重新登录';
+          break;
+        }
+
+        final isAlready = res.message.contains('已签到') ||
+            res.message.contains('签过到') ||
+            res.message.contains('今日已签') ||
+            res.message.contains('无需重复签到') ||
+            res.message.contains('k_misign:tdyq') ||
+            res.message.contains('k_misign:signed') ||
+            res.message.contains('已打卡');
+        if ((res.rank != null && res.rank! > 0) || res.success || isAlready) {
           await _recordSuccess(todayStr, res);
           break;
-        } else if (res.success || res.message.contains('已签到') || res.message.contains('签过到') || res.message.contains('今日已签')) {
-          final info = await KlpbbsApi.getSignHeaderInfo(forceRefresh: true);
-          if (info.isSignedToday) {
-            await _recordSuccess(todayStr, res, headerInfo: info);
-            break;
-          }
         }
-        await Future.delayed(Duration(milliseconds: _burstIntervalMs.clamp(50, 500)));
+        if (res.message.contains('502') || res.message.contains('异常') || res.message.contains('网关')) {
+          final outage = ServerOutageInfo.tryParse(res.message);
+          notifyServerOutage(outage, source: '定时签到');
+          break;
+        }
+        _statusMessage = '定时签到中 (${res.message})...';
+        notifyListeners();
+        final delayMs = res.message.contains('网络连接超时') ? 2000 : _burstIntervalMs.clamp(100, 500);
+        await Future.delayed(Duration(milliseconds: delayMs));
       }
     } catch (e) {
       _statusMessage = '定时签到异常：$e';
+      final outage = ServerOutageInfo.tryParse(e);
+      if (outage != null) {
+        notifyServerOutage(outage, source: '定时签到');
+      }
     } finally {
       _isRunning = false;
       _runningStartTime = null;
@@ -632,36 +1144,48 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final info = await KlpbbsApi.getSignHeaderInfo(forceRefresh: true);
       if (info.isSignedToday) {
-        _lastSuccessDate = todayStr;
-        final sp = await SharedPreferences.getInstance();
-        await sp.setString(_keyLastSuccessDate, todayStr);
-        final rankText = (info.mySignRank != null && info.mySignRank! > 0) ? ' (第 ${info.mySignRank} 名)' : '';
-        final daysText = info.continuousDays > 0 ? ' | 连续 ${info.continuousDays} 天' : '';
-        _statusMessage = '今日已完成签到$rankText$daysText';
-        notifyListeners();
+        await markSignedToday(
+          rank: info.mySignRank,
+          continuousDays: info.continuousDays,
+        );
       } else {
-        // 服务端显示尚未签到，清理可能存在的错误本地标记，立即执行自动签到
-        _lastSuccessDate = '';
-        final sp = await SharedPreferences.getInstance();
-        await sp.remove(_keyLastSuccessDate);
-        checkAndAutoSignIn(triggerSource: '后台巡检未签到自动打卡', force: true);
+        await markUnsignedToday();
+        final isAnyAutoEnabled = _burstModeEnabled || _scheduledSignEnabled || _autoSignOnLaunch || AppConfig.autoCheckin;
+        if (isAnyAutoEnabled) {
+          // 服务端权威显示尚未签到且开启了自动签到，立即触发打卡并治愈
+          checkAndAutoSignIn(triggerSource: '后台巡检未签到自动打卡', force: true);
+        }
       }
-    } catch (_) {}
+    } catch (e) {
+      final outage = ServerOutageInfo.tryParse(e);
+      if (outage != null) {
+        notifyServerOutage(outage, source: '后台巡检');
+      }
+    }
   }
 
   /// 检查并执行自动签到（启动/手动触发）
   Future<void> checkAndAutoSignIn({String triggerSource = '自动签到', bool force = false}) async {
     if (!DioClient.isLoggedIn || _isRunning) return;
+    if (isSignedToday() && !force) return; // 已经签到成功，保持静默
 
     final now = DateTime.now();
+    final todayStr = serverTodayStr;
+
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final savedSuccess = sp.getString(_keyLastSuccessDate) ?? '';
+      if (savedSuccess == todayStr) {
+        _lastSuccessDate = todayStr;
+        if (!force) return;
+      }
+    } catch (_) {}
+
     // 3 分钟频控防抖（非强制触发时）
     if (!force && _lastCheckTime != null && now.difference(_lastCheckTime!).inMinutes < 3) {
       return;
     }
     _lastCheckTime = now;
-
-    final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-
     _isRunning = true;
     _runningStartTime = DateTime.now();
     _statusMessage = '$triggerSource正在检测...';
@@ -670,33 +1194,37 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final info = await KlpbbsApi.getSignHeaderInfo(forceRefresh: true);
       if (info.isSignedToday) {
-        _lastSuccessDate = todayStr;
-        final sp = await SharedPreferences.getInstance();
-        await sp.setString(_keyLastSuccessDate, todayStr);
-        final rankText = (info.mySignRank != null && info.mySignRank! > 0) ? ' (第 ${info.mySignRank} 名)' : '';
-        final daysText = info.continuousDays > 0 ? ' | 连续 ${info.continuousDays} 天' : '';
-        _statusMessage = '今日已完成签到$rankText$daysText';
+        await markSignedToday(
+          rank: info.mySignRank,
+          continuousDays: info.continuousDays,
+          rewardIron: info.rewardIron,
+          notify: _notifyOnResult,
+        );
         _isRunning = false;
         _runningStartTime = null;
-        notifyListeners();
         return;
       }
 
-      // 服务端网页权威确认尚未签到，清理本地可能存在的错误成功标记
-      if (_lastSuccessDate == todayStr) {
-        _lastSuccessDate = '';
-        final sp = await SharedPreferences.getInstance();
-        await sp.remove(_keyLastSuccessDate);
-      }
-
+      // 未检测到已签到状态，继续向服务端发起签到
       final res = await KlpbbsApi.signIn();
-      if (res.success) {
+      final isAlready = res.message.contains('已签到') ||
+          res.message.contains('签过到') ||
+          res.message.contains('今日已签') ||
+          res.message.contains('无需重复签到') ||
+          res.message.contains('k_misign:tdyq') ||
+          res.message.contains('k_misign:signed') ||
+          res.message.contains('已打卡');
+      if (res.success || isAlready) {
         await _recordSuccess(todayStr, res);
       } else {
         _statusMessage = '签到未完成：${res.message}，将在后台持续探测重试';
       }
     } catch (e) {
       _statusMessage = '签到异常：$e';
+      final out = ServerOutageInfo.tryParse(e);
+      if (out != null) {
+        notifyServerOutage(out, source: triggerSource);
+      }
     } finally {
       _isRunning = false;
       _runningStartTime = null;
@@ -705,81 +1233,46 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _recordSuccess(String targetDateStr, dynamic res, {SignHeaderInfo? headerInfo}) async {
-    // 核心权威二次校验：若已斩获确切排名（如第 1 名），直接认定成功；其余情况通过服务端网页二次核实
-    final hasConfirmedRank = res.rank != null && res.rank > 0;
-    SignHeaderInfo info = headerInfo ?? const SignHeaderInfo();
-    if (headerInfo != null) {
-      info = headerInfo;
-    } else {
-      try {
-        info = await KlpbbsApi.getSignHeaderInfo(forceRefresh: true);
-        if (!info.isSignedToday && !hasConfirmedRank) {
-          // 数据库异步写入可能存在微小时滞，进行轻量级阶梯核验（最多 2 次）
-          for (int i = 1; i <= 2; i++) {
-            await Future.delayed(Duration(milliseconds: i * 400));
-            info = await KlpbbsApi.getSignHeaderInfo(forceRefresh: true);
-            if (info.isSignedToday) break;
-          }
-        }
-      } catch (_) {}
-    }
+    _cancelRecoveryProbe();
+    final isAlready = res.message.contains('已签到') ||
+        res.message.contains('签过到') ||
+        res.message.contains('今日已签') ||
+        res.message.contains('无需重复签到') ||
+        res.message.contains('k_misign:tdyq') ||
+        res.message.contains('k_misign:signed') ||
+        res.message.contains('已打卡');
 
-    if (!hasConfirmedRank && !info.isSignedToday) {
-      // 若服务端仍显示未签到且无排名，绝不标记成功，保持未完成状态以便继续探测
-      _statusMessage = '签到请求已提交，等待论坛入库确认中...';
-      notifyListeners();
-      return;
-    }
+    SignHeaderInfo info = headerInfo ?? const SignHeaderInfo();
 
     _lastSuccessDate = targetDateStr;
     final sp = await SharedPreferences.getInstance();
     await sp.setString(_keyLastSuccessDate, targetDateStr);
+    await KlpbbsApi.clearSignLocalCache();
+    await KlpbbsApi.recordSignDateToLocalCalendar();
 
-    // 幂等防重：同一目标日期只允许记录并推送一次通知，杜绝重复发信
-    if (_lastNotifiedDate == targetDateStr) {
-      return;
+    // 提取真实数据，优先使用签到响应中的铁粒、经验、名次，杜绝多余流水查询加重服务器负担
+    int? resRank;
+    if (res.rank != null) {
+      if (res.rank is int) {
+        resRank = res.rank as int;
+      } else if (res.rank is String) {
+        resRank = int.tryParse(res.rank as String);
+      }
     }
-    _lastNotifiedDate = targetDateStr;
-    await sp.setString(_keyLastNotifiedDate, targetDateStr);
-
-    // 1. 深度同步：从真实账单流水（home.php?mod=spacecp&ac=credit&op=log）拉取绝对精确的实时变动明细
-    // 服务端数据库入库可能有短暂延迟，采用阶梯延时重试机制（最多 3 次，如 600ms, 800ms, 1000ms）
-    String rewardSummary = '';
-    final now = DateTime.now();
-    final shortDateStr = '${now.year}-${now.month}-${now.day}';
-
-    for (int attempt = 1; attempt <= 3; attempt++) {
-      try {
-        await Future.delayed(Duration(milliseconds: attempt == 1 ? 600 : 800));
-        final logs = await KlpbbsApi.getCreditLogs(page: 1, forceRefresh: true);
-        final todayLogs = logs.where((l) {
-          final isSignOp = l.operation.contains('签到') || l.detail.contains('签到');
-          final isTodayTime = l.timeText.contains(targetDateStr) ||
-              l.timeText.contains(shortDateStr) ||
-              l.timeText.contains('今天') ||
-              l.timeText.contains('刚刚') ||
-              l.timeText.contains('分钟前') ||
-              l.timeText.contains('小时前');
-          return isSignOp && isTodayTime;
-        }).toList();
-
-        if (todayLogs.isNotEmpty) {
-          final rewards = <String>[];
-          for (final log in todayLogs) {
-            rewards.add('${log.creditType} ${log.amount}');
-          }
-          rewardSummary = rewards.join(', ');
-          break; // 成功获取到权威流水明细，直接跳出重试
-        }
-      } catch (_) {}
+    int? resDays;
+    if (res.continuousDays != null) {
+      if (res.continuousDays is int) {
+        resDays = res.continuousDays as int;
+      } else if (res.continuousDays is String) {
+        resDays = int.tryParse(res.continuousDays as String);
+      }
     }
 
-    // 2. 若流水未抓取到或缺少名次/连续天数，从权威 headerInfo 提取真实数据
-    int? finalRank = (res.rank != null && res.rank > 0)
-        ? res.rank
+    int? finalRank = (resRank != null && resRank > 0)
+        ? resRank
         : (info.mySignRank != null && info.mySignRank! > 0 ? info.mySignRank : null);
-    int? finalContinuousDays = (res.continuousDays != null && res.continuousDays > 0)
-        ? res.continuousDays
+    int? finalContinuousDays = (resDays != null && resDays > 0)
+        ? resDays
         : (info.continuousDays > 0 ? info.continuousDays : null);
     String? finalIron = (res.rewardIron != null && res.rewardIron.toString().isNotEmpty)
         ? res.rewardIron.toString()
@@ -788,19 +1281,19 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
         ? res.rewardExp.toString()
         : null;
 
-    // 3. 回退组合真实提示，严禁使用虚假硬编码（如 '10' 或 '6'）
-    if (rewardSummary.isEmpty) {
-      if (finalIron != null && finalIron.isNotEmpty) {
-        if (finalExp != null && finalExp.isNotEmpty) {
-          rewardSummary = '铁粒 +$finalIron, 经验 +$finalExp';
-        } else {
-          rewardSummary = '铁粒 +$finalIron';
-        }
-      } else if (finalExp != null && finalExp.isNotEmpty) {
-        rewardSummary = '经验 +$finalExp';
+    String rewardSummary = '';
+    if (finalIron != null && finalIron.isNotEmpty) {
+      if (finalExp != null && finalExp.isNotEmpty) {
+        rewardSummary = '铁粒 +$finalIron, 经验 +$finalExp';
       } else {
-        rewardSummary = '已完成打卡';
+        rewardSummary = '铁粒 +$finalIron';
       }
+    } else if (finalExp != null && finalExp.isNotEmpty) {
+      rewardSummary = '经验 +$finalExp';
+    } else if (isAlready) {
+      rewardSummary = '今日已签到';
+    } else {
+      rewardSummary = '打卡成功';
     }
 
     final hasRank = finalRank != null && finalRank > 0;
@@ -810,7 +1303,14 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
     _statusMessage = '🎉 签到成功！$rewardSummary$rankStatusText';
     notifyListeners();
 
-    if (_notifyOnResult) {
+    // 幂等防重：同一论坛自然日（以目标日期 targetDateStr 为准）绝对只允许推送一次系统通知
+    // 且当仅是“今日已签到”或非新签成功时，严禁弹窗推送！
+    final savedNotifiedDate = sp.getString(_keyLastNotifiedDate) ?? '';
+    final alreadyNotified = _lastNotifiedDate == targetDateStr || savedNotifiedDate == targetDateStr;
+
+    if (!alreadyNotified && !isAlready && res.success == true && _notifyOnResult) {
+      _lastNotifiedDate = targetDateStr;
+      await sp.setString(_keyLastNotifiedDate, targetDateStr);
       _pushSignResultNotification(
         rank: finalRank,
         continuousDays: finalContinuousDays,
@@ -874,6 +1374,13 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
         final rtt = DateTime.now().millisecondsSinceEpoch - start;
         latencies.add(rtt);
         buffer.writeln('   - 包 #$i: ${rtt}ms 响应 -> ${res.message}');
+
+        final isSigned = res.success || (res.rank != null && res.rank! > 0) ||
+            res.message.contains('已签到') || res.message.contains('签过到') || res.message.contains('今日已签');
+        if (isSigned && !isSignedToday()) {
+          await _recordSuccess(serverTodayStr, res);
+        }
+
         if (i < 5) {
           await Future.delayed(Duration(milliseconds: _burstIntervalMs));
         }
@@ -881,7 +1388,11 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
 
       final avg = (latencies.reduce((a, b) => a + b) / latencies.length).round();
       final summary = '🚀 冲刺测试完成：连发 5 包全部响应正常，平均单包延迟 ${avg}ms！';
-      _statusMessage = summary;
+      if (_statusMessage.startsWith('🎉')) {
+        _statusMessage = '$_statusMessage (冲刺测速: ${avg}ms)';
+      } else {
+        _statusMessage = summary;
+      }
       buffer.writeln('2. 总结: $summary');
       return buffer.toString();
     } catch (e) {
@@ -892,6 +1403,48 @@ class AutoSignService extends ChangeNotifier with WidgetsBindingObserver {
       _runningStartTime = null;
       notifyListeners();
     }
+  }
+
+  /// 实时诊断论坛可用性与 502 静默探测器健康度
+  Future<String> runRecoveryDiagnosticProbe() async {
+    final buffer = StringBuffer();
+    buffer.writeln('【苦力怕论坛 · 502/宕机探测器实时诊断】');
+    buffer.writeln('测试时间：${DateTime.now().toString().split('.').first}');
+    buffer.writeln('登录状态：${DioClient.isLoggedIn ? "已登录" : "未登录"}');
+    buffer.writeln('今日签到：${isSignedToday() ? "已签到" : "未签到"}');
+    buffer.writeln('自愈机制：${_serverRecoverySignEnabled ? "已启用" : "未启用"}');
+    buffer.writeln('探测状态：${_isProbingRecovery ? "🟢 正在探测中(第$_recoveryProbeCount次)" : "⚪ 待命中(无活跃宕机)"}');
+    if (_lastOutageInfo != null) {
+      buffer.writeln('最近异常：HTTP ${_lastOutageInfo!.statusCode} (${_lastOutageInfo!.title})');
+      if (_outageStartTime != null) {
+        final dur = DateTime.now().difference(_outageStartTime!);
+        buffer.writeln('故障已持续：${dur.inSeconds} 秒');
+      }
+    }
+    buffer.writeln('----------------------------------------');
+    buffer.writeln('🚀 正在发送超轻量级低开销探测探针...');
+
+    final sw = Stopwatch()..start();
+    try {
+      final isHealthy = await KlpbbsApi.probeServerRecovery();
+      sw.stop();
+      if (isHealthy) {
+        buffer.writeln('✅ 探测成功！论坛源站服务正常响应');
+        buffer.writeln('📡 探针往返耗时：${sw.elapsedMilliseconds} ms');
+        buffer.writeln('页面校验：200 OK，非 502/503/Bad Gateway 故障页');
+        buffer.writeln('\n💡 结论：论坛服务器处于健康在线状态。若此前遭遇 502/503 宕机，恢复探测器将在此刻毫秒级触发即刻打卡！');
+      } else {
+        buffer.writeln('⚠️ 探测提示：服务器未能返回正常论坛页面 (可能处于 502/503/504 故障或网络波动)');
+        buffer.writeln('📡 探针往返耗时：${sw.elapsedMilliseconds} ms');
+        buffer.writeln('\n💡 结论：论坛当前异常，后台自愈系统将在后台保持轻量轮询，直至完全恢复后自动签到。');
+      }
+    } catch (e) {
+      sw.stop();
+      buffer.writeln('❌ 探针连接失败：$e');
+      buffer.writeln('耗时：${sw.elapsedMilliseconds} ms');
+      buffer.writeln('\n💡 结论：网络连接中断或网关完全不可达，系统将继续自适应退避探测。');
+    }
+    return buffer.toString();
   }
 
   @override

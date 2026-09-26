@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:isolate';
-import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
+import 'package:flutter/foundation.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -25,6 +27,8 @@ import '../models/pm_models.dart';
 import '../models/post_edit_info.dart';
 import '../models/thread_sort_model.dart';
 import '../models/post_floor.dart';
+import '../models/server_status_model.dart';
+import '../models/server_outage_info.dart';
 import '../models/sign_entry.dart';
 import '../models/site_stats.dart';
 import '../models/smiley.dart';
@@ -33,6 +37,8 @@ import '../models/user_space.dart';
 import '../models/user_role.dart';
 import '../models/usergroup_comparison.dart';
 import '../models/papa_ai.dart';
+import '../services/auto_sign_service.dart';
+import '../services/push_notification_service.dart';
 import 'comiis_parser.dart';
 
 /// klpbbs 完整 API 封装（浏览 + 写操作 + 内存预加载）
@@ -74,6 +80,59 @@ class KlpbbsApi {
       PreloadService.instance.clear();
       clearQuickCache();
     }
+  }
+
+  static ServerStatusData? _cachedServerStatus;
+  static DateTime? _lastServerStatusTime;
+
+  static final Dio _statusDio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 10),
+      receiveTimeout: const Duration(seconds: 10),
+      headers: {
+        'Accept': 'application/json, text/plain, */*',
+        'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    ),
+  )..httpClientAdapter = IOHttpClientAdapter(
+      createHttpClient: () {
+        final client = HttpClient(context: SecurityContext.defaultContext);
+        client.badCertificateCallback = (cert, host, port) => true;
+        return client;
+      },
+    );
+
+  /// 获取服务器状态面板实时监控数据 (https://status.klpz.net/api/public/status)
+  static Future<ServerStatusData> getServerStatus({bool forceRefresh = false}) async {
+    if (!forceRefresh &&
+        _cachedServerStatus != null &&
+        _lastServerStatusTime != null &&
+        DateTime.now().difference(_lastServerStatusTime!).inSeconds < 30) {
+      return _cachedServerStatus!;
+    }
+
+    try {
+      final res = await _statusDio.get<dynamic>('https://status.klpz.net/api/public/status');
+      if (res.data != null) {
+        final raw = res.data;
+        final map = raw is Map
+            ? Map<String, dynamic>.from(raw)
+            : jsonDecode(raw.toString()) as Map<String, dynamic>;
+        final data = ServerStatusData.fromJson(map);
+        if (data.services.isNotEmpty) {
+          _cachedServerStatus = data;
+          _lastServerStatusTime = DateTime.now();
+          debugPrint('[ServerStatus] 成功获取真实监控数据: ${data.siteName}，包含 ${data.services.length} 个服务');
+          return data;
+        }
+      }
+    } catch (e) {
+      debugPrint('[ServerStatus] 请求真实监控数据异常: $e');
+    }
+
+    if (_cachedServerStatus != null) return _cachedServerStatus!;
+    throw Exception('无法连接到服务器状态监控服务 (status.klpz.net)');
   }
 
   /// 彻底清除某个主题的预加载与快速 GET 缓存（包含所有分页与排序变体）
@@ -153,6 +212,15 @@ class KlpbbsApi {
           ),
         );
         final html = _decode(resp.data ?? const []);
+        if (ServerOutageInfo.isOutageHtml(html)) {
+          throw ServerOutageException(ServerOutageInfo.fromHtml(
+            html,
+            statusCode: resp.statusCode ?? 200,
+            statusMessage: resp.statusMessage,
+            requestUrl: resp.realUri.toString(),
+            headers: resp.headers.map,
+          ));
+        }
         final fh = _extractFormhash(html);
         if (fh != null && fh.isNotEmpty) {
           _cachedFormhash = fh;
@@ -174,13 +242,21 @@ class KlpbbsApi {
                 e.type == DioExceptionType.connectionError)) {
           continue;
         }
+        if (ServerOutageInfo.isOutageDioException(e)) {
+          throw ServerOutageException(ServerOutageInfo.fromDioException(e));
+        }
         rethrow;
       } catch (_) {
         if (attempt < retries) continue;
         rethrow;
       }
     }
-    if (lastError != null) throw lastError;
+    if (lastError != null) {
+      if (ServerOutageInfo.isOutageDioException(lastError)) {
+        throw ServerOutageException(ServerOutageInfo.fromDioException(lastError));
+      }
+      throw lastError;
+    }
     throw Exception('请求失败');
   }
 
@@ -190,33 +266,51 @@ class KlpbbsApi {
     Map<String, String>? headers,
   }) async {
     _clearCache();
-    final resp = await _dio.post<List<int>>(
-      _url(path),
-      data: data,
-      options: Options(
-        responseType: ResponseType.bytes,
-        contentType: Headers.formUrlEncodedContentType,
-        headers: headers,
-        validateStatus: (code) => code != null && code < 400,
-      ),
-    );
-    final html = _decode(resp.data ?? const []);
-    final fh = _extractFormhash(html);
-    if (fh != null && fh.isNotEmpty) {
-      _cachedFormhash = fh;
+    try {
+      final resp = await _dio.post<List<int>>(
+        _url(path),
+        data: data,
+        options: Options(
+          responseType: ResponseType.bytes,
+          contentType: Headers.formUrlEncodedContentType,
+          headers: headers,
+          validateStatus: (code) => code != null && code < 400,
+        ),
+      );
+      final html = _decode(resp.data ?? const []);
+      if (ServerOutageInfo.isOutageHtml(html)) {
+        throw ServerOutageException(ServerOutageInfo.fromHtml(
+          html,
+          statusCode: resp.statusCode ?? 200,
+          statusMessage: resp.statusMessage,
+          requestUrl: resp.realUri.toString(),
+          headers: resp.headers.map,
+        ));
+      }
+      final fh = _extractFormhash(html);
+      if (fh != null && fh.isNotEmpty) {
+        _cachedFormhash = fh;
+      }
+      return html;
+    } on DioException catch (e) {
+      if (ServerOutageInfo.isOutageDioException(e)) {
+        throw ServerOutageException(ServerOutageInfo.fromDioException(e));
+      }
+      rethrow;
     }
-    return html;
   }
 
-  /// 从 HTML 提取 formhash
+  /// 从 HTML 提取 formhash（多级兜底支持 JS 变量、按钮 href、表单 input 与 URL 参数，大小写不敏感）
   static String? _extractFormhash(String html) {
-    // 覆盖三种形式：JS var formhash = 'xxx' / hidden input name="formhash" value="xxx" / URL formhash=xxx
+    if (html.isEmpty) return null;
     final patterns = <RegExp>[
-      RegExp(r"formhash\s*=\s*'([a-f0-9]{8,32})'"),
-      RegExp(r'formhash\s*=\s*"([a-f0-9]{8,32})"'),
-      RegExp(r'''name=["']formhash["'][^>]*value=["']([a-f0-9]{8,32})["']'''),
-      RegExp(r'''name=["']formhash["']\s+value=["']([a-f0-9]{8,32})["']'''),
-      RegExp(r'formhash=([a-f0-9]{8,32})'),
+      RegExp(r'''k_misign-sign\.html\?[^"'<>\\]*?formhash=([0-9a-zA-Z]{8,32})''', caseSensitive: false),
+      RegExp(r'''name=["']formhash["'][^>]*value=["']([0-9a-zA-Z]{8,32})["']''', caseSensitive: false),
+      RegExp(r'''value=["']([0-9a-zA-Z]{8,32})["'][^>]*name=["']formhash["']''', caseSensitive: false),
+      RegExp(r'''name=["']formhash["']\s+value=["']([0-9a-zA-Z]{8,32})["']''', caseSensitive: false),
+      RegExp(r"formhash\s*=\s*'([0-9a-zA-Z]{8,32})'", caseSensitive: false),
+      RegExp(r'formhash\s*=\s*"([0-9a-zA-Z]{8,32})"', caseSensitive: false),
+      RegExp(r'formhash=([0-9a-zA-Z]{8,32})', caseSensitive: false),
     ];
     for (final p in patterns) {
       final m = p.firstMatch(html);
@@ -239,14 +333,29 @@ class KlpbbsApi {
     if (!forceRefresh) {
       final cached = PreloadService.instance.get<List<ThreadSummary>>(
         'home_threads',
+        ignoreExpired: true,
       );
       if (cached != null && cached.isNotEmpty) {
         return cached;
       }
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final raw = prefs.getString('cached_home_threads_json');
+        if (raw != null && raw.isNotEmpty) {
+          final list = (jsonDecode(raw) as List<dynamic>)
+              .map((e) => ThreadSummary.fromJson(e as Map<String, dynamic>))
+              .toList();
+          if (list.isNotEmpty) {
+            PreloadService.instance.set('home_threads', list, ttl: const Duration(minutes: 30));
+            unawaited(getHome(forceRefresh: true).catchError((_) => const <ThreadSummary>[]));
+            return list;
+          }
+        }
+      } catch (_) {}
     } else {
       PreloadService.instance.remove('home_threads');
     }
-    final cached = PreloadService.instance.get<List<ThreadSummary>>('home_threads');
+    final cached = PreloadService.instance.get<List<ThreadSummary>>('home_threads', ignoreExpired: true);
     try {
       // 1. 并发获取 Discuz 移动端门户焦点大图、图文导读、热门聚焦与最新发表，以及核心热区版块数据（严格保证实时数据）
       final results = await Future.wait<dynamic>([
@@ -425,11 +534,21 @@ class KlpbbsApi {
         PreloadService.instance.set(
           'home_threads',
           enriched,
-          ttl: const Duration(seconds: 20),
+          ttl: const Duration(minutes: 30),
         );
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          final raw = jsonEncode(enriched.map((e) => e.toJson()).toList());
+          await prefs.setString('cached_home_threads_json', raw);
+        } catch (_) {}
         return enriched;
       }
-    } catch (_) {}
+
+    } catch (e) {
+      if (e is ServerOutageException || ServerOutageInfo.tryParse(e) != null) {
+        rethrow;
+      }
+    }
     if (cached != null && cached.isNotEmpty) return cached;
     return const [];
   }
@@ -475,6 +594,9 @@ class KlpbbsApi {
 
     if (forceRefresh) {
       PreloadService.instance.remove('forum_groups');
+      clearQuickCache('forum.php?forumlist=1');
+      clearQuickCache('index.php');
+      clearQuickCache('forum.php?mobile=no');
     }
     try {
       final results = await Future.wait([
@@ -482,7 +604,7 @@ class KlpbbsApi {
           'forum.php?forumlist=1&mobile=2',
           headers: {'User-Agent': AppConfig.mobileUserAgent},
           forceRefresh: forceRefresh,
-        ).catchError((_) => ''),
+        ),
         _get(
           'forum.php?mobile=no',
           headers: {'User-Agent': AppConfig.pcUserAgent},
@@ -567,7 +689,11 @@ class KlpbbsApi {
         } catch (_) {}
         return finalGroups;
       }
-    } catch (_) {}
+    } catch (e) {
+      if (e is ServerOutageException || ServerOutageInfo.tryParse(e) != null) {
+        rethrow;
+      }
+    }
     return cached ?? const [];
   }
 
@@ -635,34 +761,70 @@ class KlpbbsApi {
   /// 获取全站统计数据（今日发帖 / 昨日发帖 / 论坛总帖 / 注册会员）
   /// 实时从 PC 首页 #chart 与 forum.php?forumlist=1&mobile=2 提取并动态刷新
   static Future<SiteStats> getSiteStats({bool forceRefresh = false}) async {
-    final cached = PreloadService.instance.get<SiteStats>('site_stats');
-    if (!forceRefresh && cached != null && cached.isComplete) {
-      return cached;
+    final cached = PreloadService.instance.get<SiteStats>('site_stats', ignoreExpired: true);
+    if (!forceRefresh) {
+      if (cached != null && cached.isComplete) {
+        return cached;
+      }
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final raw = prefs.getString('cached_site_stats_json');
+        if (raw != null && raw.isNotEmpty) {
+          final stats = SiteStats.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+          if (stats.isComplete) {
+            PreloadService.instance.set('site_stats', stats, ttl: const Duration(hours: 24));
+            unawaited(getSiteStats(forceRefresh: true).catchError((_) => const SiteStats()));
+            return stats;
+          }
+        }
+      } catch (_) {}
+    }
+    if (forceRefresh) {
+      PreloadService.instance.remove('site_stats');
+      clearQuickCache('forum.php?mobile=no');
+      clearQuickCache('forum.php?forumlist=1');
     }
     try {
       final results = await Future.wait([
         _get(
           'forum.php?mobile=no',
           headers: {'User-Agent': AppConfig.pcUserAgent},
+          forceRefresh: forceRefresh,
         ).catchError((_) => ''),
-        _get('forum.php?forumlist=1&mobile=2').catchError((_) => ''),
+        _get('forum.php?forumlist=1&mobile=2', forceRefresh: forceRefresh).catchError((_) => ''),
       ]);
       final pcStats = ComiisParser.parseSiteStats(results[0]);
       if (pcStats.isComplete) {
-        PreloadService.instance.set('site_stats', pcStats);
+        PreloadService.instance.set('site_stats', pcStats, ttl: const Duration(hours: 24));
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('cached_site_stats_json', jsonEncode(pcStats.toJson()));
+        } catch (_) {}
         return pcStats;
       }
       final mobileStats = ComiisParser.parseSiteStats(results[1]);
       if (mobileStats.isComplete) {
-        PreloadService.instance.set('site_stats', mobileStats);
+        PreloadService.instance.set('site_stats', mobileStats, ttl: const Duration(hours: 24));
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('cached_site_stats_json', jsonEncode(mobileStats.toJson()));
+        } catch (_) {}
         return mobileStats;
       }
       if (!pcStats.isEmpty) {
-        PreloadService.instance.set('site_stats', pcStats);
+        PreloadService.instance.set('site_stats', pcStats, ttl: const Duration(hours: 24));
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('cached_site_stats_json', jsonEncode(pcStats.toJson()));
+        } catch (_) {}
         return pcStats;
       }
       if (!mobileStats.isEmpty) {
-        PreloadService.instance.set('site_stats', mobileStats);
+        PreloadService.instance.set('site_stats', mobileStats, ttl: const Duration(hours: 24));
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('cached_site_stats_json', jsonEncode(mobileStats.toJson()));
+        } catch (_) {}
         return mobileStats;
       }
     } catch (_) {}
@@ -675,8 +837,48 @@ class KlpbbsApi {
     );
   }
 
+  /// 在应用启动（main）时由底层异步预加载并瞬时灌入内存缓存（0ms 秒开）
+  static Future<void> primeHomeCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      // 1. 版块树磁盘缓存灌入内存
+      final rawForumGroups = prefs.getString('cached_forum_groups_json');
+      if (rawForumGroups != null && rawForumGroups.isNotEmpty) {
+        final list = (jsonDecode(rawForumGroups) as List<dynamic>)
+            .map((e) => ForumGroup.fromJson(e as Map<String, dynamic>))
+            .toList();
+        if (list.isNotEmpty) {
+          final injected = _injectFavoriteForums(list, prefs);
+          PreloadService.instance.set('forum_groups', injected, ttl: const Duration(hours: 24));
+        }
+      }
+
+      // 2. 首页帖子流磁盘缓存灌入内存
+      final rawHomeThreads = prefs.getString('cached_home_threads_json');
+      if (rawHomeThreads != null && rawHomeThreads.isNotEmpty) {
+        final list = (jsonDecode(rawHomeThreads) as List<dynamic>)
+            .map((e) => ThreadSummary.fromJson(e as Map<String, dynamic>))
+            .toList();
+        if (list.isNotEmpty) {
+          PreloadService.instance.set('home_threads', list, ttl: const Duration(minutes: 30));
+        }
+      }
+
+      // 3. 全站统计看板磁盘缓存灌入内存
+      final rawSiteStats = prefs.getString('cached_site_stats_json');
+      if (rawSiteStats != null && rawSiteStats.isNotEmpty) {
+        final stats = SiteStats.fromJson(jsonDecode(rawSiteStats) as Map<String, dynamic>);
+        if (!stats.isEmpty) {
+          PreloadService.instance.set('site_stats', stats, ttl: const Duration(hours: 24));
+        }
+      }
+    } catch (_) {}
+  }
+
+
   /// 获取首页土豪霸屏信息
-  static Future<({String author, String avatarUrl, String message, String linkUrl, int tid})?>
+  static Future<({String author, String avatarUrl, String message, String linkUrl, int tid, int uid})?>
   getTuhaoBanner() async {
     try {
       final html = await _get(
@@ -865,13 +1067,16 @@ class KlpbbsApi {
       if (cached != null) {
         return cached;
       }
+    } else {
+      PreloadService.instance.remove(cacheKey);
+      clearQuickCache('forum.php?mod=forumdisplay&fid=$fid');
     }
 
     final results = await Future.wait([
       _get(
         'forum.php?mod=forumdisplay&fid=$fid${typeid != null && typeid > 0 ? '&filter=typeid&typeid=$typeid' : ''}${orderby != null && orderby.isNotEmpty ? '&orderby=$orderby' : ''}&page=$page&mobile=2',
         forceRefresh: forceRefresh,
-      ).catchError((_) => ''),
+      ),
       _get(
         'forum.php?mod=forumdisplay&fid=$fid&mobile=no',
         headers: {'User-Agent': AppConfig.pcUserAgent},
@@ -882,40 +1087,34 @@ class KlpbbsApi {
     final mobileHtml = results[0];
     final pcHtml = results[1];
 
-    // 1. 帖子列表
-    final threads = ComiisParser.parseThreadList(mobileHtml, pageFid: fid);
-
-    // 2. 版头信息
-    var header = ComiisParser.parseForumHeader(pcHtml, fid);
-    if (header.rulesHtml.isEmpty && header.bannerUrl == null) {
-      final mHeader = ComiisParser.parseForumHeader(mobileHtml, fid);
-      if (mHeader.rulesHtml.isNotEmpty || mHeader.bannerUrl != null || mHeader.todayPosts > 0) {
-        header = mHeader;
+    final bundle = await Isolate.run(() {
+      final threads = ComiisParser.parseThreadList(mobileHtml, pageFid: fid);
+      var header = ComiisParser.parseForumHeader(pcHtml, fid);
+      if (header.rulesHtml.isEmpty && header.bannerUrl == null) {
+        final mHeader = ComiisParser.parseForumHeader(mobileHtml, fid);
+        if (mHeader.rulesHtml.isNotEmpty || mHeader.bannerUrl != null || mHeader.todayPosts > 0) {
+          header = mHeader;
+        }
       }
-    }
+      var types = ComiisParser.parseThreadTypes(pcHtml);
+      if (types.isEmpty) {
+        types = ComiisParser.parseThreadTypes(mobileHtml);
+      }
+      var subForums = ComiisParser.parseSubForums(mobileHtml, currentFid: fid);
+      if (subForums.isEmpty && pcHtml.isNotEmpty) {
+        subForums = ComiisParser.parseSubForums(pcHtml, currentFid: fid);
+      }
+      return (
+        threads: threads,
+        header: header,
+        types: types,
+        subForums: subForums,
+      );
+    });
 
-    // 3. 分类选项
-    var types = ComiisParser.parseThreadTypes(pcHtml);
-    if (types.isEmpty) {
-      types = ComiisParser.parseThreadTypes(mobileHtml);
-    }
-
-    // 4. 子版块
-    var subForums = ComiisParser.parseSubForums(mobileHtml, currentFid: fid);
-    if (subForums.isEmpty && pcHtml.isNotEmpty) {
-      subForums = ComiisParser.parseSubForums(pcHtml, currentFid: fid);
-    }
-
-    final bundle = (
-      threads: threads,
-      header: header,
-      types: types,
-      subForums: subForums,
-    );
-    if (threads.isNotEmpty || !header.isEmpty) {
+    if (bundle.threads.isNotEmpty || !bundle.header.isEmpty) {
       PreloadService.instance.set(cacheKey, bundle, ttl: const Duration(minutes: 5));
     }
-
     return bundle;
   }
 
@@ -965,7 +1164,11 @@ class KlpbbsApi {
         _preloadThreadList(fid, typeid: typeid, orderby: orderby, page: page);
         return enrichedRes;
       }
-    } catch (_) {}
+    } catch (e) {
+      if (e is ServerOutageException || ServerOutageInfo.tryParse(e) != null) {
+        rethrow;
+      }
+    }
     final cached = PreloadService.instance.get<List<ThreadSummary>>(cacheKey);
     return cached ?? const [];
   }
@@ -988,7 +1191,9 @@ class KlpbbsApi {
           if (orderby != null) buf.write('&orderby=$orderby');
           buf.write('&page=$nextPage');
           final html = await _get(buf.toString());
-          final res = ComiisParser.parseThreadList(html, pageFid: fid);
+          final res = await Isolate.run(
+            () => ComiisParser.parseThreadList(html, pageFid: fid),
+          );
           final enrichedRes = res
               .map(
                 (t) => t.copyWith(
@@ -1038,7 +1243,10 @@ class KlpbbsApi {
       PreloadService.instance.set(cacheKey, res);
       _preloadThreadDetail(tid, page, ordertype: ordertype);
       return res;
-    } catch (_) {
+    } catch (e) {
+      if (e is ServerOutageException || ServerOutageInfo.tryParse(e) != null) {
+        rethrow;
+      }
       final cached = PreloadService.instance.get<ThreadDetailParsed>(cacheKey);
       if (cached != null) return cached;
       rethrow;
@@ -1066,10 +1274,34 @@ class KlpbbsApi {
     bool forceRefresh = false,
   }) async {
     final otParam = (ordertype != null && ordertype > 0) ? '&ordertype=$ordertype' : '';
-    final html = await _get(
-      'forum.php?mod=viewthread&tid=$tid&mobile=2&page=$page$otParam',
-      forceRefresh: forceRefresh,
-    );
+    String html;
+    try {
+      html = await _get(
+        'forum.php?mod=viewthread&tid=$tid&mobile=2&page=$page$otParam',
+        forceRefresh: forceRefresh,
+      );
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 404) {
+        // 404 兜底：尝试伪静态 thread-X-1-1.html 与 PC 端接口，杜绝移动端路由异常
+        try {
+          html = await _get(
+            'thread-$tid-$page-1.html',
+            forceRefresh: forceRefresh,
+          );
+        } catch (_) {
+          try {
+            html = await _get(
+              'forum.php?mod=viewthread&tid=$tid&mobile=no&page=$page$otParam',
+              forceRefresh: forceRefresh,
+            );
+          } catch (_) {
+            throw Exception('该帖子不存在、已被删除或无访问权限 (HTTP 404)');
+          }
+        }
+      } else {
+        rethrow;
+      }
+    }
     var detail = await ComiisParser.parseThreadDetailAsync(html);
     if (detail.floors.isEmpty) {
       // 检查是否包含权限/密码等系统错误提示；若无，尝试回退到 PC 端（mobile=no）提取完整内容
@@ -1090,41 +1322,214 @@ class KlpbbsApi {
         } catch (_) {}
       }
     }
+    final currentIsDesc = (ordertype != null && ordertype > 0) ? (ordertype == 1) : detail.isDescOrder;
+    final normalizedFloors = _normalizeFloorsOrder(
+      detail.floors,
+      isDescOrder: currentIsDesc,
+      page: page,
+    );
+    if (detail.isDescOrder != currentIsDesc || detail.floors != normalizedFloors) {
+      detail = (
+        title: detail.title,
+        floors: normalizedFloors,
+        totalPages: detail.totalPages,
+        firstAuthorCredits: detail.firstAuthorCredits,
+        publishDate: detail.publishDate,
+        lastReplyDate: detail.lastReplyDate,
+        forumName: detail.forumName,
+        fid: detail.fid,
+        breadcrumbs: detail.breadcrumbs,
+        typeName: detail.typeName,
+        typeid: detail.typeid,
+        likes: detail.likes,
+        favorites: detail.favorites,
+        views: detail.views,
+        replies: detail.replies,
+        tags: detail.tags,
+        stamp: detail.stamp,
+        stampUrl: detail.stampUrl,
+        coverUrl: detail.coverUrl,
+        isFavorited: detail.isFavorited,
+        hasExplicitFavState: detail.hasExplicitFavState,
+        isLiked: detail.isLiked,
+        favid: detail.favid,
+        aiSummary: detail.aiSummary,
+        isDescOrder: currentIsDesc,
+        targetOrdertype: currentIsDesc ? 2 : 1,
+      );
+    }
     return detail;
   }
 
-  static final Map<int, Future<String?>> _inFlightForumRequests = {};
+  /// 楼层排序规范化保障：
+  /// 1. 第 1 页的主题作者（楼主）永远锁定在 index 0，绝不参与倒序反转！
+  /// 2. 仅对回复楼层进行排序对齐：若服务端未反转回复，按要求准确规范回复顺序。
+  static List<PostFloor> _normalizeFloorsOrder(
+    List<PostFloor> floors, {
+    required bool isDescOrder,
+    required int page,
+  }) {
+    if (floors.length <= 1) return floors;
+    if (page == 1) {
+      // 在第 1 页，无条件首先寻找真正的楼主节点（isThreadAuthor 或 floorNumber == '楼主'）
+      int louzhuIdx = floors.indexWhere((f) => f.floorNumber == '楼主' || f.isThreadAuthor);
+      if (louzhuIdx < 0) louzhuIdx = 0; // 若未显式标记，按规范第 0 个即为楼主
+      final louzhu = floors[louzhuIdx];
 
-  /// 异步获取帖子的绝对真实版块信息（直接从帖子真实页面提取，带并发去重）
+      // 提取所有回复楼层（排除楼主）
+      final replies = <PostFloor>[];
+      for (int i = 0; i < floors.length; i++) {
+        if (i != louzhuIdx) replies.add(floors[i]);
+      }
+      if (replies.length <= 1) return [louzhu, ...replies];
+
+      // 检查回复楼层的单调性
+      final numFloors = <int>[];
+      for (final r in replies) {
+        final n = int.tryParse(r.floorNumber.replaceAll(RegExp(r'[^\d]'), ''));
+        if (n != null && n > 0) numFloors.add(n);
+      }
+      bool isRepliesDesc = false;
+      if (numFloors.length >= 2) {
+        int desc = 0;
+        int asc = 0;
+        for (int i = 0; i < numFloors.length - 1; i++) {
+          if (numFloors[i] > numFloors[i + 1]) desc++;
+          if (numFloors[i] < numFloors[i + 1]) asc++;
+        }
+        isRepliesDesc = desc > asc;
+      }
+      if (isDescOrder && !isRepliesDesc && numFloors.isNotEmpty) {
+        // 请求倒序，但回复为升序：反转回复列表，楼主永远锁定在 index 0！
+        return [louzhu, ...replies.reversed];
+      } else if (!isDescOrder && isRepliesDesc && numFloors.isNotEmpty) {
+        // 请求正序，但回复为降序：反转回复列表，楼主永远锁定在 index 0！
+        return [louzhu, ...replies.reversed];
+      }
+      return [louzhu, ...replies];
+    } else {
+      // 第 2 页及之后均为回复，无楼主
+      final numFloors = <int>[];
+      for (final r in floors) {
+        final n = int.tryParse(r.floorNumber.replaceAll(RegExp(r'[^\d]'), ''));
+        if (n != null && n > 0) numFloors.add(n);
+      }
+      bool isRepliesDesc = false;
+      if (numFloors.length >= 2) {
+        int desc = 0;
+        int asc = 0;
+        for (int i = 0; i < numFloors.length - 1; i++) {
+          if (numFloors[i] > numFloors[i + 1]) desc++;
+          if (numFloors[i] < numFloors[i + 1]) asc++;
+        }
+        isRepliesDesc = desc > asc;
+      }
+      if (isDescOrder && !isRepliesDesc && numFloors.isNotEmpty) {
+        return floors.reversed.toList();
+      } else if (!isDescOrder && isRepliesDesc && numFloors.isNotEmpty) {
+        return floors.reversed.toList();
+      }
+      return floors;
+    }
+  }
+
+  static final Set<int> _failedForumTids = {};
+  static final Map<int, Future<String?>> _inFlightForumRequests = {};
+  static final List<({int tid, Completer<String?> completer})> _forumResolutionQueue = [];
+  static bool _isProcessingForumQueue = false;
+
+  /// 异步获取帖子的绝对真实版块信息（带串行低优先级排队与流量节流，彻底杜绝并发抓取导致页面卡顿）
   static Future<String?> resolveThreadForumAsync(int tid) async {
-    if (tid <= 0) return null;
+    if (tid <= 0 || _failedForumTids.contains(tid)) return null;
     final cached = ComiisParser.getForumNameByTid(tid);
     if (cached != null && cached.isNotEmpty) return cached;
 
     if (_inFlightForumRequests.containsKey(tid)) {
-      return _inFlightForumRequests[tid];
+      return _inFlightForumRequests[tid]!;
     }
 
-    final future = () async {
+    final completer = Completer<String?>();
+    _inFlightForumRequests[tid] = completer.future;
+
+    // 滑动太快时控制排队上限，丢弃队列最前端旧请求，防止无谓的网络占用
+    if (_forumResolutionQueue.length >= 10) {
+      final dropped = _forumResolutionQueue.removeAt(0);
+      _inFlightForumRequests.remove(dropped.tid);
+      if (!dropped.completer.isCompleted) {
+        dropped.completer.complete(null);
+      }
+    }
+
+    _forumResolutionQueue.add((tid: tid, completer: completer));
+    _processForumResolutionQueue();
+
+    return completer.future;
+  }
+
+  static void _processForumResolutionQueue() async {
+    if (_isProcessingForumQueue) return;
+    _isProcessingForumQueue = true;
+
+    while (_forumResolutionQueue.isNotEmpty) {
+      final req = _forumResolutionQueue.removeAt(0);
+      final tid = req.tid;
+
+      final cached = ComiisParser.getForumNameByTid(tid);
+      if (cached != null && cached.isNotEmpty) {
+        if (!req.completer.isCompleted) req.completer.complete(cached);
+        _inFlightForumRequests.remove(tid);
+        continue;
+      }
+
+      String? forumName;
       try {
-        final html = await _get('forum.php?mod=viewthread&tid=$tid&mobile=2');
-        final detail = await ComiisParser.parseThreadDetailAsync(html);
-        if (detail.forumName.isNotEmpty) {
+        final html = await _get(
+          'forum.php?mod=viewthread&tid=$tid&mobile=2',
+          retries: 0,
+          cacheTtl: const Duration(minutes: 5),
+        );
+        int? fid;
+        final fidMatch = RegExp(r'\bfid\s*=\s*parseInt\(\s*[\x27\x22]?(\d+)').firstMatch(html);
+        if (fidMatch != null) {
+          fid = int.tryParse(fidMatch.group(1)!);
+          if (fid != null && fid > 0) {
+            forumName = ComiisParser.getForumNameByFid(fid);
+          }
+        }
+
+        if (forumName == null || forumName.isEmpty) {
+          final titleMatch = RegExp(r'<title>(?:[^\-<]*)?-\s*([^<>\-]+?)\s*-[^<]*</title>').firstMatch(html);
+          if (titleMatch != null) {
+            final cand = titleMatch.group(1)!.trim();
+            if (cand.isNotEmpty && !cand.contains('苦力怕论坛')) {
+              forumName = cand;
+            }
+          }
+        }
+
+        if (forumName != null && forumName.isNotEmpty) {
           ComiisParser.registerThread(
             tid,
-            fid: detail.fid,
-            forumName: detail.forumName,
+            fid: fid,
+            forumName: forumName,
           );
-          return detail.forumName;
         }
       } catch (_) {}
-      return null;
-    }();
 
-    _inFlightForumRequests[tid] = future;
-    final result = await future;
-    _inFlightForumRequests.remove(tid);
-    return result;
+      if (forumName == null || forumName.isEmpty) {
+        _failedForumTids.add(tid);
+      }
+
+      if (!req.completer.isCompleted) {
+        req.completer.complete(forumName);
+      }
+      _inFlightForumRequests.remove(tid);
+
+      // 请求之间留出 200ms 空隙，让出网络信道与渲染帧
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+
+    _isProcessingForumQueue = false;
   }
 
   /// 快速获取主题详情（兼容别名）
@@ -1155,7 +1560,9 @@ class KlpbbsApi {
         forceRefresh: forceRefresh,
       );
       if (mobileHtml.isNotEmpty) {
-        final mobileThreads = ComiisParser.parseThreadList(mobileHtml);
+        final mobileThreads = await Isolate.run(
+          () => ComiisParser.parseThreadList(mobileHtml),
+        );
         if (mobileThreads.isNotEmpty) {
           final result = mobileThreads
               .map(
@@ -1185,7 +1592,9 @@ class KlpbbsApi {
         forceRefresh: forceRefresh,
       );
       if (pcHtml.isNotEmpty) {
-        final pcThreads = ComiisParser.parseThreadList(pcHtml);
+        final pcThreads = await Isolate.run(
+          () => ComiisParser.parseThreadList(pcHtml),
+        );
         if (pcThreads.isNotEmpty) {
           final result = pcThreads
               .map(
@@ -1207,7 +1616,11 @@ class KlpbbsApi {
           return result;
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      if (e is ServerOutageException || ServerOutageInfo.tryParse(e) != null) {
+        rethrow;
+      }
+    }
 
     final cached = PreloadService.instance.get<List<ThreadSummary>>(cacheKey, ignoreExpired: true);
     if (cached != null && cached.isNotEmpty) return cached;
@@ -1223,14 +1636,14 @@ class KlpbbsApi {
     clearQuickCache('k_misign-sign.html');
 
     SignHeaderInfo bestResult = const SignHeaderInfo();
+    final serverNow = AutoSignService.instance.estimatedServerNow;
+    final todayStr = AutoSignService.instance.serverTodayStr;
 
-    // 优先请求 PC 端全量页面（含今日之星、连续天数、全天统计与准确打卡状态），失败再降级请求手机端
+    // 统一使用 PC UA 深度适配（1:1 对齐网页端 k_misign 官方模板，杜绝移动版伪状态）
     final ts = DateTime.now().millisecondsSinceEpoch;
     final endpoints = [
-      ('plugin.php?id=k_misign:sign&mobile=no&_t=$ts', {'User-Agent': AppConfig.pcUserAgent}),
       ('k_misign-sign.html?_t=$ts', {'User-Agent': AppConfig.pcUserAgent}),
-      ('plugin.php?id=k_misign:sign&mobile=2&_t=$ts', <String, String>{}),
-      ('plugin.php?id=k_misign:sign&_t=$ts', <String, String>{}),
+      ('plugin.php?id=k_misign:sign&mobile=no&_t=$ts', {'User-Agent': AppConfig.pcUserAgent}),
     ];
 
     for (final (path, headers) in endpoints) {
@@ -1242,24 +1655,126 @@ class KlpbbsApi {
           cacheTtl: Duration.zero,
         );
         if (html.isNotEmpty) {
-          final parsed = ComiisParser.parseSignPageData(html);
-          if (parsed.isSignedToday) {
-            // 一旦捕获到确凿的已签到标记，立即作为最高优先级权威数据返回
-            bestResult = parsed;
-            break;
-          }
-          if (parsed.starUsername.isNotEmpty ||
-              parsed.highestCount > 0 ||
-              parsed.todaySignCount > 0 ||
-              parsed.continuousDays > 0 ||
-              parsed.totalDays > 0) {
-            bestResult = parsed;
-            // 已获取到有效统计数据，无需继续串行重试后续端点
+          final parsed = ComiisParser.parseSignPageData(html, serverDay: serverNow.day);
+
+          // 综合多端点提取到的统计信息，进行深度补全合并
+          final mergedRank = (parsed.mySignRank != null && parsed.mySignRank! > 0)
+              ? parsed.mySignRank
+              : bestResult.mySignRank;
+          final mergedTodayCount = parsed.todaySignCount > 0
+              ? parsed.todaySignCount
+              : (bestResult.todaySignCount > 0 ? bestResult.todaySignCount : (mergedRank ?? 0));
+          final mergedHighest = parsed.highestCount > 0
+              ? parsed.highestCount
+              : bestResult.highestCount;
+          final mergedStarUser = parsed.starUsername.isNotEmpty
+              ? parsed.starUsername
+              : bestResult.starUsername;
+          final mergedStarUid = (parsed.starUid != null && parsed.starUid! > 0)
+              ? parsed.starUid
+              : bestResult.starUid;
+          final mergedDays = parsed.continuousDays > 0
+              ? parsed.continuousDays
+              : bestResult.continuousDays;
+          final mergedTotal = parsed.totalDays > 0
+              ? parsed.totalDays
+              : bestResult.totalDays;
+          final mergedLevel = parsed.signLevel.isNotEmpty
+              ? parsed.signLevel
+              : bestResult.signLevel;
+          final mergedReward = parsed.rewardIron.isNotEmpty
+              ? parsed.rewardIron
+              : bestResult.rewardIron;
+
+          bestResult = SignHeaderInfo(
+            starUsername: mergedStarUser,
+            starUid: mergedStarUid,
+            highestCount: mergedHighest,
+            todaySignCount: mergedTodayCount,
+            isSignedToday: parsed.isSignedToday,
+            mySignRank: mergedRank,
+            username: parsed.username.isNotEmpty ? parsed.username : bestResult.username,
+            uid: parsed.uid ?? bestResult.uid,
+            continuousDays: mergedDays,
+            signLevel: mergedLevel,
+            rewardIron: mergedReward,
+            totalDays: mergedTotal,
+            retroSignBid: parsed.retroSignBid ?? bestResult.retroSignBid,
+            retroSignDays: parsed.retroSignDays > 0 ? parsed.retroSignDays : bestResult.retroSignDays,
+            retroSignTip: parsed.retroSignTip.isNotEmpty ? parsed.retroSignTip : bestResult.retroSignTip,
+          );
+
+          if (parsed.todaySignCount > 0 || parsed.highestCount > 0 || parsed.starUsername.isNotEmpty) {
+            // 首个权威端点已成功提取全量核心数据（含今日之星、打卡人数、连续天数及真实签到状态），立即极速中断！
             break;
           }
         }
-      } catch (_) {}
+      } on ServerOutageException catch (e) {
+        AutoSignService.instance.notifyServerOutage(e.info, source: '签到数据拉取');
+      } catch (e) {
+        final out = ServerOutageInfo.tryParse(e);
+        if (out != null) {
+          AutoSignService.instance.notifyServerOutage(out, source: '签到数据拉取');
+        }
+      }
     }
+
+    // 结合服务端权威与双向自愈闭环：
+    // 1. 若网络请求成功拉取到页面，严格以服务端状态为准，严禁本地脏缓存反向覆盖导致死锁
+    // 2. 若服务端权威确认未签，自愈清理本地旧缓存；若确认已签，双向落库持久化凭证与日历
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final lastSuccessDate = sp.getString('auto_sign_last_success_date') ?? '';
+      final monthKey = 'sign_dates_${serverNow.year}${serverNow.month.toString().padLeft(2, '0')}';
+      final calendarDays = sp.getStringList(monthKey) ?? [];
+
+      final hasValidServerPage = bestResult.todaySignCount > 0 ||
+          bestResult.starUsername.isNotEmpty ||
+          bestResult.continuousDays > 0 ||
+          bestResult.totalDays > 0;
+
+      if (!bestResult.isSignedToday) {
+        // 自愈机制：若服务端页面明确判定“今日未签到”，无论本地缓存为何，严格以服务端实时数据为准！
+        if (hasValidServerPage) {
+          await AutoSignService.instance.markUnsignedToday();
+        }
+      }
+
+      // 今日已签人数保底：若已有个人签到排名，则今日已签人数至少为该排名
+      if (bestResult.todaySignCount == 0 && bestResult.mySignRank != null && bestResult.mySignRank! > 0) {
+        bestResult = bestResult.copyWith(todaySignCount: bestResult.mySignRank!);
+      }
+      if (bestResult.todaySignCount == 0) {
+        final cachedTodayRank = PreloadService.instance.get<List<SignEntry>>('sign_rank_today_1');
+        if (cachedTodayRank != null && cachedTodayRank.isNotEmpty) {
+          bestResult = bestResult.copyWith(todaySignCount: cachedTodayRank.length);
+        }
+      }
+
+      // 未登录时强制确保签到状态为 false，杜绝游客或会话失效时被标记已签
+      if (!DioClient.isLoggedIn) {
+        bestResult = bestResult.copyWith(isSignedToday: false, mySignRank: null);
+      }
+
+      if (bestResult.isSignedToday) {
+        // 服务端权威确认已签到，立即双向反哺持久化凭证、日历并同步 AutoSignService 全局状态
+        if (lastSuccessDate != todayStr) {
+          await sp.setString('auto_sign_last_success_date', todayStr);
+        }
+        if (!calendarDays.contains('${serverNow.day}')) {
+          calendarDays.add('${serverNow.day}');
+          await sp.setStringList(monthKey, calendarDays.toSet().toList());
+        }
+        try {
+          await AutoSignService.instance.markSignedToday(
+            rank: bestResult.mySignRank,
+            continuousDays: bestResult.continuousDays,
+            rewardIron: bestResult.rewardIron,
+            notify: false,
+          );
+        } catch (_) {}
+      }
+    } catch (_) {}
 
     // 结合登录用户身份补全 UID 与用户名
     int? myUid = bestResult.uid;
@@ -1419,9 +1934,9 @@ class KlpbbsApi {
     bool forceRefresh = true,
   }) async {
     try {
-      final now = DateTime.now();
-      final m = month ?? now.month;
-      final y = year ?? now.year;
+      final serverNow = AutoSignService.instance.estimatedServerNow;
+      final m = month ?? serverNow.month;
+      final y = year ?? serverNow.year;
       clearQuickCache('plugin.php?id=k_misign:sign&operation=calendar');
       var html = await _get(
         'plugin.php?id=k_misign:sign&operation=calendar&month=$m&year=$y',
@@ -1433,18 +1948,47 @@ class KlpbbsApi {
         forceRefresh: true,
         cacheTtl: Duration.zero,
       );
-      var days = ComiisParser.parseSignedDaysFromCalendarHtml(html);
+      var days = ComiisParser.parseSignedDaysFromCalendarHtml(html, expectedYear: y, expectedMonth: m);
       if (days.isEmpty) {
-        final mobileHtml = await _get(
-          'plugin.php?id=k_misign:sign&operation=calendar&month=$m&year=$y&mobile=2',
+        final pcFallbackHtml = await _get(
+          'plugin.php?id=k_misign:sign&operation=calendar&month=$m&year=$y&mobile=no',
           headers: {
+            'User-Agent': AppConfig.pcUserAgent,
             'X-Requested-With': 'XMLHttpRequest',
-            'Referer': '${AppConfig.baseUrl}plugin.php?id=k_misign:sign&mobile=2',
+            'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
           },
           forceRefresh: true,
           cacheTtl: Duration.zero,
         );
-        days = ComiisParser.parseSignedDaysFromCalendarHtml(mobileHtml);
+        days = ComiisParser.parseSignedDaysFromCalendarHtml(pcFallbackHtml, expectedYear: y, expectedMonth: m);
+      }
+      if (days.isEmpty && y == serverNow.year && m == serverNow.month) {
+        // 兜底第 3 路径：从签到主页获取内嵌日历（PC 端主页自带完整当前月日历表格）
+        final mainHtml = await _get(
+          'k_misign-sign.html?_t=${DateTime.now().millisecondsSinceEpoch}',
+          headers: {'User-Agent': AppConfig.pcUserAgent},
+          forceRefresh: true,
+          cacheTtl: Duration.zero,
+        );
+        days = ComiisParser.parseSignedDaysFromCalendarHtml(mainHtml, expectedYear: y, expectedMonth: m);
+      }
+      if (days.isNotEmpty) {
+        // 自动将服务端最新日历反哺落库本地持久化，支持离线查看历史月份打卡
+        final monthKey = 'sign_dates_$y${m.toString().padLeft(2, '0')}';
+        final sp = await SharedPreferences.getInstance();
+        await sp.setStringList(monthKey, days.map((d) => '$d').toList());
+        if (y == serverNow.year && m == serverNow.month && days.contains(serverNow.day)) {
+          final todayStr = AutoSignService.instance.serverTodayStr;
+          await sp.setString('auto_sign_last_success_date', todayStr);
+          try {
+            await AutoSignService.instance.markSignedToday();
+          } catch (_) {}
+        }
+      } else if (y != serverNow.year || m != serverNow.month) {
+        // 历史月份若服务端确凿返回无打卡记录，清除历史版本可能误写入的污染缓存
+        final monthKey = 'sign_dates_$y${m.toString().padLeft(2, '0')}';
+        final sp = await SharedPreferences.getInstance();
+        await sp.remove(monthKey);
       }
       return days;
     } catch (_) {
@@ -1464,7 +2008,10 @@ class KlpbbsApi {
     final url = cid != null
         ? 'forum.php?mod=misc&action=showdarkroom&cid=$cid&mobile=2'
         : 'forum.php?mod=misc&action=showdarkroom&page=$page&mobile=2';
-    final html = await _get(url);
+    final html = await _get(
+      url,
+      headers: {'User-Agent': AppConfig.mobileUserAgent},
+    );
     final res = ComiisParser.parseDarkroom(html);
     PreloadService.instance.set(cacheKey, res, ttl: const Duration(minutes: 10));
     return res;
@@ -1500,6 +2047,9 @@ class KlpbbsApi {
               final map = jsonDecode(rawJson) as Map<String, dynamic>;
               final space = UserSpace.fromJson(map);
               _cachedMyUserSpace = space;
+              if (space.faceUrl.isNotEmpty) {
+                AppConfig.myFaceUrl ??= space.faceUrl;
+              }
               if (space.uid > 0) {
                 PreloadService.instance.set('user_space_${space.uid}', space, ttl: userProfileTtl);
               }
@@ -1515,8 +2065,10 @@ class KlpbbsApi {
     if (space.uid <= 0) return;
     _cachedMyUid = space.uid;
     if (space.username.isNotEmpty) _cachedMyUsername = space.username;
-    if (space.faceUrl.isNotEmpty) _cachedMyAvatar = space.faceUrl;
     _cachedMyUserSpace = space;
+    if (space.faceUrl.isNotEmpty) {
+      await AppConfig.setMyFaceUrl(space.faceUrl);
+    }
     PreloadService.instance.set('user_space_${space.uid}', space, ttl: userProfileTtl);
 
     try {
@@ -1526,7 +2078,7 @@ class KlpbbsApi {
         await sp.setString(_keyCachedMyUsername, space.username);
       }
       if (space.faceUrl.isNotEmpty) {
-        await sp.setString(_keyCachedMyAvatar, space.faceUrl);
+        await sp.setString('my_face_url', space.faceUrl);
       }
       await sp.setString(_keyCachedUserSpaceJson, jsonEncode(space.toJson()));
       await sp.setInt(_keyCachedUserProfileTime, DateTime.now().millisecondsSinceEpoch);
@@ -1557,6 +2109,10 @@ class KlpbbsApi {
 
   /// 获取当前已缓存的我的头像 URL（纯同步/零延迟）
   static String? get currentCachedMyAvatar => _cachedMyAvatar;
+
+  /// 获取当前已缓存的我的用户空间资料（纯同步/零延迟）
+  static UserSpace? get cachedSpace => _cachedMyUserSpace;
+  static UserSpace? get currentCachedMyUserSpace => _cachedMyUserSpace;
 
   /// 用户空间（个人资料，支持 7 天长期本地持久化秒开）
   static Future<UserSpace?> getUserSpace(int uid, {bool forceRefresh = false}) async {
@@ -2002,7 +2558,11 @@ class KlpbbsApi {
         'forum.php?mod=misc&action=votepoll&fid=$targetFid&tid=$tid&pollsubmit=yes&quickforward=yes&mobile=2',
         data,
       );
-      return !res.contains('alert_error');
+      final ok = !res.contains('alert_error');
+      if (ok) {
+        clearThreadDetailCache(tid);
+      }
+      return ok;
     } catch (_) {
       return false;
     }
@@ -2100,13 +2660,24 @@ class KlpbbsApi {
     int page = 1,
   }) async {
     final cacheKey = 'user_threads_${uid}_${type}_$page';
-    final endpoints = [
-      'home.php?mod=space&uid=$uid&do=thread&view=me&from=space&type=$type&mobile=no${page > 1 ? '&page=$page' : ''}',
-      'home.php?mod=space&uid=$uid&do=thread&view=me&type=$type&from=space&mobile=2${page > 1 ? '&page=$page' : ''}',
-      'home.php?mod=space&uid=$uid&do=thread&type=$type&from=space&mobile=no${page > 1 ? '&page=$page' : ''}',
-      'home.php?mod=space&uid=$uid&do=thread&type=$type&view=all&from=space&mobile=no${page > 1 ? '&page=$page' : ''}',
-      'home.php?mod=space&uid=$uid&do=thread&type=$type&view=all&mobile=2${page > 1 ? '&page=$page' : ''}',
-    ];
+    final myUid = await getMyUid().catchError((_) => null);
+    final isMe = myUid != null && myUid == uid;
+
+    final endpoints = isMe
+        ? [
+            'home.php?mod=space&uid=$uid&do=thread&view=me&from=space&type=$type&mobile=no${page > 1 ? '&page=$page' : ''}',
+            'home.php?mod=space&uid=$uid&do=thread&view=me&type=$type&from=space&mobile=2${page > 1 ? '&page=$page' : ''}',
+            'home.php?mod=space&do=thread&view=me&type=$type&mobile=no${page > 1 ? '&page=$page' : ''}',
+            'forum.php?mod=guide&view=my&type=$type&mobile=no${page > 1 ? '&page=$page' : ''}',
+            'home.php?mod=space&uid=$uid&do=thread&type=$type&from=space&mobile=no${page > 1 ? '&page=$page' : ''}',
+            'home.php?mod=space&uid=$uid&do=thread&type=$type&mobile=2${page > 1 ? '&page=$page' : ''}',
+          ]
+        : [
+            'home.php?mod=space&uid=$uid&do=thread&type=$type&from=space&mobile=no${page > 1 ? '&page=$page' : ''}',
+            'home.php?mod=space&uid=$uid&do=thread&type=$type&from=space&mobile=2${page > 1 ? '&page=$page' : ''}',
+            'home.php?mod=space&uid=$uid&do=thread&type=$type&view=all&from=space&mobile=no${page > 1 ? '&page=$page' : ''}',
+            'home.php?mod=space&uid=$uid&do=thread&type=$type&view=all&mobile=2${page > 1 ? '&page=$page' : ''}',
+          ];
 
     List<ThreadSummary> list = const [];
     for (final ep in endpoints) {
@@ -2119,22 +2690,23 @@ class KlpbbsApi {
 
     if (list.isNotEmpty) {
       PreloadService.instance.set(cacheKey, list);
-      _preloadUserThreads(uid, type, page);
+      _preloadUserThreads(uid, type, page, isMe: isMe);
       return list;
     }
     final cached = PreloadService.instance.get<List<ThreadSummary>>(cacheKey);
     return cached ?? const [];
   }
 
-  static void _preloadUserThreads(int uid, String type, int page) {
+  static void _preloadUserThreads(int uid, String type, int page, {bool isMe = false}) {
     Future.microtask(() async {
       try {
         final nextPage = page + 1;
         final nextKey = 'user_threads_${uid}_${type}_$nextPage';
         if (!PreloadService.instance.has(nextKey)) {
-          final html = await _get(
-            'home.php?mod=space&uid=$uid&do=thread&view=me&from=space&type=$type&mobile=no&page=$nextPage',
-          );
+          final ep = isMe
+              ? 'home.php?mod=space&uid=$uid&do=thread&view=me&from=space&type=$type&mobile=no&page=$nextPage'
+              : 'home.php?mod=space&uid=$uid&do=thread&type=$type&from=space&mobile=no&page=$nextPage';
+          final html = await _get(ep);
           final res = ComiisParser.parseUserThreads(html);
           if (res.isNotEmpty) {
             PreloadService.instance.set(nextKey, res);
@@ -2149,10 +2721,17 @@ class KlpbbsApi {
     int uid, {
     int page = 1,
     String? tag,
+    bool forceRefresh = false,
   }) async {
     final tagParam = (tag != null && tag.isNotEmpty && tag != '全部') ? '&tag=${Uri.encodeComponent(tag)}' : '';
+    final path = 'home.php?mod=space&uid=$uid&do=favorite&type=thread&mobile=no$tagParam${page > 1 ? '&page=$page' : ''}';
+    if (forceRefresh) {
+      clearQuickCache(path);
+      clearQuickCache('home.php?mod=space&uid=$uid&do=favorite');
+    }
     final html = await _get(
-      'home.php?mod=space&uid=$uid&do=favorite&type=thread&mobile=no$tagParam${page > 1 ? '&page=$page' : ''}',
+      path,
+      forceRefresh: forceRefresh,
     );
     final list = ComiisParser.parseUserThreads(html);
     if (page == 1 && list.isNotEmpty) {
@@ -2409,6 +2988,13 @@ class KlpbbsApi {
       await sp.remove('cached_username');
       await sp.remove('fav_tids');
       await sp.remove('liked_tids');
+      await clearSignLocalCache();
+      try {
+        await AutoSignService.instance.onAccountSwitched();
+      } catch (_) {}
+      try {
+        PushNotificationService.instance.clearUnread();
+      } catch (_) {}
     } catch (_) {}
 
     // 清理 Dio 及已挂载的 WebView2 全局 Cookies
@@ -2819,16 +3405,17 @@ class KlpbbsApi {
     } catch (_) {}
   }
 
-  /// 净化旧版本残留的脏收藏缓存（一次性迁移修复）
+  /// 净化旧版本残留的脏收藏与点赞缓存（一次性迁移修复）
   static Future<void> sanitizeFavoriteCache() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final hasSanitized = prefs.getBool('fav_cache_sanitized_v3') ?? false;
+      final hasSanitized = prefs.getBool('fav_and_like_cache_sanitized_v5') ?? false;
       if (!hasSanitized) {
         await prefs.remove('fav_tids');
+        await prefs.remove('liked_tids');
         _threadFavidCache.clear();
         await prefs.remove('fav_favid_map');
-        await prefs.setBool('fav_cache_sanitized_v3', true);
+        await prefs.setBool('fav_and_like_cache_sanitized_v5', true);
         if (DioClient.isLoggedIn) {
           unawaited(syncFavorites());
         }
@@ -2956,9 +3543,14 @@ class KlpbbsApi {
 
   /// 我的收藏版块（从 Discuz 原生收藏中心拉取：home.php?mod=space&do=favorite&type=forum）
   static Future<List<Forum>> getFavoriteForums(int uid, {bool forceRefresh = false}) async {
+    final path = 'home.php?mod=space&do=favorite&type=forum&mobile=no';
+    if (forceRefresh) {
+      clearQuickCache(path);
+      clearQuickCache('home.php?mod=space&do=favorite');
+    }
     try {
       final html = await _get(
-        'home.php?mod=space&do=favorite&type=forum&mobile=no',
+        path,
         forceRefresh: forceRefresh,
       );
       // 检查页面是否为合法的 Discuz 收藏中心页面
@@ -3504,10 +4096,19 @@ class KlpbbsApi {
     String? errorMessage,
     List<PostAttachmentItem> unusedAttachments,
     PostEditorAttributes editorAttributes,
-  })> getReplyInfo(int tid, {int? fid, bool? asMobile}) async {
+  })> getReplyInfo(
+    int tid, {
+    int? fid,
+    int? repquote,
+    int? reppost,
+    bool? asMobile,
+  }) async {
     try {
+      final fidPart = (fid != null && fid > 0) ? '&fid=$fid' : '';
+      final repquotePart = (repquote != null && repquote > 0) ? '&repquote=$repquote' : '';
+      final reppostPart = (reppost != null && reppost > 0) ? '&reppost=$reppost' : '';
       final html = await _get(
-        'forum.php?mod=post&action=reply&tid=$tid',
+        'forum.php?mod=post&action=reply&tid=$tid$fidPart$repquotePart$reppostPart&extra=page%3D1&page=1&mobile=no',
         headers: {
           'Referer': '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid',
           if (asMobile == true) 'User-Agent': AppConfig.mobileUserAgent,
@@ -3725,6 +4326,13 @@ class KlpbbsApi {
       final loggedIn =
           uid != null || DioClient.isLoggedIn || html.contains('action=logout');
       if (uid != null && uid > 0) {
+        if (_cachedMyUid != null && _cachedMyUid != uid) {
+          clearSignLocalCache();
+          try {
+            PushNotificationService.instance.clearUnread();
+          } catch (_) {}
+          AutoSignService.instance.onAccountSwitched();
+        }
         _cachedMyUid = uid;
       }
       return (
@@ -3750,27 +4358,28 @@ class KlpbbsApi {
   }) {
     // 1. CDATA in XML: <root><![CDATA[...]]></root>
     final cdataM = RegExp(r'<!\[CDATA\[([\s\S]*?)\]\]>').firstMatch(html);
-    String raw = cdataM != null ? cdataM.group(1)! : html;
+    final raw = cdataM != null ? cdataM.group(1)! : html;
 
-    // 清洗 <script> 标签
-    raw = raw.replaceAll(
-      RegExp(r'<script[\s\S]*?<\/script>', caseSensitive: false),
-      '',
-    );
-
-    // 2. 匹配 alert_info / alert_error / messagetext / alert_correct
-    final alertM = RegExp(
-          r'class="alert_(?:info|error|correct)"[^>]*>([\s\S]*?)<\/(?:div|dd|p|span)>',
-        ).firstMatch(raw) ??
-        RegExp(r'<div id="messagetext"[^>]*>([\s\S]*?)<\/div>').firstMatch(raw) ??
-        RegExp(r'<p class="message"[^>]*>([\s\S]*?)<\/p>').firstMatch(raw) ??
-        RegExp(r'<div class="tip"[^>]*>([\s\S]*?)<\/div>').firstMatch(raw);
-    if (alertM != null) {
-      final text = alertM.group(1)!.replaceAll(RegExp(r'<[^>]+>'), '').trim();
-      if (text.isNotEmpty) return text;
+    // 2. 优先通过 ComiisParser.parseMessage 进行 DOM 节点提取
+    final comiisMsg = ComiisParser.parseMessage(raw);
+    if (comiisMsg != null && comiisMsg.isNotEmpty) {
+      return comiisMsg;
     }
 
-    // 3. 匹配 popup.open('...', ...) 或 showmessage('...', ...)
+    // 3. DOM 解析 alert_info / alert_error / messagetext / alert_correct / tip / jump_c / altw
+    try {
+      final doc = html_parser.parse(raw);
+      final alertEl = doc.querySelector(
+        '#messagetext, .alert_right, .alert_error, .alert_info, .alert_correct, .comiis_tip, .jump_c, .tip, p.message, .altw',
+      );
+      if (alertEl != null) {
+        final p = alertEl.querySelector('p') ?? alertEl;
+        final t = p.text.replaceAll(RegExp(r'\s+'), ' ').trim();
+        if (t.isNotEmpty) return t;
+      }
+    } catch (_) {}
+
+    // 4. 匹配 popup.open('...', ...) 或 showmessage('...', ...)
     final popM = RegExp(
       r"(?:popup\.open|showmessage|showError|showPrompt)\s*\(\s*['\x22]([^'\x22]+)['\x22]",
     ).firstMatch(raw);
@@ -3779,7 +4388,7 @@ class KlpbbsApi {
       if (text.isNotEmpty) return text;
     }
 
-    // 4. 清理 HTML 标签后若文本简短直接作为消息返回
+    // 5. 清理 HTML 标签后若文本简短直接作为消息返回
     final stripped = raw.replaceAll(RegExp(r'<[^>]+>'), '').trim();
     if (stripped.isNotEmpty && stripped.length < 80) {
       return stripped;
@@ -3875,9 +4484,12 @@ class KlpbbsApi {
         } catch (_) {}
       }
 
-      final isSuccess = html.contains('succeed') ||
+      final hasExplicitError = html.contains('alert_error') ||
+          html.contains('alert_info') ||
+          html.contains('error');
+      final isSuccess = (html.contains('succeed') ||
           html.contains('成功') ||
-          !html.contains('alert_error');
+          html.contains('recommend_succeed')) && !hasExplicitError;
 
       if (isSuccess) {
         final likedList = (prefs.getStringList('liked_tids') ?? []).toSet();
@@ -3960,9 +4572,12 @@ class KlpbbsApi {
         return (success: false, message: '您不能点赞自己的回帖', isLiked: false);
       }
 
-      final isSuccess = html.contains('succeed') ||
+      final hasExplicitError = html.contains('alert_error') ||
+          html.contains('alert_info') ||
+          html.contains('error');
+      final isSuccess = (html.contains('succeed') ||
           html.contains('成功') ||
-          !html.contains('alert_error');
+          html.contains('postreview_succeed')) && !hasExplicitError;
 
       if (isSuccess) {
         final likedPids = (prefs.getStringList('liked_pids') ?? []).toSet();
@@ -4094,7 +4709,11 @@ class KlpbbsApi {
     }
 
     // 优先拉取 PC 端页面以获得最全的价格与条件要求（ul.mgcl li）
-    final pcHtml = await _get('home.php?mod=medal&mobile=no', forceRefresh: forceRefresh);
+    final pcHtml = await _get(
+      'home.php?mod=medal&mobile=no',
+      headers: {'User-Agent': AppConfig.pcUserAgent},
+      forceRefresh: forceRefresh,
+    );
     final pcList = ComiisParser.parseMedals(pcHtml);
     if (pcList.isNotEmpty) {
       PreloadService.instance.set(cacheKey, pcList, ttl: const Duration(hours: 1));
@@ -4102,7 +4721,11 @@ class KlpbbsApi {
     }
 
     // 移动端页面备选
-    final html = await _get('home.php?mod=medal&mobile=2', forceRefresh: forceRefresh);
+    final html = await _get(
+      'home.php?mod=medal&mobile=2',
+      headers: {'User-Agent': AppConfig.mobileUserAgent},
+      forceRefresh: forceRefresh,
+    );
     final res = ComiisParser.parseMedals(html);
     if (res.isNotEmpty) {
       PreloadService.instance.set(cacheKey, res, ttl: const Duration(hours: 1));
@@ -4122,7 +4745,10 @@ class KlpbbsApi {
         }
       }
       // 备选尝试从 medal order 页面解析
-      final orderHtml = await _get('home.php?mod=medal&action=order&mobile=no');
+      final orderHtml = await _get(
+        'home.php?mod=medal&action=order&mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+      );
       final list = ComiisParser.parseMedals(orderHtml);
       return list.map((m) => (id: m.id, name: m.name, desc: m.desc, img: m.img)).toList();
     } catch (_) {
@@ -4145,6 +4771,7 @@ class KlpbbsApi {
       // 1. 移动端 (mobile=2)
       final mobHtml = await _get(
         'home.php?mod=spacecp&ac=credit&op=log$param&page=$page&mobile=2$ts',
+        headers: {'User-Agent': AppConfig.mobileUserAgent},
         forceRefresh: forceRefresh,
         cacheTtl: forceRefresh ? Duration.zero : const Duration(seconds: 15),
       );
@@ -4165,6 +4792,7 @@ class KlpbbsApi {
       if (subop.isNotEmpty) {
         final fallbackMob = await _get(
           'home.php?mod=spacecp&ac=credit&op=log&page=$page&mobile=2$ts',
+          headers: {'User-Agent': AppConfig.mobileUserAgent},
           forceRefresh: forceRefresh,
           cacheTtl: forceRefresh ? Duration.zero : const Duration(seconds: 15),
         );
@@ -4188,7 +4816,10 @@ class KlpbbsApi {
   /// 积分基础概况（home.php?mod=spacecp&ac=credit&mobile=2，多级回退与个人空间数据互补）
   static Future<CreditBaseInfo?> getCreditBase() async {
     try {
-      final html = await _get('home.php?mod=spacecp&ac=credit&mobile=2');
+      final html = await _get(
+        'home.php?mod=spacecp&ac=credit&mobile=2',
+        headers: {'User-Agent': AppConfig.mobileUserAgent},
+      );
       var info = ComiisParser.parseCreditBase(html);
       if (info.details.isNotEmpty) {
         return info;
@@ -4196,8 +4827,22 @@ class KlpbbsApi {
     } catch (_) {}
 
     try {
-      final baseHtml = await _get('home.php?mod=spacecp&ac=credit&op=base&mobile=2');
+      final baseHtml = await _get(
+        'home.php?mod=spacecp&ac=credit&op=base&mobile=2',
+        headers: {'User-Agent': AppConfig.mobileUserAgent},
+      );
       var info = ComiisParser.parseCreditBase(baseHtml);
+      if (info.details.isNotEmpty) {
+        return info;
+      }
+    } catch (_) {}
+
+    try {
+      final pcHtml = await _get(
+        'home.php?mod=spacecp&ac=credit&mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+      );
+      var info = ComiisParser.parseCreditBase(pcHtml);
       if (info.details.isNotEmpty) {
         return info;
       }
@@ -4258,7 +4903,10 @@ class KlpbbsApi {
     String memo = '',
   }) async {
     try {
-      final page = await _get('home.php?mod=spacecp&ac=credit&op=transfer&mobile=no');
+      final page = await _get(
+        'home.php?mod=spacecp&ac=credit&op=transfer&mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+      );
       final formhash = _extractFormhash(page) ?? _cachedFormhash ?? '';
       if (formhash.isEmpty) {
         return (success: false, message: '请先登录后再进行转账操作');
@@ -4277,6 +4925,7 @@ class KlpbbsApi {
           'transfersubmit_btn': 'true',
         },
         headers: {
+          'User-Agent': AppConfig.pcUserAgent,
           'Referer': '${AppConfig.baseUrl}home.php?mod=spacecp&ac=credit&op=transfer',
         },
       );
@@ -4316,9 +4965,37 @@ class KlpbbsApi {
   /// 道具商店列表与背包状态（home.php?mod=magic&action=shop）
   static Future<({List<MagicItem> magics, MagicBagInfo bag})> getMagicShop({bool forceRefresh = false}) async {
     try {
-      final html = await _get('home.php?mod=magic&action=shop&mobile=2', forceRefresh: forceRefresh);
-      final list = ComiisParser.parseMagicShop(html);
-      final bag = ComiisParser.parseMagicBagInfo(html);
+      final html = await _get(
+        'home.php?mod=magic&action=shop&mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+        forceRefresh: forceRefresh,
+      );
+      var list = ComiisParser.parseMagicShop(html);
+      var bag = ComiisParser.parseMagicBagInfo(html);
+      if (list.isEmpty) {
+        final mobHtml = await _get(
+          'home.php?mod=magic&action=shop&mobile=2',
+          headers: {'User-Agent': AppConfig.mobileUserAgent},
+          forceRefresh: forceRefresh,
+        );
+        final mobList = ComiisParser.parseMagicShop(mobHtml);
+        if (mobList.isNotEmpty) list = mobList;
+        if (bag.usedCapacity == 0 && bag.ironCount == 0) {
+          bag = ComiisParser.parseMagicBagInfo(mobHtml);
+        }
+      }
+      if (bag.ironCount <= 0 && DioClient.isLoggedIn) {
+        try {
+          final credit = await getCreditBase();
+          if (credit != null) {
+            final ironStr = credit.details['铁粒'] ?? '0';
+            final iron = int.tryParse(ironStr.replaceAll(RegExp(r'[^\d]'), '')) ?? 0;
+            if (iron > 0) {
+              bag = bag.copyWith(ironCount: iron);
+            }
+          }
+        } catch (_) {}
+      }
       return (magics: list, bag: bag);
     } catch (_) {
       final list = ComiisParser.parseMagicShop('');
@@ -4328,77 +5005,137 @@ class KlpbbsApi {
 
   /// 我的道具包列表与背包状态（home.php?mod=magic&action=mybox）
   static Future<({List<MagicItem> magics, MagicBagInfo bag})> getMyMagics({bool forceRefresh = false}) async {
+    if (!DioClient.isLoggedIn) {
+      return (magics: const <MagicItem>[], bag: const MagicBagInfo(usedCapacity: 0, totalCapacity: 500, ironCount: 0));
+    }
     try {
-      final html = await _get('home.php?mod=magic&action=mybox&mobile=2', forceRefresh: forceRefresh);
-      final list = ComiisParser.parseMyMagics(html);
-      final bag = ComiisParser.parseMagicBagInfo(html);
+      final html = await _get(
+        'home.php?mod=magic&action=mybox&mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+        forceRefresh: forceRefresh,
+      );
+      var list = ComiisParser.parseMyMagics(html);
+      var bag = ComiisParser.parseMagicBagInfo(html);
+      if (list.isEmpty) {
+        final mobHtml = await _get(
+          'home.php?mod=magic&action=mybox&mobile=2',
+          headers: {'User-Agent': AppConfig.mobileUserAgent},
+          forceRefresh: forceRefresh,
+        );
+        final mobList = ComiisParser.parseMyMagics(mobHtml);
+        if (mobList.isNotEmpty) list = mobList;
+        if (bag.usedCapacity == 0 && bag.ironCount == 0) {
+          bag = ComiisParser.parseMagicBagInfo(mobHtml);
+        }
+      }
+      if (bag.ironCount <= 0 && DioClient.isLoggedIn) {
+        try {
+          final credit = await getCreditBase();
+          if (credit != null) {
+            final ironStr = credit.details['铁粒'] ?? '0';
+            final iron = int.tryParse(ironStr.replaceAll(RegExp(r'[^\d]'), '')) ?? 0;
+            if (iron > 0) {
+              bag = bag.copyWith(ironCount: iron);
+            }
+          }
+        } catch (_) {}
+      }
       return (magics: list, bag: bag);
     } catch (_) {
-      return (magics: <MagicItem>[], bag: const MagicBagInfo(usedCapacity: 0, totalCapacity: 500, ironCount: 0));
+      return (magics: const <MagicItem>[], bag: const MagicBagInfo(usedCapacity: 0, totalCapacity: 500, ironCount: 0));
     }
   }
 
   /// 道具流水记录（home.php?mod=magic&action=log）
   static Future<List<MagicLogEntry>> getMagicLogs({String op = 'uselog', int page = 1}) async {
     try {
-      final html = await _get('home.php?mod=magic&action=log&operation=$op&mobile=2${page > 1 ? '&page=$page' : ''}');
+      final html = await _get(
+        'home.php?mod=magic&action=log&operation=$op&mobile=no${page > 1 ? '&page=$page' : ''}',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+      );
       return ComiisParser.parseMagicLogs(html);
     } catch (_) {
       return const [];
     }
   }
 
-  /// 购买道具
-  static Future<({bool success, String message})> buyMagic(int magicId, {int count = 1}) async {
+  /// 购买道具（支持 numeric id 或 string identifier）
+  static Future<({bool success, String message})> buyMagic(dynamic magicIdOrIdentifier, {int count = 1}) async {
     if (!DioClient.isLoggedIn) return (success: false, message: '请先登录');
     try {
-      final formHtml = await _get('home.php?mod=magic&action=shop&operation=buy&mid=$magicId&inajax=1');
-      final formhash = _extractFormhash(formHtml);
+      final mid = magicIdOrIdentifier.toString();
+      final formHtml = await _get(
+        'home.php?mod=magic&action=shop&operation=buy&mid=$mid&inajax=1&mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+      );
+      final formhash = _extractFormhash(formHtml) ?? _cachedFormhash ?? cachedFormhash;
       if (formhash == null) return (success: false, message: '未能获取安全验证码 (formhash)');
 
-      final res = await _post('home.php?mod=magic&action=shop&operation=buy&mid=$magicId&inajax=1', {
-        'formhash': formhash,
-        'buysubmit': 'yes',
-        'magicid': '$magicId',
-        'magicnum': '$count',
-      });
-      if (res.contains('购买成功') || res.contains('成功购买') || res.contains('succeed')) {
+      final res = await _post(
+        'home.php?mod=magic&action=shop&operation=buy&mid=$mid&inajax=1&mobile=no',
+        {
+          'formhash': formhash,
+          'operation': 'buy',
+          'mid': mid,
+          'magicid': mid,
+          'magicnum': '$count',
+          'operatesubmit': 'yes',
+          'buysubmit': 'yes',
+        },
+        headers: {
+          'User-Agent': AppConfig.pcUserAgent,
+          'Referer': '${AppConfig.baseUrl}home.php?mod=magic&action=shop&mobile=no',
+        },
+      );
+      if (res.contains('购买成功') || res.contains('成功购买') || res.contains('succeed') || res.contains('magics_buy_succeed')) {
         return (success: true, message: '道具购买成功！');
       }
-      final msgM = RegExp(r'<div id="messagetext"[^>]*><p>([^<]+)</p>|class="altw"[^>]*><p>([^<]+)</p>').firstMatch(res);
-      final msg = msgM?.group(1) ?? msgM?.group(2) ?? '购买请求已提交';
-      return (success: !msg.contains('抱歉') && !msg.contains('失败') && !msg.contains('不足'), message: msg);
+      final msg = _extractDiscuzResponseMessage(res, defaultMsg: res.contains('不足') ? '铁粒或道具库存不足' : '购买请求已提交');
+      return (success: !msg.contains('抱歉') && !msg.contains('失败') && !msg.contains('不足') && !msg.contains('不存在'), message: msg);
     } catch (e) {
       return (success: false, message: '购买失败：$e');
     }
   }
 
-  /// 赠送道具
+  /// 赠送道具（支持 numeric id 或 string identifier）
   static Future<({bool success, String message})> giveMagic(
-    int magicId, {
+    dynamic magicIdOrIdentifier, {
     required String username,
     int count = 1,
     String message = '',
   }) async {
     if (!DioClient.isLoggedIn) return (success: false, message: '请先登录');
     try {
-      final formHtml = await _get('home.php?mod=magic&action=shop&operation=give&mid=$magicId&inajax=1');
-      final formhash = _extractFormhash(formHtml);
+      final mid = magicIdOrIdentifier.toString();
+      final formHtml = await _get(
+        'home.php?mod=magic&action=mybox&operation=give&mid=$mid&inajax=1&mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+      );
+      final formhash = _extractFormhash(formHtml) ?? _cachedFormhash ?? cachedFormhash;
       if (formhash == null) return (success: false, message: '未能获取安全验证码 (formhash)');
 
-      final res = await _post('home.php?mod=magic&action=shop&operation=give&mid=$magicId&inajax=1', {
-        'formhash': formhash,
-        'givesubmit': 'yes',
-        'magicid': '$magicId',
-        'magicnum': '$count',
-        'tousername': username,
-        'message': message,
-      });
-      if (res.contains('赠送成功') || res.contains('成功赠送') || res.contains('succeed')) {
+      final res = await _post(
+        'home.php?mod=magic&action=mybox&operation=give&mid=$mid&inajax=1&mobile=no',
+        {
+          'formhash': formhash,
+          'operation': 'give',
+          'mid': mid,
+          'magicid': mid,
+          'magicnum': '$count',
+          'tousername': username,
+          'message': message,
+          'operatesubmit': 'yes',
+          'givesubmit': 'yes',
+        },
+        headers: {
+          'User-Agent': AppConfig.pcUserAgent,
+          'Referer': '${AppConfig.baseUrl}home.php?mod=magic&action=mybox&mobile=no',
+        },
+      );
+      if (res.contains('赠送成功') || res.contains('成功赠送') || res.contains('succeed') || res.contains('magics_give_succeed')) {
         return (success: true, message: '道具已成功赠送给 $username！');
       }
-      final msgM = RegExp(r'<div id="messagetext"[^>]*><p>([^<]+)</p>|class="altw"[^>]*><p>([^<]+)</p>').firstMatch(res);
-      final msg = msgM?.group(1) ?? msgM?.group(2) ?? '赠送请求已提交';
+      final msg = _extractDiscuzResponseMessage(res, defaultMsg: '赠送请求已提交');
       return (success: !msg.contains('抱歉') && !msg.contains('失败') && !msg.contains('不存在'), message: msg);
     } catch (e) {
       return (success: false, message: '赠送失败：$e');
@@ -4410,58 +5147,155 @@ class KlpbbsApi {
     int magicId, {
     int? tid,
     int? pid,
+    int? bid,
     String? targetUsername,
     String? newUsername,
     int count = 1,
   }) async {
     if (!DioClient.isLoggedIn) return (success: false, message: '请先登录');
     try {
-      final formHtml = await _get('home.php?mod=magic&action=mybox&operation=use&magicid=$magicId&inajax=1');
-      final formhash = _extractFormhash(formHtml);
+      final formHtml = await _get(
+        'home.php?mod=magic&action=mybox&operation=use&magicid=$magicId&inajax=1&mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+      );
+      final formhash = _extractFormhash(formHtml) ?? _cachedFormhash ?? cachedFormhash;
       if (formhash == null) return (success: false, message: '未能获取安全验证码 (formhash)');
 
       final params = <String, String>{
         'formhash': formhash,
+        'operation': 'use',
+        'operatesubmit': 'yes',
         'usesubmit': 'yes',
         'magicid': '$magicId',
         'magicnum': '$count',
       };
       if (tid != null) params['tid'] = '$tid';
       if (pid != null) params['pid'] = '$pid';
+      if (bid != null) params['bid'] = '$bid';
       if (targetUsername != null && targetUsername.isNotEmpty) params['tousername'] = targetUsername;
       if (newUsername != null && newUsername.isNotEmpty) params['newusername'] = newUsername;
 
-      final res = await _post('home.php?mod=magic&action=mybox&operation=use&magicid=$magicId&inajax=1', params);
+      final res = await _post(
+        'home.php?mod=magic&action=mybox&operation=use&magicid=$magicId&inajax=1&mobile=no',
+        params,
+        headers: {
+          'User-Agent': AppConfig.pcUserAgent,
+          'Referer': '${AppConfig.baseUrl}home.php?mod=magic&action=mybox&mobile=no',
+        },
+      );
       if (res.contains('使用成功') || res.contains('成功使用') || res.contains('succeed')) {
         return (success: true, message: '道具使用成功！');
       }
-      final msgM = RegExp(r'<div id="messagetext"[^>]*><p>([^<]+)</p>|class="altw"[^>]*><p>([^<]+)</p>').firstMatch(res);
-      final msg = msgM?.group(1) ?? msgM?.group(2) ?? '道具使用请求已提交';
+      final msg = _extractDiscuzResponseMessage(res, defaultMsg: '道具使用请求已提交');
       return (success: !msg.contains('抱歉') && !msg.contains('失败') && !msg.contains('不能'), message: msg);
     } catch (e) {
       return (success: false, message: '使用失败：$e');
     }
   }
 
-  /// 回收/丢弃道具
+  /// 使用补签卡补签 (k_misign_bq)
+  static Future<({bool success, String message})> useRetroSignCard({
+    required int bid,
+    int? magicId,
+  }) async {
+    if (!DioClient.isLoggedIn) return (success: false, message: '请先登录论坛账号');
+    int? targetMagicId = magicId;
+    if (targetMagicId == null || targetMagicId <= 0) {
+      try {
+        final box = await getMyMagics(forceRefresh: true);
+        final card = box.magics.where((m) =>
+          m.identifier.contains('bq') || m.name.contains('补签')
+        ).firstOrNull;
+        if (card != null) {
+          targetMagicId = card.id;
+        }
+      } catch (_) {}
+    }
+
+    if (targetMagicId == null || targetMagicId <= 0) {
+      return (
+        success: false,
+        message: '您的道具包中暂无【补签卡】，请前往道具商城购买后再使用',
+      );
+    }
+
+    try {
+      final formHtml = await _get(
+        'home.php?mod=magic&action=mybox&operation=use&mid=k_misign:k_misign_bq&bid=$bid&inajax=1&mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+        forceRefresh: true,
+      );
+      final formhash = _extractFormhash(formHtml) ?? _cachedFormhash ?? cachedFormhash;
+      if (formhash == null || formhash.isEmpty) {
+        return (success: false, message: '未能获取安全验证码 (formhash)');
+      }
+
+      final params = <String, String>{
+        'formhash': formhash,
+        'usesubmit': 'yes',
+        'magicid': '$targetMagicId',
+        'bid': '$bid',
+        'handlekey': 'magic_k_misign_bq',
+      };
+
+      final res = await _post(
+        'home.php?mod=magic&action=mybox&operation=use&mid=k_misign:k_misign_bq&bid=$bid&inajax=1&mobile=no',
+        params,
+        headers: {
+          'User-Agent': AppConfig.pcUserAgent,
+          'Referer': '${AppConfig.baseUrl}home.php?mod=magic&action=mybox&mobile=no',
+        },
+      );
+
+      final isSuccess = res.contains('成功') ||
+          res.contains('succeed') ||
+          res.contains('right') ||
+          res.contains('补签成功');
+
+      if (isSuccess) {
+        await clearSignLocalCache();
+        unawaited(getSignHeaderInfo(forceRefresh: true));
+        unawaited(getSignedDaysFromServerCalendar(forceRefresh: true));
+        return (success: true, message: '恭喜，补签成功！连续签到已恢复！');
+      }
+
+      final msg = _extractDiscuzResponseMessage(res, defaultMsg: '补签请求已提交，请刷新查看');
+      return (success: !msg.contains('抱歉') && !msg.contains('失败') && !msg.contains('不能'), message: msg);
+    } catch (e) {
+      return (success: false, message: '补签请求异常：$e');
+    }
+  }
+
+  /// 回收/出售道具（home.php?mod=magic&action=mybox&operation=sell）
   static Future<({bool success, String message})> dropMagic(int magicId, {int count = 1}) async {
     if (!DioClient.isLoggedIn) return (success: false, message: '请先登录');
     try {
-      final formHtml = await _get('home.php?mod=magic&action=mybox&operation=drop&magicid=$magicId&inajax=1');
-      final formhash = _extractFormhash(formHtml);
+      final formHtml = await _get(
+        'home.php?mod=magic&action=mybox&operation=sell&magicid=$magicId&inajax=1&mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+      );
+      final formhash = _extractFormhash(formHtml) ?? _cachedFormhash ?? cachedFormhash;
       if (formhash == null) return (success: false, message: '未能获取安全验证码 (formhash)');
 
-      final res = await _post('home.php?mod=magic&action=mybox&operation=drop&magicid=$magicId&inajax=1', {
-        'formhash': formhash,
-        'dropsubmit': 'yes',
-        'magicid': '$magicId',
-        'magicnum': '$count',
-      });
-      if (res.contains('回收成功') || res.contains('成功回收') || res.contains('succeed')) {
-        return (success: true, message: '道具已成功回收！');
+      final res = await _post(
+        'home.php?mod=magic&action=mybox&operation=sell&magicid=$magicId&inajax=1&mobile=no',
+        {
+          'formhash': formhash,
+          'operation': 'sell',
+          'operatesubmit': 'yes',
+          'sellsubmit': 'yes',
+          'magicid': '$magicId',
+          'magicnum': '$count',
+        },
+        headers: {
+          'User-Agent': AppConfig.pcUserAgent,
+          'Referer': '${AppConfig.baseUrl}home.php?mod=magic&action=mybox&mobile=no',
+        },
+      );
+      if (res.contains('回收成功') || res.contains('成功回收') || res.contains('出售成功') || res.contains('succeed')) {
+        return (success: true, message: '道具已成功回收出售！');
       }
-      final msgM = RegExp(r'<div id="messagetext"[^>]*><p>([^<]+)</p>|class="altw"[^>]*><p>([^<]+)</p>').firstMatch(res);
-      final msg = msgM?.group(1) ?? msgM?.group(2) ?? '回收请求已提交';
+      final msg = _extractDiscuzResponseMessage(res, defaultMsg: '回收请求已提交');
       return (success: !msg.contains('抱歉') && !msg.contains('失败'), message: msg);
     } catch (e) {
       return (success: false, message: '回收失败：$e');
@@ -4508,23 +5342,41 @@ class KlpbbsApi {
   }) async {
     if (!AppConfig.allowWrite) return false;
     final page = await _get(
-      'home.php?mod=magic&mid=$mid&idtype=$idtype&id=$id&mobile=2',
+      'home.php?mod=magic&mid=$mid&idtype=$idtype&id=$id&mobile=no',
+      headers: {'User-Agent': AppConfig.pcUserAgent},
     );
     final formhash = _extractFormhash(page);
     if (formhash == null) return false;
     await _post(
-      'home.php?mod=magic&mid=$mid&idtype=$idtype&id=$id&operation=use&mobile=2',
+      'home.php?mod=magic&mid=$mid&idtype=$idtype&id=$id&operation=use&mobile=no',
       {'formhash': formhash, 'usesubmit': 'yes'},
+      headers: {
+        'User-Agent': AppConfig.pcUserAgent,
+        'Referer': '${AppConfig.baseUrl}home.php?mod=magic&mid=$mid&idtype=$idtype&id=$id&mobile=no',
+      },
     );
     return true;
   }
 
   /// 任务中心（home.php?mod=task，需登录；默认抓「进行中」tab 因为「新任务」常为空）
   static Future<List<({int id, String name, String reward})>> getTasks() async {
-    var html = await _get('home.php?mod=task&item=doing&mobile=2');
+    var html = await _get(
+      'home.php?mod=task&item=doing&mobile=2',
+      headers: {'User-Agent': AppConfig.mobileUserAgent},
+    );
     var list = ComiisParser.parseTasks(html);
     if (list.isEmpty) {
-      html = await _get('home.php?mod=task&mobile=2');
+      html = await _get(
+        'home.php?mod=task&mobile=2',
+        headers: {'User-Agent': AppConfig.mobileUserAgent},
+      );
+      list = ComiisParser.parseTasks(html);
+    }
+    if (list.isEmpty) {
+      html = await _get(
+        'home.php?mod=task&item=doing&mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+      );
       list = ComiisParser.parseTasks(html);
     }
     return list;
@@ -4532,8 +5384,19 @@ class KlpbbsApi {
 
   /// 推广中心（home.php?mod=spacecp&ac=promotion，需登录）
   static Future<List<({String label, String url})>> getPromotion() async {
-    final html = await _get('home.php?mod=spacecp&ac=promotion&mobile=2');
-    return ComiisParser.parsePromotion(html);
+    final html = await _get(
+      'home.php?mod=spacecp&ac=promotion&mobile=2',
+      headers: {'User-Agent': AppConfig.mobileUserAgent},
+    );
+    var list = ComiisParser.parsePromotion(html);
+    if (list.isEmpty) {
+      final pcHtml = await _get(
+        'home.php?mod=spacecp&ac=promotion&mobile=no',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+      );
+      list = ComiisParser.parsePromotion(pcHtml);
+    }
+    return list;
   }
 
   /// 获取好友列表（支持 7 大 Tab 分类，对齐移动端手机版与 PC 版）
@@ -4903,23 +5766,55 @@ class KlpbbsApi {
   }
 
   /// 删除私信会话
-  static Future<bool> deletePm(int touid) async {
+  static Future<bool> deletePm(int touid, {int? pmid}) async {
     var formhash = _cachedFormhash;
     try {
-      final page = await _get('home.php?mod=spacecp&ac=pm');
+      final page = await _get('home.php?mod=spacecp&ac=pm&mobile=no');
       formhash = _extractFormhash(page) ?? formhash;
     } catch (_) {}
 
     if (formhash == null || formhash.isEmpty) return false;
-    final html = await _post(
-      'home.php?mod=spacecp&ac=pm&op=delete&inajax=1',
-      {'formhash': formhash, 'touid': '$touid', 'deletesubmit': 'yes'},
-      headers: {
-        'X-Requested-With': 'XMLHttpRequest',
-        'Referer': '${AppConfig.baseUrl}home.php?mod=space&do=pm',
-      },
-    );
-    return !html.contains('alert_error');
+
+    // 1. 同时以 Discuz 原生 POST 格式提交 (模拟 deletepmform)
+    try {
+      final postData = <String, dynamic>{
+        'formhash': formhash,
+        'deletesubmit': 'true',
+        'deletesubmitbtn': 'true',
+        'deletepmsubmit_btn': 'true',
+        'deletepm_deluid[]': '$touid',
+        'deletepm_deluid[$touid]': '$touid',
+        'touid': '$touid',
+      };
+      if (pmid != null && pmid > 0) {
+        postData['deletepm_pmid[]'] = '$pmid';
+        postData['deletepm_pmid[$pmid]'] = '$pmid';
+        postData['pmid'] = '$pmid';
+      }
+      final html = await _post(
+        'home.php?mod=spacecp&ac=pm&op=delete&folder=&inajax=1',
+        postData,
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest',
+          'Referer': '${AppConfig.baseUrl}home.php?mod=space&do=pm',
+        },
+      );
+      if (!html.contains('alert_error')) {
+        clearQuickCache('home.php?mod=space&do=pm');
+        return true;
+      }
+    } catch (_) {}
+
+    // 2. 备选：以 Discuz ajaxget 原生 GET 格式提交
+    try {
+      final getUrl =
+          'home.php?mod=spacecp&ac=pm&op=delete&deletesubmit=1&deletepm_deluid[]=$touid&deletepm_deluid[$touid]=$touid&formhash=$formhash&inajax=1';
+      final res = await _get(getUrl, forceRefresh: true);
+      clearQuickCache('home.php?mod=space&do=pm');
+      return !res.contains('alert_error');
+    } catch (_) {
+      return false;
+    }
   }
 
   /// 发送私信
@@ -4963,16 +5858,17 @@ class KlpbbsApi {
 
   static String? _cachedSignFormhash;
 
-  /// 获取或预热签到 FormHash（100% 实时拉取最新登录凭据）
+  /// 获取或预热签到 FormHash（100% 实时拉取最新登录凭据，优先从签到页提取，失败降级首页）
   static Future<String?> getSignFormhash({bool forceRefresh = true}) async {
     if (!forceRefresh && _cachedSignFormhash != null && _cachedSignFormhash!.isNotEmpty) {
       return _cachedSignFormhash;
     }
     String? formhash;
     final ts = DateTime.now().millisecondsSinceEpoch;
+    // 1. 优先从 k_misign-sign.html 页面中获取（官方签到按钮所在页面）
     try {
       final signPageHtml = await _get(
-        'plugin.php?id=k_misign:sign&mobile=no&_t=$ts',
+        'k_misign-sign.html?_t=$ts',
         headers: {'User-Agent': AppConfig.pcUserAgent},
         forceRefresh: true,
         cacheTtl: Duration.zero,
@@ -4980,10 +5876,11 @@ class KlpbbsApi {
       formhash = _extractFormhash(signPageHtml);
     } catch (_) {}
 
+    // 2. 备用从 plugin.php 获取
     if (formhash == null) {
       try {
         final signPageHtml = await _get(
-          'k_misign-sign.html?_t=$ts',
+          'plugin.php?id=k_misign:sign&mobile=no&_t=$ts',
           headers: {'User-Agent': AppConfig.pcUserAgent},
           forceRefresh: true,
           cacheTtl: Duration.zero,
@@ -4992,6 +5889,20 @@ class KlpbbsApi {
       } catch (_) {}
     }
 
+    // 3. 兜底从论坛首页抓取（对齐油猴脚本 HOME_URL）
+    if (formhash == null) {
+      try {
+        final homeHtml = await _get(
+          'forum.php?_t=$ts',
+          headers: {'User-Agent': AppConfig.pcUserAgent},
+          forceRefresh: true,
+          cacheTtl: Duration.zero,
+        );
+        formhash = _extractFormhash(homeHtml);
+      } catch (_) {}
+    }
+
+    // 4. 移动端兜底
     if (formhash == null) {
       try {
         final forumHtml = await _get(
@@ -5009,7 +5920,143 @@ class KlpbbsApi {
     return formhash;
   }
 
-  /// 签到（k_misign qiandao，100% 全实时端点极速直达与铁粒/经验/连续天数精准解析）
+  /// 获取服务器精准时间与本地时间的偏差（毫秒：serverTime - localTime）
+  /// 通过轻量 HEAD/GET 请求提取响应头 Date，解析 RFC 1123 / HttpDate
+  static Future<int?> pingServerTime() async {
+    try {
+      final t0 = DateTime.now().millisecondsSinceEpoch;
+      final resp = await _dio.head<void>(
+        _url('k_misign-sign.html'),
+        options: Options(
+          sendTimeout: const Duration(seconds: 3),
+          receiveTimeout: const Duration(seconds: 3),
+          headers: {'User-Agent': AppConfig.pcUserAgent},
+        ),
+      );
+      final t1 = DateTime.now().millisecondsSinceEpoch;
+      final dateStr = resp.headers.value('date');
+      if (dateStr != null) {
+        final serverTime = HttpDate.parse(dateStr).millisecondsSinceEpoch;
+        final latency = (t1 - t0) ~/ 2;
+        final estimatedServerNow = serverTime + latency;
+        return estimatedServerNow - t1;
+      }
+    } catch (_) {
+      try {
+        final t0 = DateTime.now().millisecondsSinceEpoch;
+        final resp = await _dio.get<String>(
+          _url('k_misign-sign.html'),
+          options: Options(
+            sendTimeout: const Duration(seconds: 3),
+            receiveTimeout: const Duration(seconds: 3),
+            headers: {'User-Agent': AppConfig.pcUserAgent},
+          ),
+        );
+        final t1 = DateTime.now().millisecondsSinceEpoch;
+        final dateStr = resp.headers.value('date');
+        if (dateStr != null) {
+          final serverTime = HttpDate.parse(dateStr).millisecondsSinceEpoch;
+          final latency = (t1 - t0) ~/ 2;
+          final estimatedServerNow = serverTime + latency;
+          return estimatedServerNow - t1;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  /// 实时探测论坛服务器恢复状态（轻量级探针，不走重型签到接口与大页面解析）
+  /// 返回 true 表示论坛源站已完全恢复（HTTP 200 且响应体为正常论坛 HTML，非 502/503/504 故障页）
+  static Future<bool> probeServerRecovery() async {
+    try {
+      final resp = await _dio.get<String>(
+        _url('k_misign-sign.html?_probe=${DateTime.now().millisecondsSinceEpoch}'),
+        options: Options(
+          sendTimeout: const Duration(seconds: 4),
+          receiveTimeout: const Duration(seconds: 4),
+          headers: {
+            'User-Agent': AppConfig.pcUserAgent,
+            'Cache-Control': 'no-cache, no-store',
+          },
+          validateStatus: (status) => true,
+        ),
+      );
+      final statusCode = resp.statusCode ?? 0;
+      if (statusCode != 200 && statusCode != 302 && statusCode != 301) {
+        return false;
+      }
+      final data = resp.data ?? '';
+      if (data.isEmpty) return false;
+      if (ServerOutageInfo.isOutageHtml(data)) {
+        return false;
+      }
+      if (data.contains('klpbbs') ||
+          data.contains('Discuz') ||
+          data.contains('k_misign') ||
+          data.contains('<!DOCTYPE') ||
+          data.contains('<html')) {
+        return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 只读访问签到页回退校验（对齐油猴脚本 verifySigned：安全只读请求）
+  static Future<bool?> verifySigned() async {
+    try {
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final html = await _get(
+        'k_misign-sign.html?_t=$ts',
+        headers: {'User-Agent': AppConfig.pcUserAgent},
+        forceRefresh: true,
+        cacheTtl: Duration.zero,
+      );
+      final parsed = ComiisParser.parseSignPageData(html);
+      if (parsed.isSignedToday) return true;
+      final m = RegExp(r'''class="[^"]*\bfont\b[^"]*"[^>]*>\s*([^<]{1,20})''').firstMatch(html);
+      if (m != null) {
+        final label = m.group(1)!.trim();
+        if (label.contains('已签到') || label.contains('今日已签') || label.contains('已打卡')) return true;
+        if (label.contains('点我') || label.contains('未签') || label.contains('立即签到')) return false;
+      }
+      return parsed.isSignedToday;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 清理签到相关的内存与持久化排行榜缓存（严禁污染日历）
+  static Future<void> clearSignLocalCache() async {
+    PreloadService.instance.remove('sign_header_info_realtime');
+    PreloadService.instance.clear('sign_rank_');
+    clearQuickCache('plugin.php?id=k_misign');
+    clearQuickCache('k_misign');
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final keys = sp.getKeys().where((k) => k.startsWith('sign_rank_')).toList();
+      for (final k in keys) {
+        await sp.remove(k);
+      }
+    } catch (_) {}
+  }
+
+  /// 真正确认签到成功时，将今日写入本地日历持久化缓存（严格锚定论坛东八区北京时间）
+  static Future<void> recordSignDateToLocalCalendar() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final now = AutoSignService.instance.estimatedServerNow;
+      final monthKey = 'sign_dates_${now.year}${now.month.toString().padLeft(2, '0')}';
+      final list = sp.getStringList(monthKey) ?? [];
+      if (!list.contains('${now.day}')) {
+        list.add('${now.day}');
+        await sp.setStringList(monthKey, list.toSet().toList());
+      }
+    } catch (_) {}
+  }
+
+  /// 签到（k_misign qiandao，100% 对齐官方签到行为与油猴脚本实测，支持 CDATA 解包与只读回退核验）
   static Future<
     ({
       bool success,
@@ -5059,53 +6106,23 @@ class KlpbbsApi {
       );
     }
 
-    // 2. 依次尝试签到端点（全实时直接请求，零缓存，带时间戳防 CDN 缓存）
+    // 2. 依次尝试官方标准签到端点（优先静态重写路由，失败后备用原生插件路由；一旦获得响应立即停止，杜绝多余扫描引发 WAF 拦截）
     String html = '';
     final ts = DateTime.now().millisecondsSinceEpoch;
-    final endpoints = fastMode
-        ? [
-            ('plugin.php?id=k_misign:sign&operation=qiandao&format=button&formhash=$fh&_t=$ts', <String, String>{
-              'User-Agent': AppConfig.pcUserAgent,
-              'X-Requested-With': 'XMLHttpRequest',
-              'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
-            }),
-          ]
-        : [
-            ('plugin.php?id=k_misign:sign&operation=qiandao&format=button&formhash=$fh&_t=$ts', <String, String>{
-              'User-Agent': AppConfig.pcUserAgent,
-              'X-Requested-With': 'XMLHttpRequest',
-              'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
-            }),
-            ('k_misign-sign.html?operation=qiandao&format=button&formhash=$fh&_t=$ts', <String, String>{
-              'User-Agent': AppConfig.pcUserAgent,
-              'X-Requested-With': 'XMLHttpRequest',
-              'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
-            }),
-            ('plugin.php?id=k_misign:sign&operation=qiandao&format=empty&formhash=$fh&_t=$ts', <String, String>{
-              'User-Agent': AppConfig.pcUserAgent,
-              'X-Requested-With': 'XMLHttpRequest',
-              'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
-            }),
-            ('plugin.php?id=k_misign:sign&operation=qiandao&formhash=$fh&_t=$ts', <String, String>{
-              'User-Agent': AppConfig.pcUserAgent,
-              'X-Requested-With': 'XMLHttpRequest',
-              'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
-            }),
-            ('plugin.php?id=k_misign:sign&operation=qiandao&mobile=2&formhash=$fh&_t=$ts', <String, String>{
-              'X-Requested-With': 'XMLHttpRequest',
-              'Referer': '${AppConfig.baseUrl}plugin.php?id=k_misign:sign&mobile=2',
-            }),
-            ('plugin.php?id=k_misign:sign&operation=qiandao&format=text&formhash=$fh&_t=$ts', <String, String>{
-              'X-Requested-With': 'XMLHttpRequest',
-              'Referer': '${AppConfig.baseUrl}plugin.php?id=k_misign:sign&mobile=2',
-            }),
-            ('plugin.php?id=k_misign:sign&operation=qiandao&infloat=yes&handlekey=qiandao&formhash=$fh&_t=$ts', <String, String>{
-              'User-Agent': AppConfig.pcUserAgent,
-              'X-Requested-With': 'XMLHttpRequest',
-              'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
-            }),
-          ];
+    final endpoints = [
+      ('k_misign-sign.html?operation=qiandao&format=button&formhash=$fh&_t=$ts', <String, String>{
+        'User-Agent': AppConfig.pcUserAgent,
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
+      }),
+      ('plugin.php?id=k_misign:sign&operation=qiandao&format=button&formhash=$fh&_t=$ts', <String, String>{
+        'User-Agent': AppConfig.pcUserAgent,
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': '${AppConfig.baseUrl}k_misign-sign.html',
+      }),
+    ];
 
+    ServerOutageInfo? detectedOutage;
     for (final (ep, headers) in endpoints) {
       try {
         final resp = await _get(
@@ -5115,147 +6132,191 @@ class KlpbbsApi {
           cacheTtl: Duration.zero,
         );
         if (resp.isNotEmpty) {
-          html = resp;
-          if (html.contains('签到成功') ||
-              html.contains('恭喜您签到成功') ||
-              html.contains('获得随机奖励') ||
-              html.contains('已签到') ||
-              html.contains('今日已签') ||
-              html.contains('您今天已经签过到了') ||
-              html.contains('k_misign:tdyq') ||
-              html.contains('k_misign:signed') ||
-              html.contains('signsuccess') ||
-              html.contains('btnvisted') ||
-              html.contains('已打卡')) {
-            break;
+          if (ServerOutageInfo.isOutageHtml(resp)) {
+            detectedOutage = ServerOutageInfo.fromHtml(resp);
+          } else {
+            html = resp;
+            break; // 收到有效响应立即终止请求，严防重复请求触发 WAF 封禁
           }
         }
-      } catch (_) {}
+      } on ServerOutageException catch (e) {
+        detectedOutage = e.info;
+      } catch (e) {
+        final out = ServerOutageInfo.tryParse(e);
+        if (out != null) {
+          detectedOutage = out;
+        }
+      }
     }
 
-    // 3. 解析铁粒与经验、排名、连续天数
+    if (html.isEmpty) {
+      if (detectedOutage != null) {
+        // 静默故障上报：自动通知 AutoSignService 启动恢复探测器
+        AutoSignService.instance.notifyServerOutage(detectedOutage, source: '签到请求');
+        return (
+          success: false,
+          message: '服务器异常(${detectedOutage.statusCode} ${detectedOutage.title})，已启动后台静默实时探测，恢复后自动签到',
+          rewardIron: null,
+          rewardExp: null,
+          rank: null,
+          continuousDays: null,
+        );
+      }
+      return (
+        success: false,
+        message: '网络连接超时或未能连接到论坛服务器',
+        rewardIron: null,
+        rewardExp: null,
+        rank: null,
+        continuousDays: null,
+      );
+    }
+
+    // 3. 响应解包（提取 CDATA 文本，如 <?xml...><root><![CDATA[今日已签]]></root>）
+    final cdataMatch = RegExp(r'<!\[CDATA\[([\s\S]*?)\]\]>').firstMatch(html);
+    final payload = (cdataMatch != null ? cdataMatch.group(1)! : html).trim();
+
+    // 4. 解析铁粒与经验、排名、连续天数
     String? rewardIron;
     String? rewardExp;
     int? rank;
     int? continuousDays;
 
     final ironM =
-        RegExp(r'(?:获得|奖励|铁粒\s*[+]?)\s*(\d+)\s*(?:粒)?铁粒').firstMatch(html) ??
-        RegExp(r'获得随机奖励\s*(\d+)\s*(?:粒)?铁粒').firstMatch(html) ??
-        RegExp(r'(\d+)\s*粒?铁粒').firstMatch(html);
+        RegExp(r'(?:获得|奖励|铁粒\s*[+]?)\s*(\d+)\s*(?:粒)?铁粒').firstMatch(payload) ??
+        RegExp(r'获得随机奖励\s*(\d+)\s*(?:粒)?铁粒').firstMatch(payload) ??
+        RegExp(r'(\d+)\s*粒?铁粒').firstMatch(payload);
     if (ironM != null) rewardIron = ironM.group(1);
 
     final expM =
         RegExp(
           r'(?:获得|奖励|经验\s*[+]?)\s*(\d+)\s*(?:点|EP)?经验',
-        ).firstMatch(html) ??
-        RegExp(r'(\d+)\s*(?:点|EP)?经验').firstMatch(html);
+        ).firstMatch(payload) ??
+        RegExp(r'(\d+)\s*(?:点|EP)?经验').firstMatch(payload);
     if (expM != null) rewardExp = expM.group(1);
 
     final rankM =
-        RegExp(r'''id=["']qiandaobtnnum["'][^>]*value=["']?(\d+)["']?''', caseSensitive: false).firstMatch(html) ??
-        RegExp(r'''value=["']?(\d+)["']?[^>]*id=["']qiandaobtnnum["']''', caseSensitive: false).firstMatch(html) ??
-        RegExp(r'''class=["'][^"']*hidnum[^"']*["'][^>]*value=["']?(\d+)["']?''', caseSensitive: false).firstMatch(html) ??
-        RegExp(r'''(?:今日签到|排名)\s*[:：]?\s*(\d+)''').firstMatch(html) ??
-        RegExp(r'id="qiandaobtnnum"[^>]*>(\d+)<').firstMatch(html) ??
-        RegExp(r'qiandaobtnnum">(\d+)<').firstMatch(html) ??
-        RegExp(r'第\s*(\d+)\s*(?:个|位|名)?签到').firstMatch(html) ??
-        RegExp(r'您是今天第\s*(\d+)\s*个签到的会员').firstMatch(html) ??
-        RegExp(r'排名\s*[：:]?\s*(\d+)').firstMatch(html);
+        RegExp(r'''id=["']qiandaobtnnum["'][^>]*value=["']?(\d+)["']?''', caseSensitive: false).firstMatch(payload) ??
+        RegExp(r'''value=["']?(\d+)["']?[^>]*id=["']qiandaobtnnum["']''', caseSensitive: false).firstMatch(payload) ??
+        RegExp(r'''class=["'][^"']*hidnum[^"']*["'][^>]*value=["']?(\d+)["']?''', caseSensitive: false).firstMatch(payload) ??
+        RegExp(r'''(?:今日签到|排名)\s*[:：]?\s*(\d+)''').firstMatch(payload) ??
+        RegExp(r'id="qiandaobtnnum"[^>]*>(\d+)<').firstMatch(payload) ??
+        RegExp(r'qiandaobtnnum">(\d+)<').firstMatch(payload) ??
+        RegExp(r'第\s*(\d+)\s*(?:个|位|名)?签到').firstMatch(payload) ??
+        RegExp(r'您是今天第\s*(\d+)\s*个签到的会员').firstMatch(payload) ??
+        RegExp(r'排名\s*[：:]?\s*(\d+)').firstMatch(payload);
     if (rankM != null) rank = int.tryParse(rankM.group(1)!);
 
     final daysM =
-        RegExp(r'连续签到\s*(\d+)\s*天').firstMatch(html) ??
-        RegExp(r'已连续\s*(\d+)\s*天').firstMatch(html) ??
-        RegExp('id="lxdays"[^>]*>(\\d+)<').firstMatch(html);
+        RegExp(r'连续签到\s*(\d+)\s*天').firstMatch(payload) ??
+        RegExp(r'已连续\s*(\d+)\s*天').firstMatch(payload) ??
+        RegExp(r'连续\s*(\d+)\s*天').firstMatch(payload) ??
+        RegExp('id="lxdays"[^>]*>(\\d+)<').firstMatch(payload);
     if (daysM != null) continuousDays = int.tryParse(daysM.group(1)!);
 
-    final hasUnsignedClues = html.contains('还没有签到') ||
-        html.contains('未签到') ||
-        html.contains('点我签到') ||
-        html.contains('立即签到');
+    // 5. 核心状态判定分类（对齐 Discuz 原生插件回包与多态状态机）
+    final hasAlreadySignedClues = payload.contains('今日已签') ||
+        payload.contains('已签到') ||
+        payload.contains('签过到') ||
+        payload.contains('签过') ||
+        payload.contains('请勿重复') ||
+        payload.contains('不能重复') ||
+        payload.contains('您今天已经签过到了') ||
+        payload.contains('k_misign:tdyq') ||
+        payload.contains('k_misign:signed') ||
+        payload.contains('btnvisted') ||
+        payload.contains('已打卡');
+
+    // 真正的本次全新签到成功线索（必须有明确的单次奖励或全新成功文案，且绝不能属于今日已签状态）
+    final hasFreshSuccessClues = !hasAlreadySignedClues && (
+        payload.contains('恭喜您签到成功') ||
+        payload.contains('获得随机奖励') ||
+        payload.contains('signsuccess') ||
+        RegExp(r'恭喜.*?获得.*?(?:铁粒|经验)').hasMatch(payload) ||
+        (payload.contains('签到成功') && !payload.contains('已签到'))
+    );
+
+    final isLoggedOut = payload.contains('请先登录') ||
+        payload.contains('需要登录') ||
+        payload.contains('需要先登录') ||
+        payload.contains('未登录') ||
+        payload.contains('登录后') ||
+        payload.contains('非法') ||
+        (payload.contains('formhash') && !hasFreshSuccessClues && !hasAlreadySignedClues);
 
     bool success = false;
-    if (rank != null && rank > 0) {
-      // 捕获到确凿的当日签到排名（如第 1 名），100% 确认签到成功
-      success = true;
-    } else if (html.contains('签到成功') ||
-        html.contains('恭喜您签到成功') ||
-        html.contains('获得随机奖励')) {
-      // 捕获到明确的发奖成功提示
-      success = true;
-    } else if (!hasUnsignedClues) {
-      if (!fastMode &&
-          (html.contains('btnvisted') ||
-              html.contains('已签到') ||
-              html.contains('今日已签') ||
-              html.contains('您今天已经签过到了') ||
-              html.contains('k_misign:tdyq') ||
-              html.contains('k_misign:signed') ||
-              html.contains('signsuccess') ||
-              html.contains('已打卡'))) {
-        success = true;
-      }
-    }
+    bool isAlready = false;
+    String message = '';
 
-    // 核心权威双重核验（仅在常规模式执行，fastMode 冲榜时跳过 27KB 慢请求）：
-    // 强制与服务端网页 signHeaderInfo 实时状态对齐！
-    if (!fastMode) {
-      try {
-        final headerInfo = await getSignHeaderInfo(forceRefresh: true);
-        if (headerInfo.isSignedToday) {
-          success = true;
-          if (headerInfo.rewardIron.isNotEmpty) {
-            rewardIron ??= headerInfo.rewardIron;
-          }
-          if (headerInfo.continuousDays > 0) {
-            continuousDays ??= headerInfo.continuousDays;
-          }
-          if (headerInfo.mySignRank != null && headerInfo.mySignRank! > 0) {
-            rank ??= headerInfo.mySignRank;
-          }
-        } else if (!html.contains('恭喜您签到成功') && !html.contains('获得随机奖励')) {
-          // 服务端网页权威判定今日尚未签到，强制修正 success = false
-          success = false;
-        }
-      } catch (_) {}
-    }
-
-    String message = success ? '签到成功' : '签到未完成';
-    if (html.contains('k_misign:tdyq') ||
-        html.contains('今日已签') ||
-        html.contains('已签到') ||
-        html.contains('您今天已经签过到了')) {
+    if (hasAlreadySignedClues) {
+      // 已经签过到的情况：明确标记 isAlready 为 true，success 为 false（非新签成功）
+      success = false;
+      isAlready = true;
       message = '今日已签到，无需重复签到';
-    } else if (rank != null && rank > 0) {
-      message = '签到成功（今日第 $rank 名）';
-    } else if (success) {
-      message = '签到成功';
-    } else if (!success) {
-      if (html.contains('需要先登录') || html.contains('请先登录')) {
-        message = '登录状态已失效，请重新登录';
-      } else if (html.contains('alert_error')) {
-        final alertM = RegExp(
-          r'<div class="alert_error"[^>]*>([\s\S]*?)<\/div>',
-        ).firstMatch(html);
-        message =
-            alertM?.group(1)?.replaceAll(RegExp(r'<[^>]+>'), '').trim() ??
-            '签到失败';
-      } else if (hasUnsignedClues) {
-        message = '今日尚未签到';
+    } else if (hasFreshSuccessClues) {
+      success = true;
+      isAlready = false;
+      message = (rank != null && rank > 0) ? '签到成功（今日第 $rank 名）' : '签到成功';
+    } else if (isLoggedOut) {
+      success = false;
+      message = '登录状态已失效，请重新登录';
+    } else {
+      // 返回内容陌生，启动只读回退校验（不增加写操作风险）
+      if (!fastMode) {
+        final verified = await verifySigned();
+        if (verified == true) {
+          success = false;
+          isAlready = true;
+          message = '今日已签到';
+        } else {
+          success = false;
+          if (payload.contains('alert_error')) {
+            final alertM = RegExp(
+              r'<div class="alert_error"[^>]*>([\s\S]*?)<\/div>',
+            ).firstMatch(payload);
+            message = alertM?.group(1)?.replaceAll(RegExp(r'<[^>]+>'), '').trim() ?? '签到未完成';
+          } else {
+            message = '签到未完成';
+          }
+        }
       } else {
+        success = false;
         message = '签到请求已提交，等待论坛确认';
       }
     }
 
-    if (success ||
-        html.contains('今日已签') ||
-        html.contains('已签到') ||
-        html.contains('您今天已经签过到了') ||
-        html.contains('k_misign:tdyq') ||
-        html.contains('k_misign:signed') ||
-        html.contains('signsuccess')) {
+    // 6. 权威数据二次同步补充（非 fastMode 时同步头部奖励/连续天数，但绝不逆转已判定的成功）
+    if (!fastMode && (success || isAlready)) {
+      try {
+        final headerInfo = await getSignHeaderInfo(forceRefresh: true);
+        if (headerInfo.rewardIron.isNotEmpty) {
+          rewardIron ??= headerInfo.rewardIron;
+        }
+        if (headerInfo.continuousDays > 0) {
+          continuousDays ??= headerInfo.continuousDays;
+        }
+        if (headerInfo.mySignRank != null && headerInfo.mySignRank! > 0) {
+          rank ??= headerInfo.mySignRank;
+        }
+      } catch (_) {}
+    }
+
+    // 7. 成功或已签时，彻底清理排行榜缓存并落库本地日历与持久化签到成功状态
+    if (success || isAlready) {
       _clearCache();
+      await clearSignLocalCache();
+      await recordSignDateToLocalCalendar();
+      if (!fastMode && success && !isAlready) {
+        try {
+          await AutoSignService.instance.markSignedToday(
+            rank: rank,
+            continuousDays: continuousDays,
+            rewardIron: rewardIron?.toString(),
+            rewardExp: rewardExp?.toString(),
+            notify: false,
+          );
+        } catch (_) {}
+      }
     }
 
     return (
@@ -5323,14 +6384,12 @@ class KlpbbsApi {
       } catch (_) {}
     }
 
+    final doc = html_parser.parse(html);
+
     // 1. 检查是否有 Discuz 权限/错误提示
-    final msgMatch = RegExp(r'<div id="messagetext"[^>]*>([\s\S]*?)</div>').firstMatch(html);
-    if (msgMatch != null) {
-      final msg = msgMatch.group(1)!
-          .replaceAll(RegExp(r'<script[\s\S]*?</script>'), '')
-          .replaceAll(RegExp(r'<[^>]+>'), ' ')
-          .replaceAll(RegExp(r'\s+'), ' ')
-          .trim();
+    final alertEl = doc.querySelector('#messagetext, .jump_c, .alert_error, .alert_info');
+    if (alertEl != null) {
+      final msg = alertEl.text.replaceAll(RegExp(r'\s+'), ' ').trim();
       if (msg.contains('没有权限') ||
           msg.contains('未登录') ||
           msg.contains('已过') ||
@@ -5338,93 +6397,45 @@ class KlpbbsApi {
         return PostEditInfo(errorMessage: msg);
       }
     }
-    final jumpMatch = RegExp(r'<div class="jump_c"[^>]*>([\s\S]*?)</div>').firstMatch(html);
-    if (jumpMatch != null) {
-      final msg = jumpMatch.group(1)!
-          .replaceAll(RegExp(r'<[^>]+>'), ' ')
-          .replaceAll(RegExp(r'\s+'), ' ')
-          .trim();
-      if (msg.contains('没有权限') || msg.contains('未登录') || msg.contains('抱歉')) {
-        return PostEditInfo(errorMessage: msg);
-      }
-    }
 
     // 2. 提取 formhash 和 posttime
     final formhash = _extractFormhash(html) ?? _cachedFormhash;
-    final posttimeMatch = RegExp(r'name="posttime"[^>]*value="(\d+)"').firstMatch(html);
-    final posttime = posttimeMatch?.group(1);
+    final posttimeInput = doc.querySelector('input[name="posttime"]');
+    final posttime = posttimeInput?.attributes['value'];
 
     // 3. 提取 textarea 中的 BBCode message 原文
-    final textareaMatch = RegExp(
-      r'<textarea[^>]+name="message"[^>]*>([\s\S]*?)</textarea>',
-      caseSensitive: false,
-    ).firstMatch(html) ??
-    RegExp(
-      r'<textarea[^>]+id="needmessage"[^>]*>([\s\S]*?)</textarea>',
-      caseSensitive: false,
-    ).firstMatch(html);
-    String rawMessage = '';
-    if (textareaMatch != null) {
-      rawMessage = _unescapeHtml(textareaMatch.group(1)!);
-    }
+    final textareaEl = doc.querySelector('textarea#needmessage, textarea[name="message"]');
+    String rawMessage = _unescapeHtml(textareaEl?.text ?? '');
 
     // 4. 提取标题 subject
-    String subject = '';
-    final subjectMatch = RegExp(
-      r'<input[^>]+name="subject"[^>]*value="([^"]*)"',
-      caseSensitive: false,
-    ).firstMatch(html) ??
-    RegExp(
-      r'<input[^>]+value="([^"]*)"[^>]*name="subject"',
-      caseSensitive: false,
-    ).firstMatch(html);
-    if (subjectMatch != null) {
-      subject = _unescapeHtml(subjectMatch.group(1)!);
-    }
+    final subjectInput = doc.querySelector('input[name="subject"]');
+    String subject = _unescapeHtml(subjectInput?.attributes['value'] ?? '');
 
     // 5. 提取分类 typeid
     int? typeid;
-    final typeidSelectMatch = RegExp(
-      r'<select[^>]+name="typeid"[^>]*>([\s\S]*?)</select>',
-      caseSensitive: false,
-    ).firstMatch(html);
-    if (typeidSelectMatch != null) {
-      final optMatch = RegExp(
-        r'<option[^>]+value="(\d+)"[^>]*selected',
-        caseSensitive: false,
-      ).firstMatch(typeidSelectMatch.group(1)!);
-      if (optMatch != null) {
-        typeid = int.tryParse(optMatch.group(1)!);
-      }
+    final selOpt = doc.querySelector('select[name="typeid"] option[selected]');
+    if (selOpt != null) {
+      typeid = int.tryParse(selOpt.attributes['value'] ?? '');
     }
     if (typeid == null) {
-      final typeidInputMatch = RegExp(
-        r'<input[^>]+name="typeid"[^>]*value="(\d+)"',
-        caseSensitive: false,
-      ).firstMatch(html);
-      if (typeidInputMatch != null) {
-        typeid = int.tryParse(typeidInputMatch.group(1)!);
+      final typeidInput = doc.querySelector('input[name="typeid"]');
+      if (typeidInput != null) {
+        typeid = int.tryParse(typeidInput.attributes['value'] ?? '');
       }
     }
 
     // 6. 提取阅读权限 readperm
     int? readperm;
-    final readpermMatch = RegExp(
-      r'<input[^>]+name="readperm"[^>]*value="(\d+)"',
-      caseSensitive: false,
-    ).firstMatch(html);
-    if (readpermMatch != null) {
-      readperm = int.tryParse(readpermMatch.group(1)!);
+    final readpermInput = doc.querySelector('input[name="readperm"]');
+    if (readpermInput != null) {
+      readperm = int.tryParse(readpermInput.attributes['value'] ?? '');
     }
 
     // 7. 提取标签 tags
     final tags = <String>[];
-    final tagsMatch = RegExp(
-      r'<input[^>]+name="tags"[^>]*value="([^"]*)"',
-      caseSensitive: false,
-    ).firstMatch(html);
-    if (tagsMatch != null && tagsMatch.group(1)!.isNotEmpty) {
-      final tStr = _unescapeHtml(tagsMatch.group(1)!);
+    final tagsInput = doc.querySelector('input[name="tags"]');
+    final tStr = tagsInput?.attributes['value'] ?? '';
+    if (tStr.isNotEmpty) {
       tags.addAll(
         tStr.split(RegExp(r'[,，\s]+')).where((s) => s.isNotEmpty),
       );
@@ -5434,45 +6445,31 @@ class KlpbbsApi {
     final attachments = <PostAttachmentItem>[];
     final seenAids = <int>{};
 
-    final attachRowRegex = RegExp(
-      r'<(?:tr|tbody)[^>]+id="attach_(\d+)"[^>]*>([\s\S]*?)</(?:tr|tbody)>',
-      caseSensitive: false,
-    );
-    for (final m in attachRowRegex.allMatches(html)) {
-      final aid = int.tryParse(m.group(1)!);
+    for (final row in doc.querySelectorAll('tr[id^="attach_"], tbody[id^="attach_"]')) {
+      final idAttr = row.attributes['id'] ?? '';
+      final aid = int.tryParse(idAttr.replaceFirst('attach_', ''));
       if (aid != null && !seenAids.contains(aid)) {
         seenAids.add(aid);
-        final rowContent = m.group(2)!;
-        final nameMatch = RegExp(
-          r'<a[^>]+class="attnt"[^>]*>([^<]+)</a>',
-          caseSensitive: false,
-        ).firstMatch(rowContent) ??
-        RegExp(
-          r'id="span_attach_\d+"[^>]*>([^<]+)<',
-          caseSensitive: false,
-        ).firstMatch(rowContent) ??
-        RegExp(
-          r'<a[^>]+title="([^"]+)"',
-          caseSensitive: false,
-        ).firstMatch(rowContent);
-        final filename = nameMatch != null
-            ? _unescapeHtml(nameMatch.group(1)!.trim())
-            : '附件_$aid';
+        final nameEl = row.querySelector('a.attnt, [id^="span_attach_"], a[title]');
+        final filename = nameEl?.text.trim() ?? nameEl?.attributes['title']?.trim() ?? '附件_$aid';
 
-        final sizeMatch = RegExp(
-          r'<span class="xg1">\s*\(([\d\.]+)\s*([KkMmGg]?[Bb])',
-          caseSensitive: false,
-        ).firstMatch(rowContent);
+        final sizeEl = row.querySelector('.xg1');
         int filesize = 0;
-        if (sizeMatch != null) {
-          final numVal = double.tryParse(sizeMatch.group(1)!) ?? 0;
-          final unit = sizeMatch.group(2)!.toUpperCase();
-          if (unit.startsWith('M')) {
-            filesize = (numVal * 1024 * 1024).round();
-          } else if (unit.startsWith('K')) {
-            filesize = (numVal * 1024).round();
-          } else {
-            filesize = numVal.round();
+        if (sizeEl != null) {
+          final sizeMatch = RegExp(
+            r'\(([\d\.]+)\s*([KkMmGg]?[Bb])',
+            caseSensitive: false,
+          ).firstMatch(sizeEl.text);
+          if (sizeMatch != null) {
+            final numVal = double.tryParse(sizeMatch.group(1)!) ?? 0;
+            final unit = sizeMatch.group(2)!.toUpperCase();
+            if (unit.startsWith('M')) {
+              filesize = (numVal * 1024 * 1024).round();
+            } else if (unit.startsWith('K')) {
+              filesize = (numVal * 1024).round();
+            } else {
+              filesize = numVal.round();
+            }
           }
         }
 
@@ -5482,7 +6479,8 @@ class KlpbbsApi {
             lowerName.endsWith('.jpeg') ||
             lowerName.endsWith('.gif') ||
             lowerName.endsWith('.webp') ||
-            rowContent.contains('attach_img');
+            row.classes.contains('attach_img') ||
+            row.innerHtml.contains('attach_img');
 
         final isInserted = rawMessage.contains('[attach]$aid') ||
             rawMessage.contains('[attachimg]$aid');
@@ -5500,8 +6498,8 @@ class KlpbbsApi {
     }
 
     // 方式 B：检查 delete[] 复选框
-    for (final m in RegExp(r'name="delete\[\]"[^>]+value="(\d+)"').allMatches(html)) {
-      final aid = int.tryParse(m.group(1)!);
+    for (final delInput in doc.querySelectorAll('input[name="delete[]"], input[name*="delete"]')) {
+      final aid = int.tryParse(delInput.attributes['value'] ?? '');
       if (aid != null && !seenAids.contains(aid)) {
         seenAids.add(aid);
         final isInserted = rawMessage.contains('[attach]$aid') ||
@@ -6171,8 +7169,7 @@ class KlpbbsApi {
       if (res.contains('succeedhandle') || (!res.contains('alert_error') && !res.contains('抱歉') && res.isNotEmpty)) {
         return (success: true, message: '操作成功');
       } else {
-        final m = RegExp(r'<div class="alert_error"[^>]*>([\s\S]*?)</div>').firstMatch(res);
-        final msg = m?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '操作失败，可能无权限或已被处理';
+        final msg = _extractDiscuzResponseMessage(res, defaultMsg: '操作失败，可能无权限或已被处理');
         return (success: false, message: msg);
       }
     } catch (e) {
@@ -6340,8 +7337,7 @@ class KlpbbsApi {
       if (res.contains('succeedhandle') || (!res.contains('alert_error') && !res.contains('抱歉') && res.isNotEmpty)) {
         return (success: true, message: '楼层删除成功');
       } else {
-        final m = RegExp(r'<div class="alert_error"[^>]*>([\s\S]*?)</div>').firstMatch(res);
-        final msg = m?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '删除楼层失败';
+        final msg = _extractDiscuzResponseMessage(res, defaultMsg: '删除楼层失败');
         return (success: false, message: msg);
       }
     } catch (e) {
@@ -6384,8 +7380,7 @@ class KlpbbsApi {
       if (res.contains('succeedhandle') || (!res.contains('alert_error') && !res.contains('抱歉') && res.isNotEmpty)) {
         return (success: true, message: banned ? '楼层已成功屏蔽' : '已解除楼层屏蔽');
       } else {
-        final m = RegExp(r'<div class="alert_error"[^>]*>([\s\S]*?)</div>').firstMatch(res);
-        final msg = m?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '屏蔽操作失败';
+        final msg = _extractDiscuzResponseMessage(res, defaultMsg: '屏蔽操作失败');
         return (success: false, message: msg);
       }
     } catch (e) {
@@ -6428,8 +7423,7 @@ class KlpbbsApi {
       if (res.contains('succeedhandle') || (!res.contains('alert_error') && !res.contains('抱歉') && res.isNotEmpty)) {
         return (success: true, message: warned ? '已向该作者发出警告' : '已撤销警告');
       } else {
-        final m = RegExp(r'<div class="alert_error"[^>]*>([\s\S]*?)</div>').firstMatch(res);
-        final msg = m?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '警告操作失败';
+        final msg = _extractDiscuzResponseMessage(res, defaultMsg: '警告操作失败');
         return (success: false, message: msg);
       }
     } catch (e) {
@@ -6452,8 +7446,7 @@ class KlpbbsApi {
       );
 
       if (html.contains('alert_error')) {
-        final m = RegExp(r'<div class="alert_error"[^>]*>([\s\S]*?)</div>').firstMatch(html);
-        final msg = m?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '无权查看该楼层 IP';
+        final msg = _extractDiscuzResponseMessage(html, defaultMsg: '无权查看该楼层 IP');
         return (success: false, ip: '', location: '', message: msg);
       }
 
@@ -6482,25 +7475,24 @@ class KlpbbsApi {
       final fidParam = (fid != null && fid > 0) ? '&fid=$fid' : '';
       final html = await _get('forum.php?mod=modcp&action=report$fidParam&page=$page');
       final list = <({int id, String url, String message, String uName, String dateline})>[];
+      final doc = html_parser.parse(html);
 
-      final rows = RegExp(r'<tr[^>]*>([\s\S]*?)<\/tr>', caseSensitive: false).allMatches(html);
-      for (final r in rows) {
-        final content = r.group(1) ?? '';
-        final idMatch = RegExp(r'name="reportids\[\]"\s+value="(\d+)"').firstMatch(content);
-        if (idMatch == null) continue;
-        final id = int.tryParse(idMatch.group(1)!) ?? 0;
+      for (final tr in doc.querySelectorAll('table tr, .report_list tr, .dt tr, tr')) {
+        final idInput = tr.querySelector('input[name="reportids[]"], input[name*="reportid"]');
+        if (idInput == null) continue;
+        final id = int.tryParse(idInput.attributes['value'] ?? '') ?? 0;
+        if (id <= 0) continue;
 
-        final urlMatch = RegExp(r'<a\s+href="([^"]+)"[^>]*target="_blank"').firstMatch(content);
-        final url = urlMatch?.group(1) ?? '';
+        final urlA = tr.querySelector('a[target="_blank"]');
+        final url = urlA?.attributes['href'] ?? '';
 
-        final uMatch = RegExp(r'<a\s+href="home\.php\?mod=space&[^"]*"[^>]*>([^<]+)</a>').firstMatch(content);
-        final uName = uMatch?.group(1) ?? '匿名用户';
+        final uA = tr.querySelector('a[href*="mod=space"]');
+        final uName = uA?.text.trim() ?? '匿名用户';
 
-        final msgMatch = RegExp(r'<td[^>]*class="[^"]*report[^"]*"[^>]*>([\s\S]*?)</td>', caseSensitive: false).firstMatch(content) ??
-            RegExp(r'<p>([\s\S]*?)</p>', caseSensitive: false).firstMatch(content);
-        final rawMsg = msgMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '违规举报';
+        final msgEl = tr.querySelector('td.report, [class*="report"], p');
+        final rawMsg = msgEl?.text.trim() ?? '违规举报';
 
-        final dateMatch = RegExp(r'(\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{1,2})').firstMatch(content);
+        final dateMatch = RegExp(r'(\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{1,2})').firstMatch(tr.text);
         final dateline = dateMatch?.group(1) ?? '';
 
         list.add((
@@ -6706,39 +7698,35 @@ class KlpbbsApi {
       final html = await _get('home.php?mod=spacecp&ac=plugin&id=sunju_facemall:face&mobile=2');
       final formhash = _extractFormhash(html) ?? _cachedFormhash ?? '';
 
-      // 移除 script 和 style 标签，杜绝匹配到 JS 模板代码
-      final cleanHtml = html
-          .replaceAll(RegExp(r'<script[\s\S]*?<\/script>', caseSensitive: false), '')
-          .replaceAll(RegExp(r'<style[\s\S]*?<\/style>', caseSensitive: false), '');
+      final doc = html_parser.parse(html);
+      doc.querySelectorAll('script, style').forEach((e) => e.remove());
 
-      // 解析当前佩戴挂件与当前头像（严格剔除 {$sj_my} 等模板变量）
+      // 解析当前佩戴挂件与当前头像（从 #sj_fm_myface 容器中查找）
       String? myFace;
-      final myM = RegExp(r'<div[^>]*id="sj_fm_myface"[^>]*>[\s\S]*?<img[^>]*class="b"[^>]*src="([^"]+)"', caseSensitive: false).firstMatch(cleanHtml);
-      if (myM != null) {
-        var src = myM.group(1)!.trim();
-        if (!src.contains('{') && !src.contains('}') && !src.contains('\$') && src.isNotEmpty && src != 'none') {
+      final myFaceEl = doc.querySelector('#sj_fm_myface img.b, #sj_fm_myface .b, .sj_fm_myface img.b');
+      if (myFaceEl != null) {
+        var src = myFaceEl.attributes['src']?.trim() ?? myFaceEl.attributes['data-src']?.trim() ?? '';
+        if (src.isNotEmpty && !src.contains('{') && !src.contains('}') && !src.contains('\$') && src != 'none') {
           if (!src.startsWith('http')) src = '${AppConfig.baseUrl}$src';
           myFace = src;
         }
       }
 
       String? userAvatar;
-      final avtM = RegExp(r'<div[^>]*id="sj_fm_myface"[^>]*>[\s\S]*?<img[^>]*class="a"[^>]*src="([^"]+)"', caseSensitive: false).firstMatch(cleanHtml);
-      if (avtM != null) {
-        var src = avtM.group(1)!.trim();
-        if (!src.contains('{') && !src.contains('}') && !src.contains('\$') && src.isNotEmpty) {
+      final avtEl = doc.querySelector('#sj_fm_myface img.a, #sj_fm_myface .a, .sj_fm_myface img.a');
+      if (avtEl != null) {
+        var src = avtEl.attributes['src']?.trim() ?? avtEl.attributes['data-src']?.trim() ?? '';
+        if (src.isNotEmpty && !src.contains('{') && !src.contains('}') && !src.contains('\$')) {
           userAvatar = src;
         }
       }
 
-      // 严格仅在 #sj_fm_catelist 区域内解析分类标签（杜绝匹配到底部的 确认购买 按钮）
+      // 仅在 #sj_fm_catelist 区域内解析分类标签
       final categories = <(int, String)>[];
-      final catBlockMatch = RegExp(r'<div[^>]*id="sj_fm_catelist"[^>]*>([\s\S]*?)<\/div>', caseSensitive: false).firstMatch(cleanHtml);
-      final catContent = catBlockMatch?.group(1) ?? cleanHtml;
-      final catMatches = RegExp(r'<div[^>]*data-id="([1-9]\d*)"[^>]*>([^<]+)<\/div>').allMatches(catContent);
-      for (final m in catMatches) {
-        final cid = int.tryParse(m.group(1) ?? '') ?? 0;
-        final cname = m.group(2)!.trim();
+      final catEls = doc.querySelectorAll('#sj_fm_catelist [data-id], .sj_fm_catelist [data-id]');
+      for (final el in catEls) {
+        final cid = int.tryParse(el.attributes['data-id'] ?? '') ?? 0;
+        final cname = el.text.trim();
         if (cid > 0 && cname.isNotEmpty && !categories.any((c) => c.$1 == cid)) {
           categories.add((cid, cname));
         }
@@ -6748,26 +7736,29 @@ class KlpbbsApi {
         categories.addAll([(1, '默认'), (2, '二次元'), (3, '我的世界'), (4, '综合'), (5, '其他')]);
       }
 
-      // 严格在 HTML 中解析首屏挂件列表（杜绝匹配 JS 变量与模板标记）
+      // 在 HTML DOM 中解析首屏挂件列表
       final items = <Map<String, dynamic>>[];
-      final itemMatches = RegExp(
-        r'<div[^>]*class="shop[^"]*"[^>]*data-id="(\d+)"[^>]*data-price="([^"]*)"[\s\S]*?<img[^>]*class="b"[^>]*src="([^"]+)"[\s\S]*?<div[^>]*class="shop_name">([^<]+)<\/div>',
-        caseSensitive: false,
-      ).allMatches(cleanHtml);
+      final itemEls = doc.querySelectorAll('.shop[data-id], [class*="shop"][data-id], #sj_fm_shoplist [data-id]');
+      for (final el in itemEls) {
+        final id = el.attributes['data-id'] ?? '';
+        if (id.isEmpty) continue;
 
-      for (final m in itemMatches) {
-        final id = m.group(1) ?? '';
-        final title = m.group(4)?.trim() ?? '';
+        final nameEl = el.querySelector('.shop_name, .name, [class*="name"]');
+        final title = nameEl?.text.trim() ?? '';
         if (title.isEmpty || title.contains('+') || title.contains('v.s_title') || title.contains('{') || title.contains('}')) continue;
-        var src = m.group(3) ?? '';
-        if (src.contains('{') || src.contains('}') || src.isEmpty) {
+
+        // 挂件贴图：严格匹配挂件图片，严禁误取用户自身头像 img.a
+        final imgEl = el.querySelector('img.b, .b, img[src*="sunju_facemall"], img[src*="fm_"], img[data-src*="sunju_facemall"], img[data-src*="fm_"]');
+        var src = imgEl?.attributes['src']?.trim() ?? imgEl?.attributes['data-src']?.trim() ?? '';
+        if (src.isEmpty || src.contains('avatar') || src.contains('noavatar') || src.contains('{') || src.contains('}')) {
           src = '${AppConfig.baseUrl}data/attachment/sunju_facemall/fm_$id.png';
         } else if (!src.startsWith('http')) {
           src = '${AppConfig.baseUrl}$src';
         }
+
         items.add({
           'id': id,
-          'price': m.group(2) ?? '0',
+          'price': el.attributes['data-price'] ?? '0',
           'img': src,
           'title': title,
         });
@@ -6808,7 +7799,7 @@ class KlpbbsApi {
         for (final item in json['data']) {
           final id = item['id']?.toString() ?? '';
           var img = item['s_img']?.toString() ?? '';
-          if (img.isEmpty || img.contains('{')) {
+          if (img.isEmpty || img.contains('{') || img.contains('avatar') || img.contains('noavatar')) {
             img = '${AppConfig.baseUrl}data/attachment/sunju_facemall/fm_$id.png';
           } else if (!img.startsWith('http')) {
             img = '${AppConfig.baseUrl}$img';
@@ -6838,7 +7829,7 @@ class KlpbbsApi {
         for (final item in json['data']) {
           final id = item['id']?.toString() ?? '';
           var img = item['s_img']?.toString() ?? '';
-          if (img.isEmpty || img.contains('{')) {
+          if (img.isEmpty || img.contains('{') || img.contains('avatar') || img.contains('noavatar')) {
             img = '${AppConfig.baseUrl}data/attachment/sunju_facemall/fm_$id.png';
           } else if (!img.startsWith('http')) {
             img = '${AppConfig.baseUrl}$img';
@@ -7044,12 +8035,17 @@ class KlpbbsApi {
       final param = smod.isNotEmpty ? '&smod=$smod' : '';
       final html = await _get('plugin.php?id=comiis_app_homestyle$param&mobile=2');
       final list = <Map<String, String>>[];
-      final matches = RegExp(
-        r'''comiis_homestylevx\(this,\s*['"]([^'"]+)['"],\s*['"](\d+)['"]\)''',
-        caseSensitive: false,
-      ).allMatches(html);
+      final doc = html_parser.parse(html);
 
-      for (final m in matches) {
+      final elements = doc.querySelectorAll('[onclick*="comiis_homestylevx"], [data-url], .comiis_p12 li, #comiis_homestyle li, li');
+      for (final el in elements) {
+        final onclick = el.attributes['onclick'] ?? '';
+        final m = RegExp(
+          r'''comiis_homestylevx\(this,\s*['"]([^'"]+)['"],\s*['"](\d+)['"]\)''',
+          caseSensitive: false,
+        ).firstMatch(onclick);
+        if (m == null) continue;
+
         var rawPath = m.group(1) ?? '';
         final id = m.group(2) ?? '';
         if (rawPath.startsWith('.')) rawPath = rawPath.substring(1);
@@ -7073,7 +8069,9 @@ class KlpbbsApi {
           name = '主世界';
         }
 
-        list.add({'url': fullUrl, 'name': name, 'id': id});
+        if (!list.any((item) => item['id'] == id)) {
+          list.add({'url': fullUrl, 'name': name, 'id': id});
+        }
       }
       return list;
     } catch (_) {
@@ -7107,12 +8105,38 @@ class KlpbbsApi {
         forceRefresh: forceRefresh,
       );
 
-      final streamM = RegExp(r'data-stream="([^"]+)"').firstMatch(html);
-      final apiM = RegExp(r'data-api="([^"]+)"').firstMatch(html);
-      final inputMaxM = RegExp(r'data-inputmax="(\d+)"').firstMatch(html);
-      final chatOnM = RegExp(r'data-chaton="([^"]+)"').firstMatch(html);
-      final freeM = RegExp(r'data-kai-free[^>]*>(\d+)<').firstMatch(html);
-      final balM = RegExp(r'data-kai-balance[^>]*>(\d+)<').firstMatch(html);
+      final doc = html_parser.parse(html);
+
+      final streamEl = doc.querySelector('[data-stream]');
+      final streamUrl = streamEl?.attributes['data-stream'] ??
+          RegExp(r'data-stream="([^"]+)"').firstMatch(html)?.group(1) ??
+          'plugin.php?id=klpbbs_ai:stream';
+
+      final apiEl = doc.querySelector('[data-api]');
+      final apiUrl = apiEl?.attributes['data-api'] ??
+          RegExp(r'data-api="([^"]+)"').firstMatch(html)?.group(1) ??
+          'plugin.php?id=klpbbs_ai:api';
+
+      final inputMaxEl = doc.querySelector('[data-inputmax]');
+      final inputMax = int.tryParse(inputMaxEl?.attributes['data-inputmax'] ?? '') ??
+          int.tryParse(RegExp(r'data-inputmax="(\d+)"').firstMatch(html)?.group(1) ?? '') ??
+          1000;
+
+      final chatOnEl = doc.querySelector('[data-chaton]');
+      final chatOnVal = chatOnEl?.attributes['data-chaton'] ??
+          RegExp(r'data-chaton="([^"]+)"').firstMatch(html)?.group(1);
+      final chatOn = chatOnVal != '0';
+
+      final freeEl = doc.querySelector('[data-kai-free], .kai-free');
+      final freeLeft = int.tryParse(freeEl?.attributes['data-kai-free'] ?? freeEl?.text.trim() ?? '') ??
+          int.tryParse(RegExp(r'data-kai-free[^>]*>(\d+)<').firstMatch(html)?.group(1) ?? '') ??
+          50;
+
+      final balEl = doc.querySelector('[data-kai-balance], .kai-balance');
+      final balance = int.tryParse(balEl?.attributes['data-kai-balance'] ?? balEl?.text.trim() ?? '') ??
+          int.tryParse(RegExp(r'data-kai-balance[^>]*>(\d+)<').firstMatch(html)?.group(1) ?? '') ??
+          0;
+
       final fhM = _extractFormhash(html);
 
       Map<String, dynamic> panels = {};
@@ -7127,19 +8151,21 @@ class KlpbbsApi {
       final reportsM = RegExp(r'var\s+KAI_REPORTS\s*=\s*(\[.*?\]);', dotAll: true).firstMatch(html);
       if (reportsM != null) {
         try {
-          final decoded = jsonDecode(reportsM.group(1)!) as List<dynamic>;
-          reports = decoded.whereType<Map<String, dynamic>>().toList();
+          final decoded = jsonDecode(reportsM.group(1)!);
+          if (decoded is List) {
+            reports = decoded.whereType<Map<String, dynamic>>().toList();
+          }
         } catch (_) {}
       }
 
       return PapaChatContext(
-        streamUrl: streamM?.group(1) ?? 'plugin.php?id=klpbbs_ai:stream',
-        apiUrl: apiM?.group(1) ?? 'plugin.php?id=klpbbs_ai:api',
+        streamUrl: streamUrl,
+        apiUrl: apiUrl,
         formhash: fhM ?? '',
-        freeLeft: freeM != null ? int.tryParse(freeM.group(1)!) ?? 50 : 50,
-        balance: balM != null ? int.tryParse(balM.group(1)!) ?? 0 : 0,
-        chatOn: chatOnM?.group(1) != '0',
-        inputMax: inputMaxM != null ? int.tryParse(inputMaxM.group(1)!) ?? 1000 : 1000,
+        freeLeft: freeLeft,
+        balance: balance,
+        chatOn: chatOn,
+        inputMax: inputMax,
         panels: panels,
         reports: reports,
       );
@@ -7394,33 +8420,68 @@ class KlpbbsApi {
         forceRefresh: true,
       );
 
-      final freeM = RegExp(r'data-kai-free[^>]*>(\d+)<').firstMatch(html);
+      final doc = html_parser.parse(html);
+
+      // 提取免费点数与总额
+      int freeLeft = 50;
+      int freeTotal = 50;
+      final freeEl = doc.querySelector('[data-kai-free], .kai-free');
+      if (freeEl != null) {
+        final val = int.tryParse(freeEl.attributes['data-kai-free'] ?? freeEl.text.trim());
+        if (val != null) freeLeft = val;
+      } else {
+        final freeM = RegExp(r'data-kai-free[^>]*>(\d+)<').firstMatch(html);
+        if (freeM != null) freeLeft = int.tryParse(freeM.group(1)!) ?? 50;
+      }
       final freeTotalM = RegExp(r'/\s*(\d+)').firstMatch(html);
-      final balM = RegExp(r'data-kai-balance[^>]*>(\d+)<').firstMatch(html);
-      final exMinM = RegExp(r'id="kai-amount"[^>]*min="(\d+)"').firstMatch(html);
+      if (freeTotalM != null) freeTotal = int.tryParse(freeTotalM.group(1)!) ?? 50;
+
+      // 提取火药余额
+      int balance = 0;
+      final balEl = doc.querySelector('[data-kai-balance], .kai-balance');
+      if (balEl != null) {
+        final val = int.tryParse(balEl.attributes['data-kai-balance'] ?? balEl.text.trim());
+        if (val != null) balance = val;
+      } else {
+        final balM = RegExp(r'data-kai-balance[^>]*>(\d+)<').firstMatch(html);
+        if (balM != null) balance = int.tryParse(balM.group(1)!) ?? 0;
+      }
+
+      // 兑换最低数量
+      int exchangeMin = 1;
+      final minEl = doc.querySelector('#kai-amount, input[name="amount"]');
+      if (minEl != null) {
+        final val = int.tryParse(minEl.attributes['min'] ?? '');
+        if (val != null && val > 0) exchangeMin = val;
+      }
 
       // 解析兑换比率
       final rates = <PapaExchangeRate>[];
-      final optMatches = RegExp(r'<option\s+value="(\d+)"\s+data-rate="(\d+)"[^>]*>([^<]+)</option>').allMatches(html);
-      for (final m in optMatches) {
-        final src = int.tryParse(m.group(1)!) ?? 0;
-        final rate = int.tryParse(m.group(2)!) ?? 0;
-        final title = m.group(3)!.trim();
-        final haveM = RegExp(r'有\s*(\d+)').firstMatch(title);
-        final have = haveM != null ? int.tryParse(haveM.group(1)!) ?? 0 : 0;
-        rates.add(PapaExchangeRate(src: src, title: title, have: have, rate: rate));
+      for (final opt in doc.querySelectorAll('select#kai-credits option, select option[data-rate], select option[value]')) {
+        final valStr = opt.attributes['value'] ?? '';
+        final src = int.tryParse(valStr) ?? 0;
+        final rateStr = opt.attributes['data-rate'] ?? '';
+        final rate = int.tryParse(rateStr) ?? 0;
+        final title = opt.text.trim();
+        if (src > 0 || rate > 0) {
+          final haveM = RegExp(r'有\s*(\d+)').firstMatch(title);
+          final have = haveM != null ? int.tryParse(haveM.group(1)!) ?? 0 : 0;
+          rates.add(PapaExchangeRate(src: src, title: title, have: have, rate: rate));
+        }
       }
 
       // 解析计费表
       final prices = <PapaPriceItem>[];
-      final priceMatches = RegExp(r'<div class="p"><span>([^<]+)</span><b>([^<]+)</b></div>').allMatches(html);
-      for (final m in priceMatches) {
-        prices.add(PapaPriceItem(name: m.group(1)!.trim(), price: m.group(2)!.trim()));
+      for (final pEl in doc.querySelectorAll('.kai-price .p, .p')) {
+        final span = pEl.querySelector('span');
+        final b = pEl.querySelector('b');
+        if (span != null && b != null) {
+          prices.add(PapaPriceItem(name: span.text.trim(), price: b.text.trim()));
+        }
       }
 
       // 解析流水明细
       final logs = <PapaCreditLog>[];
-      final doc = html_parser.parse(html);
       final liElements = doc.querySelectorAll('.kai-flow li');
       for (final li in liElements) {
         final time = li.querySelector('.time')?.text.trim() ?? '';
@@ -7441,11 +8502,11 @@ class KlpbbsApi {
       }
 
       return PapaWallet(
-        freeLeft: freeM != null ? int.tryParse(freeM.group(1)!) ?? 50 : 50,
-        freeTotal: freeTotalM != null ? int.tryParse(freeTotalM.group(1)!) ?? 50 : 50,
-        balance: balM != null ? int.tryParse(balM.group(1)!) ?? 0 : 0,
-        exchangeOn: html.contains('kai_exchangesubmit'),
-        exchangeMin: exMinM != null ? int.tryParse(exMinM.group(1)!) ?? 1 : 1,
+        freeLeft: freeLeft,
+        freeTotal: freeTotal,
+        balance: balance,
+        exchangeOn: html.contains('kai_exchangesubmit') || doc.querySelector('form[name="kai_exchange"]') != null,
+        exchangeMin: exchangeMin,
         rates: rates,
         prices: prices,
         logs: logs,
@@ -7479,8 +8540,7 @@ class KlpbbsApi {
       if (res.contains('成功') || res.contains('兑换成功')) {
         return (success: true, message: '火药兑换成功！');
       }
-      final msgM = RegExp(r'<div id="messagetext"[^>]*>.*?<p>([^<]+)</p>', dotAll: true).firstMatch(res);
-      final msg = msgM != null ? msgM.group(1)!.trim() : '兑换已提交';
+      final msg = _extractDiscuzResponseMessage(res, defaultMsg: '兑换已提交');
       return (success: true, message: msg);
     } catch (e) {
       return (success: false, message: '兑换失败：$e');

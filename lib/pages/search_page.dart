@@ -4,11 +4,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
 import '../models/forum.dart';
+import '../models/server_outage_info.dart';
 import '../models/thread_summary.dart';
 import '../models/user_space.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
+import '../widgets/server_outage_view.dart';
 import '../widgets/skeleton_list.dart';
 import '../widgets/thread_card.dart';
 import 'thread_detail_page.dart';
@@ -33,6 +35,7 @@ class _SearchPageState extends State<SearchPage> {
   List<UserSpace>? _userResults;
   bool _loading = false;
   String? _error;
+  ServerOutageInfo? _activeOutage;
   List<String> _history = [];
   int _page = 1;
   int _totalPages = 1;
@@ -127,6 +130,7 @@ class _SearchPageState extends State<SearchPage> {
       _page = page;
       _loading = true;
       _error = null;
+      _activeOutage = null;
       _isAllMode = false;
       _fetchingAll = false;
     });
@@ -148,6 +152,7 @@ class _SearchPageState extends State<SearchPage> {
           _threadResults = results;
           _userResults = null;
           _loading = false;
+          _activeOutage = null;
           if (results.length >= 10) {
             _totalPages = math.max(_totalPages, page + 1);
           } else {
@@ -164,6 +169,7 @@ class _SearchPageState extends State<SearchPage> {
           _userResults = users;
           _threadResults = null;
           _loading = false;
+          _activeOutage = null;
           if (users.length >= 10) {
             _totalPages = math.max(_totalPages, page + 1);
           } else {
@@ -174,9 +180,11 @@ class _SearchPageState extends State<SearchPage> {
       }
     } catch (e) {
       if (!mounted) return;
+      final outage = ServerOutageInfo.tryParse(e);
       setState(() {
         _loading = false;
-        _error = '搜索失败：$e';
+        _activeOutage = outage;
+        _error = outage != null ? '源站网关异常 (${outage.statusCode})' : '搜索失败：$e';
       });
     }
   }
@@ -499,8 +507,17 @@ class _SearchPageState extends State<SearchPage> {
               // 搜索中 loading 骨架屏
               if (_loading && !_fetchingAll) const SkeletonList(itemCount: 6),
 
-              // 错误/空状态提示
-              if (_error != null && !_loading && !_fetchingAll)
+              // 502 服务端网关故障全景视图
+              if (_activeOutage != null && !_loading && !_fetchingAll)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: ServerOutageView(
+                    outage: _activeOutage!,
+                    onRetry: () => _doSearch(page: _page),
+                  ),
+                )
+              // 常规错误/空状态提示
+              else if (_error != null && !_loading && !_fetchingAll)
                 Container(
                   padding: const EdgeInsets.all(20),
                   alignment: Alignment.center,

@@ -24,13 +24,16 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
       .replaceAll('>', '&gt;');
 
   // 1.5 表情短码与 Discuz 标准表情代码转换 (如 [贴吧_滑稽], [哔哩_doge], {:12_292:}, {:6_178:} 等)
-  final smileyMap = ComiisParser.getSmileyCodeMap(customSmileys);
-  for (final entry in smileyMap.entries) {
-    if (s.contains(entry.key)) {
-      s = s.replaceAll(
-        entry.key,
-        '<img src="${entry.value}" class="vm" smilieid="1" alt="${entry.key}" />',
-      );
+  if (s.contains('[') || s.contains('{:')) {
+    final smileyMap = ComiisParser.getSmileyCodeMap(customSmileys);
+    for (final entry in smileyMap.entries) {
+      if (entry.key.isEmpty) continue;
+      if (s.contains(entry.key)) {
+        s = s.replaceAll(
+          entry.key,
+          '<img src="${entry.value}" class="vm" smilieid="1" alt="${entry.key}" />',
+        );
+      }
     }
   }
 
@@ -248,7 +251,7 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
     (m) {
       final panName = m[1]?.trim().isNotEmpty == true ? m[1]!.trim() : '网盘下载';
       final content = m[2]?.trim() ?? '';
-      return '<div class="comiis_attach" style="padding:10px;margin:8px 0;background-color:#f0f9eb;border:1px solid #e1f3d8;border-radius:6px;"><b>💾 $panName:</b> $content</div>';
+      return '<div class="comiis_pan" style="padding:10px;margin:8px 0;background-color:#f0f9eb;border:1px solid #e1f3d8;border-radius:6px;"><b>💾 $panName:</b> $content</div>';
     },
   );
   s = s.replaceAllMapped(
@@ -256,7 +259,7 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
     (m) {
       final downName = m[1]?.trim().isNotEmpty == true ? m[1]!.trim() : '资源下载';
       final content = m[2]?.trim() ?? '';
-      return '<div class="comiis_attach" style="padding:10px;margin:8px 0;background-color:#ecf5ff;border:1px solid #d9ecff;border-radius:6px;"><b>⬇️ $downName:</b> $content</div>';
+      return '<div class="comiis_pan" style="padding:10px;margin:8px 0;background-color:#ecf5ff;border:1px solid #d9ecff;border-radius:6px;"><b>⬇️ $downName:</b> $content</div>';
     },
   );
 

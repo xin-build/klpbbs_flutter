@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_config.dart';
+import '../models/server_outage_info.dart';
 
 /// Dio 单例：统一 UA、超时、Cookie 会话管理与环境感知写策略
 class DioClient {
@@ -146,7 +147,6 @@ class DioClient {
         sendTimeout: AppConfig.timeout,
         followRedirects: false,
         headers: {
-          'User-Agent': AppConfig.userAgent,
           'Accept':
               'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
           'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
@@ -155,8 +155,6 @@ class DioClient {
           'Sec-Fetch-Mode': 'navigate',
           'Sec-Fetch-Dest': 'document',
           'Sec-Ch-Ua': '"Not A(Brand";v="99", "Chromium";v="120", "Google Chrome";v="120"',
-          'Sec-Ch-Ua-Mobile': AppConfig.usePcUa ? '?0' : '?1',
-          'Sec-Ch-Ua-Platform': AppConfig.usePcUa ? '"Windows"' : '"Android"',
         },
       ),
     );
@@ -164,8 +162,43 @@ class DioClient {
     d.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) {
-          // 动态同步最新 UA 与 Referer（保留显式传入的自定义 UA，如 pcUserAgent）
-          options.headers['User-Agent'] ??= AppConfig.userAgent;
+          // UA 按需设置，不要统一：优先尊重调用方显式指定的 User-Agent，未指定时按 endpoint 场景精准匹配
+          final String resolvedUa;
+          final explicitUa = options.headers['User-Agent'] as String?;
+          if (explicitUa != null && explicitUa.isNotEmpty) {
+            resolvedUa = explicitUa;
+          } else {
+            final p = options.path.toLowerCase();
+            final q = options.uri.query.toLowerCase();
+            final combined = '$p?$q';
+
+            // 1. 显式 PC 端参数或 PC 专属核心功能模块（Discuz! 核心道具、积分转账、管理面板、AI 钱包等在移动端无完整独立页面）
+            if (combined.contains('mobile=no') ||
+                combined.contains('mod=magic') ||
+                combined.contains('op=transfer') ||
+                combined.contains('klpbbs_ai') ||
+                combined.contains('mod=modcp') ||
+                combined.contains('action=order') ||
+                combined.contains('action=viewratings') ||
+                combined.contains('k_misign-sign')) {
+              resolvedUa = AppConfig.pcUserAgent;
+            } else if (combined.contains('mod=post') ||
+                combined.contains('topicsubmit=yes') ||
+                combined.contains('replysubmit=yes')) {
+              // 2. 发帖与回复：遵循用户在发帖/回复界面选择的设备设置 (AppConfig.userAgent / usePcUa)
+              resolvedUa = AppConfig.userAgent;
+            } else {
+              // 3. 其他所有常规页面按页面自身需求，默认移动端 (Comiis 手机模板)
+              resolvedUa = AppConfig.mobileUserAgent;
+            }
+            options.headers['User-Agent'] = resolvedUa;
+          }
+
+          // 动态 Client Hints 与 UA 特征完美协同，杜绝因 UA 与 Client Hints 矛盾被 WAF 拦截
+          final isPcUa = resolvedUa.contains('Windows') || resolvedUa.contains('x64') || resolvedUa == AppConfig.pcUserAgent;
+          options.headers['Sec-Ch-Ua-Mobile'] = isPcUa ? '?0' : '?1';
+          options.headers['Sec-Ch-Ua-Platform'] = isPcUa ? '"Windows"' : '"Android"';
+
           options.headers['Referer'] ??= AppConfig.baseUrl;
           if (options.path.contains('inajax=1') ||
               options.uri.queryParameters['inajax'] == '1') {
@@ -243,6 +276,13 @@ class DioClient {
             return;
           }
           handler.next(response);
+        },
+        onError: (err, handler) {
+          if (ServerOutageInfo.isOutageDioException(err)) {
+            final outageInfo = ServerOutageInfo.fromDioException(err);
+            err = err.copyWith(error: ServerOutageException(outageInfo));
+          }
+          handler.next(err);
         },
       ),
     );

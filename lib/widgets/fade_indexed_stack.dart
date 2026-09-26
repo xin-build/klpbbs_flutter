@@ -1,11 +1,12 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
-/// 带平滑渐变淡入动画的 IndexedStack，完整保留所有子页面状态（滚动位置、输入内容、缓存数据）
+/// 带平滑渐变淡入动画与按需惰性挂载的 IndexedStack，完整保留所有子页面状态（滚动位置、输入内容、缓存数据）
 class FadeIndexedStack extends StatefulWidget {
   final int index;
   final List<Widget> children;
   final Duration duration;
   final Curve curve;
+  final bool lazy;
 
   const FadeIndexedStack({
     super.key,
@@ -13,6 +14,7 @@ class FadeIndexedStack extends StatefulWidget {
     required this.children,
     this.duration = const Duration(milliseconds: 220),
     this.curve = Curves.easeOutCubic,
+    this.lazy = true,
   });
 
   @override
@@ -24,11 +26,13 @@ class _FadeIndexedStackState extends State<FadeIndexedStack>
   late AnimationController _controller;
   late Animation<double> _animation;
   late int _currentIndex;
+  late final Set<int> _activatedIndices;
 
   @override
   void initState() {
     super.initState();
     _currentIndex = widget.index;
+    _activatedIndices = {widget.index};
     _controller = AnimationController(
       vsync: this,
       duration: widget.duration,
@@ -44,6 +48,7 @@ class _FadeIndexedStackState extends State<FadeIndexedStack>
   void didUpdateWidget(FadeIndexedStack oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.index != oldWidget.index) {
+      _activatedIndices.add(widget.index);
       setState(() {
         _currentIndex = widget.index;
       });
@@ -63,8 +68,14 @@ class _FadeIndexedStackState extends State<FadeIndexedStack>
       opacity: _animation,
       child: IndexedStack(
         index: _currentIndex.clamp(0, widget.children.isEmpty ? 0 : widget.children.length - 1),
-        children: widget.children,
+        children: List.generate(widget.children.length, (i) {
+          if (!widget.lazy || _activatedIndices.contains(i)) {
+            return widget.children[i];
+          }
+          return const SizedBox.shrink();
+        }),
       ),
     );
   }
 }
+

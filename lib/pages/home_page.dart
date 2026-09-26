@@ -12,20 +12,31 @@ import '../core/app_config.dart';
 import '../core/dio_client.dart';
 import '../core/forum_events.dart';
 import '../core/preload_service.dart';
+import '../core/write_confirm.dart';
+import '../models/dashboard_card_model.dart';
 import '../models/forum.dart';
 import '../models/site_stats.dart';
 import '../models/thread_summary.dart';
+import '../models/server_outage_info.dart';
+import '../widgets/server_outage_view.dart';
+import '../widgets/dashboard_cards/dashboard_card_factory.dart';
+import '../widgets/dashboard_skeleton_view.dart';
 import '../widgets/desktop_shortcuts.dart';
+import '../widgets/diy_layout_studio.dart';
 import '../widgets/horn_banner_widget.dart';
+import '../widgets/mobile_home_customizer.dart';
 import '../widgets/responsive_layout.dart';
 import '../widgets/retry_image.dart';
+import '../widgets/site_stats_card.dart';
 import '../widgets/skeleton_list.dart';
+import '../widgets/interactive_animations.dart';
 import '../widgets/thread_card.dart';
-import '../widgets/tuhao_banner_widget.dart';
+import '../widgets/visual_grid_canvas.dart';
 import '../services/auto_sign_service.dart';
 import '../services/push_notification_service.dart';
 import 'credit_page.dart';
 import 'darkroom_page.dart';
+import 'favorite_hub_page.dart';
 import 'forums_page.dart';
 import 'guide_page.dart';
 import 'login_page.dart';
@@ -34,11 +45,14 @@ import 'medal_page.dart';
 import 'notice_page.dart';
 import 'papa_ai_chat_page.dart';
 import 'pm_inbox_page.dart';
+import 'post_page.dart';
 import 'ranklist_page.dart';
 import 'search_page.dart';
+import 'task_page.dart';
 import 'thread_detail_page.dart';
 import 'thread_list_page.dart';
 import 'user_space_page.dart';
+import 'user_threads_page.dart';
 
 /// 首页：版块导航 + 推荐帖子
 class HomePage extends StatefulWidget {
@@ -66,6 +80,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   late Future<(List<ForumGroup>, List<ThreadSummary>, SiteStats)> _future;
+  ServerOutageInfo? _activeOutage;
   final _homeScrollCtrl = ScrollController();
   int _unreadPm = 0;
   int _unreadNotice = 0;
@@ -85,12 +100,17 @@ class _HomePageState extends State<HomePage> {
     _homeScrollCtrl.addListener(_onHomeScroll);
     PushNotificationService.instance.addListener(_onPushNotificationUpdate);
     ForumFavoriteNotifier.instance.addListener(_loadFavForums);
+    AppConfig.instance.addListener(_onAppConfigUpdate);
     ComiisParser.loadTidForumCache();
     _future = _load();
     _loadFavForums();
-    if ((AppConfig.autoCheckin || AutoSignService.instance.autoSignOnLaunch) && DioClient.isLoggedIn) {
-      AutoSignService.instance.checkAndAutoSignIn(triggerSource: '首页启动自动打卡');
+    if (DioClient.isLoggedIn) {
+      AutoSignService.instance.checkOnAppLaunch();
     }
+  }
+
+  void _onAppConfigUpdate() {
+    if (mounted) setState(() {});
   }
 
   void _onPushNotificationUpdate() {
@@ -136,8 +156,14 @@ class _HomePageState extends State<HomePage> {
     final cachedThreads = PreloadService.instance.get<List<ThreadSummary>>('home_threads', ignoreExpired: true);
     final cachedStats = PreloadService.instance.get<SiteStats>('site_stats', ignoreExpired: true);
 
-    if (!forceRefresh && cachedGroups != null && cachedThreads != null) {
-      // 命中本地缓存直接 0ms 秒开呈现，并在后台静默拉取网络最新数据
+    // 检查缓存有效性：必须版块和推荐帖子都不为空
+    final hasValidCache = cachedGroups != null &&
+        cachedGroups.isNotEmpty &&
+        cachedThreads != null &&
+        cachedThreads.isNotEmpty;
+
+    if (!forceRefresh && hasValidCache) {
+      // 命中有效本地缓存直接 0ms 秒开呈现，并在后台静默拉取网络最新数据
       unawaited(() async {
         try {
           final results = await Future.wait([
@@ -151,10 +177,18 @@ class _HomePageState extends State<HomePage> {
             final freshThreads = results[1] as List<ThreadSummary>;
             final freshStats = results[2] as SiteStats;
             setState(() {
+              _activeOutage = null; // 网络拉取成功，清除故障状态
               _future = Future.value((freshGroups, freshThreads, freshStats));
             });
           }
-        } catch (_) {}
+        } catch (e) {
+          final outage = ServerOutageInfo.tryParse(e);
+          if (outage != null && mounted) {
+            setState(() {
+              _activeOutage = outage; // 激活置顶故障警告横幅，明确告知用户当前是离线缓存
+            });
+          }
+        }
       }());
       _loadUnread();
       return (
@@ -198,12 +232,27 @@ class _HomePageState extends State<HomePage> {
       if (groups.isEmpty && threads.isEmpty) {
         throw Exception('暂未获取到内容，请检查网络或点击重试');
       }
+      _activeOutage = null;
       return (groups, threads, stats);
     } catch (e) {
-      if (cachedGroups != null || cachedThreads != null) {
+      final outage = ServerOutageInfo.tryParse(e);
+      if (outage != null) {
+        _activeOutage = outage;
+        // 关键修复：强制刷新（用户手动重试）或本地无完整有效帖子缓存时，坚决不静默回退，必须抛出展示 502 网关故障页！
+        if (forceRefresh || !hasValidCache) {
+          rethrow;
+        }
+        // 仅在静默初次加载且存在完整非空旧缓存时，优雅降级展示缓存并附带故障警告横幅
         return (
-          cachedGroups ?? const <ForumGroup>[],
-          cachedThreads ?? const <ThreadSummary>[],
+          cachedGroups,
+          cachedThreads,
+          cachedStats ?? const SiteStats(),
+        );
+      }
+      if (!forceRefresh && hasValidCache) {
+        return (
+          cachedGroups,
+          cachedThreads,
           cachedStats ?? const SiteStats(),
         );
       }
@@ -215,9 +264,14 @@ class _HomePageState extends State<HomePage> {
     PreloadService.instance.remove('home_threads');
     PreloadService.instance.remove('forum_groups');
     PreloadService.instance.remove('site_stats');
+    unawaited(KlpbbsApi.getServerStatus(forceRefresh: true).catchError((_) => KlpbbsApi.getServerStatus()));
     setState(() {
+      _activeOutage = null;
       _more = [];
       _morePage = 1;
+      _memoizedAllThreads = [];
+      _lastInitialThreads = null;
+      _lastMoreLength = -1;
       _future = _load(forceRefresh: true);
     });
   }
@@ -284,6 +338,7 @@ class _HomePageState extends State<HomePage> {
     _homeScrollCtrl.dispose();
     PushNotificationService.instance.removeListener(_onPushNotificationUpdate);
     ForumFavoriteNotifier.instance.removeListener(_loadFavForums);
+    AppConfig.instance.removeListener(_onAppConfigUpdate);
     super.dispose();
   }
 
@@ -308,6 +363,22 @@ class _HomePageState extends State<HomePage> {
       duration: const Duration(milliseconds: 450),
       curve: Curves.easeOutCubic,
     );
+  }
+
+  void _openPost() {
+    if (!DioClient.isLoggedIn) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先登录发表新帖')),
+      );
+      return;
+    }
+    confirmWrite(context, '发帖').then((ok) {
+      if (ok && mounted) {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const PostPage()),
+        );
+      }
+    });
   }
 
   Future<void> _openNotifications() async {
@@ -474,90 +545,283 @@ class _HomePageState extends State<HomePage> {
                 )
               : null,
           actions: [
-            IconButton(
-              icon: const Icon(Icons.refresh_rounded),
-              tooltip: '手动刷新',
-              visualDensity: VisualDensity.compact,
-              padding: const EdgeInsets.all(6),
-              constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-              onPressed: () {
-                HapticFeedback.lightImpact();
-                _reload();
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('已刷新首页内容'),
-                    duration: Duration(milliseconds: 1500),
-                  ),
-                );
-              },
-            ),
-            IconButton(
-              icon: const Icon(Icons.search),
-              tooltip: '搜索 (Ctrl+F)',
-              visualDensity: VisualDensity.compact,
-              padding: const EdgeInsets.all(6),
-              constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-              onPressed: () {
-                Navigator.of(
-                  context,
-                ).push(MaterialPageRoute(builder: (_) => const SearchPage()));
-              },
-            ),
-            IconButton(
-              icon: const Icon(Icons.smart_toy_outlined),
-              tooltip: '帕帕 AI 助手',
-              visualDensity: VisualDensity.compact,
-              padding: const EdgeInsets.all(6),
-              constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-              onPressed: () {
-                Navigator.of(
-                  context,
-                ).push(MaterialPageRoute(builder: (_) => const PapaAiChatPage()));
-              },
-            ),
-            Badge(
-              isLabelVisible: _unreadNotice > 0,
-              label: Text(
-                '$_unreadNotice',
-                style: const TextStyle(fontSize: 10),
-              ),
-              child: IconButton(
-                icon: const Icon(Icons.notifications_outlined),
-                tooltip: '通知',
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.all(6),
-                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                onPressed: _openNotifications,
-              ),
-            ),
-            if (isDesktop && MediaQuery.sizeOf(context).width >= 768)
+            if (!isDesktop || MediaQuery.sizeOf(context).width < 600) ...[
+              // 移动端/窄屏紧凑顶部栏：仅保留搜索、通知与多功能气泡菜单，杜绝小屏幕元素拥挤与溢出
               IconButton(
-                icon: const Icon(Icons.settings_outlined),
-                tooltip: '设置',
-                onPressed: widget.onOpenSettings,
-              ),
-            Badge(
-              isLabelVisible: _unreadPm > 0,
-              label: Text('$_unreadPm', style: const TextStyle(fontSize: 10)),
-              child: IconButton(
-                icon: const Icon(Icons.mail_outline),
-                tooltip: '私信收件箱',
+                icon: const Icon(Icons.search),
+                tooltip: '搜索 (Ctrl+F)',
                 visualDensity: VisualDensity.compact,
                 padding: const EdgeInsets.all(6),
                 constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                onPressed: _openPmInbox,
+                onPressed: () {
+                  Navigator.of(
+                    context,
+                  ).push(MaterialPageRoute(builder: (_) => const SearchPage()));
+                },
               ),
-            ),
-            IconButton(
-              icon: Icon(
-                DioClient.isLoggedIn ? Icons.account_circle : Icons.login,
+              Badge(
+                isLabelVisible: _unreadNotice > 0,
+                label: Text(
+                  '$_unreadNotice',
+                  style: const TextStyle(fontSize: 10),
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.notifications_outlined),
+                  tooltip: '通知',
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.all(6),
+                  constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                  onPressed: _openNotifications,
+                ),
               ),
-              tooltip: DioClient.isLoggedIn ? '我的空间' : '登录',
-              visualDensity: VisualDensity.compact,
-              padding: const EdgeInsets.all(6),
-              constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-              onPressed: _openAccountMenu,
-            ),
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.more_vert_rounded),
+                tooltip: '更多与自定义',
+                onSelected: (val) {
+                  if (val == 'mobile_custom') {
+                    MobileHomeCustomizer.show(context);
+                  } else if (val == 'refresh') {
+                    HapticFeedback.lightImpact();
+                    _reload();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('已刷新首页内容'),
+                        duration: Duration(milliseconds: 1500),
+                      ),
+                    );
+                  } else if (val == 'papa_ai') {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const PapaAiChatPage()),
+                    );
+                  } else if (val == 'pm') {
+                    _openPmInbox();
+                  } else if (val == 'account') {
+                    _openAccountMenu();
+                  } else if (val == 'diy_studio') {
+                    DiyLayoutStudio.show(context, initialTab: 0);
+                  }
+                },
+                itemBuilder: (context) => [
+                  const PopupMenuItem(
+                    value: 'mobile_custom',
+                    child: Row(
+                      children: [
+                        Icon(Icons.tune_rounded, size: 20),
+                        SizedBox(width: 10),
+                        Text('移动端首页自定义'),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'refresh',
+                    child: Row(
+                      children: [
+                        Icon(Icons.refresh_rounded, size: 20),
+                        SizedBox(width: 10),
+                        Text('刷新首页'),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'papa_ai',
+                    child: Row(
+                      children: [
+                        Icon(Icons.smart_toy_outlined, size: 20),
+                        SizedBox(width: 10),
+                        Text('帕帕 AI 助手'),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'pm',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.mail_outline, size: 20),
+                        const SizedBox(width: 10),
+                        const Text('私信收件箱'),
+                        if (_unreadPm > 0) ...[
+                          const Spacer(),
+                          Badge.count(count: _unreadPm),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const PopupMenuDivider(),
+                  PopupMenuItem(
+                    value: 'account',
+                    child: Row(
+                      children: [
+                        Icon(
+                          DioClient.isLoggedIn
+                              ? Icons.account_circle_outlined
+                              : Icons.login_rounded,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 10),
+                        Text(DioClient.isLoggedIn ? '我的空间 / 账户' : '登录账户'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ] else ...[
+              // 宽屏桌面端完整工具栏
+              IconButton(
+                icon: const Icon(Icons.refresh_rounded),
+                tooltip: '手动刷新',
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.all(6),
+                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                onPressed: () {
+                  HapticFeedback.lightImpact();
+                  _reload();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('已刷新首页内容'),
+                      duration: Duration(milliseconds: 1500),
+                    ),
+                  );
+                },
+              ),
+              IconButton(
+                icon: const Icon(Icons.search),
+                tooltip: '搜索 (Ctrl+F)',
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.all(6),
+                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                onPressed: () {
+                  Navigator.of(
+                    context,
+                  ).push(MaterialPageRoute(builder: (_) => const SearchPage()));
+                },
+              ),
+              IconButton(
+                icon: const Icon(Icons.tune_rounded),
+                tooltip: '移动端首页配置 (预览)',
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.all(6),
+                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                onPressed: () => MobileHomeCustomizer.show(context),
+              ),
+              IconButton(
+                icon: const Icon(Icons.space_dashboard_outlined),
+                tooltip: '自定义首页布局 (DIY)',
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.all(6),
+                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                onPressed: () => DiyLayoutStudio.show(context, initialTab: 0),
+              ),
+              IconButton(
+                icon: const Icon(Icons.smart_toy_outlined),
+                tooltip: '帕帕 AI 助手',
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.all(6),
+                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                onPressed: () {
+                  Navigator.of(
+                    context,
+                  ).push(MaterialPageRoute(builder: (_) => const PapaAiChatPage()));
+                },
+              ),
+              Badge(
+                isLabelVisible: _unreadNotice > 0,
+                label: Text(
+                  '$_unreadNotice',
+                  style: const TextStyle(fontSize: 10),
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.notifications_outlined),
+                  tooltip: '通知',
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.all(6),
+                  constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                  onPressed: _openNotifications,
+                ),
+              ),
+              if (MediaQuery.sizeOf(context).width >= 768)
+                IconButton(
+                  icon: const Icon(Icons.settings_outlined),
+                  tooltip: '设置',
+                  onPressed: widget.onOpenSettings,
+                ),
+              Badge(
+                isLabelVisible: _unreadPm > 0,
+                label: Text('$_unreadPm', style: const TextStyle(fontSize: 10)),
+                child: IconButton(
+                  icon: const Icon(Icons.mail_outline),
+                  tooltip: '私信收件箱',
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.all(6),
+                  constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                  onPressed: _openPmInbox,
+                ),
+              ),
+              if (MediaQuery.sizeOf(context).width >= 850) ...[
+                IconButton(
+                  icon: Icon(
+                    AppConfig.homeShowLeftCards
+                        ? Icons.view_sidebar_rounded
+                        : Icons.view_sidebar_outlined,
+                    color: AppConfig.homeShowLeftCards ? Theme.of(context).colorScheme.primary : null,
+                  ),
+                  tooltip: AppConfig.homeShowLeftCards ? '收起左侧卡片栏' : '展开左侧卡片栏',
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.all(6),
+                  constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                  onPressed: () {
+                    HapticFeedback.lightImpact();
+                    AppConfig.setHomeShowLeftCards(!AppConfig.homeShowLeftCards);
+                  },
+                ),
+                IconButton(
+                  icon: Icon(
+                    AppConfig.homeShowRightCards
+                        ? Icons.dock_rounded
+                        : Icons.dock_outlined,
+                    color: AppConfig.homeShowRightCards ? Theme.of(context).colorScheme.primary : null,
+                  ),
+                  tooltip: AppConfig.homeShowRightCards ? '收起右侧卡片栏' : '展开右侧卡片栏',
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.all(6),
+                  constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                  onPressed: () {
+                    HapticFeedback.lightImpact();
+                    AppConfig.setHomeShowRightCards(!AppConfig.homeShowRightCards);
+                  },
+                ),
+              ],
+              IconButton(
+                icon: const Icon(Icons.dashboard_customize_outlined),
+                tooltip: '自由画布工坊 (DIY 界面)',
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.all(6),
+                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => VisualGridCanvas(
+                        pageCategory: 'home',
+                        initialLayout: AppConfig.homeDashboardLayout,
+                        onExit: () => Navigator.of(context).pop(),
+                        onSave: (saved) {
+                          setState(() {});
+                        },
+                      ),
+                    ),
+                  );
+                },
+              ),
+              IconButton(
+                icon: Icon(
+                  DioClient.isLoggedIn ? Icons.account_circle : Icons.login,
+                ),
+                tooltip: DioClient.isLoggedIn ? '我的空间' : '登录',
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.all(6),
+                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                onPressed: _openAccountMenu,
+              ),
+            ],
           ],
         ),
         body: FutureBuilder(
@@ -565,229 +829,727 @@ class _HomePageState extends State<HomePage> {
           builder: (context, snap) {
             if (!snap.hasData) {
               if (snap.hasError) {
-                return _ErrorView(error: '${snap.error}', onRetry: _reload);
+                final hasCache = PreloadService.instance.get<List<ForumGroup>>('forum_groups', ignoreExpired: true)?.isNotEmpty == true &&
+                    PreloadService.instance.get<List<ThreadSummary>>('home_threads', ignoreExpired: true)?.isNotEmpty == true;
+                return _ErrorView(
+                  error: '${snap.error}',
+                  onRetry: _reload,
+                  onViewCache: hasCache
+                      ? () {
+                          final cg = PreloadService.instance.get<List<ForumGroup>>('forum_groups', ignoreExpired: true) ?? [];
+                          final ct = PreloadService.instance.get<List<ThreadSummary>>('home_threads', ignoreExpired: true) ?? [];
+                          final cs = PreloadService.instance.get<SiteStats>('site_stats', ignoreExpired: true) ?? const SiteStats();
+                          setState(() {
+                            _future = Future.value((cg, ct, cs));
+                          });
+                        }
+                      : null,
+                );
               }
-              // 列表骨架屏
-              return const SkeletonList(itemCount: 8);
+              // 布局同步动态微光骨架屏（完全契合用户当前个性化网格配置，完美自适应）
+              return SingleChildScrollView(
+                physics: const NeverScrollableScrollPhysics(),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1280),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        DashboardSkeletonView(layout: AppConfig.homeDashboardLayout),
+                        const SkeletonList(itemCount: 4),
+                      ],
+                    ),
+                  ),
+                ),
+              );
             }
             final (groups, threads, stats) = snap.data!;
             final messenger = ScaffoldMessenger.of(context);
             final allThreads = _getDisplayThreads(threads);
             final isDesktop = ResponsiveBreakpoints.isDesktop(context);
 
-            return RefreshIndicator(
-              onRefresh: () async {
-                HapticFeedback.lightImpact();
-                _reload();
-                await Future.delayed(const Duration(milliseconds: 400));
-                if (mounted) {
-                  final now = DateTime.now();
-                  final hm =
-                      '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
-                  messenger.showSnackBar(SnackBar(content: Text('已刷新 $hm')));
-                }
-              },
-              color: Theme.of(context).colorScheme.primary,
-              backgroundColor: Theme.of(context).colorScheme.surface,
-              displacement: 40,
-              edgeOffset: 8,
-              child: SafeArea(
-                top: false,
-                left: true,
-                right: true,
-                bottom: true,
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 1280),
-                    child: CustomScrollView(
-                    controller: _homeScrollCtrl,
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    slivers: [
-                      // 社区顶部土豪霸屏与全站数据统计栏（实时动态刷新）
-                      SliverToBoxAdapter(child: TuhaoBannerWidget(stats: stats)),
-                      // 小喇叭广播跑马灯
-                      const SliverToBoxAdapter(child: HornBannerWidget()),
-                      if (groups.isNotEmpty)
-                        SliverToBoxAdapter(
-                          child: ForumNav(
-                            groups: groups,
-                            favFids: _favForums,
-                            onToggleFav: _toggleFavForum,
-                          ),
-                        )
-                      else
-                        // 空态
-                        SliverToBoxAdapter(
-                          child: Padding(
-                            padding: const EdgeInsets.all(24),
-                            child: Center(
-                              child: Column(
-                                children: [
-                                  Icon(
-                                    Icons.forum_outlined,
-                                    size: 40,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.outlineVariant,
+            return SafeArea(
+              top: false,
+              left: true,
+              right: true,
+              bottom: true,
+              child: Column(
+                children: [
+                  if (_activeOutage != null)
+                    ServerOutageBanner(
+                      outage: _activeOutage!,
+                      onRetry: _reload,
+                      onViewDetails: () {
+                        ServerOutageView.showAsDialog(
+                          context,
+                          outage: _activeOutage!,
+                          onRetry: _reload,
+                        );
+                      },
+                      onDismiss: () {
+                        setState(() => _activeOutage = null);
+                      },
+                    ),
+                  Expanded(
+                    child: ListenableBuilder(
+                      listenable: AppConfig.instance,
+                      builder: (context, _) {
+                        return LayoutBuilder(
+                          builder: (context, constraints) {
+                      final availableWidth = constraints.maxWidth;
+
+                      // 响应式三栏与折叠决策（比例较小自动隐藏卡片栏）
+                      // 1. 窄屏 / 移动端 (< 850px)：比例较小，完全隐藏左右卡片，原版内容 100% 呈现
+                      // 2. 中屏 (850 ~ 1150px)：展示原版内容 + 用户启用的一侧卡片（若两侧都启用优先展示右侧生态卡片）
+                      // 3. 宽屏 (>= 1150px)：完整三栏（左侧快捷工具 + 中间原版流弹性自适应 + 右侧社区动态）
+                      final isCompact = availableWidth < 850;
+                      final bool showLeft = !isCompact && AppConfig.homeShowLeftCards;
+                      final bool showRight = !isCompact && AppConfig.homeShowRightCards;
+
+                      double leftWidth = AppConfig.homeLeftSidebarWidth;
+                      double rightWidth = AppConfig.homeRightSidebarWidth;
+
+                      // 当左右两侧均开启时，根据屏幕可用宽度自适应约束两栏宽度，保证中央内容流至少拥有 380px 舒适阅读区
+                      if (showLeft && showRight) {
+                        const minCenterWidth = 380.0;
+                        final availableForSidebars = availableWidth - minCenterWidth - 16.0;
+                        final desiredTotal = leftWidth + rightWidth;
+                        if (availableForSidebars > 0 && desiredTotal > availableForSidebars) {
+                          final scale = (availableForSidebars / desiredTotal).clamp(0.6, 1.0);
+                          leftWidth = (leftWidth * scale).clamp(180.0, 320.0);
+                          rightWidth = (rightWidth * scale).clamp(180.0, 320.0);
+                        }
+                      }
+
+                      // 卡片分配与过滤：彻底移除 credit_log 与 horn_banner
+                      final layout = AppConfig.homeDashboardLayout
+                          .where((c) => c.cardType != 'credit_log' && c.cardType != 'horn_banner')
+                          .toList();
+
+                      final leftCards = layout.where((c) {
+                        return (c.col + c.colSpan / 2) < 6;
+                      }).toList()..sort((a, b) => a.row != b.row ? a.row.compareTo(b.row) : a.col.compareTo(b.col));
+
+                      final rightCards = layout.where((c) {
+                        return (c.col + c.colSpan / 2) >= 6;
+                      }).toList()..sort((a, b) => a.row != b.row ? a.row.compareTo(b.row) : a.col.compareTo(b.col));
+
+                      // 平衡两栏卡片分布（若用户只排布了一边）
+                      if (leftCards.isEmpty && rightCards.length >= 4) {
+                        final half = (rightCards.length / 2).ceil();
+                        leftCards.addAll(rightCards.sublist(half));
+                        rightCards.removeRange(half, rightCards.length);
+                      } else if (rightCards.isEmpty && leftCards.length >= 4) {
+                        final half = (leftCards.length / 2).ceil();
+                        rightCards.addAll(leftCards.sublist(half));
+                        leftCards.removeRange(half, leftCards.length);
+                      }
+
+                      final centerWidth = availableWidth -
+                          (showLeft ? leftWidth + 8.0 : 0.0) -
+                          (showRight ? rightWidth + 8.0 : 0.0);
+
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          // 左侧卡片栏（快捷工具区：独立 RepaintBoundary 隔离，杜绝中间流滚动时反复重绘）
+                          if (showLeft) ...[
+                            RepaintBoundary(
+                              child: ValueListenableBuilder<double>(
+                                valueListenable: AppConfig.homeLeftSidebarWidthNotifier,
+                                builder: (context, width, _) {
+                                  return _buildCardSidebar(
+                                    context: context,
+                                    isLeft: true,
+                                    cards: leftCards,
+                                    allThreads: allThreads,
+                                    stats: stats,
+                                    width: width,
+                                  );
+                                },
+                              ),
+                            ),
+                            _buildSidebarSplitter(isLeft: true),
+                          ],
+
+                          // 中间原版内容（自适应填满剩余全部空间，独立 RepaintBoundary 隔离，杜绝滚动时向上传播重绘全局窗口）
+                          Expanded(
+                            child: RepaintBoundary(
+                              child: RefreshIndicator(
+                                onRefresh: () async {
+                                  HapticFeedback.lightImpact();
+                                  _reload();
+                                  await Future.delayed(const Duration(milliseconds: 400));
+                                  if (mounted) {
+                                    final now = DateTime.now();
+                                    final hm =
+                                        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+                                    messenger.showSnackBar(SnackBar(content: Text('已刷新 $hm')));
+                                  }
+                                },
+                                color: Theme.of(context).colorScheme.primary,
+                                backgroundColor: Theme.of(context).colorScheme.surface,
+                                displacement: 40,
+                                edgeOffset: 8,
+                                child: CustomScrollView(
+                                  controller: _homeScrollCtrl,
+                                  physics: const AlwaysScrollableScrollPhysics(),
+                                  slivers: _buildCenterOriginalSlivers(
+                                    context: context,
+                                    groups: groups,
+                                    threads: threads,
+                                    allThreads: allThreads,
+                                    stats: stats,
+                                    isDesktop: isDesktop,
+                                    centerWidth: centerWidth,
                                   ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    '暂无版块',
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.outline,
-                                    ),
-                                  ),
-                                ],
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                      // 快捷入口：仅在移动端展示（桌面端已有左侧侧边栏导航）
-                      if (!isDesktop)
-                        SliverToBoxAdapter(
-                          child: QuickActionsWidget(onNavigate: _onNavigateTab),
-                        ),
-                      // 推荐分区头
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(14, 14, 14, 6),
-                          child: Row(
-                            children: [
-                              Container(
-                                width: 4,
-                                height: 16,
-                                decoration: BoxDecoration(
-                                  color: Theme.of(context).colorScheme.primary,
-                                  borderRadius: BorderRadius.circular(2),
-                                ),
+
+                          // 右侧卡片栏（社区生态与监控区：独立 RepaintBoundary 隔离）
+                          if (showRight) ...[
+                            _buildSidebarSplitter(isLeft: false),
+                            RepaintBoundary(
+                              child: ValueListenableBuilder<double>(
+                                valueListenable: AppConfig.homeRightSidebarWidthNotifier,
+                                builder: (context, width, _) {
+                                  return _buildCardSidebar(
+                                    context: context,
+                                    isLeft: false,
+                                    cards: rightCards,
+                                    allThreads: allThreads,
+                                    stats: stats,
+                                    width: width,
+                                  );
+                                },
                               ),
-                              const SizedBox(width: 8),
-                              const Text(
-                                '推荐',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 16,
-                                ),
-                              ),
-                              const Spacer(),
-                              Text(
-                                '下拉刷新',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(180),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      // 推荐轮播（前 5 篇，移动端展示）
-                      if (threads.isNotEmpty && !isDesktop)
-                        SliverToBoxAdapter(
-                          child: _RecommendCarousel(
-                            threads: threads.take(5).toList(),
-                            onTap: _openThread,
-                          ),
-                        ),
-                      const SliverToBoxAdapter(child: SizedBox(height: 6)),
-                      // 帖子列表（LAZY 动态虚拟列表构建，仅在滚动进入视口时实例化，彻底消除卡顿）
-                      if (isDesktop)
-                        SliverPadding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                          sliver: SliverGrid.builder(
-                            gridDelegate:
-                                const SliverGridDelegateWithMaxCrossAxisExtent(
-                                  maxCrossAxisExtent: 520,
-                                  mainAxisExtent: 138,
-                                  mainAxisSpacing: 12,
-                                  crossAxisSpacing: 12,
-                                ),
-                            itemCount: allThreads.length,
-                            itemBuilder: (ctx, i) {
-                              final t = allThreads[i];
-                              return RepaintBoundary(
-                                child: ThreadCard(
-                                  thread: t,
-                                  isGrid: true,
-                                  onTap: () => _openThread(t.tid),
-                                  onAuthorTap: t.uid == null
-                                      ? null
-                                      : () => Navigator.of(context).push(
-                                          MaterialPageRoute(
-                                            builder: (_) =>
-                                                UserSpacePage(uid: t.uid!),
-                                          ),
-                                        ),
-                                ),
-                              );
-                            },
-                          ),
-                        )
-                      else
-                        SliverList.builder(
-                          itemCount: allThreads.length,
-                          itemBuilder: (ctx, i) {
-                            final t = allThreads[i];
-                            return RepaintBoundary(
-                              child: ThreadCard(
-                                thread: t,
-                                onTap: () => _openThread(t.tid),
-                                onAuthorTap: t.uid == null
-                                    ? null
-                                    : () => Navigator.of(context).push(
-                                        MaterialPageRoute(
-                                          builder: (_) =>
-                                              UserSpacePage(uid: t.uid!),
-                                        ),
-                                      ),
-                              ),
-                            );
+                            ),
+                          ],
+                        ],
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      );
+          },
+        ),
+        floatingActionButton: CoordinatedActionFabGroup(
+          showBackToTop: _showBackToTop,
+          onBackToTop: _scrollToTop,
+          primaryIcon: Icons.edit_rounded,
+          primaryLabel: '发帖',
+          primaryTooltip: '发布新帖 (Ctrl+N)',
+          onPrimaryAction: _openPost,
+          heroTagPrefix: 'home',
+        ),
+      ),
+    );
+  }
+
+  /// 构建侧栏卡片容器（支持左右独立展开/折叠、自适应高度、RepaintBoundary 隔离）
+  Widget _buildCardSidebar({
+    required BuildContext context,
+    required bool isLeft,
+    required List<DashboardGridItem> cards,
+    required List<ThreadSummary> allThreads,
+    required SiteStats stats,
+    required double width,
+  }) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    return Container(
+      width: width,
+      decoration: BoxDecoration(
+        color: isDark
+            ? theme.colorScheme.surfaceContainerLow
+            : theme.colorScheme.surfaceContainerLowest,
+        border: Border(
+          right: isLeft
+              ? BorderSide(color: theme.dividerColor.withAlpha(35), width: 1)
+              : BorderSide.none,
+          left: !isLeft
+              ? BorderSide(color: theme.dividerColor.withAlpha(35), width: 1)
+              : BorderSide.none,
+        ),
+      ),
+      child: Column(
+        children: [
+          // 侧栏标题与折叠栏
+          Container(
+            height: 38,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(color: theme.dividerColor.withAlpha(25), width: 0.8),
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  isLeft ? Icons.widgets_outlined : Icons.insights_rounded,
+                  size: 16,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  isLeft ? '个人工具' : '社区动态',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.onSurface.withAlpha(210),
+                  ),
+                ),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.tune_rounded, size: 15),
+                  tooltip: 'DIY 画布工坊',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                  onPressed: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => VisualGridCanvas(
+                          pageCategory: 'home',
+                          initialLayout: AppConfig.homeDashboardLayout,
+                          onExit: () => Navigator.of(context).pop(),
+                          onSave: (saved) {
+                            setState(() {});
                           },
                         ),
-                      // 加载更多
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          child: Center(
-                            child: _loadingMore
-                                ? const SizedBox(
-                                    width: 22,
-                                    height: 22,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : FilledButton.tonal(
-                                    onPressed: _loadMore,
-                                    child: const Text('加载更多推荐'),
-                                  ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(width: 4),
+                IconButton(
+                  icon: Icon(
+                    isLeft ? Icons.first_page_rounded : Icons.last_page_rounded,
+                    size: 17,
+                  ),
+                  tooltip: isLeft ? '收起左侧栏' : '收起右侧栏',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                  onPressed: () {
+                    HapticFeedback.lightImpact();
+                    if (isLeft) {
+                      AppConfig.setHomeShowLeftCards(false);
+                    } else {
+                      AppConfig.setHomeShowRightCards(false);
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+          // 卡片滚动流
+          Expanded(
+            child: cards.isEmpty
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.dashboard_customize_outlined,
+                            size: 32,
+                            color: theme.colorScheme.outlineVariant,
                           ),
+                          const SizedBox(height: 8),
+                          Text(
+                            isLeft ? '暂无左侧卡片' : '暂无右侧卡片',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: theme.colorScheme.outline,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          FilledButton.tonal(
+                            onPressed: () => DiyLayoutStudio.show(context, initialTab: 0),
+                            style: FilledButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              textStyle: const TextStyle(fontSize: 11),
+                            ),
+                            child: const Text('添加卡片'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(10, 10, 10, 16),
+                    itemCount: cards.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (context, index) {
+                      final item = cards[index];
+                      final cardHeight = (item.rowSpan * 88.0 + (item.rowSpan - 1) * 8.0)
+                          .clamp(86.0, 380.0);
+                      return SizedBox(
+                        height: cardHeight,
+                        child: DashboardCardFactory.buildCard(
+                          item: item,
+                          isPreview: false,
+                          threads: allThreads,
+                          stats: stats,
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 侧边栏拖拽快捷调整大小分割条（鼠标按住拖动即可直接调整宽度并持久化保存）
+  Widget _buildSidebarSplitter({required bool isLeft}) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeColumn,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragUpdate: (details) {
+          final delta = details.delta.dx;
+          if (isLeft) {
+            final newWidth = (AppConfig.homeLeftSidebarWidth + delta).clamp(200.0, 480.0);
+            AppConfig.updateHomeLeftSidebarWidth(newWidth);
+          } else {
+            final newWidth = (AppConfig.homeRightSidebarWidth - delta).clamp(200.0, 480.0);
+            AppConfig.updateHomeRightSidebarWidth(newWidth);
+          }
+        },
+        onHorizontalDragEnd: (_) {
+          if (isLeft) {
+            AppConfig.setHomeLeftSidebarWidth(AppConfig.homeLeftSidebarWidth);
+          } else {
+            AppConfig.setHomeRightSidebarWidth(AppConfig.homeRightSidebarWidth);
+          }
+        },
+        child: Container(
+          width: 8,
+          color: Colors.transparent,
+          child: Center(
+            child: Container(
+              width: 2.5,
+              height: 48,
+              decoration: BoxDecoration(
+                color: colorScheme.outlineVariant.withAlpha(90),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 构建中间原版论坛内容流（全自适应宽度，包括顶部公告跑马灯、版块导航、推荐轮播、帖子 Feed 流）
+  List<Widget> _buildCenterOriginalSlivers({
+    required BuildContext context,
+    required List<ForumGroup> groups,
+    required List<ThreadSummary> threads,
+    required List<ThreadSummary> allThreads,
+    required SiteStats stats,
+    required bool isDesktop,
+    required double centerWidth,
+  }) {
+    final slivers = <Widget>[];
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    // 动态按用户设置的轻量模块顺序渲染各区域
+    final sections = (!isDesktop || centerWidth < 600)
+        ? AppConfig.mobileHomeSections
+        : AppConfig.defaultMobileHomeSections;
+
+    for (final sec in sections) {
+      if (sec == 'horn_banner') {
+        // 1. 原版经典全站小喇叭公告栏
+        if (AppConfig.homeModules.contains('horn_banner')) {
+          slivers.add(
+            const SliverPadding(
+              padding: EdgeInsets.fromLTRB(12, 10, 12, 4),
+              sliver: SliverToBoxAdapter(child: HornBannerWidget()),
+            ),
+          );
+        }
+      } else if (sec == 'stats') {
+        // 1.1 全站统计看板（今日 / 昨日 / 帖子 / 会员，严格与手机版原版数据对齐）
+        if (stats.totalPosts > 0 || stats.todayPosts > 0 || stats.totalMembers > 0) {
+          slivers.add(
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 6),
+              sliver: SliverToBoxAdapter(child: SiteStatsCard(stats: stats)),
+            ),
+          );
+        }
+      } else if (sec == 'forum_nav') {
+        // 2. 原版版块导航
+        if (groups.isNotEmpty) {
+          slivers.add(
+            SliverToBoxAdapter(
+              child: ForumNav(
+                groups: groups,
+                favFids: _favForums,
+                onToggleFav: _toggleFavForum,
+              ),
+            ),
+          );
+        } else {
+          slivers.add(
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Center(
+                  child: Column(
+                    children: [
+                      Icon(
+                        Icons.forum_outlined,
+                        size: 40,
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '暂无版块',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Theme.of(context).colorScheme.outline,
                         ),
                       ),
-                      // 给右下角发帖与回到顶部 FAB 预留空间，避免遮挡最后一张卡片
-                      const SliverToBoxAdapter(child: SizedBox(height: 96)),
                     ],
                   ),
                 ),
               ),
             ),
           );
-        },
-      ),
-        floatingActionButton: _showBackToTop
-            ? FloatingActionButton.small(
-                key: const ValueKey('home_back_to_top_btn'),
-                tooltip: '回到顶部',
-                elevation: 3,
-                onPressed: _scrollToTop,
-                child: const Icon(Icons.arrow_upward_rounded),
-              )
-            : null,
+        }
+      } else if (sec == 'quick_actions') {
+        // 3. 移动端/窄屏快捷金刚区（4~8 项自由挑选，单双行自适应）
+        if (!isDesktop || centerWidth < 600) {
+          slivers.add(
+            SliverToBoxAdapter(
+              child: QuickActionsWidget(onNavigate: _onNavigateTab),
+            ),
+          );
+        }
+      } else if (sec == 'carousel') {
+        // 4. 推荐轮播（前 5 篇精华推荐）
+        if (threads.isNotEmpty) {
+          slivers.add(
+            SliverToBoxAdapter(
+              child: RepaintBoundary(
+                child: _RecommendCarousel(
+                  threads: threads.take(5).toList(),
+                  onTap: _openThread,
+                ),
+              ),
+            ),
+          );
+        }
+      }
+    }
+
+    // 5. 推荐分区头
+    slivers.add(
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
+          child: Row(
+            children: [
+              Container(
+                width: 4,
+                height: 16,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primary,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Text(
+                '推荐',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '下拉刷新',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(180),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
+
+    slivers.add(const SliverToBoxAdapter(child: SizedBox(height: 6)));
+
+    // 6. 帖子列表（按中间自适应宽度动态选择双列网格或单列列表）
+    final useGrid = centerWidth >= 620;
+    if (allThreads.isEmpty) {
+      if (_activeOutage != null) {
+        slivers.add(
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0x22EF4444) : const Color(0xFFFEF2F2),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: isDark ? const Color(0x44EF4444) : const Color(0xFFFECACA),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Icon(
+                      Icons.cloud_off_rounded,
+                      size: 32,
+                      color: isDark ? const Color(0xFFF87171) : const Color(0xFFDC2626),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '推荐帖子暂不可用 (${_activeOutage!.statusCode} ${_activeOutage!.title})',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                        color: isDark ? const Color(0xFFF87171) : const Color(0xFFB91C1C),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '论坛源站返回了异常响应，暂时无法拉取最新推荐列表。',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    FilledButton.icon(
+                      onPressed: _reload,
+                      icon: const Icon(Icons.refresh_rounded, size: 16),
+                      label: const Text('重试连接'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      } else {
+        slivers.add(
+          const SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.symmetric(vertical: 36),
+              child: Center(child: Text('暂无推荐帖子')),
+            ),
+          ),
+        );
+      }
+    } else {
+      if (useGrid) {
+        slivers.add(
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            sliver: SliverGrid.builder(
+              addRepaintBoundaries: false,
+              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                maxCrossAxisExtent: 520,
+                mainAxisExtent: 138,
+                mainAxisSpacing: 12,
+                crossAxisSpacing: 12,
+              ),
+              itemCount: allThreads.length,
+              itemBuilder: (ctx, i) {
+                final t = allThreads[i];
+                return ScrollAwareSpringEntrance(
+                  index: i,
+                  child: ThreadCard(
+                    thread: t,
+                    isGrid: true,
+                    onTap: () => _openThread(t.tid, fid: t.fid),
+                    onAuthorTap: t.uid == null
+                        ? null
+                        : () => Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => UserSpacePage(uid: t.uid!),
+                              ),
+                            ),
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      } else {
+        slivers.add(
+          SliverList.builder(
+            addRepaintBoundaries: false,
+            itemCount: allThreads.length,
+            itemBuilder: (ctx, i) {
+              final t = allThreads[i];
+              return ScrollAwareSpringEntrance(
+                index: i,
+                child: ThreadCard(
+                  thread: t,
+                  onTap: () => _openThread(t.tid, fid: t.fid),
+                  onAuthorTap: t.uid == null
+                      ? null
+                      : () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => UserSpacePage(uid: t.uid!),
+                            ),
+                          ),
+                ),
+              );
+            },
+          ),
+        );
+      }
+
+      // 7. 加载更多
+      slivers.add(
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: Center(
+              child: _loadingMore
+                  ? const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : FilledButton.tonal(
+                      onPressed: _loadMore,
+                      child: const Text('加载更多推荐'),
+                    ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // 底部留白
+    slivers.add(const SliverToBoxAdapter(child: SizedBox(height: 80)));
+
+    return slivers;
   }
 
   /// 缓存与防抖首页推荐合并列表，避免在滑动或 rebuild 期间频繁执行重复计算
@@ -820,10 +1582,10 @@ class _HomePageState extends State<HomePage> {
     ];
   }
 
-  void _openThread(int tid) {
+  void _openThread(int tid, {int? fid}) {
     Navigator.of(
       context,
-    ).push(MaterialPageRoute(builder: (_) => ThreadDetailPage(tid: tid)));
+    ).push(MaterialPageRoute(builder: (_) => ThreadDetailPage(tid: tid, fid: fid)));
   }
 
   /// 切换到底部导航对应 tab（由主壳提供）或跳转对应路由
@@ -862,6 +1624,56 @@ class _HomePageState extends State<HomePage> {
       Navigator.of(
         context,
       ).push(MaterialPageRoute(builder: (_) => const PapaAiChatPage()));
+      return;
+    }
+    if (index == 16) {
+      Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const TaskPage()));
+      return;
+    }
+    if (index == 17) {
+      if (!DioClient.isLoggedIn) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先登录查看我的收藏')));
+        return;
+      }
+      KlpbbsApi.getMyUid().then((uid) {
+        if (mounted) {
+          Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => FavoriteHubPage(uid: uid ?? 0)),
+          );
+        }
+      });
+      return;
+    }
+    if (index == 18) {
+      if (!DioClient.isLoggedIn) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先登录查看我的主题')));
+        return;
+      }
+      KlpbbsApi.getMyUid().then((uid) {
+        if (mounted) {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => UserThreadsPage(
+                uid: uid ?? 0,
+                type: 'thread',
+                title: '我的主题',
+              ),
+            ),
+          );
+        }
+      });
+      return;
+    }
+    if (index == 19) {
+      if (!DioClient.isLoggedIn) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先登录发表新帖')));
+        return;
+      }
+      Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const PostPage()));
       return;
     }
     if (_onSwitchTab != null) _onSwitchTab!(index);
@@ -942,8 +1754,9 @@ class _ForumNavState extends State<ForumNav> {
   bool _expandAll = false;
 
   void _showFavForums(BuildContext context) {
+    final seen = <int>{};
     final favList = widget.allForums
-        .where((f) => widget.favFids.contains(f.fid))
+        .where((f) => widget.favFids.contains(f.fid) && seen.add(f.fid))
         .toList()
       ..sort((a, b) => a.name.compareTo(b.name));
     showModalBottomSheet<void>(
@@ -1408,10 +2221,11 @@ class _FavForumsSheetState extends State<_FavForumsSheet> {
 
   /// 名称关键词高亮
   TextSpan _highlightName(String text, String kw) {
+    if (kw.isEmpty) return TextSpan(text: text);
     final scheme = Theme.of(context).colorScheme;
     final spans = <TextSpan>[];
     var start = 0;
-    while (true) {
+    while (start < text.length) {
       final idx = text.indexOf(kw, start);
       if (idx < 0) {
         spans.add(TextSpan(text: text.substring(start)));
@@ -1425,6 +2239,7 @@ class _FavForumsSheetState extends State<_FavForumsSheet> {
         ),
       );
       start = idx + kw.length;
+      if (kw.isEmpty) break;
     }
     return TextSpan(children: spans);
   }
@@ -1614,39 +2429,108 @@ class QuickActionsWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    // 快捷金刚区：舒展的 2 排 × 4 宫格排布，带 M3 触觉反馈与色彩主题
-    final items = [
-      (Icons.smart_toy_rounded, '帕帕 AI', const Color(0xFF008AC5), 15),
-      (Icons.forum_outlined, '版块导航', const Color(0xFF00A2FF), 1),
-      (Icons.event_available, '今日签到', const Color(0xFF4CAF50), 2),
-      (Icons.military_tech, '勋章中心', const Color(0xFF9C27B0), 3),
-      (Icons.local_fire_department, '导读精选', const Color(0xFFFF7043), 10),
-      (Icons.search, '全站搜索', const Color(0xFF2E7D32), 11),
-      (Icons.gavel, '封神榜', Colors.redAccent, 12),
-      (Icons.leaderboard, '排行榜', const Color(0xFF7E57C2), 13),
-    ];
+    final colorScheme = theme.colorScheme;
+
+    // 根据 AppConfig.mobileQuickActions 动态映射功能列表
+    final selectedIds = AppConfig.mobileQuickActions;
+    final allMetaMap = {
+      for (final meta in MobileHomeCustomizer.allQuickActions) meta.id: meta,
+    };
+
+    final items = <(IconData, String, Color, int)>[];
+    for (final id in selectedIds) {
+      final meta = allMetaMap[id];
+      if (meta != null) {
+        items.add((meta.icon, meta.label, meta.color, meta.tabIndex));
+      }
+    }
+
+    // 保底至少 4 个
+    if (items.isEmpty) {
+      for (final meta in MobileHomeCustomizer.allQuickActions.take(4)) {
+        items.add((meta.icon, meta.label, meta.color, meta.tabIndex));
+      }
+    }
+
+    final isSingleRow = items.length <= 4;
+    final row1Count = isSingleRow ? items.length : 4;
+    final row2Count = isSingleRow ? 0 : (items.length - 4);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 4),
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // 标题与自定义入口
+          Padding(
+            padding: const EdgeInsets.only(left: 2, right: 2, bottom: 6),
+            child: Row(
+              children: [
+                Text(
+                  '常用功能',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: colorScheme.onSurfaceVariant.withAlpha(190),
+                  ),
+                ),
+                const Spacer(),
+                InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () => MobileHomeCustomizer.show(context),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.tune_rounded,
+                          size: 13,
+                          color: colorScheme.primary,
+                        ),
+                        const SizedBox(width: 3),
+                        Text(
+                          '自定义',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: colorScheme.primary,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // 第一行
           Row(
             children: [
-              for (var i = 0; i < 4; i++)
+              for (var i = 0; i < row1Count; i++)
                 Expanded(
                   child: _buildItem(context, theme, items[i]),
                 ),
+              if (isSingleRow && items.length < 4)
+                for (var i = items.length; i < 4; i++)
+                  const Expanded(child: SizedBox.shrink()),
             ],
           ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              for (var i = 4; i < 8; i++)
-                Expanded(
-                  child: _buildItem(context, theme, items[i]),
-                ),
-            ],
-          ),
+          // 第二行（如果多于 4 项）
+          if (!isSingleRow) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                for (var i = 4; i < 4 + row2Count; i++)
+                  Expanded(
+                    child: _buildItem(context, theme, items[i]),
+                  ),
+                if (row2Count < 4)
+                  for (var i = row2Count; i < 4; i++)
+                    const Expanded(child: SizedBox.shrink()),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -1663,6 +2547,10 @@ class QuickActionsWidget extends StatelessWidget {
       onTap: () {
         HapticFeedback.lightImpact();
         onNavigate(tabIndex);
+      },
+      onLongPress: () {
+        HapticFeedback.mediumImpact();
+        MobileHomeCustomizer.show(context);
       },
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
@@ -1705,7 +2593,13 @@ class QuickActionsWidget extends StatelessWidget {
 class _ErrorView extends StatelessWidget {
   final String error;
   final VoidCallback onRetry;
-  const _ErrorView({required this.error, required this.onRetry});
+  final VoidCallback? onViewCache;
+
+  const _ErrorView({
+    required this.error,
+    required this.onRetry,
+    this.onViewCache,
+  });
 
   String _friendlyMessage(String raw) {
     if (raw.contains('523') || raw.contains('522') || raw.contains('521') || raw.contains('502') || raw.contains('503') || raw.contains('504')) {
@@ -1725,6 +2619,15 @@ class _ErrorView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final outage = ServerOutageInfo.tryParse(error);
+    if (outage != null) {
+      return ServerOutageView(
+        outage: outage,
+        onRetry: onRetry,
+        onViewCache: onViewCache,
+      );
+    }
+
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
@@ -1853,13 +2756,10 @@ class _RecommendCarouselState extends State<_RecommendCarousel> {
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: scheme.primary.withAlpha(25),
-                            blurRadius: 10,
-                            offset: const Offset(0, 3),
-                          ),
-                        ],
+                        border: Border.all(
+                          color: scheme.outlineVariant.withAlpha(50),
+                          width: 0.8,
+                        ),
                       ),
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(12),
@@ -1883,7 +2783,7 @@ class _RecommendCarouselState extends State<_RecommendCarousel> {
                                   imageUrl: t.coverUrl!,
                                   fit: BoxFit.cover,
                                   alignment: Alignment.center,
-                                  filterQuality: FilterQuality.medium,
+                                  filterQuality: FilterQuality.low,
                                   memCacheWidth: 720,
                                   errorWidget: (_, __, ___) => const SizedBox.shrink(),
                                 ),

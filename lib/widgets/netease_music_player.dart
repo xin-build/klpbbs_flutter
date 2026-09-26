@@ -709,38 +709,40 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
   }
 
   Widget _buildWaveBars(ThemeData theme) {
-    return AnimatedBuilder(
-      animation: _waveController,
-      builder: (context, _) {
-        final v = _waveController.value;
-        final heights = _playing
-            ? [
-                4.0 + 8.0 * ((v * 1.3) % 1.0),
-                3.0 + 10.0 * (((v + 0.4) * 1.5) % 1.0),
-                5.0 + 7.0 * (((v + 0.7) * 1.2) % 1.0),
-                3.0 + 9.0 * (((v + 0.2) * 1.7) % 1.0),
-              ]
-            : [3.0, 3.0, 3.0, 3.0];
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            for (int i = 0; i < heights.length; i++) ...[
-              if (i > 0) const SizedBox(width: 2),
-              Container(
-                width: 2.5,
-                height: heights[i],
-                decoration: BoxDecoration(
-                  color: _playing
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.outlineVariant,
-                  borderRadius: BorderRadius.circular(1.5),
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _waveController,
+        builder: (context, _) {
+          final v = _waveController.value;
+          final heights = _playing
+              ? [
+                  4.0 + 8.0 * ((v * 1.3) % 1.0),
+                  3.0 + 10.0 * (((v + 0.4) * 1.5) % 1.0),
+                  5.0 + 7.0 * (((v + 0.7) * 1.2) % 1.0),
+                  3.0 + 9.0 * (((v + 0.2) * 1.7) % 1.0),
+                ]
+              : [3.0, 3.0, 3.0, 3.0];
+          return Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              for (int i = 0; i < heights.length; i++) ...[
+                if (i > 0) const SizedBox(width: 2),
+                Container(
+                  width: 2.5,
+                  height: heights[i],
+                  decoration: BoxDecoration(
+                    color: _playing
+                        ? theme.colorScheme.primary
+                        : theme.colorScheme.outlineVariant,
+                    borderRadius: BorderRadius.circular(1.5),
+                  ),
                 ),
-              ),
+              ],
             ],
-          ],
-        );
-      },
+          );
+        },
+      ),
     );
   }
 
@@ -748,17 +750,7 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    return Listener(
-      onPointerSignal: (event) {
-        if (event is PointerScrollEvent) {
-          if (event.scrollDelta.dy < 0) {
-            _setVolume(((_muted ? 0.0 : _volume) + 5.0).clamp(0.0, 100.0));
-          } else if (event.scrollDelta.dy > 0) {
-            _setVolume(((_muted ? 0.0 : _volume) - 5.0).clamp(0.0, 100.0));
-          }
-        }
-      },
-      child: Container(
+    return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerLow,
@@ -786,9 +778,11 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
               // 黑胶旋转唱片
               GestureDetector(
                 onTap: _loading ? null : _toggle,
-                child: RotationTransition(
-                  turns: _rotateController,
-                  child: _buildVinylCover(theme),
+                child: RepaintBoundary(
+                  child: RotationTransition(
+                    turns: _rotateController,
+                    child: _buildVinylCover(theme),
+                  ),
                 ),
               ),
               const SizedBox(width: 12),
@@ -918,9 +912,8 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
           _buildCompactLyrics(theme),
         ],
       ),
-    ),
-  );
-}
+    );
+  }
 
   /// 紧凑型/大范围自适应滚动歌词条（上下带平滑渐隐虚化边缘，支持自由展开与收起）
   Widget _buildCompactLyrics(ThemeData theme) {
@@ -995,22 +988,24 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(8),
-                    child: ShaderMask(
-                      shaderCallback: (rect) {
-                        return const LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.transparent,
-                            Colors.black,
-                            Colors.black,
-                            Colors.transparent,
-                          ],
-                          stops: [0.0, 0.22, 0.78, 1.0],
-                        ).createShader(rect);
-                      },
-                      blendMode: BlendMode.dstIn,
-                      child: _buildLyricsContent(theme, hasAnyTranslation),
+                    child: RepaintBoundary(
+                      child: ShaderMask(
+                        shaderCallback: (rect) {
+                          return const LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Colors.transparent,
+                              Colors.black,
+                              Colors.black,
+                              Colors.transparent,
+                            ],
+                            stops: [0.0, 0.22, 0.78, 1.0],
+                          ).createShader(rect);
+                        },
+                        blendMode: BlendMode.dstIn,
+                        child: _buildLyricsContent(theme, hasAnyTranslation),
+                      ),
                     ),
                   ),
                 ),
@@ -1270,51 +1265,62 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
   Widget _buildVolumeControl(ThemeData theme) {
     final effectiveVol = _muted ? 0.0 : _volume;
     final colorScheme = theme.colorScheme;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        IconButton(
-          tooltip: _muted ? '取消静音' : '静音',
-          visualDensity: VisualDensity.compact,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
-          icon: Icon(
-            _muted || effectiveVol == 0
-                ? Icons.volume_off_rounded
-                : (effectiveVol < 50 ? Icons.volume_down_rounded : Icons.volume_up_rounded),
-            size: 17,
-            color: _muted ? colorScheme.error : colorScheme.onSurfaceVariant,
-          ),
-          onPressed: _toggleMute,
-        ),
-        SizedBox(
-          width: 62,
-          child: SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              trackHeight: 2.2,
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 4),
-              overlayShape: const RoundSliderOverlayShape(overlayRadius: 8),
-              activeTrackColor: colorScheme.primary,
-              inactiveTrackColor: colorScheme.outlineVariant.withAlpha(80),
-              thumbColor: colorScheme.primary,
+    return Listener(
+      onPointerSignal: (event) {
+        if (event is PointerScrollEvent) {
+          if (event.scrollDelta.dy < 0) {
+            _setVolume(((_muted ? 0.0 : _volume) + 5.0).clamp(0.0, 100.0));
+          } else if (event.scrollDelta.dy > 0) {
+            _setVolume(((_muted ? 0.0 : _volume) - 5.0).clamp(0.0, 100.0));
+          }
+        }
+      },
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: _muted ? '取消静音' : '静音',
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+            icon: Icon(
+              _muted || effectiveVol == 0
+                  ? Icons.volume_off_rounded
+                  : (effectiveVol < 50 ? Icons.volume_down_rounded : Icons.volume_up_rounded),
+              size: 17,
+              color: _muted ? colorScheme.error : colorScheme.onSurfaceVariant,
             ),
-            child: Slider(
-              value: effectiveVol,
-              min: 0.0,
-              max: 100.0,
-              onChanged: (v) => _setVolume(v),
+            onPressed: _toggleMute,
+          ),
+          SizedBox(
+            width: 62,
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 2.2,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 4),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 8),
+                activeTrackColor: colorScheme.primary,
+                inactiveTrackColor: colorScheme.outlineVariant.withAlpha(80),
+                thumbColor: colorScheme.primary,
+              ),
+              child: Slider(
+                value: effectiveVol,
+                min: 0.0,
+                max: 100.0,
+                onChanged: (v) => _setVolume(v),
+              ),
             ),
           ),
-        ),
-        Text(
-          _muted ? '静音' : '${effectiveVol.round()}%',
-          style: TextStyle(
-            fontSize: 10,
-            color: colorScheme.outline,
-            fontFeatures: const [FontFeature.tabularFigures()],
+          Text(
+            _muted ? '静音' : '${effectiveVol.round()}%',
+            style: TextStyle(
+              fontSize: 10,
+              color: colorScheme.outline,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }

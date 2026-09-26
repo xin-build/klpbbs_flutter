@@ -346,7 +346,9 @@ class _FacemallPageState extends State<FacemallPage>
                           uid: _currentUid > 0 ? _currentUid : null,
                           author: _currentUsername,
                           size: 80,
-                          faceUrl: item.frameUrl,
+                          faceUrl: (item.frameUrl.isNotEmpty && !item.frameUrl.contains('avatar'))
+                              ? item.frameUrl
+                              : (item.id.isNotEmpty ? 'fm_${item.id}.png' : item.name),
                         ),
                         const SizedBox(height: 14),
                         Text(
@@ -849,7 +851,9 @@ class _FacemallPageState extends State<FacemallPage>
                                 uid: _currentUid > 0 ? _currentUid : null,
                                 author: _currentUsername,
                                 size: 56,
-                                faceUrl: item.frameUrl,
+                                faceUrl: (item.frameUrl.isNotEmpty && !item.frameUrl.contains('avatar'))
+                                    ? item.frameUrl
+                                    : (item.id.isNotEmpty ? 'fm_${item.id}.png' : item.name),
                               ),
                               const SizedBox(height: 10),
                               Text(
@@ -934,7 +938,9 @@ class _FacemallPageState extends State<FacemallPage>
                 uid: _currentUid > 0 ? _currentUid : null,
                 author: _currentUsername,
                 size: 56,
-                faceUrl: imgUrl,
+                faceUrl: (imgUrl.isNotEmpty && !imgUrl.contains('avatar'))
+                    ? imgUrl
+                    : (sFid.isNotEmpty ? 'fm_$sFid.png' : title),
               ),
               const SizedBox(height: 8),
               Text(

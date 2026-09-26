@@ -7,11 +7,13 @@ import '../api/comiis_parser.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/preload_service.dart';
+import '../models/server_outage_info.dart';
 import '../models/user_space.dart';
 import '../models/usergroup_comparison.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/inline_html_text.dart';
+import '../widgets/server_outage_view.dart';
 import '../widgets/thread_card.dart';
 import 'credit_page.dart';
 import 'friend_page.dart';
@@ -860,6 +862,25 @@ class _UserSpacePageState extends State<UserSpacePage> {
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done && snap.data == null) {
           return _buildSpaceSkeleton(context);
+        }
+        if (snap.hasError) {
+          final outage = ServerOutageInfo.tryParse(snap.error);
+          if (outage != null) {
+            return Scaffold(
+              appBar: AppBar(
+                title: Text(_isMe ? '我的空间' : 'Ta 的空间'),
+              ),
+              body: ServerOutageView(
+                outage: outage,
+                onRetry: () => _loadData(forceRefresh: true),
+                onGoHome: () {
+                  if (Navigator.of(context).canPop()) {
+                    Navigator.of(context).popUntil((route) => route.isFirst);
+                  }
+                },
+              ),
+            );
+          }
         }
         final user = snap.data;
         if (user == null) {

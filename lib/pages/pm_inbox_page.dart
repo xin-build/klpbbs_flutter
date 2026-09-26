@@ -30,6 +30,7 @@ class _PmInboxPageState extends State<PmInboxPage> {
   Set<int> _pinned = {};
   bool _selectionMode = false;
   final Set<int> _selected = {};
+  final Set<int> _deletedTouids = {};
   List<PmConversation> _allConvs = const [];
 
   @override
@@ -177,8 +178,12 @@ class _PmInboxPageState extends State<PmInboxPage> {
                 final messenger = ScaffoldMessenger.of(context);
                 final confirmed = await confirmWrite(context, '删除会话');
                 if (!confirmed || !context.mounted) return;
+                final targetUid = c.touid;
+                setState(() {
+                  _deletedTouids.add(targetUid);
+                });
                 try {
-                  final ok = await KlpbbsApi.deletePm(c.touid);
+                  final ok = await KlpbbsApi.deletePm(targetUid);
                   if (ok && mounted) {
                     messenger.showSnackBar(const SnackBar(content: Text('已删除会话')));
                     _reload();
@@ -379,7 +384,8 @@ class _PmInboxPageState extends State<PmInboxPage> {
                     ),
                   );
                 }
-                final all = snap.data!;
+                final rawAll = snap.data!;
+                final all = rawAll.where((c) => !_deletedTouids.contains(c.touid)).toList();
                 _allConvs = all;
                 final filtered = _kw.isEmpty
                     ? all
@@ -448,8 +454,12 @@ class _PmInboxPageState extends State<PmInboxPage> {
                         confirmDismiss: (_) async {
                           final confirmed = await confirmWrite(context, '删除会话');
                           if (!confirmed || !context.mounted) return false;
+                          final targetUid = c.touid;
+                          setState(() {
+                            _deletedTouids.add(targetUid);
+                          });
                           try {
-                            final ok = await KlpbbsApi.deletePm(c.touid);
+                            final ok = await KlpbbsApi.deletePm(targetUid);
                             if (ok) {
                               if (context.mounted) {
                                 ScaffoldMessenger.of(context).showSnackBar(
@@ -791,33 +801,35 @@ class _PmInboxPageState extends State<PmInboxPage> {
                               );
                               if (confirmed != true || !context.mounted) return;
                               // 删除进度提示
+                              final toDelete = _selected.toList();
+                              setState(() {
+                                _deletedTouids.addAll(toDelete);
+                                _selectionMode = false;
+                                _selected.clear();
+                              });
                               final messenger = ScaffoldMessenger.of(context);
                               messenger.showSnackBar(
                                 SnackBar(
                                   content: Text(
-                                    '删除中（0/${_selected.length}）...',
+                                    '删除中（0/${toDelete.length}）...',
                                   ),
                                 ),
                               );
                               var okCount = 0;
                               var i = 0;
-                              for (final t in _selected.toList()) {
+                              for (final t in toDelete) {
                                 final ok = await KlpbbsApi.deletePm(t);
                                 if (ok) okCount++;
                                 i++;
                                 messenger.showSnackBar(
                                   SnackBar(
                                     content: Text(
-                                      '删除中（$i/${_selected.length}）...',
+                                      '删除中（$i/${toDelete.length}）...',
                                     ),
                                   ),
                                 );
                               }
                               if (!mounted) return;
-                              setState(() {
-                                _selectionMode = false;
-                                _selected.clear();
-                              });
                               messenger.showSnackBar(
                                 SnackBar(
                                   content: Row(

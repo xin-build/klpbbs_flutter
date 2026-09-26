@@ -13,7 +13,6 @@ import 'core/app_config.dart';
 import 'core/cache_manager.dart';
 import 'core/dio_client.dart';
 import 'core/main_tab_controller.dart';
-import 'core/write_confirm.dart';
 import 'pages/darkroom_page.dart';
 import 'pages/forums_page.dart';
 import 'pages/guide_page.dart';
@@ -34,6 +33,7 @@ import 'services/push_notification_service.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'services/auto_test_screenshot_service.dart';
 import 'services/rgb_theme_service.dart';
 import 'services/tray_service.dart';
 import 'widgets/fade_indexed_stack.dart';
@@ -75,13 +75,13 @@ void main() async {
     }
   }
 
-  // 开启全平台 GPU 显卡硬件纹理与光栅化缓存加速（Desktop 512MB / Mobile 256MB VRAM 材质池）
+  // 优化图片内存缓存上限（避免长期持有数千张解码位图导致内存膨胀 2GB+ 以及显存/WDDM 频繁换页卡顿）
   final isDesktop = !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
   final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
-  PaintingBinding.instance.imageCache.maximumSize = isDesktop ? 2000 : (isMobile ? 1200 : 800);
+  PaintingBinding.instance.imageCache.maximumSize = isDesktop ? 300 : (isMobile ? 200 : 150);
   PaintingBinding.instance.imageCache.maximumSizeBytes = isDesktop
-      ? 512 * 1024 * 1024
-      : (isMobile ? 256 * 1024 * 1024 : 128 * 1024 * 1024);
+      ? 128 * 1024 * 1024
+      : (isMobile ? 64 * 1024 * 1024 : 32 * 1024 * 1024);
 
   MediaKit.ensureInitialized();
   await AppConfig.loadAll();
@@ -114,7 +114,12 @@ void main() async {
     );
   };
 
+  AppConfig.ensureServerStatusInHomeLayout();
+  await KlpbbsApi.primeHomeCache();
+
   runApp(const KlpbbsApp());
+
+  AutoTestScreenshotService.maybeTriggerTestingRoutine(appNavigatorKey);
 }
 
 /// klpbbs 客户端（全功能重构 + PC 桌面与移动端双排版 + 高级自定义）
@@ -126,7 +131,7 @@ class KlpbbsApp extends StatelessWidget {
     return DynamicColorBuilder(
       builder: (ColorScheme? lightDynamic, ColorScheme? darkDynamic) {
         return ListenableBuilder(
-          listenable: Listenable.merge([AppConfig.instance, RgbThemeService.instance]),
+          listenable: Listenable.merge([AppConfig.themeNotifier, RgbThemeService.instance]),
           builder: (context, _) {
             final isAndroid = !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
             final useDynamic = isAndroid && AppConfig.useSystemMonet && lightDynamic != null;
@@ -263,13 +268,16 @@ class KlpbbsApp extends StatelessWidget {
                 return CallbackShortcuts(
                   bindings: globalShortcuts,
                   child: FocusScope(
-                    child: Container(
-                      color: theme.scaffoldBackgroundColor,
-                      child: MediaQuery(
-                        data: MediaQuery.of(context).copyWith(
-                          textScaler: TextScaler.linear(AppConfig.fontScale),
+                    child: RepaintBoundary(
+                      key: AutoTestScreenshotService.rootKey,
+                      child: Container(
+                        color: theme.scaffoldBackgroundColor,
+                        child: MediaQuery(
+                          data: MediaQuery.of(context).copyWith(
+                            textScaler: TextScaler.linear(AppConfig.fontScale),
+                          ),
+                          child: GlobalInAppNotificationOverlay(child: child!),
                         ),
-                        child: GlobalInAppNotificationOverlay(child: child!),
                       ),
                     ),
                   ),
@@ -384,7 +392,7 @@ class _AppThemeDataCache {
         surfaceTintColor: Colors.transparent,
       ),
       cardTheme: CardThemeData(
-        clipBehavior: Clip.antiAlias,
+        clipBehavior: Clip.none,
         elevation: 0.5,
         color: Colors.white,
         shape: RoundedRectangleBorder(
@@ -465,7 +473,7 @@ class _AppThemeDataCache {
         indicatorColor: colorScheme.primary.withAlpha(50),
       ),
       cardTheme: CardThemeData(
-        clipBehavior: Clip.antiAlias,
+        clipBehavior: Clip.none,
         elevation: 0,
         color: isOled ? const Color(0xFF111312) : const Color(0xFF1B201D),
         shape: RoundedRectangleBorder(
@@ -593,16 +601,6 @@ class _MainShellState extends State<_MainShell> {
   }
 
   void _openDrawer() => _scaffoldKey.currentState?.openDrawer();
-
-  void _openPost() {
-    confirmWrite(context, '发帖').then((ok) {
-      if (ok && mounted) {
-        Navigator.of(
-          context,
-        ).push(MaterialPageRoute(builder: (_) => const PostPage()));
-      }
-    });
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -738,14 +736,7 @@ class _MainShellState extends State<_MainShell> {
       },
       navItems: navItems,
       drawer: GlobalAppDrawer(currentTabIndex: _index),
-      floatingActionButton: _index == 0
-          ? FloatingActionButton.extended(
-              onPressed: _openPost,
-              tooltip: '发帖',
-              icon: const Icon(Icons.edit_rounded),
-              label: const Text('发帖'),
-            )
-          : null,
+      floatingActionButton: null,
       body: FadeIndexedStack(
         index: _index.clamp(0, pages.length - 1),
         duration: const Duration(milliseconds: 220),

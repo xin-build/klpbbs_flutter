@@ -7,11 +7,14 @@ import '../api/comiis_parser.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/dio_client.dart';
+import '../core/preload_service.dart';
 import '../core/url_helper.dart';
 import '../core/write_confirm.dart';
 import '../models/ai_summary.dart';
 import '../models/post_floor.dart';
+import '../models/server_outage_info.dart';
 import '../models/smiley.dart';
+import '../widgets/server_outage_view.dart';
 import '../widgets/ai_summary_card.dart';
 import '../widgets/bili_video_player.dart';
 import '../widgets/general_audio_player.dart';
@@ -21,11 +24,16 @@ import '../widgets/netease_music_player.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/inline_html_text.dart';
+import '../widgets/interactive_animations.dart';
+import '../widgets/visual_grid_canvas.dart';
 import '../widgets/favorite_dialog.dart';
 import '../widgets/floor_admin_dialog.dart';
+import '../widgets/rating_filter_hall.dart';
 import '../widgets/report_dialog.dart';
+import '../widgets/responsive_layout.dart';
 import '../widgets/skeleton_list.dart';
 import '../widgets/thread_card.dart';
+import '../widgets/thread_layout_workbench.dart';
 import '../widgets/topic_admin_dialog.dart';
 import 'login_page.dart';
 import 'post_page.dart';
@@ -41,6 +49,9 @@ class ThreadDetailPage extends StatefulWidget {
   final int? fid;
   final bool showBackButton;
   final bool stopPlayersOnDispose;
+  final bool canShowForumSidebar;
+  final VoidCallback? onToggleForumSidebar;
+  final bool? isForumSidebarVisible;
 
   const ThreadDetailPage({
     super.key,
@@ -48,6 +59,9 @@ class ThreadDetailPage extends StatefulWidget {
     this.fid,
     this.showBackButton = true,
     this.stopPlayersOnDispose = true,
+    this.canShowForumSidebar = true,
+    this.onToggleForumSidebar,
+    this.isForumSidebarVisible,
   });
 
   @override
@@ -60,6 +74,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   final _scrollCtrl = ScrollController();
   int _page = 1;
   bool _scrolled = false;
+  bool _showBackToTop = false;
   String _title = '';
   String? _stamp;
   String? _stampUrl;
@@ -69,6 +84,17 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   int? _myUid;
   int? _firstAuthorUid;
   int? _threadFid;
+  late int _effectiveTid;
+  int? _effectiveFid;
+  String? _forumName;
+  bool _showForumSidebar = false;
+  bool _showInThreadSearch = false;
+  final _inThreadSearchCtrl = TextEditingController();
+  List<int> _inThreadSearchMatches = [];
+  int _inThreadSearchCurrentIdx = 0;
+
+  int? get currentFid => _effectiveFid ?? _threadFid ?? widget.fid;
+
   bool _canModerate = false;
   int _likes = 0;
   int _favorites = 0;
@@ -76,12 +102,21 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   int _replies = 0;
   List<String> _tags = const [];
   List<PostFloor> _floors = const [];
+  final Map<int, GlobalKey> _floorItemKeys = {};
   int? _ordertype;
   bool _isDescOrder = false;
+  int? _highlightedFloorIndex;
+  int? _pendingTargetFloor;
+  int _totalPages = 1;
+  ServerOutageInfo? _activeOutage;
+  bool _viewCacheAnyway = false;
 
   @override
   void initState() {
     super.initState();
+    _effectiveTid = widget.tid;
+    _effectiveFid = widget.fid;
+    _showForumSidebar = AppConfig.threadLeftEnabled;
     AppConfig.instance.addListener(_onConfigChanged);
     _loadAndInit();
     KlpbbsApi.getMyUid()
@@ -99,21 +134,50 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
           }
         })
         .catchError((_) {});
-    // AppBar 标题滚动折叠：滚动超过 120px 显示帖子标题
+    // AppBar 标题滚动折叠：滚动超过 120px 显示帖子标题；超过 280px 显示回到顶部
     _scrollCtrl.addListener(() {
       final show = _scrollCtrl.offset > 120;
       if (show != _scrolled) setState(() => _scrolled = show);
+      final showTop = _scrollCtrl.offset > 280;
+      if (showTop != _showBackToTop) setState(() => _showBackToTop = showTop);
     });
   }
 
+  void _onSidebarSelectThread(int newTid) {
+    if (_effectiveTid == newTid) return;
+    BiliVideoPlayer.stopAll();
+    NetEaseMusicPlayer.stopAll();
+    GeneralAudioPlayer.stopAll();
+    GeneralVideoPlayer.stopAll();
+    setState(() {
+      _effectiveTid = newTid;
+      _page = 1;
+      _floors = const [];
+      _title = '';
+      _stamp = null;
+      _stampUrl = null;
+      _aiSummary = null;
+      _favored = false;
+      _liked = false;
+    });
+    _loadAndInit(forceRefresh: true);
+  }
+
   void _onConfigChanged() {
-    if (mounted) setState(() {});
+    if (mounted) {
+      if (_showForumSidebar != AppConfig.threadLeftEnabled) {
+        _showForumSidebar = AppConfig.threadLeftEnabled;
+      }
+      setState(() {});
+    }
   }
 
   void _loadAndInit({bool forceRefresh = false}) {
     setState(() {
+      _viewCacheAnyway = false;
+      _activeOutage = null;
       _future = KlpbbsApi.getThread(
-        widget.tid,
+        _effectiveTid,
         page: _page,
         ordertype: _ordertype,
         forceRefresh: forceRefresh,
@@ -121,6 +185,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
         final prefs = await SharedPreferences.getInstance();
         if (mounted) {
           setState(() {
+            _activeOutage = null;
             _applyThreadData(r, prefs);
           });
         }
@@ -136,8 +201,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       _firstAuthorUid = r.floors.first.uid;
     }
 
+    if (r.forumName != null && (r.forumName as String).trim().isNotEmpty) {
+      _forumName = (r.forumName as String).trim();
+    }
+
     if (r.fid != null && r.fid > 0) {
       _threadFid = r.fid;
+      _effectiveFid ??= r.fid;
       KlpbbsApi.getMyRole(fid: r.fid).then((role) {
         if (mounted) {
           final canMod = role.isAdmin || role.isSuperMod || role.isModerator;
@@ -147,13 +217,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     }
 
     final likedList = prefs.getStringList('liked_tids') ?? const [];
-    final isLocalLiked = likedList.contains('${widget.tid}');
+    final isLocalLiked = likedList.contains('$_effectiveTid');
     final isServerLiked = (r.isLiked == true) || (r.floors.isNotEmpty && r.floors.first.isLiked && _page == 1);
     if (_page == 1) {
       if (DioClient.isLoggedIn) {
         _liked = isServerLiked;
         if (isServerLiked != isLocalLiked) {
-          _saveState('liked_tids', '${widget.tid}', isServerLiked);
+          _saveState('liked_tids', '$_effectiveTid', isServerLiked);
         }
       } else {
         _liked = isLocalLiked;
@@ -162,37 +232,39 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     }
 
     final favList = prefs.getStringList('fav_tids') ?? const [];
-    final isLocalFav = favList.contains('${widget.tid}') || KlpbbsApi.isThreadFavidCached(widget.tid);
+    final isLocalFav = favList.contains('$_effectiveTid');
+
     if (DioClient.isLoggedIn) {
-      if (r.hasExplicitFavState) {
-        // 服务端 DOM 具备明确的收藏标记（无论已收藏还是未收藏，均以服务端最新状态为准）
-        _favored = r.isFavorited;
-        _favid = r.favid ?? (r.isFavorited ? KlpbbsApi.getCachedFavid(widget.tid) : null);
-        if (r.isFavorited) {
-          if (!isLocalFav) {
-            _saveState('fav_tids', '${widget.tid}', true);
-          }
-        } else {
-          // 服务端明确指出当前用户未收藏，坚决清理本地可能残留的历史脏数据
-          if (isLocalFav) {
-            _saveState('fav_tids', '${widget.tid}', false);
-          }
+      if (r.hasExplicitFavState && r.isFavorited == true) {
+        _favored = true;
+        _favid = r.favid ?? (KlpbbsApi.getCachedFavid(_effectiveTid));
+        _saveState('fav_tids', '$_effectiveTid', true);
+      } else if (r.hasExplicitFavState && r.isFavorited == false) {
+        // 服务端明确给出了未激活收藏态，坚决判定为 false 并清除历史残留的污染标记
+        _favored = false;
+        _favid = null;
+        if (isLocalFav) {
+          _saveState('fav_tids', '$_effectiveTid', false);
         }
+      } else if (isLocalFav && !r.hasExplicitFavState) {
+        _favored = true;
+        _favid = KlpbbsApi.getCachedFavid(_effectiveTid);
       } else {
-        // 服务端未输出显式标记（例如 PC 版降级页面），依赖本地持久化状态并在未命中时进行安全探针验证
-        _favored = isLocalFav;
-        _favid = KlpbbsApi.getCachedFavid(widget.tid);
-        if (!_favored) {
-          KlpbbsApi.checkThreadFavorited(widget.tid).then((serverFav) {
-            if (mounted && serverFav && !_favored) {
-              setState(() {
-                _favored = true;
-                _favid = KlpbbsApi.getCachedFavid(widget.tid);
-              });
-            }
-          }).catchError((_) {});
-        }
+        // 关键防御：未给出明确激活类或未被命中时，保持 false，杜绝黄色星星闪烁；由后续 checkThreadFavorited 异步权威定夺
+        _favored = false;
+        _favid = null;
       }
+
+      // 无论首屏是否推测出状态，均发起权威端点异步兜底核验，确保 100% 与网页端实际收藏状态保持绝对同步
+      KlpbbsApi.checkThreadFavorited(_effectiveTid).then((serverFav) {
+        if (mounted && _favored != serverFav) {
+          setState(() {
+            _favored = serverFav;
+            _favid = serverFav ? KlpbbsApi.getCachedFavid(_effectiveTid) : null;
+          });
+          _saveState('fav_tids', '$_effectiveTid', serverFav);
+        }
+      }).catchError((_) {});
     } else {
       // 未登录用户绝不展示高亮激活收藏态
       _favored = false;
@@ -202,6 +274,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     _favorites = r.favorites;
     _views = r.views;
     _replies = r.replies;
+    _totalPages = r.totalPages;
     if (_page == 1 || _tags.isEmpty) {
       _tags = r.tags;
     }
@@ -217,8 +290,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       // 若用户明确指定了 ordertype（1 = 倒序，2 = 正序），必须以明确参数为准
       _isDescOrder = (_ordertype == 1);
     } else {
-      // 默认加载下，由服务端解析判断当前主题默认是正序还是倒序
+      // 默认加载下，由服务端解析判断当前主题默认是正序还是倒序，并同步锁定 ordertype
       _isDescOrder = r.isDescOrder;
+      _ordertype = _isDescOrder ? 1 : 2;
     }
   }
 
@@ -232,11 +306,16 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       GeneralAudioPlayer.stopAll();
       GeneralVideoPlayer.stopAll();
     }
+    _inThreadSearchCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
   }
 
   void _reload() {
+    setState(() {
+      _viewCacheAnyway = false;
+      _activeOutage = null;
+    });
     _loadAndInit(forceRefresh: true);
   }
 
@@ -250,7 +329,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       _page = 1; // 切换排序重置为第1页
     });
     // 清除该帖子的缓存，确保网络请求获取全新排序结果
-    KlpbbsApi.clearThreadDetailCache(widget.tid);
+    KlpbbsApi.clearThreadDetailCache(_effectiveTid);
     _loadAndInit(forceRefresh: true);
 
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
@@ -362,8 +441,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   void didUpdateWidget(covariant ThreadDetailPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.tid != widget.tid) {
+      _effectiveTid = widget.tid;
       _page = 1;
       _reload();
+    }
+    if (oldWidget.fid != widget.fid && widget.fid != null) {
+      _effectiveFid = widget.fid;
     }
   }
 
@@ -690,7 +773,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       final author = _floors.isNotEmpty ? _floors.first.author : '';
       final res = await FavoriteDialog.show(
         context,
-        tid: widget.tid,
+        tid: _effectiveTid,
         title: _title,
         author: author,
         isFavorited: _favored,
@@ -700,12 +783,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
             _favored = fav;
             _favorites += fav ? 1 : (_favorites > 0 ? -1 : 0);
             if (fav) {
-              _favid = KlpbbsApi.getCachedFavid(widget.tid) ?? _favid;
+              _favid = KlpbbsApi.getCachedFavid(_effectiveTid) ?? _favid;
             } else {
               _favid = null;
             }
           });
-          _saveState('fav_tids', '${widget.tid}', fav);
+          _saveState('fav_tids', '$_effectiveTid', fav);
         },
       );
       if (res != null) {
@@ -713,12 +796,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
           _favored = res;
           _favorites += res ? 1 : (_favorites > 0 ? -1 : 0);
           if (res) {
-            _favid = KlpbbsApi.getCachedFavid(widget.tid) ?? _favid;
+            _favid = KlpbbsApi.getCachedFavid(_effectiveTid) ?? _favid;
           } else {
             _favid = null;
           }
         });
-        _saveState('fav_tids', '${widget.tid}', res);
+        _saveState('fav_tids', '$_effectiveTid', res);
       }
       return;
     }
@@ -729,14 +812,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       _favored = nextFav;
       _favorites += nextFav ? 1 : (_favorites > 0 ? -1 : 0);
     });
-    _saveState('fav_tids', '${widget.tid}', nextFav);
+    _saveState('fav_tids', '$_effectiveTid', nextFav);
 
     try {
       if (nextFav) {
-        final res = await KlpbbsApi.favoriteThread(widget.tid);
+        final res = await KlpbbsApi.favoriteThread(_effectiveTid);
         if (mounted) {
           setState(() {
-            _favid = KlpbbsApi.getCachedFavid(widget.tid) ?? _favid;
+            _favid = KlpbbsApi.getCachedFavid(_effectiveTid) ?? _favid;
           });
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -746,7 +829,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
           );
         }
       } else {
-        final res = await KlpbbsApi.unfavoriteThread(widget.tid, favid: _favid);
+        final res = await KlpbbsApi.unfavoriteThread(_effectiveTid, favid: _favid);
         if (mounted) {
           setState(() {
             _favid = null;
@@ -759,7 +842,29 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
           );
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _favored = !nextFav;
+          _favorites += !nextFav ? 1 : (_favorites > 0 ? -1 : 0);
+        });
+        _saveState('fav_tids', '$_effectiveTid', !nextFav);
+        final outage = ServerOutageInfo.tryParse(e);
+        if (outage != null) {
+          ServerOutageView.showAsDialog(
+            context,
+            outage: outage,
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('收藏操作失败：$e'),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    }
   }
 
   void _showLikedUsersDialog([List<PostFloor>? floors]) {
@@ -873,34 +978,55 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     );
   }
 
-  void _onReplyGlobal() {
-    Navigator.of(context).push(
+  Future<void> _onReplyGlobal() async {
+    final ok = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
-        builder: (_) => PostPage(tid: widget.tid, initialMessage: null),
+        builder: (_) => PostPage(
+          tid: _effectiveTid,
+          fid: _effectiveFid,
+          threadTitle: _title,
+          initialMessage: null,
+        ),
       ),
     );
+    if (ok == true && mounted) {
+      _reload();
+    }
   }
 
   void _goPage(int page) {
     setState(() {
+      _viewCacheAnyway = false;
+      _activeOutage = null;
+      _floorItemKeys.clear();
       _page = page;
       _future = KlpbbsApi.getThread(
-        widget.tid,
+        _effectiveTid,
         page: page,
-        ordertype: _ordertype,
+        ordertype: _ordertype ?? (_isDescOrder ? 1 : 2),
       ).then((r) async {
         final prefs = await SharedPreferences.getInstance();
         if (mounted) {
           setState(() {
+            _activeOutage = null;
             _applyThreadData(r, prefs);
           });
+          if (_pendingTargetFloor != null) {
+            final floorToFind = _pendingTargetFloor!;
+            _pendingTargetFloor = null;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _scrollToFloorNumberInCurrentPage(floorToFind);
+            });
+          }
         }
         return r;
       });
     });
-    // 分页后回到顶部
+    // 分页后若无待跳转楼层则回到顶部
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollCtrl.hasClients) _scrollCtrl.jumpTo(0);
+      if (_pendingTargetFloor == null && _scrollCtrl.hasClients) {
+        _scrollCtrl.jumpTo(0);
+      }
     });
   }
 
@@ -947,6 +1073,35 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   Future<void> _onMenuAction(String action) async {
     if (!context.mounted) return;
     switch (action) {
+      case 'toggle_search':
+        setState(() {
+          _showInThreadSearch = !_showInThreadSearch;
+          if (!_showInThreadSearch) {
+            _inThreadSearchCtrl.clear();
+            _inThreadSearchMatches = [];
+            _inThreadSearchCurrentIdx = 0;
+          }
+        });
+        break;
+      case 'toggle_forum_sidebar':
+        if (widget.onToggleForumSidebar != null) {
+          widget.onToggleForumSidebar!();
+        } else if (ResponsiveBreakpoints.isDesktop(context)) {
+          setState(() {
+            _showForumSidebar = !_showForumSidebar;
+            AppConfig.setThreadLeftEnabled(_showForumSidebar);
+          });
+        } else if (currentFid != null && currentFid! > 0) {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => ThreadListPage(
+                fid: currentFid!,
+                title: _forumName ?? ComiisParser.getForumNameByFid(currentFid) ?? '版块列表',
+              ),
+            ),
+          );
+        }
+        break;
       case 'topic_admin':
         final snap = await _future;
         if (!mounted) return;
@@ -1112,6 +1267,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
 
   @override
   Widget build(BuildContext context) {
+    final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+    final theme = Theme.of(context);
+    final hasSidebarToggle = widget.onToggleForumSidebar != null ||
+        (widget.canShowForumSidebar && isDesktop && currentFid != null && currentFid! > 0);
+    final isSidebarOpen = widget.onToggleForumSidebar != null
+        ? (widget.isForumSidebarVisible ?? true)
+        : _showForumSidebar;
+
     return FocusTraversalGroup(
       policy: ReadingOrderTraversalPolicy(),
       child: Scaffold(
@@ -1144,6 +1307,63 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                   : '当前为正序浏览（最早在前），点击切换为倒序',
               onPressed: _toggleOrder,
             ),
+            if (hasSidebarToggle)
+              IconButton(
+                icon: Icon(
+                  isSidebarOpen ? Icons.view_sidebar_rounded : Icons.view_sidebar_outlined,
+                  size: 20,
+                  color: isSidebarOpen ? theme.colorScheme.primary : null,
+                ),
+                tooltip: isSidebarOpen ? '收起版块列表' : '展开版块列表',
+                onPressed: () {
+                  if (widget.onToggleForumSidebar != null) {
+                    widget.onToggleForumSidebar!();
+                  } else {
+                    setState(() {
+                      _showForumSidebar = !_showForumSidebar;
+                      AppConfig.setThreadLeftEnabled(_showForumSidebar);
+                    });
+                  }
+                },
+              ),
+            IconButton(
+              icon: Icon(
+                _showInThreadSearch ? Icons.search_off_rounded : Icons.search_rounded,
+                size: 20,
+                color: _showInThreadSearch ? theme.colorScheme.primary : null,
+              ),
+              tooltip: _showInThreadSearch ? '关闭楼层搜索' : '搜索本帖楼层',
+              onPressed: () {
+                setState(() {
+                  _showInThreadSearch = !_showInThreadSearch;
+                  if (!_showInThreadSearch) {
+                    _inThreadSearchCtrl.clear();
+                    _inThreadSearchMatches = [];
+                    _inThreadSearchCurrentIdx = 0;
+                  }
+                });
+              },
+            ),
+            if (isDesktop)
+              IconButton(
+                icon: const Icon(Icons.tune_rounded),
+                tooltip: '工作台排版微调 (自由画布)',
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      fullscreenDialog: true,
+                      builder: (ctx) => VisualGridCanvas(
+                        initialLayout: AppConfig.threadDashboardLayout,
+                        pageCategory: 'thread',
+                        onSave: (saved) {
+                          AppConfig.setThreadDashboardLayout(saved);
+                        },
+                        onExit: () {},
+                      ),
+                    ),
+                  );
+                },
+              ),
             IconButton(
               icon: const Icon(Icons.refresh_rounded),
               tooltip: '刷新帖子 (F5)',
@@ -1153,6 +1373,33 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
               tooltip: '更多选项',
               onSelected: (v) => _onMenuAction(v),
               itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: 'toggle_search',
+                  child: Row(
+                    children: [
+                      Icon(
+                        _showInThreadSearch ? Icons.search_off_rounded : Icons.search_rounded,
+                        size: 18,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(_showInThreadSearch ? '关闭楼层搜索' : '搜索本帖楼层'),
+                    ],
+                  ),
+                ),
+                if (hasSidebarToggle)
+                  PopupMenuItem(
+                    value: 'toggle_forum_sidebar',
+                    child: Row(
+                      children: [
+                        Icon(
+                          isSidebarOpen ? Icons.view_sidebar_rounded : Icons.view_sidebar_outlined,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(isSidebarOpen ? '收起版块列表' : '展开版块列表'),
+                      ],
+                    ),
+                  ),
                 PopupMenuItem(
                   value: 'toggle_order',
                   child: Row(
@@ -1245,27 +1492,120 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
             ),
           ],
         ),
-        body: Stack(
-          fit: StackFit.expand,
-          children: [
-            FutureBuilder<ThreadDetailParsed>(
+        body: Builder(
+          builder: (context) {
+            final mainDetailContent = FutureBuilder<ThreadDetailParsed>(
               future: _future,
               builder: (context, snap) {
                 if (snap.connectionState != ConnectionState.done) {
                   return const ThreadDetailSkeleton();
                 }
                 if (snap.hasError) {
-                  return Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text('加载失败：${snap.error}', textAlign: TextAlign.center),
-                        const SizedBox(height: 12),
-                        FilledButton(
-                          onPressed: _reload,
-                          child: const Text('重试'),
+                  final errStr = snap.error.toString();
+                  final outage = ServerOutageInfo.tryParse(snap.error);
+                  if (outage != null && !_viewCacheAnyway) {
+                    final otKey = _ordertype != null && _ordertype! > 0 ? '_ot$_ordertype' : '';
+                    final cacheKey = 'thread_detail_${_effectiveTid}_$_page$otKey';
+                    final cached = PreloadService.instance.get<ThreadDetailParsed>(cacheKey);
+                    return ServerOutageView(
+                      outage: outage,
+                      onRetry: _reload,
+                      onViewCache: cached != null
+                          ? () {
+                              setState(() {
+                                _activeOutage = outage;
+                                _viewCacheAnyway = true;
+                                _future = Future.value(cached);
+                              });
+                            }
+                          : null,
+                      onGoHome: () {
+                        if (Navigator.of(context).canPop()) {
+                          Navigator.of(context).popUntil((route) => route.isFirst);
+                        }
+                      },
+                    );
+                  }
+                  final is404 = errStr.contains('404') ||
+                      errStr.contains('不存在') ||
+                      errStr.contains('已删除') ||
+                      errStr.contains('无访问权限') ||
+                      errStr.contains('指定的主题不存在');
+                  if (is404) {
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: Theme.of(context).colorScheme.errorContainer.withAlpha(60),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Icon(
+                                Icons.article_outlined,
+                                size: 48,
+                                color: Theme.of(context).colorScheme.error,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              '帖子不存在或已被删除',
+                              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              '该主题可能已被版主清理、下架或链接有误 (HTTP 404)',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Theme.of(context).colorScheme.outline,
+                              ),
+                            ),
+                            const SizedBox(height: 20),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (Navigator.of(context).canPop()) ...[
+                                  OutlinedButton.icon(
+                                    onPressed: () => Navigator.of(context).maybePop(),
+                                    icon: const Icon(Icons.arrow_back, size: 16),
+                                    label: const Text('返回上一页'),
+                                  ),
+                                  const SizedBox(width: 12),
+                                ],
+                                FilledButton.icon(
+                                  onPressed: _reload,
+                                  icon: const Icon(Icons.refresh, size: 16),
+                                  label: const Text('重试'),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
-                      ],
+                      ),
+                    );
+                  }
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.error_outline_rounded, size: 48, color: Theme.of(context).colorScheme.error),
+                          const SizedBox(height: 12),
+                          Text('加载失败：$errStr', textAlign: TextAlign.center),
+                          const SizedBox(height: 16),
+                          FilledButton(
+                            onPressed: _reload,
+                            child: const Text('重试'),
+                          ),
+                        ],
+                      ),
                     ),
                   );
                 }
@@ -1287,16 +1627,66 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                     ),
                   );
                 }
-                return RefreshIndicator(
-                  onRefresh: () async => _reload(),
-                  child: Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 1200),
-                      child: ListView(
-                        cacheExtent: 800.0,
-                        controller: _scrollCtrl,
-                        padding: const EdgeInsets.only(bottom: 48),
-                        children: [
+                return Column(
+                  children: [
+                    if (_activeOutage != null)
+                      ServerOutageBanner(
+                        outage: _activeOutage!,
+                        onRetry: _reload,
+                        onViewDetails: () {
+                          setState(() => _viewCacheAnyway = false);
+                        },
+                        onDismiss: () => setState(() => _activeOutage = null),
+                      ),
+                    if (_showInThreadSearch) _buildInThreadSearchBar(floors),
+                    Expanded(
+                      child: RepaintBoundary(
+                        child: RefreshIndicator(
+                          onRefresh: () async => _reload(),
+                          child: ThreadLayoutWorkbench(
+                    tid: _effectiveTid,
+                    fid: data?.fid,
+                    forumName: data?.forumName,
+                    floors: floors,
+                    scrollController: _scrollCtrl,
+                    bottomBar: _buildBottomActions(floors),
+                    floatingActionButton: _buildBackTopFab(),
+                    currentPage: _page,
+                    totalPages: data?.totalPages ?? _totalPages,
+                    totalReplies: data?.replies ?? _replies,
+                    isDescOrder: data?.isDescOrder ?? _isDescOrder,
+                    onJumpToFloor: (idx) => _jumpToFloorIndex(idx),
+                    onNavigateToFloor: (targetFloor) => _navigateToFloorNumber(targetFloor),
+                    onSelectThread: (tid) {
+                      Navigator.of(context).pushReplacement(
+                        MaterialPageRoute(
+                          builder: (_) => ThreadDetailPage(
+                            tid: tid,
+                            fid: data?.fid,
+                          ),
+                        ),
+                      );
+                    },
+                    onOpenRatingFilter: () {
+                      final firstFloor = floors.isNotEmpty ? floors.first : null;
+                      final pid = firstFloor?.pid ?? 0;
+                      RatingFilterHall.show(
+                        context,
+                        tid: widget.tid,
+                        pid: pid,
+                        fallbackRewards: firstFloor?.rewards.map((r) => FloorReward(
+                          username: r.user,
+                          uid: r.uid,
+                          amount: r.amount,
+                          reason: r.reason,
+                        )).toList() ?? const [],
+                      );
+                    },
+                    child: ListView(
+                      cacheExtent: 800.0,
+                      controller: _scrollCtrl,
+                      padding: const EdgeInsets.only(bottom: 64),
+                      children: [
                           if (title.isNotEmpty)
                             Padding(
                               padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
@@ -1565,7 +1955,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                           for (var i = 0; i < floors.length; i++) ...[
                             if (_page == 1 && i == 0 && (_aiSummary != null || data?.aiSummary != null))
                               AiSummaryCard(
-                                tid: widget.tid,
+                                tid: _effectiveTid,
                                 initialData: _aiSummary ?? data?.aiSummary,
                                 onRefresh: () {
                                   if (mounted) setState(() {});
@@ -1578,17 +1968,18 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                               final isThreadAuthor = floors[i].isThreadAuthor ||
                                   (_firstAuthorUid != null && floors[i].uid == _firstAuthorUid);
                               return _FloorView(
-                                key: ValueKey('floor_${floors[i].pid ?? i}_${_ordertype ?? 0}_${_isDescOrder}_${_page}_$i'),
+                                key: _floorItemKeys.putIfAbsent(i, () => GlobalKey()),
                                 floor: floors[i],
                                 index: i,
                                 page: _page,
-                                tid: widget.tid,
+                                tid: _effectiveTid,
                                 fid: data?.fid,
                                 threadTitle: (data?.title ?? _title).isNotEmpty ? (data?.title ?? _title) : null,
                                 isFirstFloor: isFirstFloor,
                                 isThreadAuthor: isThreadAuthor,
                                 isDescOrder: data?.isDescOrder ?? _isDescOrder,
                                 totalReplies: data?.replies ?? _replies,
+                                isHighlighted: _highlightedFloorIndex == i,
                                 stamp: isFirstFloor ? (data?.stamp ?? _stamp) : null,
                                 stampUrl: isFirstFloor ? (data?.stampUrl ?? _stampUrl) : null,
                                 isLiked: isFirstFloor ? _liked : null,
@@ -1772,110 +2163,558 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                       ),
                     ),
                   ),
-                );
-              },
-            ),
-            // 底部操作栏（赞/收藏/分享/回复）
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: SafeArea(
-                top: false,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surface,
-                    border: Border(
-                      top: BorderSide(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.outlineVariant.withAlpha(60),
-                        width: 0.5,
-                      ),
+                ),
+              ),
+            ],
+          );
+        },
+      );
+
+            if (widget.canShowForumSidebar && isDesktop && _showForumSidebar && currentFid != null && currentFid! > 0) {
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SizedBox(
+                    width: AppConfig.threadForumSidebarWidth,
+                    child: ThreadListPage(
+                      fid: currentFid!,
+                      title: _forumName ?? ComiisParser.getForumNameByFid(currentFid) ?? '版块列表',
+                      isSidebar: true,
+                      activeTid: _effectiveTid,
+                      onThreadSelected: _onSidebarSelectThread,
+                      onCloseSidebar: () {
+                        setState(() {
+                          _showForumSidebar = false;
+                          AppConfig.setThreadLeftEnabled(false);
+                        });
+                      },
                     ),
                   ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: GestureDetector(
-                          onLongPress: () => _showLikedUsersDialog(_floors),
-                          child: _BottomAction(
-                            icon: _liked
-                                ? Icons.thumb_up
-                                : Icons.thumb_up_outlined,
-                            label: _likes > 0 ? '$_likes 赞' : '点赞',
-                            highlighted: _liked,
-                            onTap: _onLike,
-                          ),
-                        ),
-                      ),
-                      Expanded(
-                        child: GestureDetector(
-                          onLongPress: () => _onFavorite(openDialog: true),
-                          child: _BottomAction(
-                            icon: _favored ? Icons.star : Icons.star_outline,
-                            label: _favorites > 0 ? '$_favorites 收藏' : '收藏',
-                            highlighted: _favored,
-                            activeColor: Colors.amber.shade700,
-                            onTap: () => _onFavorite(openDialog: false),
-                          ),
-                        ),
-                      ),
-                      Expanded(
-                        child: _BottomAction(
-                          icon: Icons.share_outlined,
-                          label: '分享',
-                          onTap: () {
-                            final url =
-                                '${AppConfig.baseUrl}thread-${widget.tid}-1-1.html';
-                            final shareText = _title.isNotEmpty
-                                ? '$_title $url'
-                                : url;
-                            Clipboard.setData(ClipboardData(text: shareText));
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('标题+链接已复制')),
-                            );
-                          },
-                        ),
-                      ),
-                      Expanded(
-                        child: _BottomAction(
-                          icon: Icons.reply_outlined,
-                          label: _replies > 0 ? '$_replies 回复' : '回复',
-                          onTap: () => _onReplyGlobal(),
-                        ),
-                      ),
-                    ],
-                  ),
+                  _buildForumSidebarSplitter(),
+                  Expanded(child: mainDetailContent),
+                ],
+              );
+            }
+
+            return mainDetailContent;
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomActions(List<PostFloor> currentFloors) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return SafeArea(
+      top: false,
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: 8,
+          vertical: 6,
+        ),
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          border: Border(
+            top: BorderSide(
+              color: colorScheme.outlineVariant.withAlpha(60),
+              width: 0.5,
+            ),
+          ),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: GestureDetector(
+                onLongPress: () => _showLikedUsersDialog(currentFloors.isNotEmpty ? currentFloors : _floors),
+                child: _BottomAction(
+                  icon: _liked
+                      ? Icons.thumb_up
+                      : Icons.thumb_up_outlined,
+                  label: _likes > 0 ? '$_likes 赞' : '点赞',
+                  highlighted: _liked,
+                  onTap: _onLike,
                 ),
               ),
             ),
-            // 回顶部 FAB（操作栏上方）
-            Positioned(
-              right: 16,
-              bottom: 84,
-              child: SafeArea(
-                child: FloatingActionButton.small(
-                  heroTag: 'back_top',
-                  tooltip: '回顶部',
-                  onPressed: () {
-                    if (_scrollCtrl.hasClients) {
-                      _scrollCtrl.animateTo(
-                        0,
-                        duration: const Duration(milliseconds: 300),
-                        curve: Curves.easeOut,
-                      );
-                    }
-                  },
-                  child: const Icon(Icons.arrow_upward, size: 18),
+            Expanded(
+              child: GestureDetector(
+                onLongPress: () => _onFavorite(openDialog: true),
+                child: _BottomAction(
+                  icon: _favored ? Icons.star : Icons.star_outline,
+                  label: _favorites > 0 ? '$_favorites 收藏' : '收藏',
+                  highlighted: _favored,
+                  activeColor: Colors.amber.shade700,
+                  onTap: () => _onFavorite(openDialog: false),
                 ),
+              ),
+            ),
+            Expanded(
+              child: _BottomAction(
+                icon: Icons.share_outlined,
+                label: '分享',
+                onTap: () {
+                  final url =
+                      '${AppConfig.baseUrl}thread-${widget.tid}-1-1.html';
+                  final shareText = _title.isNotEmpty
+                      ? '$_title $url'
+                      : url;
+                  Clipboard.setData(ClipboardData(text: shareText));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('标题+链接已复制')),
+                  );
+                },
+              ),
+            ),
+            Expanded(
+              child: _BottomAction(
+                icon: Icons.reply_outlined,
+                label: _replies > 0 ? '$_replies 回复' : '回复',
+                onTap: () => _onReplyGlobal(),
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBackTopFab() {
+    final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+    return ScrollDirectionAwareFab(
+      isVisible: _showBackToTop,
+      child: SafeArea(
+        child: isDesktop
+            ? FloatingActionButton.extended(
+                heroTag: 'back_top',
+                tooltip: '回到顶部 (Home / PgUp)',
+                elevation: 4,
+                onPressed: () {
+                  if (_scrollCtrl.hasClients) {
+                    _scrollCtrl.animateTo(
+                      0,
+                      duration: const Duration(milliseconds: 350),
+                      curve: Curves.easeOutCubic,
+                    );
+                  }
+                },
+                icon: const Icon(Icons.arrow_upward_rounded, size: 20),
+                label: const Text(
+                  '回到顶部',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                ),
+              )
+            : FloatingActionButton.small(
+                heroTag: 'back_top',
+                tooltip: '回顶部',
+                elevation: 3,
+                onPressed: () {
+                  if (_scrollCtrl.hasClients) {
+                    _scrollCtrl.animateTo(
+                      0,
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeOut,
+                    );
+                  }
+                },
+                child: const Icon(Icons.arrow_upward, size: 18),
+              ),
+      ),
+    );
+  }
+
+  void _jumpToFloorIndex(int idx) {
+    if (idx < 0 || idx >= _floors.length) return;
+    setState(() {
+      _highlightedFloorIndex = idx;
+    });
+    // 2.5秒后自动淡出高亮
+    Future.delayed(const Duration(milliseconds: 2500), () {
+      if (mounted && _highlightedFloorIndex == idx) {
+        setState(() {
+          _highlightedFloorIndex = null;
+        });
+      }
+    });
+
+    if (!_scrollCtrl.hasClients) return;
+    if (idx <= 0) {
+      _scrollCtrl.animateTo(
+        0,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOutCubic,
+      );
+      return;
+    }
+    if (_floors.isNotEmpty && idx >= _floors.length - 1) {
+      _scrollCtrl.animateTo(
+        _scrollCtrl.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOutCubic,
+      );
+      return;
+    }
+
+    final key = _floorItemKeys[idx];
+    final ctx = key?.currentContext;
+    if (ctx != null) {
+      Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOutCubic,
+        alignment: 0.05,
+      );
+    } else {
+      // 离屏虚拟化区域平滑过渡定位
+      final total = _floors.isNotEmpty ? _floors.length : 1;
+      final progress = (idx / total).clamp(0.0, 1.0);
+      final estimatedOffset = (_scrollCtrl.position.maxScrollExtent * progress)
+          .clamp(0.0, _scrollCtrl.position.maxScrollExtent);
+      _scrollCtrl.animateTo(
+        estimatedOffset,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOutCubic,
+      ).then((_) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          final lateCtx = _floorItemKeys[idx]?.currentContext;
+          if (lateCtx != null) {
+            Scrollable.ensureVisible(
+              lateCtx,
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+              alignment: 0.05,
+            );
+          }
+        });
+      });
+    }
+  }
+
+  void _scrollToFloorNumberInCurrentPage(int targetFloor) {
+    if (!mounted || _floors.isEmpty) return;
+
+    int? targetIndex;
+
+    // 1. 楼主特殊直达（第 1 页 index 0）
+    if (targetFloor == 1 && _page == 1) {
+      targetIndex = 0;
+    }
+
+    // 2. 真实楼层文字与编号优先比对（优先绝对精准定位，避免删除楼层导致推导偏差）
+    if (targetIndex == null) {
+      for (int i = 0; i < _floors.length; i++) {
+        final f = _floors[i];
+        final fn = f.floorNumber.replaceAll(RegExp(r'[^\d]'), '');
+        if (fn.isNotEmpty && int.tryParse(fn) == targetFloor) {
+          targetIndex = i;
+          break;
+        }
+        if (targetFloor == 1 && (f.floorNumber == '楼主' || f.isThreadAuthor || (_page == 1 && i == 0))) {
+          targetIndex = i;
+          break;
+        }
+        if (targetFloor == 2 && f.floorNumber.contains('沙发')) {
+          targetIndex = i;
+          break;
+        }
+        if (targetFloor == 3 && f.floorNumber.contains('板凳')) {
+          targetIndex = i;
+          break;
+        }
+        if (targetFloor == 4 && f.floorNumber.contains('地板')) {
+          targetIndex = i;
+          break;
+        }
+      }
+    }
+
+    // 3. 数学推导兜底（当服务端未能解析出单楼层明确标号时）
+    if (targetIndex == null) {
+      if (!_isDescOrder) {
+        // 正序：每页10楼
+        final expectedIdx = (targetFloor - 1) % 10;
+        if (expectedIdx >= 0 && expectedIdx < _floors.length) {
+          targetIndex = expectedIdx;
+        }
+      } else {
+        // 倒序：1楼在第1页 index 0；回复依序倒序下排
+        final total = _replies > 0 ? _replies + 1 : _floors.length;
+        if (targetFloor == 1) {
+          targetIndex = 0;
+        } else {
+          final k = total - targetFloor;
+          if (_page == 1) {
+            final expectedIdx = 1 + k;
+            if (expectedIdx >= 0 && expectedIdx < _floors.length) {
+              targetIndex = expectedIdx;
+            }
+          } else {
+            final expectedIdx = (k - 9) % 10;
+            if (expectedIdx >= 0 && expectedIdx < _floors.length) {
+              targetIndex = expectedIdx;
+            }
+          }
+        }
+      }
+    }
+
+    targetIndex ??= 0;
+    _jumpToFloorIndex(targetIndex.clamp(0, _floors.length - 1));
+  }
+
+  void _navigateToFloorNumber(int targetFloor) {
+    if (targetFloor <= 0) return;
+
+    // 0. 优先在当前页全面检索：若该楼层已在当前页列表中，直接平滑定位，杜绝无谓跳页与打架！
+    if (_floors.isNotEmpty) {
+      if (targetFloor == 1 && _page == 1) {
+        _scrollToFloorNumberInCurrentPage(1);
+        return;
+      }
+      for (int i = 0; i < _floors.length; i++) {
+        final f = _floors[i];
+        final fn = f.floorNumber.replaceAll(RegExp(r'[^\d]'), '');
+        if (fn.isNotEmpty && int.tryParse(fn) == targetFloor) {
+          _scrollToFloorNumberInCurrentPage(targetFloor);
+          return;
+        }
+        if (targetFloor == 2 && f.floorNumber.contains('沙发')) {
+          _scrollToFloorNumberInCurrentPage(targetFloor);
+          return;
+        }
+        if (targetFloor == 3 && f.floorNumber.contains('板凳')) {
+          _scrollToFloorNumberInCurrentPage(targetFloor);
+          return;
+        }
+        if (targetFloor == 4 && f.floorNumber.contains('地板')) {
+          _scrollToFloorNumberInCurrentPage(targetFloor);
+          return;
+        }
+      }
+    }
+
+    final totalReplies = _replies;
+    final totalFloors = totalReplies > 0 ? totalReplies + 1 : _floors.length;
+    final totalPages = _totalPages > 0 ? _totalPages : 1;
+
+    int targetPage = 1;
+    if (!_isDescOrder) {
+      // 正序：每页10楼，Page = ((targetFloor - 1) ~/ 10) + 1
+      targetPage = ((targetFloor - 1) ~/ 10) + 1;
+    } else {
+      // 倒序：1楼永远在第1页；最新回复从第1页 index 1 往下排
+      if (targetFloor == 1) {
+        targetPage = 1;
+      } else {
+        final k = totalFloors - targetFloor;
+        if (k < 9) {
+          targetPage = 1;
+        } else {
+          targetPage = 2 + ((k - 9) ~/ 10);
+        }
+      }
+    }
+
+    // 边界限制
+    if (totalPages > 1 && targetPage > totalPages) {
+      targetPage = totalPages;
+    }
+    if (targetPage < 1) targetPage = 1;
+
+    if (targetPage == _page) {
+      _scrollToFloorNumberInCurrentPage(targetFloor);
+    } else {
+      _pendingTargetFloor = targetFloor;
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('正在前往第 $targetPage 页定位 $targetFloor# 楼...'),
+          duration: const Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      _goPage(targetPage);
+    }
+  }
+
+  Widget _buildInThreadSearchBar(List<PostFloor> allFloors) {
+    if (!_showInThreadSearch) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final totalMatches = _inThreadSearchMatches.length;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHigh.withAlpha(240),
+        border: Border(
+          bottom: BorderSide(
+            color: colorScheme.outlineVariant.withAlpha(80),
+            width: 1,
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.search_rounded, size: 20, color: colorScheme.primary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: TextField(
+              controller: _inThreadSearchCtrl,
+              autofocus: true,
+              style: theme.textTheme.bodyMedium,
+              decoration: InputDecoration(
+                hintText: '搜索本帖楼层、作者或发言内容...',
+                hintStyle: TextStyle(
+                  color: colorScheme.onSurfaceVariant.withAlpha(150),
+                  fontSize: 13,
+                ),
+                isDense: true,
+                border: InputBorder.none,
+                contentPadding: const EdgeInsets.symmetric(vertical: 6),
+              ),
+              onChanged: (val) {
+                final query = val.trim().toLowerCase();
+                if (query.isEmpty) {
+                  setState(() {
+                    _inThreadSearchMatches = [];
+                    _inThreadSearchCurrentIdx = 0;
+                  });
+                } else {
+                  final matches = <int>[];
+                  for (int i = 0; i < allFloors.length; i++) {
+                    final f = allFloors[i];
+                    if (f.author.toLowerCase().contains(query) ||
+                        f.contentHtml.toLowerCase().contains(query) ||
+                        f.floorNumber.toLowerCase().contains(query)) {
+                      matches.add(i);
+                    }
+                  }
+                  setState(() {
+                    _inThreadSearchMatches = matches;
+                    _inThreadSearchCurrentIdx = matches.isNotEmpty ? 1 : 0;
+                  });
+                  if (matches.isNotEmpty) {
+                    _jumpToFloorIndex(matches.first);
+                  }
+                }
+              },
+            ),
+          ),
+          if (_inThreadSearchCtrl.text.isNotEmpty) ...[
+            Text(
+              totalMatches > 0
+                  ? '$_inThreadSearchCurrentIdx / $totalMatches'
+                  : '无匹配',
+              style: TextStyle(
+                fontSize: 12,
+                color: totalMatches > 0 ? colorScheme.primary : colorScheme.error,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(width: 4),
+            IconButton(
+              icon: const Icon(Icons.keyboard_arrow_up_rounded, size: 20),
+              tooltip: '上一个匹配楼层',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              onPressed: totalMatches > 1
+                  ? () {
+                      setState(() {
+                        if (_inThreadSearchCurrentIdx <= 1) {
+                          _inThreadSearchCurrentIdx = totalMatches;
+                        } else {
+                          _inThreadSearchCurrentIdx--;
+                        }
+                      });
+                      _jumpToFloorIndex(_inThreadSearchMatches[_inThreadSearchCurrentIdx - 1]);
+                    }
+                  : null,
+            ),
+            IconButton(
+              icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
+              tooltip: '下一个匹配楼层',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              onPressed: totalMatches > 1
+                  ? () {
+                      setState(() {
+                        if (_inThreadSearchCurrentIdx >= totalMatches) {
+                          _inThreadSearchCurrentIdx = 1;
+                        } else {
+                          _inThreadSearchCurrentIdx++;
+                        }
+                      });
+                      _jumpToFloorIndex(_inThreadSearchMatches[_inThreadSearchCurrentIdx - 1]);
+                    }
+                  : null,
+            ),
+            IconButton(
+              icon: const Icon(Icons.clear_rounded, size: 18),
+              tooltip: '清空输入',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              onPressed: () {
+                _inThreadSearchCtrl.clear();
+                setState(() {
+                  _inThreadSearchMatches = [];
+                  _inThreadSearchCurrentIdx = 0;
+                });
+              },
+            ),
+          ],
+          IconButton(
+            icon: const Icon(Icons.close_rounded, size: 18),
+            tooltip: '关闭搜索',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+            onPressed: () {
+              setState(() {
+                _showInThreadSearch = false;
+                _inThreadSearchCtrl.clear();
+                _inThreadSearchMatches = [];
+                _inThreadSearchCurrentIdx = 0;
+              });
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildForumSidebarSplitter() {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeColumn,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onDoubleTap: () {
+          setState(() {
+            AppConfig.setThreadForumSidebarWidth(380.0);
+          });
+        },
+        onHorizontalDragUpdate: (details) {
+          final delta = details.delta.dx;
+          final newWidth = (AppConfig.threadForumSidebarWidth + delta).clamp(240.0, 720.0);
+          setState(() {
+            AppConfig.setThreadForumSidebarWidth(newWidth);
+          });
+        },
+        child: Container(
+          width: 8,
+          color: Colors.transparent,
+          child: Center(
+            child: Container(
+              width: 2.5,
+              height: 56,
+              decoration: BoxDecoration(
+                color: colorScheme.outlineVariant.withAlpha(120),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -1892,6 +2731,7 @@ class _FloorView extends StatefulWidget {
   final bool isThreadAuthor;
   final bool isDescOrder;
   final int? totalReplies;
+  final bool isHighlighted;
   final String? stamp;
   final String? stampUrl;
   final String? threadTitle;
@@ -1914,6 +2754,7 @@ class _FloorView extends StatefulWidget {
     this.isThreadAuthor = false,
     this.isDescOrder = false,
     this.totalReplies,
+    this.isHighlighted = false,
     this.stamp,
     this.stampUrl,
     this.isLiked,
@@ -1996,51 +2837,55 @@ class _FloorViewState extends State<_FloorView> {
   }
 
   String get _displayFloorNumber {
-    // 1. 如果是第1页第1楼，为楼主
+    // 1. 如果是第1页第1楼，坚决锁定为楼主
     if (widget.isFirstFloor) {
       return '楼主';
     }
-    // 2. 如果服务端 HTML 解析出了明确的楼层号（如 187635#、11#、沙发、板凳、地板、20# 等），优先展示
+
+    // 2. 优先从服务端解析出的真实楼层编号呈现（Discuz 真实权威标识，杜绝虚假计算楼层）
     final fn = floor.floorNumber.trim();
     if (fn.isNotEmpty && fn != '楼主') {
-      // 正序第1页若服务端未转写，将 2#、3#、4# 转换为传统中国论坛昵称
-      if (!widget.isDescOrder && widget.page == 1) {
-        if (fn == '2#' || index == 1) return '沙发';
-        if (fn == '3#' || index == 2) return '板凳';
-        if (fn == '4#' || index == 3) return '地板';
+      final numM = RegExp(r'(\d+)').firstMatch(fn);
+      if (numM != null) {
+        final n = int.tryParse(numM.group(1)!);
+        if (n != null) {
+          if (n == 2) return '2 楼 (沙发)';
+          if (n == 3) return '3 楼 (板凳)';
+          if (n == 4) return '4 楼 (地板)';
+          return '$n 楼';
+        }
       }
-      if (fn.endsWith('#')) {
-        return '${fn.replaceAll('#', '')} 楼';
-      }
-      // 关键防错：如果当前处于倒序模式，且 HTML 中残留了 "沙发/板凳/地板" 文本，坚决屏蔽伪沙发
-      if (widget.isDescOrder && (fn == '沙发' || fn == '板凳' || fn == '地板')) {
-        // 进入下方倒序真实序号推导
-      } else {
-        return fn;
-      }
+      if (fn.contains('沙发')) return '2 楼 (沙发)';
+      if (fn.contains('板凳')) return '3 楼 (板凳)';
+      if (fn.contains('地板')) return '4 楼 (地板)';
+      if (fn.endsWith('#')) return '${fn.replaceAll('#', '')} 楼';
+      return fn;
     }
-    // 3. 倒序浏览模式下的楼层计算
+
+    // 3. 楼层编号缺失时的容错保底推导（绝不将任何回复错误标记为「楼主」）
     if (widget.isDescOrder) {
       final total = widget.totalReplies ?? 0;
       if (total > 0) {
-        // 在倒序下，最高楼层为 total + 1 楼 (楼主算1楼，总回复数 total)
-        // 例如总回复 187634，最高回复楼层为 187635 楼
-        final descFloor = (total + 1) - ((widget.page - 1) * 10 + (index - 1));
-        if (descFloor > 1) {
-          return '$descFloor 楼';
-        }
+        final offset = widget.page == 1
+            ? (index - 1)
+            : 9 + (widget.page - 2) * 10 + index;
+        final descFloor = (total + 1) - offset;
+        if (descFloor == 2) return '2 楼 (沙发)';
+        if (descFloor == 3) return '3 楼 (板凳)';
+        if (descFloor == 4) return '4 楼 (地板)';
+        if (descFloor > 1) return '$descFloor 楼';
       }
-      return '${index + 1} 楼';
-    }
-    // 4. 正序模式：根据分页与索引计算真实的全局楼层序号
-    if (widget.page == 1) {
-      if (index == 1) return '沙发';
-      if (index == 2) return '板凳';
-      if (index == 3) return '地板';
-      return '${index + 1} 楼';
+      return '回帖';
     } else {
-      final globalFloor = (widget.page - 1) * 10 + index + 1;
-      return '$globalFloor 楼';
+      if (widget.page == 1) {
+        if (index == 1) return '2 楼 (沙发)';
+        if (index == 2) return '3 楼 (板凳)';
+        if (index == 3) return '4 楼 (地板)';
+        return '${index + 1} 楼';
+      } else {
+        final globalFloor = (widget.page - 1) * 10 + index + 1;
+        return '$globalFloor 楼';
+      }
     }
   }
 
@@ -2373,12 +3218,13 @@ class _FloorViewState extends State<_FloorView> {
               tooltip: '打赏评分',
               onTap: () => _onRewardFloor(context),
             ),
-            // 引用（纯图标）
-            _buildIconAction(
-              icon: Icons.format_quote_rounded,
-              tooltip: '引用回复',
-              onTap: () => _openReply(context, quote: true),
-            ),
+            // 引用（纯图标，仅非一楼展示，一楼为主题楼主）
+            if (!_isFirstFloorOverall)
+              _buildIconAction(
+                icon: Icons.format_quote_rounded,
+                tooltip: '引用回复',
+                onTap: () => _openReply(context, quote: true),
+              ),
             // 分享（纯图标）
             _buildIconAction(
               icon: Icons.share_outlined,
@@ -2457,17 +3303,31 @@ class _FloorViewState extends State<_FloorView> {
     final theme = Theme.of(context);
     final isDesktop = MediaQuery.of(context).size.width >= 800;
 
+    final isHighlighted = widget.isHighlighted;
     final cardDecoration = BoxDecoration(
       color: widget.isFirstFloor
-          ? theme.colorScheme.primaryContainer.withAlpha(35)
-          : theme.brightness == Brightness.dark
-          ? theme.colorScheme.surfaceContainerLow
-          : theme.colorScheme.surface,
+          ? theme.colorScheme.primaryContainer.withAlpha(isHighlighted ? 60 : 35)
+          : isHighlighted
+              ? theme.colorScheme.primaryContainer.withAlpha(45)
+              : (theme.brightness == Brightness.dark
+                  ? theme.colorScheme.surfaceContainerLow
+                  : theme.colorScheme.surface),
       borderRadius: BorderRadius.circular(12),
       border: Border.all(
-        color: theme.colorScheme.outlineVariant.withAlpha(60),
-        width: 0.6,
+        color: isHighlighted
+            ? theme.colorScheme.primary
+            : theme.colorScheme.outlineVariant.withAlpha(60),
+        width: isHighlighted ? 2.0 : 0.6,
       ),
+      boxShadow: isHighlighted
+          ? [
+              BoxShadow(
+                color: theme.colorScheme.primary.withAlpha(120),
+                blurRadius: 12,
+                spreadRadius: 2,
+              ),
+            ]
+          : null,
     );
 
     return RepaintBoundary(
@@ -2744,7 +3604,8 @@ class _FloorViewState extends State<_FloorView> {
               floor: floor,
               tid: tid,
               onQuickReply: () => _openReply(context, quote: false),
-              onQuoteReply: () => _openReply(context, quote: true),
+              onQuoteReply: _isFirstFloorOverall ? null : () => _openReply(context, quote: true),
+              onPollVoted: widget.onReload,
             ),
             // 评分/打赏记录
             if (floor.rewards.isNotEmpty || floor.rewardCount.isNotEmpty)
@@ -2798,8 +3659,8 @@ class _FloorViewState extends State<_FloorView> {
         ),
       ),
     ),
-  );
-}
+    );
+  }
 
   Widget _buildDzhanSection(ThemeData theme, PostFloor floor) {
     final likeCount = _likesCount > 0 ? _likesCount : floor.likes;
@@ -3033,14 +3894,29 @@ class _FloorViewState extends State<_FloorView> {
     final d = int.tryParse(m.group(3) ?? '') ?? 1;
     final h = int.tryParse(m.group(4) ?? '') ?? 0;
     final mi = int.tryParse(m.group(5) ?? '') ?? 0;
-    final hm =
-        '${h.toString().padLeft(2, '0')}:${mi.toString().padLeft(2, '0')}';
+    final postTime = DateTime(y, mo, d, h, mi);
+    final hm = '${h.toString().padLeft(2, '0')}:${mi.toString().padLeft(2, '0')}';
     final today = DateTime(now.year, now.month, now.day);
     final that = DateTime(y, mo, d);
     final diff = today.difference(that).inDays;
-    if (diff == 0) return '今天 $hm';
+
+    // 1. 若时间在未来（如论坛使用提升卡、置顶延期、定时发布或微小时钟偏差），绝不能显示负数「-X 天前」
+    if (diff < 0 || postTime.isAfter(now)) {
+      final futureDiffSec = postTime.difference(now).inSeconds;
+      if (futureDiffSec < 300) return '刚刚';
+      if (y == now.year) return '$mo月$d日 $hm';
+      return '$y-${mo.toString().padLeft(2, '0')}-${d.toString().padLeft(2, '0')} $hm';
+    }
+
+    // 2. 正常历史时间
+    if (diff == 0) {
+      final diffMin = now.difference(postTime).inMinutes;
+      if (diffMin < 1) return '刚刚';
+      if (diffMin < 60) return '$diffMin 分钟前';
+      return '今天 $hm';
+    }
     if (diff == 1) return '昨天 $hm';
-    if (diff < 7) return '$diff 天前';
+    if (diff >= 2 && diff < 7) return '$diff 天前';
     if (y == now.year) return '$mo月$d日 $hm';
     return '$y-${mo.toString().padLeft(2, '0')}-${d.toString().padLeft(2, '0')}';
   }
@@ -3268,9 +4144,7 @@ class _FloorViewState extends State<_FloorView> {
       return;
     }
     final hasAuthor = initialAuthor != null && initialAuthor.trim().isNotEmpty;
-    final ctrl = TextEditingController(
-      text: hasAuthor ? '回复 @$initialAuthor : ' : '',
-    );
+    final ctrl = TextEditingController(); // 对齐网页端：编辑输入区保持清空，不预填“回复xxx : ”
     showDialog<void>(
       context: context,
       builder: (ctx) {
@@ -3323,6 +4197,30 @@ class _FloorViewState extends State<_FloorView> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    if (hasAuthor)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.primaryContainer.withAlpha(90),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.reply, size: 14, color: Theme.of(context).colorScheme.primary),
+                            const SizedBox(width: 4),
+                            Text(
+                              '回复 @$initialAuthor',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).colorScheme.primary,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     TextField(
                       controller: ctrl,
                       maxLines: 4,
@@ -3462,8 +4360,11 @@ class _FloorViewState extends State<_FloorView> {
                   onPressed: submitting
                       ? null
                       : () async {
-                          final msg = ctrl.text.trim();
-                          if (msg.isEmpty) return;
+                          final rawMsg = ctrl.text.trim();
+                          if (rawMsg.isEmpty) return;
+                          final msg = hasAuthor && !rawMsg.startsWith('回复 @') && !rawMsg.startsWith('回复@')
+                              ? '回复 @$initialAuthor : $rawMsg'
+                              : rawMsg;
                           final messenger = ScaffoldMessenger.of(context);
                           final confirmed = await confirmWrite(context, '回复楼中楼');
                           if (!confirmed) return;
@@ -3709,11 +4610,14 @@ class _FloorViewState extends State<_FloorView> {
   }
 
   // 回复/引用回复（完全对齐 Discuz Web 端逻辑）
-  void _openReply(BuildContext context, {required bool quote}) {
+  Future<void> _openReply(BuildContext context, {required bool quote}) async {
+    final isFirst = _isFirstFloorOverall;
+    final effectiveQuote = quote && !isFirst;
+
     if (!DioClient.isLoggedIn) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(quote ? '请先登录论坛账号后再进行引用回复' : '请先登录论坛账号后再进行回复'),
+          content: Text(effectiveQuote ? '请先登录论坛账号后再进行引用回复' : '请先登录论坛账号后再进行回复'),
           action: SnackBarAction(
             label: '去登录',
             onPressed: () => Navigator.of(context).push(
@@ -3724,59 +4628,62 @@ class _FloorViewState extends State<_FloorView> {
       );
       return;
     }
-    final isFirst = widget.isFirstFloor ||
-        floor.floorNumber == '1' ||
-        floor.floorNumber == '楼主' ||
-        floor.floorNumber == '1#';
 
-    if (quote) {
-      // 引用回复：先剥离已有 quote 引用块和 HTML 标签，避免多层嵌套
-      final cleanContent = floor.contentHtml
-          .replaceAll(RegExp(r'<div class="quote">.*?</div>', dotAll: true), '')
-          .replaceAll(RegExp(r'<blockquote.*?>.*?</blockquote>', dotAll: true), '')
-          .replaceAll(RegExp(r'<[^>]+>'), ' ')
-          .replaceAll(RegExp(r'\s+'), ' ')
-          .trim();
-      final snippet = cleanContent.length > 200
-          ? '${cleanContent.substring(0, 200)}...'
-          : cleanContent;
+    // 提取纯文本摘要（剥离已有 quote 引用块和 HTML 标签，避免多层嵌套）
+    final cleanContent = floor.contentHtml
+        .replaceAll(RegExp(r'<div class="quote">.*?</div>', dotAll: true), '')
+        .replaceAll(RegExp(r'<blockquote.*?>.*?</blockquote>', dotAll: true), '')
+        .replaceAll(RegExp(r'<[^>]+>'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    final snippet = cleanContent.length > 200
+        ? '${cleanContent.substring(0, 200)}...'
+        : cleanContent;
 
-      // Discuz 标准带链接引用格式
-      final quoteText = (floor.pid != null && floor.pid! > 0)
-          ? '[quote][size=2][url=forum.php?mod=redirect&goto=findpost&pid=${floor.pid}&ptid=$tid][color=#999999]${floor.author}${floor.timeText.isNotEmpty ? " 发表于 ${floor.timeText}" : ""}[/color][/url][/size]\n$snippet[/quote]\n\n'
-          : '[quote]${floor.author}:\n$snippet[/quote]\n\n';
+    // Discuz 标准带链接引用格式（作为 noticetrimstr 发送给服务端）
+    final quoteBBCode = (floor.pid != null && floor.pid! > 0)
+        ? '[quote][size=2][url=forum.php?mod=redirect&goto=findpost&pid=${floor.pid}&ptid=$tid][color=#999999]${floor.author}${floor.timeText.isNotEmpty ? " 发表于 ${floor.timeText}" : ""}[/color][/url][/size]\n$snippet[/quote]'
+        : '[quote]${floor.author}:\n$snippet[/quote]';
 
-      final tTitle = widget.threadTitle;
-      Navigator.of(context).push(
+    final tTitle = widget.threadTitle;
+    final navigator = Navigator.of(context);
+    bool? ok;
+
+    if (effectiveQuote) {
+      ok = await navigator.push<bool>(
         MaterialPageRoute(
           builder: (_) => PostPage(
             tid: tid,
             fid: fid,
             threadTitle: tTitle,
             repquote: floor.pid,
+            reppost: floor.pid,
             noticeauthor: floor.author,
-            noticetrimstr: snippet,
+            noticetrimstr: quoteBBCode,
+            quoteAuthor: floor.author,
+            quoteTimeText: floor.timeText,
+            quoteContent: snippet,
             replyToFloorText: '引用 $_displayFloorNumber (${floor.author})',
-            initialMessage: quoteText,
+            initialMessage: null, // 完美对齐 Discuz 网页版：输入框保持清空，正文不直接插入引用 BBCode
           ),
         ),
       );
     } else {
-      // 普通回复：若回复非楼主楼层，对齐 Discuz 传递 reppost 并预填 @用户，触发系统站内信提醒
-      final tTitle = widget.threadTitle;
+      // 普通回复：完全对齐 Discuz 网页版——输入框保持清空，绝不生硬插入“回复xxx : ”，在上方独立呈现回复目标卡片
       if (isFirst) {
-        Navigator.of(context).push(
+        ok = await navigator.push<bool>(
           MaterialPageRoute(
             builder: (_) => PostPage(
               tid: tid,
               fid: fid,
               threadTitle: tTitle,
               replyToFloorText: '回复楼主 (${floor.author})',
+              initialMessage: null,
             ),
           ),
         );
       } else {
-        Navigator.of(context).push(
+        ok = await navigator.push<bool>(
           MaterialPageRoute(
             builder: (_) => PostPage(
               tid: tid,
@@ -3784,12 +4691,18 @@ class _FloorViewState extends State<_FloorView> {
               threadTitle: tTitle,
               reppost: floor.pid,
               noticeauthor: floor.author,
+              quoteAuthor: floor.author,
+              quoteTimeText: floor.timeText,
+              quoteContent: snippet,
               replyToFloorText: '回复 $_displayFloorNumber (${floor.author})',
-              initialMessage: '回复 @${floor.author} : ',
+              initialMessage: null, // 完美对齐 Discuz 网页版：输入框保持清空，绝不在编辑区插入“回复xxx : ”
             ),
           ),
         );
       }
+    }
+    if (ok == true && mounted) {
+      widget.onReload?.call();
     }
   }
 
@@ -4340,95 +5253,16 @@ class _RewardSectionState extends State<_RewardSection> {
 
   void _openRewardDetail() {
     final pid = floor.pid ?? 0;
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (ctx) {
-        return FutureBuilder<List<FloorReward>>(
-          future: (pid > 0 ? KlpbbsApi.getRatings(widget.tid, pid) : Future.value(<FloorReward>[])).then((apiList) {
-            if (apiList.isNotEmpty) {
-              return apiList;
-            }
-            return floor.rewards.map((r) => FloorReward(
-              username: r.user,
-              uid: r.uid,
-              amount: r.amount,
-              reason: r.reason,
-            )).toList();
-          }),
-          builder: (context, snap) {
-            final allList = snap.data ?? floor.rewards.map((r) => FloorReward(
-              username: r.user,
-              uid: r.uid,
-              amount: r.amount,
-              reason: r.reason,
-            )).toList();
-            final count = allList.isNotEmpty ? allList.length : floor.rewards.length;
-
-            return SafeArea(
-              child: SizedBox(
-                height: MediaQuery.of(ctx).size.height * 0.65,
-                child: Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.card_giftcard_rounded,
-                            size: 20,
-                            color: Theme.of(ctx).colorScheme.primary,
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            '楼层评分与打赏日志 ($count 条)',
-                            style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const Spacer(),
-                          IconButton(
-                            icon: const Icon(Icons.close, size: 20),
-                            onPressed: () => Navigator.of(ctx).pop(),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const Divider(height: 1),
-                    Expanded(
-                      child: (snap.connectionState != ConnectionState.done && allList.isEmpty)
-                          ? const Center(child: CircularProgressIndicator())
-                          : allList.isEmpty
-                              ? const Center(child: Text('暂无打赏记录'))
-                              : ListView.separated(
-                                  padding: const EdgeInsets.all(12),
-                                  itemCount: allList.length,
-                                  separatorBuilder: (_, __) =>
-                                      const Divider(height: 1, indent: 44),
-                                  itemBuilder: (_, idx) {
-                                    final r = allList[idx];
-                                    return _buildRewardItem(
-                                      ctx,
-                                      (
-                                        user: r.username,
-                                        uid: r.uid,
-                                        avatar: '',
-                                        amount: r.amount,
-                                        reason: r.reason,
-                                      ),
-                                      dateline: r.dateline,
-                                    );
-                                  },
-                                ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
+    RatingFilterHall.show(
+      context,
+      tid: widget.tid,
+      pid: pid,
+      fallbackRewards: floor.rewards.map((r) => FloorReward(
+        username: r.user,
+        uid: r.uid,
+        amount: r.amount,
+        reason: r.reason,
+      )).toList(),
     );
   }
 

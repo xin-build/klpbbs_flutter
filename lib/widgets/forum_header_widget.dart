@@ -4,6 +4,7 @@ import 'package:html/parser.dart' as html_parser;
 import '../api/klpbbs_api.dart';
 import '../core/url_helper.dart';
 import '../models/forum_header_info.dart';
+import 'interactive_animations.dart';
 import 'retry_image.dart';
 
 /// 版块头部组件（100% 还原网页版：Banner 顶图 + 统计与版主栏 + 版块导览与规章卡片）
@@ -185,28 +186,33 @@ class _ForumHeaderWidgetState extends State<ForumHeaderWidget> {
                     ),
                     const SizedBox(width: 4),
 
-                    // 展开收起导览
+                    // 展开收起导览（带触控微回弹与状态记忆）
                     if (info.rulesHtml.isNotEmpty)
-                      InkWell(
-                        borderRadius: BorderRadius.circular(6),
+                      PressScaleEffect(
+                        scaleDown: 0.94,
+                        enableHaptic: true,
                         onTap: () => setState(() => _expanded = !_expanded),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: colorScheme.surfaceContainerHighest.withAlpha(90),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(
-                                _expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                              AnimatedExpandArrow(
+                                isCollapsed: !_expanded,
                                 size: 16,
                                 color: colorScheme.onSurfaceVariant,
                               ),
-                              const SizedBox(width: 2),
+                              const SizedBox(width: 3),
                               Text(
                                 _expanded ? '收起导览' : '展开导览',
                                 style: TextStyle(
                                   fontSize: 12,
                                   color: colorScheme.onSurfaceVariant,
-                                  fontWeight: FontWeight.w500,
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
                             ],
@@ -261,14 +267,21 @@ class _ForumHeaderWidgetState extends State<ForumHeaderWidget> {
             ),
           ),
 
-          // 3. 版块导览与规章卡片（还原网页版富文本与快速入口按钮）
-          if (info.rulesHtml.isNotEmpty && _expanded) ...[
-            const Divider(height: 1, indent: 12, endIndent: 12),
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: _buildRichRulesContent(context, info.rulesHtml),
+          // 3. 版块导览与规章卡片（原生 Android 级流体手风琴错峰视差展开）
+          if (info.rulesHtml.isNotEmpty)
+            FluidAccordionSection(
+              isCollapsed: !_expanded,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Divider(height: 1, indent: 12, endIndent: 12),
+                  Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: _buildRichRulesContent(context, info.rulesHtml),
+                  ),
+                ],
+              ),
             ),
-          ],
         ],
       ),
     );
@@ -374,77 +387,90 @@ class _ForumHeaderWidgetState extends State<ForumHeaderWidget> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // 0. 提示通知条
-        for (final notice in notices)
-          Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: colorScheme.primaryContainer.withAlpha(50),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(
-                color: colorScheme.primary.withAlpha(60),
-                width: 0.6,
+        // 0. 提示通知条（微延迟错峰浮现）
+        for (var i = 0; i < notices.length; i++)
+          AccordionStaggerItem(
+            index: i,
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: colorScheme.primaryContainer.withAlpha(50),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: colorScheme.primary.withAlpha(60),
+                  width: 0.6,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.info_outline_rounded,
+                    size: 15,
+                    color: colorScheme.primary,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      notices[i],
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: colorScheme.onSurfaceVariant,
+                        height: 1.35,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.info_outline_rounded,
-                  size: 15,
-                  color: colorScheme.primary,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    notice,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: colorScheme.onSurfaceVariant,
-                      height: 1.35,
+          ),
+
+        // 1. 顶部宣传海报大图（全宽卡片，自适应圆角、微按压反馈与错峰弹跳展开）
+        for (var i = 0; i < posters.length; i++)
+          AccordionStaggerItem(
+            index: notices.length + i,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: HoverScaleElevationEffect(
+                translateY: -2.5,
+                child: PressScaleEffect(
+                  scaleDown: 0.985,
+                  enableHaptic: true,
+                  onTap: posters[i].href != null ? () => _openLink(posters[i].href!) : null,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: RetryImage(
+                      imageUrl: posters[i].src,
+                      width: double.infinity,
+                      fit: BoxFit.fitWidth,
                     ),
                   ),
                 ),
-              ],
-            ),
-          ),
-
-        // 1. 顶部宣传海报大图（全宽卡片，自适应圆角与点击事件）
-        for (final poster in posters)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: poster.href != null ? () => _openLink(poster.href!) : null,
-                  child: RetryImage(
-                    imageUrl: poster.src,
-                    width: double.infinity,
-                    fit: BoxFit.fitWidth,
-                  ),
-                ),
               ),
             ),
           ),
 
-        // 2. 功能交互按钮区（智能适配：1-3 个横幅纵向全宽展示，4个以上卡片按矩阵网格展示）
+        // 2. 功能交互按钮区（智能适配：1-3 个横幅纵向全宽展示，4个以上卡片按矩阵网格错峰展开，带触感微弹跳）
         if (imageButtons.isNotEmpty) ...[
           if (imageButtons.length <= 3)
-            for (final item in imageButtons)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(6),
-                  child: Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      onTap: () => _openLink(item.href),
-                      child: RetryImage(
-                        imageUrl: item.src,
-                        width: double.infinity,
-                        fit: BoxFit.fitWidth,
+            for (var i = 0; i < imageButtons.length; i++)
+              AccordionStaggerItem(
+                index: notices.length + posters.length + i,
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: HoverScaleElevationEffect(
+                    translateY: -2.0,
+                    child: PressScaleEffect(
+                      scaleDown: 0.97,
+                      enableHaptic: true,
+                      onTap: () => _openLink(imageButtons[i].href),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: RetryImage(
+                          imageUrl: imageButtons[i].src,
+                          width: double.infinity,
+                          fit: BoxFit.fitWidth,
+                        ),
                       ),
                     ),
                   ),
@@ -466,15 +492,20 @@ class _ForumHeaderWidgetState extends State<ForumHeaderWidget> {
                   itemCount: imageButtons.length,
                   itemBuilder: (ctx, i) {
                     final item = imageButtons[i];
-                    return ClipRRect(
-                      borderRadius: BorderRadius.circular(6),
-                      child: Material(
-                        color: Colors.transparent,
-                        child: InkWell(
+                    return AccordionStaggerItem(
+                      index: notices.length + posters.length + i,
+                      child: HoverScaleElevationEffect(
+                        translateY: -2.0,
+                        child: PressScaleEffect(
+                          scaleDown: 0.955,
+                          enableHaptic: true,
                           onTap: () => _openLink(item.href),
-                          child: RetryImage(
-                            imageUrl: item.src,
-                            fit: BoxFit.cover,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(6),
+                            child: RetryImage(
+                              imageUrl: item.src,
+                              fit: BoxFit.cover,
+                            ),
                           ),
                         ),
                       ),

@@ -1,5 +1,5 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
@@ -8,6 +8,7 @@ import '../models/horn_message.dart';
 import '../models/site_stats.dart';
 import '../pages/thread_detail_page.dart';
 import '../pages/user_space_page.dart';
+import 'thread_card.dart';
 
 /// 苦力怕论坛「土豪霸屏」置顶横幅组件与全站数据统计栏（完美还原网页端，未检测到霸屏时严格隐藏）
 class TuhaoBannerWidget extends StatefulWidget {
@@ -22,6 +23,7 @@ class TuhaoBannerWidget extends StatefulWidget {
   final int? yesterdayPosts;
   final int? totalPosts;
   final int? totalMembers;
+  final bool showStatsBar;
 
   const TuhaoBannerWidget({
     super.key,
@@ -36,6 +38,7 @@ class TuhaoBannerWidget extends StatefulWidget {
     this.yesterdayPosts,
     this.totalPosts,
     this.totalMembers,
+    this.showStatsBar = true,
   });
 
   @override
@@ -53,7 +56,9 @@ class _TuhaoBannerWidgetState extends State<TuhaoBannerWidget> {
     _siteStats = widget.stats ?? PreloadService.instance.get<SiteStats>('site_stats');
     _loadTuhaoBannerData();
     _loadHornData();
-    _loadStatsData();
+    if (widget.showStatsBar) {
+      _loadStatsData();
+    }
   }
 
   @override
@@ -70,12 +75,22 @@ class _TuhaoBannerWidgetState extends State<TuhaoBannerWidget> {
     KlpbbsApi.getTuhaoBanner().then((tuhao) {
       if (mounted && tuhao != null && tuhao.message.isNotEmpty) {
         setState(() {
+          int uid = tuhao.uid;
+          if (uid <= 0) {
+            final uidM = RegExp(r'/avatar/\d+/(\d+)/(\d+)/(\d+)').firstMatch(tuhao.avatarUrl);
+            if (uidM != null) {
+              final uidStr = '${uidM.group(1)}${uidM.group(2)}${uidM.group(3)}';
+              uid = int.tryParse(uidStr) ?? 0;
+            }
+          }
           _tuhaoMessage = HornMessage(
             id: 999999,
             author: tuhao.author,
             avatarUrl: tuhao.avatarUrl,
+            uid: uid > 0 ? uid : null,
             content: tuhao.message,
             linkUrl: tuhao.linkUrl,
+            tag: '土豪',
           );
         });
       }
@@ -125,28 +140,46 @@ class _TuhaoBannerWidgetState extends State<TuhaoBannerWidget> {
     }
   }
 
-  void _openTarget() {
+  void _openTarget() async {
     final targetTid = widget.tid ??
-        (_tuhaoMessage?.linkUrl != null
-            ? _extractTid(_tuhaoMessage!.linkUrl!)
-            : null);
+        _extractTid(widget.linkUrl ?? '') ??
+        (_tuhaoMessage?.linkUrl != null ? _extractTid(_tuhaoMessage!.linkUrl!) : null) ??
+        (_tuhaoMessage?.content != null ? _extractTid(_tuhaoMessage!.content) : null);
     if (targetTid != null && targetTid > 0) {
       Navigator.of(context).push(
         MaterialPageRoute(builder: (_) => ThreadDetailPage(tid: targetTid)),
       );
       return;
     }
-    final url = widget.linkUrl ?? _tuhaoMessage?.linkUrl ?? '';
-    final tid = _extractTid(url);
-    if (tid != null && tid > 0) {
-      Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => ThreadDetailPage(tid: tid)),
-      );
+    final url = _resolveLinkUrl();
+    if (url.isNotEmpty) {
+      final uri = Uri.tryParse(url);
+      if (uri != null) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
     }
   }
 
+  String _resolveLinkUrl() {
+    if (widget.linkUrl != null && widget.linkUrl!.isNotEmpty) {
+      return widget.linkUrl!;
+    }
+    if (_tuhaoMessage != null) {
+      if (_tuhaoMessage!.linkUrl != null && _tuhaoMessage!.linkUrl!.isNotEmpty) {
+        return _tuhaoMessage!.linkUrl!;
+      }
+      final urlM = RegExp(r'https?://(?:www\.)?klpbbs\.com/(?:thread-\d+-\d+-\d+\.html|forum\.php\?[^"\s<>\x27]+)').firstMatch(_tuhaoMessage!.content) ??
+          RegExp(r'https?://[^\s"<>\x27]+').firstMatch(_tuhaoMessage!.content);
+      if (urlM != null) {
+        return urlM.group(0)!;
+      }
+    }
+    return '';
+  }
+
   int? _extractTid(String url) {
-    final reg = RegExp(r'thread-(\\d+)|tid=(\\d+)').firstMatch(url);
+    if (url.isEmpty) return null;
+    final reg = RegExp(r'thread-(\d+)|[?&]tid=(\d+)').firstMatch(url);
     if (reg != null) {
       return int.tryParse(reg.group(1) ?? reg.group(2) ?? '');
     }
@@ -185,8 +218,8 @@ class _TuhaoBannerWidgetState extends State<TuhaoBannerWidget> {
         String text = _tuhaoMessage!.content
             .replaceAll(RegExp(r'<[^>]*>'), '')
             .replaceAll(RegExp(r'style="[^"]*"'), '')
-            .replaceAll(RegExp(r'style=\\x27[^\\x27]*\\x27'), '')
-            .replaceAll(RegExp(r'https?://\\S+'), '')
+            .replaceAll(RegExp(r"style='[^']*'"), '')
+            .replaceAll(RegExp(r'https?://\S+'), '')
             .replaceAll(RegExp(r'[💰土豪]'), '')
             .trim();
         text = text.replaceAll(RegExp(r'[a-zA-Z0-9_-]+="[^"]*"'), '').trim();
@@ -195,17 +228,10 @@ class _TuhaoBannerWidgetState extends State<TuhaoBannerWidget> {
           headline = text;
         }
       }
+      // 确保宣传语中彻底清除可能残留的 URL 字符串
+      headline = headline.replaceAll(RegExp(r'https?://\S+'), '').trim();
 
-      String linkUrl = widget.linkUrl ?? '';
-      if (linkUrl.isEmpty && _tuhaoMessage != null) {
-        final urlM = RegExp(r'https?://(?:www\\.)?klpbbs\\.com/(?:thread-\\d+-\\d+-\\d+\\.html|forum\\.php\\?[^"\\s<>\\x27]+)').firstMatch(_tuhaoMessage!.content) ??
-            RegExp(r'https?://[^\\s"<>\\x27]+').firstMatch(_tuhaoMessage!.content);
-        if (urlM != null) {
-          linkUrl = urlM.group(0)!;
-        } else if (_tuhaoMessage!.linkUrl != null && _tuhaoMessage!.linkUrl!.isNotEmpty) {
-          linkUrl = _tuhaoMessage!.linkUrl!;
-        }
-      }
+      final linkUrl = _resolveLinkUrl();
 
       if (headline.isNotEmpty && authorName.isNotEmpty) {
         tuhaoBanner = GestureDetector(
@@ -263,32 +289,15 @@ class _TuhaoBannerWidgetState extends State<TuhaoBannerWidget> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      // 圆形头像
-                      if (finalAvatarUrl.isNotEmpty)
-                        GestureDetector(
+                      // 土豪头像（支持全站设置的头像形状与挂件头像框）
+                      if (finalAvatarUrl.isNotEmpty || uid > 0)
+                        UserAvatarWidget(
+                          uid: uid > 0 ? uid : null,
+                          author: authorName,
+                          avatarUrl: finalAvatarUrl,
+                          faceUrl: UserAvatarWidget.sanitizeFaceUrl(_tuhaoMessage?.faceUrl),
+                          size: 52,
                           onTap: _openAuthor,
-                          child: Container(
-                            width: 54,
-                            height: 54,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.white, width: 2.2),
-                              boxShadow: const [
-                                BoxShadow(
-                                  color: Colors.black26,
-                                  blurRadius: 6,
-                                  offset: Offset(0, 2),
-                                ),
-                              ],
-                            ),
-                            child: ClipOval(
-                              child: CachedNetworkImage(
-                                imageUrl: finalAvatarUrl,
-                                fit: BoxFit.cover,
-                                errorWidget: (_, __, ___) => _fallbackAvatar(),
-                              ),
-                            ),
-                          ),
                         ),
                       const SizedBox(height: 6),
 
@@ -359,71 +368,64 @@ class _TuhaoBannerWidgetState extends State<TuhaoBannerWidget> {
 
     // 全站四大核心统计数据栏
     Widget? statsBar;
-    final stats = _siteStats ?? widget.stats;
-    if (stats != null && !stats.isEmpty) {
-      final todayVal = widget.todayPosts ?? stats.todayPosts;
-      final yesterdayVal = widget.yesterdayPosts ?? stats.yesterdayPosts;
-      final totalPostsVal = widget.totalPosts ?? stats.totalPosts;
-      final totalMembersVal = widget.totalMembers ?? stats.totalMembers;
+    if (widget.showStatsBar) {
+      final stats = _siteStats ?? widget.stats;
+      if (stats != null && !stats.isEmpty) {
+        final todayVal = widget.todayPosts ?? stats.todayPosts;
+        final yesterdayVal = widget.yesterdayPosts ?? stats.yesterdayPosts;
+        final totalPostsVal = widget.totalPosts ?? stats.totalPosts;
+        final totalMembersVal = widget.totalMembers ?? stats.totalMembers;
 
-      statsBar = Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surface,
-          border: Border(
-            bottom: BorderSide(
-              color: theme.colorScheme.outlineVariant.withAlpha(40),
-              width: 1,
+        statsBar = Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface,
+            border: Border(
+              bottom: BorderSide(
+                color: theme.colorScheme.outlineVariant.withAlpha(40),
+                width: 1,
+              ),
             ),
           ),
-        ),
-        child: Row(
-          children: [
-            _buildStatItem('今日', '$todayVal', theme),
-            _buildDivider(theme),
-            _buildStatItem('昨日', '$yesterdayVal', theme),
-            _buildDivider(theme),
-            _buildStatItem('帖子', '$totalPostsVal', theme),
-            _buildDivider(theme),
-            _buildStatItem('会员', '$totalMembersVal', theme),
-          ],
-        ),
-      );
+          child: Row(
+            children: [
+              _buildStatItem('今日', '$todayVal', theme),
+              _buildDivider(theme),
+              _buildStatItem('昨日', '$yesterdayVal', theme),
+              _buildDivider(theme),
+              _buildStatItem('帖子', '$totalPostsVal', theme),
+              _buildDivider(theme),
+              _buildStatItem('会员', '$totalMembersVal', theme),
+            ],
+          ),
+        );
+      }
     }
 
     if (tuhaoBanner == null && statsBar == null) {
       return const SizedBox.shrink();
     }
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (tuhaoBanner != null) tuhaoBanner,
-        if (statsBar != null) statsBar,
-      ],
+    return RepaintBoundary(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (tuhaoBanner != null) tuhaoBanner,
+          if (statsBar != null) statsBar,
+        ],
+      ),
     );
   }
 
   Widget _buildBag(double size, double opacity) {
-    return Opacity(
-      opacity: opacity,
-      child: Icon(
-        Icons.monetization_on_rounded,
-        size: size,
-        color: const Color(0xFFC67D00),
-      ),
+    return Icon(
+      Icons.monetization_on_rounded,
+      size: size,
+      color: const Color(0xFFC67D00).withAlpha((255 * opacity.clamp(0.0, 1.0)).round()),
     );
   }
 
-  Widget _fallbackAvatar() {
-    return Container(
-      color: Colors.black26,
-      child: const Center(
-        child: Icon(Icons.person, color: Colors.white, size: 28),
-      ),
-    );
-  }
 
   Widget _buildStatItem(String label, String value, ThemeData theme) {
     return Expanded(

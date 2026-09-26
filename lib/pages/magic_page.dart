@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
+import '../core/app_config.dart';
 import '../core/dio_client.dart';
 import '../models/magic_item.dart';
 import '../widgets/empty_view.dart';
@@ -33,7 +34,7 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
   Future<List<MagicLogEntry>>? _logFuture;
   String _selectedLogOp = 'uselog';
 
-  MagicBagInfo _currentBag = const MagicBagInfo(usedCapacity: 110, totalCapacity: 500, ironCount: 0);
+  MagicBagInfo _currentBag = const MagicBagInfo(usedCapacity: 0, totalCapacity: 500, ironCount: 0);
 
   @override
   void initState() {
@@ -218,18 +219,40 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
               ),
             ],
           ),
-          FilledButton.tonalIcon(
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const CreditPage()),
-              ).then((_) => _loadAll());
-            },
-            icon: const Icon(Icons.account_balance_wallet_outlined, size: 15),
-            label: const Text('我的积分', style: TextStyle(fontSize: 12)),
-            style: FilledButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            ),
+          Row(
+            children: [
+              if (_currentBag.ironCount > 0) ...[
+                Text(
+                  '铁粒: ',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                Text(
+                  '${_currentBag.ironCount}',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFFF07B00),
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
+              FilledButton.tonalIcon(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const CreditPage()),
+                  ).then((_) => _loadAll());
+                },
+                icon: const Icon(Icons.account_balance_wallet_outlined, size: 15),
+                label: const Text('我的积分', style: TextStyle(fontSize: 12)),
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -335,6 +358,7 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
                       child: item.img.isNotEmpty
                           ? CachedNetworkImage(
                               imageUrl: item.img,
+                              httpHeaders: AppConfig.imageHeadersFor(item.img),
                               fit: BoxFit.contain,
                               errorWidget: (_, __, ___) => Icon(
                                 Icons.auto_fix_high,
@@ -576,6 +600,7 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
                       child: item.img.isNotEmpty
                           ? CachedNetworkImage(
                               imageUrl: item.img,
+                              httpHeaders: AppConfig.imageHeadersFor(item.img),
                               fit: BoxFit.contain,
                               errorWidget: (_, __, ___) => Icon(
                                 Icons.auto_fix_high,
@@ -886,6 +911,7 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
             if (item.img.isNotEmpty)
               CachedNetworkImage(
                 imageUrl: item.img,
+                httpHeaders: AppConfig.imageHeadersFor(item.img),
                 width: 24,
                 height: 24,
                 fit: BoxFit.contain,
@@ -946,13 +972,37 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
 
     int count = 1;
     bool submitting = false;
+    bool fetchingBalance = false;
 
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDialogState) {
+          // 若当前记录的铁粒数为 0 且未在抓取中，自动触发后台查询最新余额
+          if (_currentBag.ironCount <= 0 && !fetchingBalance) {
+            fetchingBalance = true;
+            KlpbbsApi.getCreditBase().then((info) {
+              if (info != null && mounted) {
+                final ironStr = info.details['铁粒'] ?? '0';
+                final iron = int.tryParse(ironStr.replaceAll(RegExp(r'[^\d]'), '')) ?? 0;
+                if (iron > 0) {
+                  setState(() {
+                    _currentBag = _currentBag.copyWith(ironCount: iron);
+                  });
+                  setDialogState(() {});
+                }
+              }
+            }).catchError((_) {}).whenComplete(() {
+              fetchingBalance = false;
+            });
+          }
+
           final totalCost = item.price * count;
-          final canAfford = _currentBag.ironCount >= totalCost;
+          // 仅在明确获取到了大于 0 的余额，且该余额确实小于总花费时判定为不足；
+          // 避免因网页未渲染 extcredits 导致误判为余额不足而锁死购买按钮！
+          final hasKnownBalance = _currentBag.ironCount > 0;
+          final isDefinitelyInsufficient = hasKnownBalance && _currentBag.ironCount < totalCost;
+          final canSubmit = !submitting && !isDefinitelyInsufficient;
 
           return AlertDialog(
             title: Text('购买「${item.name}」'),
@@ -1014,17 +1064,35 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     const Text('当前拥有:'),
-                    Text(
-                      '${_currentBag.ironCount} 粒',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: canAfford ? Colors.green : Colors.red,
-                        fontWeight: FontWeight.w600,
+                    if (hasKnownBalance)
+                      Text(
+                        '${_currentBag.ironCount} 粒',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: isDefinitelyInsufficient ? Colors.red : Colors.green,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      )
+                    else if (fetchingBalance)
+                      const Row(
+                        children: [
+                          SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(strokeWidth: 1.5),
+                          ),
+                          SizedBox(width: 4),
+                          Text('余额查询中...', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                        ],
+                      )
+                    else
+                      Text(
+                        '${_currentBag.ironCount} 粒',
+                        style: const TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.w600),
                       ),
-                    ),
                   ],
                 ),
-                if (!canAfford)
+                if (isDefinitelyInsufficient)
                   const Padding(
                     padding: EdgeInsets.only(top: 8),
                     child: Text(
@@ -1040,13 +1108,13 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
                 child: const Text('取消'),
               ),
               FilledButton(
-                onPressed: (!canAfford || submitting)
-                    ? null
-                    : () async {
+                onPressed: canSubmit
+                    ? () async {
                         final messenger = ScaffoldMessenger.of(context);
                         final nav = Navigator.of(ctx);
                         setDialogState(() => submitting = true);
-                        final res = await KlpbbsApi.buyMagic(item.id, count: count);
+                        final mid = item.identifier.isNotEmpty ? item.identifier : '${item.id}';
+                        final res = await KlpbbsApi.buyMagic(mid, count: count);
                         if (mounted) {
                           nav.pop();
                           messenger.showSnackBar(
@@ -1059,7 +1127,8 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
                             _loadAll();
                           }
                         }
-                      },
+                      }
+                    : null,
                 child: submitting
                     ? const SizedBox(
                         width: 16,
@@ -1209,9 +1278,28 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
     bool submitting = false;
 
     final isBump = item.name.contains('提升') || item.identifier == 'bump';
-    final isNamecard = item.name.contains('改名') || item.identifier == 'namecard';
-    final isAnonymous = item.name.contains('匿名') || item.identifier == 'anonymous';
-    final isObserver = item.name.contains('观察') || item.identifier == 'observer';
+    final isNamecard = item.name.contains('改名') || item.identifier == 'namecard' || item.identifier == 'renamecard';
+    final isAnonymous = item.name.contains('匿名') || item.identifier == 'anonymous' || item.identifier == 'anonymouspost';
+    final isObserver = item.name.contains('观察') || item.identifier == 'observer' || item.identifier == 'namepost';
+    final isRetroSign = item.name.contains('补签') || item.identifier.contains('bq');
+    final bidCtrl = TextEditingController();
+    int? loadedBid;
+    String? retroSignTip;
+    bool loadingBid = false;
+
+    if (isRetroSign) {
+      loadingBid = true;
+      KlpbbsApi.getSignHeaderInfo(forceRefresh: true).then((info) {
+        if (info.retroSignBid != null) {
+          bidCtrl.text = '${info.retroSignBid}';
+          loadedBid = info.retroSignBid;
+        }
+        retroSignTip = info.retroSignTip;
+        loadingBid = false;
+      }).catchError((_) {
+        loadingBid = false;
+      });
+    }
 
     showDialog(
       context: context,
@@ -1228,6 +1316,43 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
                   style: const TextStyle(fontSize: 13, color: Colors.grey),
                 ),
                 const SizedBox(height: 12),
+                if (isRetroSign) ...[
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.teal.withAlpha(25),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.teal.withAlpha(60), width: 0.8),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.history_toggle_off_rounded, color: Colors.teal, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            loadingBid
+                                ? '正在与签到中心对齐可补签批次...'
+                                : (retroSignTip != null && retroSignTip!.isNotEmpty
+                                    ? retroSignTip!
+                                    : (loadedBid != null ? '已自动获取断签批次 (bid: $loadedBid)' : '未找到断签记录，可手动输入批次号')),
+                            style: const TextStyle(fontSize: 12, color: Colors.teal),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: bidCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '补签批次 ID (bid)',
+                      hintText: '自动提取自签到主页',
+                      prefixIcon: Icon(Icons.tag_rounded),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
                 if (isBump || isAnonymous)
                   TextField(
                     controller: tidCtrl,
@@ -1272,16 +1397,31 @@ class _MagicPageState extends State<MagicPage> with SingleTickerProviderStateMix
                     : () async {
                         final tid = int.tryParse(tidCtrl.text.trim());
                         final target = userCtrl.text.trim();
+                        final bidVal = int.tryParse(bidCtrl.text.trim()) ?? loadedBid;
 
                         final messenger = ScaffoldMessenger.of(context);
                         final nav = Navigator.of(ctx);
                         setDialogState(() => submitting = true);
-                        final res = await KlpbbsApi.useMagic(
-                          item.id,
-                          tid: tid,
-                          targetUsername: isObserver ? target : null,
-                          newUsername: isNamecard ? target : null,
-                        );
+
+                        final ({bool success, String message}) res;
+                        if (isRetroSign) {
+                          if (bidVal == null) {
+                            messenger.showSnackBar(
+                              const SnackBar(content: Text('未能检测到待补签的批次 ID (bid)，请手动输入')),
+                            );
+                            setDialogState(() => submitting = false);
+                            return;
+                          }
+                          res = await KlpbbsApi.useRetroSignCard(bid: bidVal, magicId: item.id);
+                        } else {
+                          res = await KlpbbsApi.useMagic(
+                            item.id,
+                            tid: tid,
+                            targetUsername: isObserver ? target : null,
+                            newUsername: isNamecard ? target : null,
+                          );
+                        }
+
                         if (mounted) {
                           nav.pop();
                           messenger.showSnackBar(

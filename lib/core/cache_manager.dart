@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/painting.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 // ignore: depend_on_referenced_packages
 import 'package:http/http.dart' as http;
@@ -184,5 +185,72 @@ class KlpbbsCacheManager {
     } catch (_) {}
 
     return cleanedCount;
+  }
+
+  /// 统计磁盘持久化图片与数据缓存总字节数
+  static Future<int> calculateTotalCacheBytes() async {
+    var totalBytes = 0;
+    try {
+      final tempDir = await getTemporaryDirectory();
+      if (await tempDir.exists()) {
+        await for (final entity in tempDir.list(recursive: true, followLinks: false)) {
+          if (entity is File) {
+            try {
+              totalBytes += await entity.length();
+            } catch (_) {}
+          }
+        }
+      }
+      final supportDir = await getApplicationSupportDirectory();
+      if (await supportDir.exists()) {
+        final cacheKeys = [key, 'libCachedImageData'];
+        for (final k in cacheKeys) {
+          final f = File('${supportDir.path}/$k.json');
+          if (await f.exists()) {
+            try {
+              totalBytes += await f.length();
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (_) {}
+    return totalBytes;
+  }
+
+  /// 格式化缓存字节为人类可读字符串 (e.g. 58.6 MB, 420 KB)
+  static String formatBytes(int bytes) {
+    if (bytes <= 0) return '0.0 MB';
+    final mb = bytes / (1024 * 1024);
+    if (mb < 0.1) {
+      final kb = bytes / 1024;
+      return '${kb.toStringAsFixed(1)} KB';
+    }
+    return '${mb.toStringAsFixed(1)} MB';
+  }
+
+  /// 彻底清空所有本地持久化磁盘图片缓存、临时目录、内存图片解码
+  static Future<int> clearEntireCache() async {
+    final beforeBytes = await calculateTotalCacheBytes();
+    try {
+      await instance.emptyCache();
+    } catch (_) {}
+    try {
+      await DefaultCacheManager().emptyCache();
+    } catch (_) {}
+    try {
+      final tempDir = await getTemporaryDirectory();
+      if (await tempDir.exists()) {
+        await for (final entity in tempDir.list(recursive: false)) {
+          try {
+            await entity.delete(recursive: true);
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    try {
+      PaintingBinding.instance.imageCache.clear();
+      PaintingBinding.instance.imageCache.clearLiveImages();
+    } catch (_) {}
+    return beforeBytes;
   }
 }

@@ -11,7 +11,7 @@ import '../widgets/responsive_layout.dart';
 import '../widgets/thread_card.dart';
 import 'credit_page.dart';
 import 'facemall_page.dart';
-import 'favorite_forums_page.dart';
+import 'favorite_hub_page.dart';
 import 'friend_page.dart';
 import 'homestyle_page.dart';
 import 'login_page.dart';
@@ -321,7 +321,7 @@ class _UserCenterPageState extends State<UserCenterPage> {
                     onTap: () {
                       if (_myUid != null && _myUid! > 0) {
                         Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => FavoriteForumsPage(uid: _myUid!)),
+                          MaterialPageRoute(builder: (_) => FavoriteHubPage(uid: _myUid!)),
                         );
                       } else {
                         _openLogin();

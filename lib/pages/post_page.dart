@@ -13,17 +13,15 @@ import '../api/comiis_parser.dart';
 import '../api/klpbbs_api.dart';
 import '../services/draft_service.dart';
 import '../core/app_config.dart';
-import '../core/bbcode.dart';
 import '../core/cache_manager.dart';
 import '../core/forum_events.dart';
 import '../models/forum.dart';
-import '../models/post_floor.dart';
 import '../models/post_edit_info.dart';
 import '../models/thread_sort_model.dart';
 import '../models/smiley.dart';
-import '../widgets/discuz_post_renderer.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
+import '../widgets/markdown_preview_view.dart';
 import '../widgets/responsive_layout.dart';
 import 'thread_detail_page.dart';
 
@@ -36,7 +34,10 @@ class PostPage extends StatefulWidget {
   final int? reppost; // 回复指定楼层 pid
   final int? repquote; // 引用指定楼层 pid
   final String? noticeauthor; // 被回复/引用用户
-  final String? noticetrimstr; // 引用摘要
+  final String? noticetrimstr; // 引用摘要 (BBCode)
+  final String? quoteAuthor; // 引用作者名
+  final String? quoteTimeText; // 引用发表时间
+  final String? quoteContent; // 引用内容摘要（纯净文本，用于独立卡片展示）
   final String? replyToFloorText; // 提示标题（如：回复 2# 沙发 (小明)）
   final String? editSubject; // 编辑预填标题
   final String? editMessage; // 编辑预填内容
@@ -57,6 +58,9 @@ class PostPage extends StatefulWidget {
     this.repquote,
     this.noticeauthor,
     this.noticetrimstr,
+    this.quoteAuthor,
+    this.quoteTimeText,
+    this.quoteContent,
     this.replyToFloorText,
     this.editSubject,
     this.editMessage,
@@ -71,6 +75,7 @@ class PostPage extends StatefulWidget {
 }
 
 class _PostPageState extends State<PostPage> {
+  static final RegExp _wordCountRegex = RegExp(r'[\u4e00-\u9fa5]|\b\w+\b');
   final _subjectCtrl = TextEditingController();
   final _contentCtrl = TextEditingController();
   final _tagCtrl = TextEditingController();
@@ -88,9 +93,10 @@ class _PostPageState extends State<PostPage> {
   bool _uploadingAttachment = false;
   bool _isPoll = false;
   bool _preview = false;
+  bool _splitPreview = false; // 桌面端双栏实时排版对比
   bool _isPlainMode = false;
   double _editorMinHeight = 280;
-  int _activeToolbarTab = 0; // 0 常用, 1 排版, 2 媒体, 3 辅助, 4 全部平铺
+  int _activeToolbarTab = 0; // 0 常用, 1 Markdown, 2 排版, 3 媒体, 4 辅助, 5 全部平铺
 
   // 投票
   final _pollDaysCtrl = TextEditingController(text: '7');
@@ -155,8 +161,18 @@ class _PostPageState extends State<PostPage> {
     (label: '超级版主 / 管理员 (255)', value: 255),
   ];
 
-  // 未使用的附件列表
+  // 引用回复与原帖信息（Discuz 原生引用状态）
+  int? _repquote;
+  int? _reppost;
+  String? _quoteAuthor;
+  String? _quoteTimeText;
+  String? _quoteContent;
+  String? _noticetrimstr;
+  String? _noticeauthor;
+
+  // 未使用的附件列表与展开显示开关
   List<PostAttachmentItem> _unusedAttachments = const [];
+  bool _showUnusedAttachmentsList = false;
   String? _formhash;
 
   // 分类信息发帖模板（ThreadSorts / sortid / typeoption）
@@ -218,10 +234,34 @@ class _PostPageState extends State<PostPage> {
     _fid = widget.fid;
     _forums = widget.forums ?? const [];
 
+    _repquote = widget.repquote;
+    _reppost = widget.reppost;
+    _quoteAuthor = widget.quoteAuthor ?? widget.noticeauthor;
+    _quoteTimeText = widget.quoteTimeText;
+    _quoteContent = widget.quoteContent;
+    _noticetrimstr = widget.noticetrimstr;
+    _noticeauthor = widget.noticeauthor;
+
+    // 如果未单独传 quoteContent 但有 noticetrimstr 或 initialMessage，提取纯文本用于卡片显示
+    if ((_repquote != null || _reppost != null || _noticeauthor != null) &&
+        (_quoteContent == null || _quoteContent!.isEmpty)) {
+      final rawQuote = widget.noticetrimstr ?? widget.initialMessage ?? '';
+      final m = RegExp(r'\[/url\]\[/size\]\s*([\s\S]*?)\[/quote\]').firstMatch(rawQuote);
+      if (m != null) {
+        _quoteContent = m.group(1)?.trim();
+      } else if (rawQuote.isNotEmpty) {
+        _quoteContent = rawQuote.replaceAll(RegExp(r'\[[^\]]+\]'), '').trim();
+      }
+    }
+
     if (widget.editSubject != null) _subjectCtrl.text = widget.editSubject!;
     if (widget.editMessage != null) _contentCtrl.text = widget.editMessage!;
-    if (widget.initialMessage != null && widget.editMessage == null) {
-      _contentCtrl.text = widget.initialMessage!;
+    // 对齐 Discuz 网页端：引用与回复模式下输入框完全清空，在上方独立渲染引用/回复卡片，绝不生硬插入 [quote] BBCode 或 “回复xxx : ”
+    if (widget.initialMessage != null && widget.editMessage == null && _repquote == null && _reppost == null) {
+      final initMsg = widget.initialMessage!.trim();
+      if (!initMsg.startsWith('回复 ') && !initMsg.startsWith('回复@') && !initMsg.startsWith('回复 @')) {
+        _contentCtrl.text = widget.initialMessage!;
+      }
     }
 
     _contentCtrl.addListener(_onContentChanged);
@@ -558,9 +598,16 @@ class _PostPageState extends State<PostPage> {
   Future<void> _loadNewThreadInfo() async {
     if (_isReply && widget.tid != null) {
       try {
-        final info = await KlpbbsApi.getReplyInfo(widget.tid!, fid: _fid, asMobile: _asMobile);
+        final info = await KlpbbsApi.getReplyInfo(
+          widget.tid!,
+          fid: _fid,
+          repquote: _repquote,
+          reppost: widget.reppost,
+          asMobile: _asMobile,
+        );
         if (!mounted) return;
         setState(() {
+          _formhash = info.formhash.isNotEmpty ? info.formhash : _formhash;
           _forumPermissionError = info.errorMessage;
           _unusedAttachments = info.unusedAttachments;
           _editorAttributes = info.editorAttributes;
@@ -1272,12 +1319,12 @@ class _PostPageState extends State<PostPage> {
               widget.tid!,
               finalContent,
               fid: _fid ?? widget.fid,
-              pid: widget.reppost ?? widget.repquote,
-              reppost: widget.reppost,
-              repquote: widget.repquote,
-              noticeauthor: widget.noticeauthor,
-              noticeauthormsg: widget.noticetrimstr,
-              noticetrimstr: widget.noticetrimstr,
+              pid: _reppost ?? _repquote,
+              reppost: _reppost ?? _repquote,
+              repquote: _repquote,
+              noticeauthor: _noticeauthor,
+              noticeauthormsg: _quoteContent,
+              noticetrimstr: _noticetrimstr,
               attachAids: attachAids,
               asMobile: _asMobile,
               isAnonymous: _isAnonymous,
@@ -1753,14 +1800,16 @@ class _PostPageState extends State<PostPage> {
                         children: [
                           _toolbarCategoryChip(0, '常用', Icons.flash_on_outlined, theme),
                           const SizedBox(width: 4),
-                          _toolbarCategoryChip(1, '排版', Icons.format_paint_outlined, theme),
+                          _toolbarCategoryChip(1, 'Markdown', Icons.article_outlined, theme),
                           const SizedBox(width: 4),
-                          _toolbarCategoryChip(2, '媒体', Icons.perm_media_outlined, theme),
+                          _toolbarCategoryChip(2, '排版', Icons.format_paint_outlined, theme),
                           const SizedBox(width: 4),
-                          _toolbarCategoryChip(3, '辅助', Icons.tune_outlined, theme),
+                          _toolbarCategoryChip(3, '媒体', Icons.perm_media_outlined, theme),
+                          const SizedBox(width: 4),
+                          _toolbarCategoryChip(4, '辅助', Icons.tune_outlined, theme),
                           if (isWide) ...[
                             const SizedBox(width: 4),
-                            _toolbarCategoryChip(4, '全部平铺', Icons.grid_view_outlined, theme),
+                            _toolbarCategoryChip(5, '全部平铺', Icons.grid_view_outlined, theme),
                           ],
                         ],
                       ),
@@ -1768,12 +1817,29 @@ class _PostPageState extends State<PostPage> {
                   ),
                   const SizedBox(width: 4),
                   // 高频通用控制
-                  _toolIcon(Icons.undo, '撤销', _undo),
-                  _toolIcon(Icons.redo, '重做', _redo),
+                  _toolIcon(Icons.undo, '撤销 (Ctrl+Z)', _undo),
+                  _toolIcon(Icons.redo, '重做 (Ctrl+Y)', _redo),
+                  if (isWide)
+                    _toolIcon(
+                      Icons.vertical_split_rounded,
+                      _splitPreview ? '关闭双栏实时预览' : '开启双栏实时对比预览',
+                      () {
+                        setState(() {
+                          _splitPreview = !_splitPreview;
+                          if (_splitPreview) _preview = false;
+                        });
+                      },
+                      isActive: _splitPreview,
+                    ),
                   _toolIcon(
                     _preview ? Icons.edit_outlined : Icons.visibility_outlined,
-                    _preview ? '返回编辑' : '实时预览',
-                    () => setState(() => _preview = !_preview),
+                    _preview ? '返回编辑' : '新UI 实时排版预览',
+                    () {
+                      setState(() {
+                        _preview = !_preview;
+                        if (_preview) _splitPreview = false;
+                      });
+                    },
                     isActive: _preview,
                   ),
                 ],
@@ -1886,6 +1952,45 @@ class _PostPageState extends State<PostPage> {
         );
 
       case 1:
+        // Markdown 专属专业编辑工具组
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              // 标题快捷
+              _mdChip('# H1', () => _insertText('\n# 标题\n')),
+              const SizedBox(width: 3),
+              _mdChip('## H2', () => _insertText('\n## 二级标题\n')),
+              const SizedBox(width: 3),
+              _mdChip('### H3', () => _insertText('\n### 三级标题\n')),
+              const _ToolbarDivider(),
+              // 行内格式
+              _bbTextBtn('**B**', '粗体 **text**', () => _insertTag('**', '**'), isBold: true),
+              _bbTextBtn('*I*', '斜体 *text*', () => _insertTag('*', '*'), isItalic: true),
+              _bbTextBtn('~~S~~', '删除线 ~~text~~', () => _insertTag('~~', '~~'), isStrike: true),
+              _mdChip('`code`', () => _insertTag('`', '`')),
+              const _ToolbarDivider(),
+              // 块级元素
+              _toolIcon(Icons.code_rounded, '代码块 (可选语言)', _showInsertMarkdownCodeBlockDialog),
+              _toolIcon(Icons.format_quote_rounded, '引用块 >', () => _insertText('\n> 引用内容\n')),
+              _toolIcon(Icons.format_list_bulleted_rounded, '无序列表 -', () => _insertText('\n- 列表项 1\n- 列表项 2\n')),
+              _toolIcon(Icons.format_list_numbered_rounded, '有序列表 1.', () => _insertText('\n1. 步骤 1\n2. 步骤 2\n')),
+              _toolIcon(Icons.check_box_outlined, '任务清单 - [ ]', () => _insertText('\n- [ ] 待办任务 1\n- [x] 已完成任务 2\n')),
+              _toolIcon(Icons.table_chart_outlined, '插入 Markdown 表格', _insertMarkdownTable),
+              _toolIcon(Icons.horizontal_rule_rounded, '分割线 ---', () => _insertText('\n---\n')),
+              const _ToolbarDivider(),
+              // 链接与图片
+              _toolIcon(Icons.link_rounded, '插入链接 [text](url)', _showInsertMarkdownLinkDialog),
+              _toolIcon(Icons.image_outlined, '插入图片 ![alt](url)', _showInsertMarkdownImageDialog),
+              const _ToolbarDivider(),
+              // 模版与速查
+              _toolButtonWithLabel(Icons.auto_awesome_rounded, '常用模版', _showMarkdownTemplatesDialog, theme),
+              _toolButtonWithLabel(Icons.menu_book_rounded, '语法速查', _showMarkdownSyntaxHelp, theme),
+            ],
+          ),
+        );
+
+      case 2:
         // 排版与样式栏
         return Wrap(
           spacing: 5,
@@ -1948,7 +2053,7 @@ class _PostPageState extends State<PostPage> {
           ],
         );
 
-      case 2:
+      case 3:
         // 媒体与扩展
         return Wrap(
           spacing: 6,
@@ -1965,7 +2070,7 @@ class _PostPageState extends State<PostPage> {
           ],
         );
 
-      case 3:
+      case 4:
         // 辅助设置与编辑控制
         return Wrap(
           spacing: 6,
@@ -1982,6 +2087,8 @@ class _PostPageState extends State<PostPage> {
             _toolButtonWithLabel(Icons.remove_circle_outline, '缩小编辑区', () => setState(() => _editorMinHeight = max(200, _editorMinHeight - 80)), theme),
             _toolButtonWithLabel(Icons.save_outlined, '手动保存草稿', _saveDraftManual, theme),
             _toolButtonWithLabel(Icons.drafts_outlined, '草稿箱 ($_draftCount)', () => _showDraftsModal(context), theme),
+            _toolButtonWithLabel(Icons.auto_awesome_rounded, '排版模版', _showMarkdownTemplatesDialog, theme),
+            _toolButtonWithLabel(Icons.menu_book_rounded, '语法速查', _showMarkdownSyntaxHelp, theme),
             _toolButtonWithLabel(
               Icons.delete_sweep_outlined,
               '清空内容',
@@ -2011,13 +2118,42 @@ class _PostPageState extends State<PostPage> {
           ],
         );
 
-      case 4:
+      case 5:
       default:
         // 全部平铺 (宽屏模式)
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildToolbarSectionTitle('常用与排版', theme),
+            _buildToolbarSectionTitle('Markdown 快捷排版', theme),
+            const SizedBox(height: 3),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _mdChip('# H1', () => _insertText('\n# 标题\n')),
+                  const SizedBox(width: 3),
+                  _mdChip('## H2', () => _insertText('\n## 二级标题\n')),
+                  const SizedBox(width: 3),
+                  _mdChip('### H3', () => _insertText('\n### 三级标题\n')),
+                  const _ToolbarDivider(),
+                  _bbTextBtn('**B**', '粗体', () => _insertTag('**', '**'), isBold: true),
+                  _bbTextBtn('*I*', '斜体', () => _insertTag('*', '*'), isItalic: true),
+                  _bbTextBtn('~~S~~', '删除线', () => _insertTag('~~', '~~'), isStrike: true),
+                  _mdChip('`code`', () => _insertTag('`', '`')),
+                  const _ToolbarDivider(),
+                  _toolIcon(Icons.code_rounded, '代码块', _showInsertMarkdownCodeBlockDialog),
+                  _toolIcon(Icons.format_quote_rounded, '引用 >', () => _insertText('\n> 引用内容\n')),
+                  _toolIcon(Icons.check_box_outlined, '任务清单', () => _insertText('\n- [ ] 待办\n- [x] 完成\n')),
+                  _toolIcon(Icons.table_chart_outlined, 'MD 表格', _insertMarkdownTable),
+                  _toolIcon(Icons.horizontal_rule_rounded, '分割线', () => _insertText('\n---\n')),
+                  const _ToolbarDivider(),
+                  _toolButtonWithLabel(Icons.auto_awesome_rounded, '排版模版', _showMarkdownTemplatesDialog, theme),
+                  _toolButtonWithLabel(Icons.menu_book_rounded, '语法速查', _showMarkdownSyntaxHelp, theme),
+                ],
+              ),
+            ),
+            const SizedBox(height: 6),
+            _buildToolbarSectionTitle('Discuz 常用与排版', theme),
             const SizedBox(height: 3),
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
@@ -2108,6 +2244,408 @@ class _PostPageState extends State<PostPage> {
             border: Border.all(color: Colors.black26, width: 0.8),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _mdChip(String label, VoidCallback onTap) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(4),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 1.5),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+        decoration: BoxDecoration(
+          color: colorScheme.surfaceContainerHighest.withAlpha(80),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(
+            color: colorScheme.outlineVariant.withAlpha(50),
+            width: 0.6,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: FontWeight.bold,
+            fontFamily: label.contains('`') ? 'Consolas' : null,
+            color: colorScheme.onSurface,
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showInsertMarkdownCodeBlockDialog() {
+    final languages = [
+      'dart', 'java', 'python', 'cpp', 'javascript', 'typescript',
+      'json', 'html', 'css', 'sql', 'bash', 'yaml', 'text',
+    ];
+    String selectedLang = 'dart';
+    final codeCtrl = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          return AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.code_rounded, size: 20),
+                SizedBox(width: 8),
+                Text('插入 Markdown 代码块', style: TextStyle(fontSize: 16)),
+              ],
+            ),
+            content: SizedBox(
+              width: 480,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Text('编程语言：', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: DropdownButton<String>(
+                          value: selectedLang,
+                          isExpanded: true,
+                          items: languages.map((l) => DropdownMenuItem(
+                            value: l,
+                            child: Text(l.toUpperCase(), style: const TextStyle(fontSize: 13)),
+                          )).toList(),
+                          onChanged: (v) {
+                            if (v != null) {
+                              setDialogState(() => selectedLang = v);
+                            }
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: codeCtrl,
+                    maxLines: 6,
+                    style: const TextStyle(fontFamily: 'Consolas', fontSize: 13),
+                    decoration: const InputDecoration(
+                      hintText: '在此输入代码（也可留空稍后在编辑框填写）...',
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.all(10),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+              FilledButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  final code = codeCtrl.text.isNotEmpty ? codeCtrl.text : '// 在此输入代码';
+                  _insertText('\n```$selectedLang\n$code\n```\n');
+                },
+                child: const Text('插入代码块'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  void _insertMarkdownTable() {
+    _insertText(
+      '\n| 列标题 1 | 列标题 2 | 列标题 3 |\n'
+      '| :--- | :---: | ---: |\n'
+      '| 单元格 1 | 居中数据 | 靠右数值 |\n'
+      '| 单元格 2 | 详细内容 | 100% |\n',
+    );
+  }
+
+  void _showInsertMarkdownLinkDialog() {
+    final titleCtrl = TextEditingController();
+    final urlCtrl = TextEditingController(text: 'https://');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('插入 Markdown 链接', style: TextStyle(fontSize: 16)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: titleCtrl,
+              decoration: const InputDecoration(
+                labelText: '链接显示文本',
+                hintText: '例如：点击前往论坛发布帖',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: urlCtrl,
+              decoration: const InputDecoration(
+                labelText: '链接网址 (URL)',
+                hintText: 'https://...',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              final t = titleCtrl.text.trim().isEmpty ? '链接文字' : titleCtrl.text.trim();
+              final u = urlCtrl.text.trim();
+              _insertText('[$t]($u)');
+            },
+            child: const Text('插入链接'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showInsertMarkdownImageDialog() {
+    final altCtrl = TextEditingController(text: '图片描述');
+    final urlCtrl = TextEditingController(text: 'https://');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('插入 Markdown 图片', style: TextStyle(fontSize: 16)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: altCtrl,
+              decoration: const InputDecoration(
+                labelText: '图片描述 (Alt Text)',
+                hintText: '例如：模组主界面截图',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: urlCtrl,
+              decoration: const InputDecoration(
+                labelText: '图片直链地址 (URL)',
+                hintText: 'https://.../preview.png',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              final alt = altCtrl.text.trim();
+              final u = urlCtrl.text.trim();
+              _insertText('![$alt]($u)');
+            },
+            child: const Text('插入图片'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showMarkdownTemplatesDialog() {
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) {
+        final theme = Theme.of(ctx);
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.auto_awesome_rounded, color: theme.colorScheme.primary, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      '选择排版模版一键套用',
+                      style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '点击对应模版将追加插入到当前光标所在位置',
+                  style: TextStyle(fontSize: 12, color: theme.colorScheme.outline),
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: theme.colorScheme.primaryContainer,
+                    child: Icon(Icons.inventory_2_outlined, color: theme.colorScheme.primary, size: 20),
+                  ),
+                  title: const Text('📦 作品/模组发布模版', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                  subtitle: const Text('包含副标题、特性亮点列表、截图展示、环境要求表格与下载地址', style: TextStyle(fontSize: 12)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _insertText(
+                      '\n# [作品名称] 简短副标题\n'
+                      '> 一句话介绍你的作品或分享的内容。\n\n'
+                      '### 📌 特性亮点\n'
+                      '- [x] 特性一：说明详情\n'
+                      '- [x] 特性二：说明详情\n'
+                      '- [ ] 规划中：后续版本计划\n\n'
+                      '### 🖼️ 预览截图\n'
+                      '![预览图](https://img.klpbbs.com/example.png)\n\n'
+                      '### ⚙️ 环境与配置要求\n'
+                      '| 项目 | 推荐版本 | 说明 |\n'
+                      '| :--- | :--- | :--- |\n'
+                      '| 核心版本 | 1.20+ | 兼容最新基岩版/Java版 |\n'
+                      '| 前置依赖 | 无 | 开箱即用 |\n\n'
+                      '### 📥 下载与获取方式\n'
+                      '- 网盘下载：[点击前往下载](https://...) (提取码: 1234)\n',
+                    );
+                  },
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: Colors.amber.shade100,
+                    child: Icon(Icons.help_outline_rounded, color: Colors.amber.shade900, size: 20),
+                  ),
+                  title: const Text('❓ 提问与故障求助模版', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                  subtitle: const Text('规范的故障提问模版，包含问题描述、复现步骤、日志代码块与运行环境', style: TextStyle(fontSize: 12)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _insertText(
+                      '\n### ❓ 问题背景描述\n'
+                      '请在此详细描述你遇到的异常或疑问...\n\n'
+                      '### 📋 复现步骤\n'
+                      '1. 第一步执行的操作\n'
+                      '2. 第二步出现的问题现象\n'
+                      '3. 期望的正常效果\n\n'
+                      '### 💻 崩溃日志与错误输出\n'
+                      '```log\n'
+                      '// 在此粘贴报错日志或关键代码堆栈\n'
+                      '```\n\n'
+                      '### ⚙️ 系统与环境信息\n'
+                      '- 服务端/客户端核心：\n'
+                      '- Java/系统版本：\n'
+                      '- 相关的插件/模组：\n',
+                    );
+                  },
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: Colors.green.shade100,
+                    child: Icon(Icons.campaign_outlined, color: Colors.green.shade900, size: 20),
+                  ),
+                  title: const Text('📢 版本更新日志模版', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                  subtitle: const Text('清晰的更新日志规范，包含新增特性、Bug修复与性能提升', style: TextStyle(fontSize: 12)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _insertText(
+                      '\n# 📢 [v1.0.0] 版本更新公告\n'
+                      '> 发布日期：${DateTime.now().toLocal().toString().split(" ")[0]}\n\n'
+                      '### ✨ 新增功能 (New Features)\n'
+                      '- 新增特性 A 说明\n'
+                      '- 新增特性 B 说明\n\n'
+                      '### 🐛 缺陷修复 (Bug Fixes)\n'
+                      '- 修复了某些情况下界面异常的问题\n'
+                      '- 修复了数据保存延迟的问题\n\n'
+                      '### ⚡ 性能优化 (Optimizations)\n'
+                      '- 优化了内存占用与加载速度\n',
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showMarkdownSyntaxHelp() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.menu_book_rounded, size: 20),
+            SizedBox(width: 8),
+            Text('Markdown 语法速查手册', style: TextStyle(fontSize: 16)),
+          ],
+        ),
+        content: SizedBox(
+          width: 500,
+          height: 380,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildHelpRow('标题', '# 一级标题  /  ## 二级标题  /  ### 三级标题'),
+                _buildHelpRow('加粗与斜体', '**粗体文本**  /  *斜体文本*'),
+                _buildHelpRow('删除线', '~~删除线文本~~'),
+                _buildHelpRow('引用块', '> 引用内容 (支持多行连续引用)'),
+                _buildHelpRow('代码块', '```lang\n代码内容\n```'),
+                _buildHelpRow('行内代码', '`var x = 1;`'),
+                _buildHelpRow('无序列表', '- 列表项 1\n- 列表项 2'),
+                _buildHelpRow('有序列表', '1. 步骤一\n2. 步骤二'),
+                _buildHelpRow('任务清单', '- [ ] 待办事项\n- [x] 已完成事项'),
+                _buildHelpRow('表格', '| 表头1 | 表头2 |\n| :--- | :---: |\n| 数据1 | 数据2 |'),
+                _buildHelpRow('超链接', '[显示的文字](https://example.com)'),
+                _buildHelpRow('图片', '![图片描述](https://example.com/a.png)'),
+                _buildHelpRow('分割线', '--- 或 ***'),
+                _buildHelpRow('Discuz 标签', '支持与 [b], [color], [quote], [hide], [spoiler] 混排！'),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('我知道了'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHelpRow(String label, String code) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+          const SizedBox(height: 2),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest.withAlpha(50),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(40), width: 0.5),
+            ),
+            child: SelectableText(
+              code,
+              style: const TextStyle(fontFamily: 'Consolas', fontSize: 11.5),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -3032,97 +3570,412 @@ class _PostPageState extends State<PostPage> {
     );
   }
 
+  /// Discuz 网页端 1:1 待使用的附件提示条（红虚线边框，支持查看/使用/删除）
   Widget _buildUnusedAttachmentsBanner(ThemeData theme) {
     if (_unusedAttachments.isEmpty) return const SizedBox.shrink();
+    final isDark = theme.brightness == Brightness.dark;
+    final borderColor = isDark ? const Color(0xFFE57373) : const Color(0xFFF26C60);
+    final bgColor = isDark
+        ? const Color(0xFFE57373).withAlpha(18)
+        : const Color(0xFFFFF8F7);
+
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.only(top: 4, bottom: 8),
       decoration: BoxDecoration(
-        color: Colors.amber.withAlpha(25),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.amber.withAlpha(120)),
+        color: bgColor,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: borderColor.withAlpha(180),
+          width: 1.0,
+        ),
       ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(Icons.info_outline, size: 18, color: Colors.amber),
-              const SizedBox(width: 8),
+              const Text('💡', style: TextStyle(fontSize: 13.5)),
+              const SizedBox(width: 6),
               Expanded(
-                child: Text(
-                  '您有 ${_unusedAttachments.length} 个未使用的附件',
-                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
-                ),
-              ),
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                ),
-                onPressed: _showUnusedAttachmentsDialog,
-                icon: const Icon(Icons.folder_open, size: 14),
-                label: const Text('管理/查看', style: TextStyle(fontSize: 11.5)),
-              ),
-              const SizedBox(width: 6),
-              FilledButton.tonal(
-                style: FilledButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-                ),
-                onPressed: _insertAllUnusedAttachments,
-                child: const Text('全部插入', style: TextStyle(fontSize: 11.5)),
-              ),
-              const SizedBox(width: 6),
-              IconButton(
-                icon: const Icon(Icons.delete_sweep_outlined, size: 18, color: Colors.redAccent),
-                tooltip: '全部删除',
-                visualDensity: VisualDensity.compact,
-                onPressed: () async {
-                  final confirm = await showDialog<bool>(
-                    context: context,
-                    builder: (c) => AlertDialog(
-                      title: const Text('删除所有未使用的附件'),
-                      content: Text('确定彻底删除全部 ${_unusedAttachments.length} 个未使用的附件吗？此操作无法撤销。'),
-                      actions: [
-                        TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('取消')),
-                        FilledButton(
-                          style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
-                          onPressed: () => Navigator.of(c).pop(true),
-                          child: const Text('确认删除'),
-                        ),
-                      ],
+                child: Text.rich(
+                  TextSpan(
+                    text: '您有 ',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: isDark ? Colors.white70 : const Color(0xFF333333),
                     ),
-                  );
-                  if (confirm == true) {
-                    await _deleteUnusedAttachments(_unusedAttachments.map((a) => a.aid).toList());
-                  }
+                    children: [
+                      TextSpan(
+                        text: '${_unusedAttachments.length}',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      const TextSpan(text: ' 个未使用的附件  '),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              // 查看
+              InkWell(
+                onTap: () {
+                  setState(() => _showUnusedAttachmentsList = !_showUnusedAttachmentsList);
                 },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  child: Text(
+                    _showUnusedAttachmentsList ? '收起' : '查看',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: theme.colorScheme.primary,
+                      fontWeight: FontWeight.w600,
+                      decoration: TextDecoration.underline,
+                      decorationColor: theme.colorScheme.primary,
+                    ),
+                  ),
+                ),
+              ),
+              Text(' | ', style: TextStyle(fontSize: 12, color: theme.colorScheme.outlineVariant)),
+              // 使用
+              InkWell(
+                onTap: _insertAllUnusedAttachments,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  child: Text(
+                    '使用',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: theme.colorScheme.primary,
+                      fontWeight: FontWeight.w600,
+                      decoration: TextDecoration.underline,
+                      decorationColor: theme.colorScheme.primary,
+                    ),
+                  ),
+                ),
+              ),
+              Text(' | ', style: TextStyle(fontSize: 12, color: theme.colorScheme.outlineVariant)),
+              // 删除
+              InkWell(
+                onTap: _confirmDeleteAllUnusedAttachments,
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  child: Text(
+                    '删除',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: Colors.redAccent,
+                      fontWeight: FontWeight.w600,
+                      decoration: TextDecoration.underline,
+                      decorationColor: Colors.redAccent,
+                    ),
+                  ),
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              for (final att in _unusedAttachments)
-                ActionChip(
-                  avatar: Icon(att.isImage ? Icons.image_outlined : Icons.insert_drive_file_outlined, size: 14),
-                  label: Text('${att.filename} (${att.sizeText})', style: const TextStyle(fontSize: 11)),
-                  onPressed: () {
-                    final tag = att.isImage ? '[attachimg]${att.aid}[/attachimg]' : '[attach]${att.aid}[/attach]';
-                    _insertText('\n$tag\n');
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('已在光标处插入附件标签：$tag')),
-                    );
-                  },
+          if (_showUnusedAttachmentsList) ...[
+            const SizedBox(height: 8),
+            Divider(height: 1, color: borderColor.withAlpha(60)),
+            const SizedBox(height: 8),
+            for (final att in _unusedAttachments)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surface,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(60)),
+                  ),
+                  child: Row(
+                    children: [
+                      if (att.isImage)
+                        GestureDetector(
+                          onTap: () => _previewImage(att.previewUrl, att.filename),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: CachedNetworkImage(
+                              imageUrl: att.previewUrl,
+                              width: 36,
+                              height: 36,
+                              fit: BoxFit.cover,
+                              placeholder: (_, __) => Container(
+                                width: 36,
+                                height: 36,
+                                color: theme.colorScheme.surfaceContainerHigh,
+                                child: const Icon(Icons.image, size: 18),
+                              ),
+                              errorWidget: (_, __, ___) => Container(
+                                width: 36,
+                                height: 36,
+                                color: theme.colorScheme.surfaceContainerHigh,
+                                child: const Icon(Icons.image_not_supported, size: 18),
+                              ),
+                            ),
+                          ),
+                        )
+                      else
+                        Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primaryContainer.withAlpha(60),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Icon(Icons.insert_drive_file_outlined, color: theme.colorScheme.primary, size: 18),
+                        ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              att.filename,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              att.filesize > 0 ? att.sizeText : 'AID: ${att.aid}',
+                              style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
+                            ),
+                          ],
+                        ),
+                      ),
+                      TextButton.icon(
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                        ),
+                        onPressed: () {
+                          final tag = att.isImage ? '[attachimg]${att.aid}[/attachimg]' : '[attach]${att.aid}[/attach]';
+                          _insertText('\n$tag\n');
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('已在光标处插入附件标签：$tag')),
+                          );
+                        },
+                        icon: const Icon(Icons.add_circle_outline, size: 14),
+                        label: const Text('使用', style: TextStyle(fontSize: 11.5)),
+                      ),
+                      IconButton(
+                        tooltip: '删除此附件',
+                        icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () async {
+                          final confirm = await showDialog<bool>(
+                            context: context,
+                            builder: (c) => AlertDialog(
+                              title: const Text('删除附件'),
+                              content: Text('确定删除「${att.filename}」吗？此操作无法撤销。'),
+                              actions: [
+                                TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('取消')),
+                                FilledButton(
+                                  style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+                                  onPressed: () => Navigator.of(c).pop(true),
+                                  child: const Text('确认删除'),
+                                ),
+                              ],
+                            ),
+                          );
+                          if (confirm == true) {
+                            await _deleteUnusedAttachments([att.aid]);
+                          }
+                        },
+                      ),
+                    ],
+                  ),
                 ),
-            ],
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// Discuz 网页端 1:1 独立引用/回复卡片（展示于编辑器上方，与输入框解耦）
+  Widget _buildQuoteCard(ThemeData theme) {
+    if (_repquote == null && _reppost == null && _quoteAuthor == null && _noticeauthor == null) {
+      return const SizedBox.shrink();
+    }
+    final isDark = theme.brightness == Brightness.dark;
+    final author = _quoteAuthor ?? _noticeauthor ?? '用户';
+    final time = _quoteTimeText;
+    final content = _quoteContent;
+
+    return Container(
+      margin: const EdgeInsets.only(top: 4, bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: isDark
+            ? theme.colorScheme.surfaceContainerHighest.withAlpha(50)
+            : const Color(0xFFF9F9F9),
+        borderRadius: BorderRadius.circular(6),
+        border: Border(
+          left: BorderSide(
+            color: theme.colorScheme.primary.withAlpha(180),
+            width: 3.5,
+          ),
+          top: BorderSide(color: theme.colorScheme.outlineVariant.withAlpha(40), width: 0.8),
+          right: BorderSide(color: theme.colorScheme.outlineVariant.withAlpha(40), width: 0.8),
+          bottom: BorderSide(color: theme.colorScheme.outlineVariant.withAlpha(40), width: 0.8),
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '“',
+            style: TextStyle(
+              fontSize: 22,
+              height: 1.0,
+              fontWeight: FontWeight.bold,
+              color: theme.colorScheme.outline,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      author,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: theme.colorScheme.primary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    if (time != null && time.isNotEmpty) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        '发表于 $time',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: theme.colorScheme.outline,
+                          fontWeight: FontWeight.normal,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                if (content != null && content.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    content,
+                    maxLines: 4,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      height: 1.35,
+                      color: theme.colorScheme.onSurface.withAlpha(220),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: '取消引用',
+            icon: const Icon(Icons.close, size: 16),
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+            onPressed: () {
+              setState(() {
+                _repquote = null;
+                _reppost = null;
+                _quoteAuthor = null;
+                _quoteTimeText = null;
+                _quoteContent = null;
+                _noticeauthor = null;
+                _noticetrimstr = null;
+              });
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('已取消引用/回复目标，转为普通回复')),
+              );
+            },
           ),
         ],
       ),
     );
+  }
+
+  void _previewImage(String url, String filename) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(16),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            InteractiveViewer(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: CachedNetworkImage(
+                  imageUrl: url,
+                  fit: BoxFit.contain,
+                  placeholder: (_, __) => const Center(child: CircularProgressIndicator()),
+                  errorWidget: (_, __, ___) => Container(
+                    color: Colors.black54,
+                    padding: const EdgeInsets.all(20),
+                    child: const Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.broken_image, size: 48, color: Colors.white70),
+                        SizedBox(height: 8),
+                        Text('图片加载失败', style: TextStyle(color: Colors.white)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: Container(
+                decoration: const BoxDecoration(
+                  color: Colors.black54,
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white, size: 20),
+                  onPressed: () => Navigator.of(ctx).pop(),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmDeleteAllUnusedAttachments() async {
+    if (_unusedAttachments.isEmpty) return;
+    final count = _unusedAttachments.length;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('删除所有未使用的附件'),
+        content: Text('确定彻底删除全部 $count 个未使用的附件吗？此操作无法撤销。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.of(c).pop(true),
+            child: const Text('确认删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      await _deleteUnusedAttachments(_unusedAttachments.map((a) => a.aid).toList());
+    }
   }
 
   void _insertAllUnusedAttachments() {
@@ -3168,307 +4021,6 @@ class _PostPageState extends State<PostPage> {
         const SnackBar(content: Text('删除附件失败，请稍后重试')),
       );
     }
-  }
-
-  Future<void> _showUnusedAttachmentsDialog() async {
-    if (_unusedAttachments.isEmpty) return;
-    final selectedAids = <int>{for (final a in _unusedAttachments) a.aid};
-    bool isDeletingBatch = false;
-
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (dialogContext, setDialogState) {
-            final theme = Theme.of(dialogContext);
-            final allSelected = selectedAids.length == _unusedAttachments.length;
-            final noneSelected = selectedAids.isEmpty;
-
-            return Container(
-              height: MediaQuery.of(dialogContext).size.height * 0.72,
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surface,
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-              ),
-              child: Column(
-                children: [
-                  Center(
-                    child: Container(
-                      width: 36,
-                      height: 4,
-                      margin: const EdgeInsets.only(top: 8, bottom: 4),
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.outlineVariant,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.attach_file, size: 20),
-                        const SizedBox(width: 8),
-                        Text(
-                          '未使用的附件管理 (${_unusedAttachments.length})',
-                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                        ),
-                        const Spacer(),
-                        IconButton(
-                          icon: const Icon(Icons.close),
-                          onPressed: () => Navigator.of(ctx).pop(),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Divider(height: 1),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                    child: Row(
-                      children: [
-                        Checkbox(
-                          value: allSelected,
-                          tristate: !allSelected && !noneSelected,
-                          onChanged: (val) {
-                            setDialogState(() {
-                              if (allSelected) {
-                                selectedAids.clear();
-                              } else {
-                                selectedAids.addAll(_unusedAttachments.map((a) => a.aid));
-                              }
-                            });
-                          },
-                        ),
-                        InkWell(
-                          onTap: () {
-                            setDialogState(() {
-                              if (allSelected) {
-                                selectedAids.clear();
-                              } else {
-                                selectedAids.addAll(_unusedAttachments.map((a) => a.aid));
-                              }
-                            });
-                          },
-                          child: Text(
-                            allSelected
-                                ? '全选 (已选 ${selectedAids.length})'
-                                : '全选 (${selectedAids.length}/${_unusedAttachments.length})',
-                            style: const TextStyle(fontSize: 13),
-                          ),
-                        ),
-                        const Spacer(),
-                        TextButton.icon(
-                          icon: const Icon(Icons.playlist_add_check, size: 16),
-                          label: const Text('全部插入', style: TextStyle(fontSize: 12)),
-                          onPressed: () {
-                            _insertAllUnusedAttachments();
-                            Navigator.of(ctx).pop();
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Divider(height: 1),
-                  Expanded(
-                    child: _unusedAttachments.isEmpty
-                        ? const Center(child: Text('暂无未使用的附件'))
-                        : ListView.separated(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                            itemCount: _unusedAttachments.length,
-                            separatorBuilder: (_, __) => const Divider(height: 1),
-                            itemBuilder: (context, index) {
-                              final att = _unusedAttachments[index];
-                              final isSelected = selectedAids.contains(att.aid);
-
-                              return ListTile(
-                                contentPadding: EdgeInsets.zero,
-                                leading: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Checkbox(
-                                      value: isSelected,
-                                      onChanged: (val) {
-                                        setDialogState(() {
-                                          if (val == true) {
-                                            selectedAids.add(att.aid);
-                                          } else {
-                                            selectedAids.remove(att.aid);
-                                          }
-                                        });
-                                      },
-                                    ),
-                                    ClipRRect(
-                                      borderRadius: BorderRadius.circular(6),
-                                      child: att.isImage
-                                          ? CachedNetworkImage(
-                                              imageUrl: att.previewUrl,
-                                              width: 44,
-                                              height: 44,
-                                              fit: BoxFit.cover,
-                                              errorWidget: (_, __, ___) => Container(
-                                                width: 44,
-                                                height: 44,
-                                                color: theme.colorScheme.surfaceContainerHighest,
-                                                child: const Icon(Icons.broken_image_outlined, size: 20),
-                                              ),
-                                            )
-                                          : Container(
-                                              width: 44,
-                                              height: 44,
-                                              color: theme.colorScheme.surfaceContainerHighest,
-                                              child: const Icon(Icons.insert_drive_file_outlined, size: 22),
-                                            ),
-                                    ),
-                                  ],
-                                ),
-                                title: Text(
-                                  att.filename,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
-                                ),
-                                subtitle: Text(
-                                  'AID: ${att.aid} · ${att.sizeText}',
-                                  style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
-                                ),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    IconButton(
-                                      tooltip: '插入正文',
-                                      icon: const Icon(Icons.add_comment_outlined, size: 19),
-                                      onPressed: () {
-                                        final tag = att.isImage ? '[attachimg]${att.aid}[/attachimg]' : '[attach]${att.aid}[/attach]';
-                                        _insertText('\n$tag\n');
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          SnackBar(content: Text('已在光标处插入：$tag')),
-                                        );
-                                      },
-                                    ),
-                                    IconButton(
-                                      tooltip: '彻底删除',
-                                      icon: const Icon(Icons.delete_outline, size: 19, color: Colors.redAccent),
-                                      onPressed: () async {
-                                        final confirm = await showDialog<bool>(
-                                          context: context,
-                                          builder: (c) => AlertDialog(
-                                            title: const Text('删除附件'),
-                                            content: Text('确定彻底删除未使用的附件“${att.filename}”吗？此操作无法撤销。'),
-                                            actions: [
-                                              TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('取消')),
-                                              FilledButton(
-                                                style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
-                                                onPressed: () => Navigator.of(c).pop(true),
-                                                child: const Text('确认删除'),
-                                              ),
-                                            ],
-                                          ),
-                                        );
-                                        if (confirm == true) {
-                                          await _deleteUnusedAttachments([att.aid]);
-                                          setDialogState(() {
-                                            selectedAids.remove(att.aid);
-                                          });
-                                          if (ctx.mounted && _unusedAttachments.isEmpty) {
-                                            Navigator.of(ctx).pop();
-                                          }
-                                        }
-                                      },
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.surface,
-                      border: Border(top: BorderSide(color: theme.colorScheme.outlineVariant, width: 0.5)),
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            icon: const Icon(Icons.delete_sweep_outlined, color: Colors.redAccent, size: 18),
-                            label: Text(
-                              '删除选中 (${selectedAids.length})',
-                              style: const TextStyle(color: Colors.redAccent, fontSize: 13),
-                            ),
-                            onPressed: selectedAids.isEmpty || isDeletingBatch
-                                ? null
-                                : () async {
-                                    final confirm = await showDialog<bool>(
-                                      context: context,
-                                      builder: (c) => AlertDialog(
-                                        title: const Text('批量删除附件'),
-                                        content: Text('确定彻底删除选中的 ${selectedAids.length} 个未使用的附件吗？此操作无法撤销。'),
-                                        actions: [
-                                          TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('取消')),
-                                          FilledButton(
-                                            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
-                                            onPressed: () => Navigator.of(c).pop(true),
-                                            child: const Text('确认删除'),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                    if (confirm == true) {
-                                      setDialogState(() => isDeletingBatch = true);
-                                      await _deleteUnusedAttachments(selectedAids.toList());
-                                      setDialogState(() {
-                                        isDeletingBatch = false;
-                                        selectedAids.clear();
-                                      });
-                                      if (ctx.mounted && _unusedAttachments.isEmpty) {
-                                        Navigator.of(ctx).pop();
-                                      }
-                                    }
-                                  },
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: FilledButton.icon(
-                            icon: const Icon(Icons.input, size: 18),
-                            label: Text(
-                              '插入选中 (${selectedAids.length})',
-                              style: const TextStyle(fontSize: 13),
-                            ),
-                            onPressed: selectedAids.isEmpty
-                                ? null
-                                : () {
-                                    final selectedList = _unusedAttachments.where((a) => selectedAids.contains(a.aid)).toList();
-                                    final buf = StringBuffer();
-                                    for (final a in selectedList) {
-                                      final tag = a.isImage ? '[attachimg]${a.aid}[/attachimg]' : '[attach]${a.aid}[/attach]';
-                                      if (!_contentCtrl.text.contains(tag)) {
-                                        buf.writeln(tag);
-                                      }
-                                    }
-                                    if (buf.isNotEmpty) {
-                                      _insertText('\n${buf.toString()}');
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        SnackBar(content: Text('已将 ${selectedList.length} 个附件插入正文')),
-                                      );
-                                    }
-                                    Navigator.of(ctx).pop();
-                                  },
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
   }
 
   Widget _buildThreadSortCard(ThemeData theme) {
@@ -3965,17 +4517,10 @@ class _PostPageState extends State<PostPage> {
                   ),
                 ),
 
-              // 未使用附件提示 Banner
-              if (!_isEdit)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: _buildUnusedAttachmentsBanner(theme),
-                ),
-
-              // 回复模式：原帖标题前缀提示（图三）
+              // 回复模式：原帖标题前缀提示（图三，对齐网页端顶部）
               if (_isReply)
                 Container(
-                  margin: const EdgeInsets.only(top: 4, bottom: 8),
+                  margin: const EdgeInsets.only(top: 4, bottom: 6),
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: theme.colorScheme.primaryContainer.withAlpha(40),
@@ -4000,6 +4545,14 @@ class _PostPageState extends State<PostPage> {
                     ],
                   ),
                 ),
+
+              // 未使用附件提示条（对齐 Discuz 网页端红虚线设计）
+              if (!_isEdit)
+                _buildUnusedAttachmentsBanner(theme),
+
+              // 引用回复独立展示卡片（对齐 Discuz 网页端，不在输入框生硬注入 BBCode）
+              if (_isReply)
+                _buildQuoteCard(theme),
 
               const SizedBox(height: 8),
 
@@ -4307,235 +4860,378 @@ class _PostPageState extends State<PostPage> {
                   ),
                 ),
 
-              // 编辑器主框：双行工具栏 + 大输入框 / 实时预览
+              // 编辑器主框：双行工具栏 + 大输入框 / 双栏实时排版 / 全屏预览
               Container(
                 decoration: BoxDecoration(
                   color: theme.colorScheme.surface,
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(10),
                   border: Border.all(
-                    color: theme.colorScheme.outlineVariant.withAlpha(80),
-                    width: 0.8,
+                    color: (_preview || _splitPreview)
+                        ? theme.colorScheme.primary.withAlpha(90)
+                        : theme.colorScheme.outlineVariant.withAlpha(75),
+                    width: 0.9,
                   ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: theme.brightness == Brightness.light
+                          ? Colors.black.withAlpha(8)
+                          : Colors.black.withAlpha(25),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
                 ),
                 child: Column(
                   children: [
                     _buildAdaptiveToolbar(theme),
-                    ConstrainedBox(
-                      constraints: BoxConstraints(minHeight: _editorMinHeight),
-                      child: _preview
-                          ? Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(14),
+                    if (_splitPreview)
+                      SizedBox(
+                        height: max(_editorMinHeight, 520),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            // 左侧：源码编辑框
+                            Expanded(
+                              flex: 5,
                               child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                    margin: const EdgeInsets.only(bottom: 12),
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                                     decoration: BoxDecoration(
-                                      color: theme.colorScheme.primaryContainer.withAlpha(35),
-                                      borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(color: theme.colorScheme.primary.withAlpha(60)),
+                                      color: theme.colorScheme.surfaceContainerHighest.withAlpha(35),
+                                      border: Border(
+                                        bottom: BorderSide(
+                                          color: theme.colorScheme.outlineVariant.withAlpha(50),
+                                          width: 0.6,
+                                        ),
+                                      ),
                                     ),
                                     child: Row(
                                       children: [
-                                        Icon(Icons.visibility_rounded, size: 16, color: theme.colorScheme.primary),
-                                        const SizedBox(width: 8),
+                                        Icon(Icons.edit_note_rounded, size: 15, color: theme.colorScheme.primary),
+                                        const SizedBox(width: 6),
                                         Text(
-                                          'Discuz BBCode 实时全排版预览',
+                                          '源码编辑',
                                           style: TextStyle(
-                                            fontSize: 12.5,
+                                            fontSize: 12,
                                             fontWeight: FontWeight.bold,
                                             color: theme.colorScheme.primary,
                                           ),
                                         ),
                                         const Spacer(),
-                                        TextButton.icon(
-                                          onPressed: () => setState(() => _preview = false),
-                                          style: TextButton.styleFrom(
-                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                            minimumSize: Size.zero,
-                                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                        Text(
+                                          '支持 Markdown & BBCode 混排',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: theme.colorScheme.outline,
                                           ),
-                                          icon: const Icon(Icons.edit_outlined, size: 14),
-                                          label: const Text('返回编辑', style: TextStyle(fontSize: 12)),
                                         ),
                                       ],
                                     ),
                                   ),
-                                  if (_contentCtrl.text.trim().isEmpty)
-                                    Container(
-                                      width: double.infinity,
-                                      padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 20),
-                                      alignment: Alignment.center,
-                                      child: Column(
-                                        mainAxisAlignment: MainAxisAlignment.center,
-                                        children: [
-                                          Icon(
-                                            Icons.description_outlined,
-                                            size: 44,
-                                            color: theme.colorScheme.outlineVariant,
-                                          ),
-                                          const SizedBox(height: 12),
-                                          Text(
-                                            '编辑区尚无内容',
-                                            style: TextStyle(
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.bold,
-                                              color: theme.colorScheme.onSurfaceVariant,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 6),
-                                          Text(
-                                            '在编辑区输入 BBCode 或文字后即可在此处查看实时排版',
-                                            style: TextStyle(
-                                              fontSize: 12,
-                                              color: theme.colorScheme.outline,
-                                            ),
-                                            textAlign: TextAlign.center,
-                                          ),
-                                        ],
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _contentCtrl,
+                                      maxLines: null,
+                                      expands: true,
+                                      textAlignVertical: TextAlignVertical.top,
+                                      decoration: const InputDecoration(
+                                        hintText: '在此输入内容，右侧将实时渲染排版效果...',
+                                        border: InputBorder.none,
+                                        contentPadding: EdgeInsets.all(14),
                                       ),
-                                    )
-                                  else
-                                    DiscuzPostRenderer(
-                                      floor: PostFloor(
-                                        author: '我（预览）',
-                                        contentHtml: bbcodeToHtml(
-                                          _contentCtrl.text,
-                                          customSmileys: _smileyCats,
-                                        ),
-                                        blocks: ComiisParser.parseStructuredBlocksFromHtml(
-                                          bbcodeToHtml(
-                                            _contentCtrl.text,
-                                            customSmileys: _smileyCats,
-                                          ),
-                                        ),
-                                      ),
-                                      tid: 0,
                                     ),
+                                  ),
                                 ],
                               ),
-                            )
-                          : TextField(
-                              controller: _contentCtrl,
-                              maxLines: null,
-                              minLines: (_editorMinHeight / 24).floor(),
-                              decoration: const InputDecoration(
-                                hintText: '点击输入文本',
-                                border: InputBorder.none,
-                                contentPadding: EdgeInsets.all(14),
+                            ),
+                            // 中间分割线
+                            VerticalDivider(
+                              width: 1,
+                              thickness: 1,
+                              color: theme.colorScheme.outlineVariant.withAlpha(65),
+                            ),
+                            // 右侧：实时渲染预览
+                            Expanded(
+                              flex: 5,
+                              child: ListenableBuilder(
+                                listenable: _contentCtrl,
+                                builder: (context, _) {
+                                  return MarkdownPreviewView(
+                                    content: _contentCtrl.text,
+                                    customSmileys: _smileyCats,
+                                    showHeader: true,
+                                    isSplitPane: true,
+                                    onBackToEdit: () => setState(() => _splitPreview = false),
+                                    onApplyConvertedBBCode: (bbcode) {
+                                      setState(() {
+                                        _contentCtrl.text = bbcode;
+                                      });
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('已将排版内容转换为标准 BBCode 并填入编辑器')),
+                                      );
+                                    },
+                                  );
+                                },
                               ),
                             ),
-                    ),
+                          ],
+                        ),
+                      )
+                    else if (_preview)
+                      SizedBox(
+                        height: max(_editorMinHeight, 480),
+                        child: ListenableBuilder(
+                          listenable: _contentCtrl,
+                          builder: (context, _) {
+                            return MarkdownPreviewView(
+                              content: _contentCtrl.text,
+                              customSmileys: _smileyCats,
+                              showHeader: true,
+                              isSplitPane: false,
+                              onBackToEdit: () => setState(() => _preview = false),
+                              onApplyConvertedBBCode: (bbcode) {
+                                setState(() {
+                                  _contentCtrl.text = bbcode;
+                                  _preview = false;
+                                });
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('已将排版内容转换为标准 BBCode 并填入编辑器')),
+                                );
+                              },
+                            );
+                          },
+                        ),
+                      )
+                    else
+                      ConstrainedBox(
+                        constraints: BoxConstraints(minHeight: _editorMinHeight),
+                        child: TextField(
+                          controller: _contentCtrl,
+                          maxLines: null,
+                          minLines: (_editorMinHeight / 24).floor(),
+                          decoration: const InputDecoration(
+                            hintText: '点击输入文本（支持 Markdown 语法与 Discuz BBCode）...',
+                            border: InputBorder.none,
+                            contentPadding: EdgeInsets.all(14),
+                          ),
+                        ),
+                      ),
                     // 底部草稿与统计状态栏
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
                       decoration: BoxDecoration(
                         color: theme.colorScheme.surfaceContainerHighest.withAlpha(30),
                         border: Border(
                           top: BorderSide(
                             color: theme.colorScheme.outlineVariant.withAlpha(60),
-                            width: 0.5,
+                            width: 0.6,
                           ),
                         ),
                       ),
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: Row(
-                          children: [
-                            Icon(Icons.check_circle_outline, size: 14, color: theme.colorScheme.outline),
-                            const SizedBox(width: 4),
-                            Text(
-                              _lastSavedTimeText.isNotEmpty
-                                  ? '草稿已于 $_lastSavedTimeText 自动保存'
-                                  : '草稿自动保存中...',
-                              style: TextStyle(fontSize: 11.5, color: theme.colorScheme.outline),
-                            ),
-                            const SizedBox(width: 8),
-                            Text('•', style: TextStyle(color: theme.colorScheme.outlineVariant)),
-                            const SizedBox(width: 8),
-                            Text(
-                              '${_contentCtrl.text.length} 字符 / ${_contentCtrl.text.split('\n').length} 行',
-                              style: TextStyle(fontSize: 11.5, color: theme.colorScheme.outline, fontWeight: FontWeight.w500),
-                            ),
-                            const SizedBox(width: 8),
-                            Text('•', style: TextStyle(color: theme.colorScheme.outlineVariant)),
-                            const SizedBox(width: 8),
-                            InkWell(
-                              onTap: _saveDraftManual,
-                              borderRadius: BorderRadius.circular(4),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                child: Text('手动保存',
-                                    style: TextStyle(fontSize: 11.5, color: theme.colorScheme.primary, fontWeight: FontWeight.bold)),
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            InkWell(
-                              onTap: () => _showDraftsModal(context),
-                              borderRadius: BorderRadius.circular(4),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                child: Text('草稿箱 ($_draftCount)',
-                                    style: TextStyle(fontSize: 11.5, color: theme.colorScheme.primary, fontWeight: FontWeight.bold)),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Text('•', style: TextStyle(color: theme.colorScheme.outlineVariant)),
-                            const SizedBox(width: 8),
-                            InkWell(
-                              onTap: () {
-                                if (_contentCtrl.text.isEmpty) return;
-                                showDialog(
-                                  context: context,
-                                  builder: (ctx) => AlertDialog(
-                                    title: const Text('确认清空内容？'),
-                                    content: const Text('清空后可通过撤销 (Ctrl+Z) 恢复。'),
-                                    actions: [
-                                      TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-                                      FilledButton(
-                                        onPressed: () {
-                                          Navigator.pop(ctx);
-                                          setState(() => _contentCtrl.clear());
-                                        },
-                                        child: const Text('确认清空'),
-                                      ),
-                                    ],
+                      child: ListenableBuilder(
+                        listenable: _contentCtrl,
+                        builder: (context, _) {
+                          final text = _contentCtrl.text;
+                          final charCount = text.length;
+                          final lineCount = text.isEmpty ? 0 : text.split('\n').length;
+                          final wordCount = _wordCountRegex.allMatches(text).length;
+                          final estMinutes = max(1, (charCount / 350).ceil());
+
+                          return SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Row(
+                              children: [
+                                // 自动保存状态指示灯
+                                Container(
+                                  width: 7,
+                                  height: 7,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: _lastSavedTimeText.isNotEmpty
+                                        ? const Color(0xFF4CAF50)
+                                        : theme.colorScheme.outlineVariant,
                                   ),
-                                );
-                              },
-                              borderRadius: BorderRadius.circular(4),
-                              child: const Padding(
-                                padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                child: Text('清空',
-                                    style: TextStyle(fontSize: 11.5, color: Colors.redAccent)),
-                              ),
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  _lastSavedTimeText.isNotEmpty
+                                      ? '已于 $_lastSavedTimeText 自动保存'
+                                      : '草稿自动保存中...',
+                                  style: TextStyle(fontSize: 11.5, color: theme.colorScheme.outline),
+                                ),
+                                const SizedBox(width: 8),
+                                Text('•', style: TextStyle(color: theme.colorScheme.outlineVariant)),
+                                const SizedBox(width: 8),
+                                Text(
+                                  '$charCount 字符 · $wordCount 词 · $lineCount 行 · 约 $estMinutes 分钟阅读',
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    color: theme.colorScheme.outline,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text('•', style: TextStyle(color: theme.colorScheme.outlineVariant)),
+                                const SizedBox(width: 8),
+                                InkWell(
+                                  onTap: _saveDraftManual,
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                    child: Text(
+                                      '保存草稿',
+                                      style: TextStyle(
+                                        fontSize: 11.5,
+                                        color: theme.colorScheme.primary,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                InkWell(
+                                  onTap: () => _showDraftsModal(context),
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          '草稿箱',
+                                          style: TextStyle(
+                                            fontSize: 11.5,
+                                            color: theme.colorScheme.primary,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        if (_draftCount > 0) ...[
+                                          const SizedBox(width: 3),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 0.5),
+                                            decoration: BoxDecoration(
+                                              color: theme.colorScheme.primary.withAlpha(25),
+                                              borderRadius: BorderRadius.circular(8),
+                                            ),
+                                            child: Text(
+                                              '$_draftCount',
+                                              style: TextStyle(
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.bold,
+                                                color: theme.colorScheme.primary,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text('•', style: TextStyle(color: theme.colorScheme.outlineVariant)),
+                                const SizedBox(width: 8),
+                                InkWell(
+                                  onTap: _showMarkdownSyntaxHelp,
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                    child: Text(
+                                      '语法速查',
+                                      style: TextStyle(fontSize: 11.5, color: theme.colorScheme.onSurfaceVariant),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                InkWell(
+                                  onTap: _showMarkdownTemplatesDialog,
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                    child: Text(
+                                      '排版模板',
+                                      style: TextStyle(fontSize: 11.5, color: theme.colorScheme.onSurfaceVariant),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text('•', style: TextStyle(color: theme.colorScheme.outlineVariant)),
+                                const SizedBox(width: 8),
+                                InkWell(
+                                  onTap: () {
+                                    if (_contentCtrl.text.isEmpty) return;
+                                    showDialog(
+                                      context: context,
+                                      builder: (ctx) => AlertDialog(
+                                        title: const Text('确认清空内容？'),
+                                        content: const Text('清空后可通过撤销 (Ctrl+Z) 恢复。'),
+                                        actions: [
+                                          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+                                          FilledButton(
+                                            onPressed: () {
+                                              Navigator.pop(ctx);
+                                              setState(() => _contentCtrl.clear());
+                                            },
+                                            child: const Text('确认清空'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: const Padding(
+                                    padding: EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                    child: Text(
+                                      '清空',
+                                      style: TextStyle(fontSize: 11.5, color: Colors.redAccent),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text('•', style: TextStyle(color: theme.colorScheme.outlineVariant)),
+                                const SizedBox(width: 8),
+                                Tooltip(
+                                  message: '加大编辑框高度',
+                                  child: InkWell(
+                                    onTap: () => setState(() => _editorMinHeight = min(800, _editorMinHeight + 80)),
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(Icons.expand, size: 13, color: theme.colorScheme.outline),
+                                          const SizedBox(width: 2),
+                                          Text('加高', style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                Tooltip(
+                                  message: '缩小编辑框高度',
+                                  child: InkWell(
+                                    onTap: () => setState(() => _editorMinHeight = max(200, _editorMinHeight - 80)),
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(Icons.compress, size: 13, color: theme.colorScheme.outline),
+                                          const SizedBox(width: 2),
+                                          Text('缩小', style: TextStyle(fontSize: 11, color: theme.colorScheme.outline)),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                            const SizedBox(width: 8),
-                            Text('•', style: TextStyle(color: theme.colorScheme.outlineVariant)),
-                            const SizedBox(width: 8),
-                            InkWell(
-                              onTap: () => setState(() => _editorMinHeight = min(600, _editorMinHeight + 80)),
-                              borderRadius: BorderRadius.circular(4),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                child: Text('加大编辑框',
-                                    style: TextStyle(fontSize: 11.5, color: theme.colorScheme.outline)),
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                            InkWell(
-                              onTap: () => setState(() => _editorMinHeight = max(200, _editorMinHeight - 80)),
-                              borderRadius: BorderRadius.circular(4),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                child: Text('缩小编辑框',
-                                    style: TextStyle(fontSize: 11.5, color: theme.colorScheme.outline)),
-                              ),
-                            ),
-                          ],
-                        ),
+                          );
+                        },
                       ),
                     ),
                   ],
@@ -4619,6 +5315,42 @@ class _PostPageState extends State<PostPage> {
                     ),
                   ),
                   const SizedBox(width: 12),
+                  // 双栏实时对比预览（宽屏/桌面端优先呈现）
+                  if (isDesktop || MediaQuery.sizeOf(context).width >= 800) ...[
+                    SizedBox(
+                      height: 44,
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          side: BorderSide(
+                            color: _splitPreview ? theme.colorScheme.primary : theme.colorScheme.outlineVariant,
+                            width: _splitPreview ? 1.5 : 1,
+                          ),
+                          backgroundColor: _splitPreview ? theme.colorScheme.primaryContainer.withAlpha(50) : null,
+                        ),
+                        onPressed: () {
+                          setState(() {
+                            _splitPreview = !_splitPreview;
+                            if (_splitPreview) _preview = false;
+                          });
+                        },
+                        icon: Icon(
+                          Icons.vertical_split_rounded,
+                          size: 18,
+                          color: _splitPreview ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant,
+                        ),
+                        label: Text(
+                          _splitPreview ? '退出双栏' : '双栏实时对比',
+                          style: TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w600,
+                            color: _splitPreview ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
                   // 独立位置的实时预览 / 返回编辑按钮
                   SizedBox(
                     height: 44,
@@ -4631,7 +5363,12 @@ class _PostPageState extends State<PostPage> {
                         ),
                         backgroundColor: _preview ? theme.colorScheme.primaryContainer.withAlpha(50) : null,
                       ),
-                      onPressed: () => setState(() => _preview = !_preview),
+                      onPressed: () {
+                        setState(() {
+                          _preview = !_preview;
+                          if (_preview) _splitPreview = false;
+                        });
+                      },
                       icon: Icon(
                         _preview ? Icons.edit_note_rounded : Icons.preview_rounded,
                         size: 18,

@@ -8,7 +8,7 @@ import '../core/preload_service.dart';
 import '../models/user_space.dart';
 import '../pages/credit_page.dart';
 import '../pages/darkroom_page.dart';
-import '../pages/favorite_forums_page.dart';
+import '../pages/favorite_hub_page.dart';
 import '../pages/guide_page.dart';
 import '../pages/login_page.dart';
 import '../pages/magic_page.dart';
@@ -421,8 +421,8 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
                     _buildNavItem(
                       icon: Icons.star_border_rounded,
                       selectedIcon: Icons.star_rounded,
-                      title: '收藏版块',
-                      onTap: () => _pushPage(FavoriteForumsPage(uid: _myUid!)),
+                      title: '我的收藏',
+                      onTap: () => _pushPage(FavoriteHubPage(uid: _myUid!)),
                     ),
                     _buildNavItem(
                       icon: Icons.task_alt_rounded,
