@@ -242,7 +242,7 @@ class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
         // 1. 标题与总体状态指示
         Row(
           children: [
-            Icon(Icons.dns_rounded, size: 17, color: overall.color),
+            Icon(Icons.dns_rounded, size: 17, color: DashboardCardTheme.of(context).accentColor),
             const SizedBox(width: 6),
             Text(
               title,

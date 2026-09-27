@@ -88,7 +88,7 @@ class MobileHomeCustomizer extends StatefulWidget {
       title: '快捷金刚区',
       subtitle: '高频功能快捷入口（支持 4~8 项）',
       icon: Icons.grid_view_rounded,
-      color: Color(0xFF4CAF50),
+      color: Color(0xFF00BCD4),
     ),
     'forum_nav': MobileSectionMeta(
       id: 'forum_nav',
@@ -147,7 +147,7 @@ class MobileHomeCustomizer extends StatefulWidget {
       id: 'search',
       label: '全站搜索',
       icon: Icons.search,
-      color: Color(0xFF2E7D32),
+      color: Color(0xFF00ACC1),
       tabIndex: 11,
     ),
     QuickActionMeta(

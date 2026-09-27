@@ -366,9 +366,9 @@ class _HomeStylePageState extends State<HomeStylePage>
                 color: colorScheme.surface,
                 child: TabBar(
                   controller: _tabController,
-                  labelColor: const Color(0xFF00A2FF),
-                  unselectedLabelColor: const Color(0xFF666666),
-                  indicatorColor: const Color(0xFF00A2FF),
+                  labelColor: colorScheme.primary,
+                  unselectedLabelColor: colorScheme.onSurfaceVariant,
+                  indicatorColor: colorScheme.primary,
                   indicatorWeight: 3,
                   labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5),
                   tabs: _categories.map((c) => Tab(text: c)).toList(),
@@ -505,7 +505,7 @@ class _HomeStylePageState extends State<HomeStylePage>
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF00A2FF).withAlpha(220),
+                          color: theme.colorScheme.primary.withAlpha(220),
                           borderRadius: BorderRadius.circular(10),
                         ),
                         child: Text(
@@ -593,7 +593,7 @@ class _HomeStylePageState extends State<HomeStylePage>
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(6),
               border: Border.all(
-                color: isSelected ? const Color(0xFF00A2FF) : Colors.transparent,
+                color: isSelected ? theme.colorScheme.primary : Colors.transparent,
                 width: isSelected ? 2.5 : 1,
               ),
               boxShadow: [
@@ -641,11 +641,11 @@ class _HomeStylePageState extends State<HomeStylePage>
                       ),
                     ),
                   ),
-                  // 壁纸名称条（选中为亮蓝底白字）
+                  // 壁纸名称条（选中为主题色底白字）
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.symmetric(vertical: 4),
-                    color: isSelected ? const Color(0xFF00A2FF) : Colors.white,
+                    color: isSelected ? theme.colorScheme.primary : theme.colorScheme.surfaceContainerHighest,
                     child: Text(
                       item.name,
                       textAlign: TextAlign.center,
@@ -654,7 +654,7 @@ class _HomeStylePageState extends State<HomeStylePage>
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                        color: isSelected ? Colors.white : const Color(0xFF555555),
+                        color: isSelected ? Colors.white : theme.colorScheme.onSurface,
                       ),
                     ),
                   ),

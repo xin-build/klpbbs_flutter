@@ -29,6 +29,7 @@ enum DashboardCardStyle {
 /// 卡片主题强调色
 enum DashboardCardAccent {
   auto('智能匹配', null, null),
+  sakura('樱花粉', Color(0xFFFA7298), Color(0xFFFF80AB)),
   emerald('苦力怕绿', Color(0xFF2E7D32), Color(0xFF4CAF50)),
   blue('钻石天蓝', Color(0xFF1565C0), Color(0xFF42A5F5)),
   amber('金粒耀金', Color(0xFFE65100), Color(0xFFFFB300)),
@@ -118,21 +119,21 @@ class DashboardCardFrame extends StatelessWidget {
     this.onTap,
   });
 
-  /// 根据卡片分类推断自然契合的默认强调色
+  /// 根据卡片分类推断自然契合的默认强调色（深度与全站动态风格保持色彩学共鸣）
   static Color getNaturalCategoryAccent(String cardType, BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
     final def = CardRegistry.get(cardType);
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     switch (def.category) {
-      case DashboardCardCategory.content:
-        return isDark ? const Color(0xFFFF7043) : const Color(0xFFE64A19);
       case DashboardCardCategory.user:
-        return isDark ? const Color(0xFF4CAF50) : const Color(0xFF2E7D32);
-      case DashboardCardCategory.stats:
-        return isDark ? const Color(0xFF29B6F6) : const Color(0xFF0288D1);
-      case DashboardCardCategory.tool:
-        return isDark ? const Color(0xFFBA68C8) : const Color(0xFF7B1FA2);
       case DashboardCardCategory.social:
-        return isDark ? const Color(0xFF26A69A) : const Color(0xFF00796B);
+        return colorScheme.primary;
+      case DashboardCardCategory.content:
+        return colorScheme.tertiary;
+      case DashboardCardCategory.stats:
+        return colorScheme.secondary;
+      case DashboardCardCategory.tool:
+        return colorScheme.primary;
     }
   }
 

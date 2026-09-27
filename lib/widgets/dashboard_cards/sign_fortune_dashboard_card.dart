@@ -276,6 +276,7 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
 
   Widget _buildCompactLOD(BuildContext context, String title) {
     final colorScheme = Theme.of(context).colorScheme;
+    final accent = DashboardCardTheme.of(context).accentColor;
     final fortune = _todayFortune;
 
     return Row(
@@ -286,7 +287,7 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             gradient: LinearGradient(
-              colors: [Colors.purple.shade400, Colors.deepPurple.shade700],
+              colors: [accent, accent.withAlpha(200)],
             ),
           ),
           child: const Icon(Icons.auto_awesome_rounded, size: 18, color: Colors.white),
@@ -335,6 +336,7 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
 
   Widget _buildExpandedLOD(BuildContext context, String title) {
     final colorScheme = Theme.of(context).colorScheme;
+    final accent = DashboardCardTheme.of(context).accentColor;
     final fortune = _todayFortune;
 
     return Column(
@@ -342,7 +344,7 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
       children: [
         Row(
           children: [
-            Icon(Icons.event_available_rounded, size: 17, color: Colors.purple.shade600),
+            Icon(Icons.event_available_rounded, size: 17, color: accent),
             const SizedBox(width: 6),
             Text(
               title,
@@ -367,9 +369,9 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
           child: Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: Colors.purple.withAlpha(20),
+              color: accent.withAlpha(20),
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.purple.withAlpha(60), width: 0.8),
+              border: Border.all(color: accent.withAlpha(60), width: 0.8),
             ),
             child: Row(
               children: [
@@ -380,7 +382,7 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
                     children: [
                       Row(
                         children: [
-                          const Icon(Icons.stars_rounded, color: Colors.purple, size: 16),
+                          Icon(Icons.stars_rounded, color: accent, size: 16),
                           const SizedBox(width: 4),
                           Expanded(
                             child: Text(
@@ -409,7 +411,7 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
                         style: TextStyle(
                           fontSize: 10,
                           fontWeight: FontWeight.bold,
-                          color: _signed ? Colors.deepPurple.shade700 : Colors.teal.shade700,
+                          color: _signed ? accent : Colors.orange.shade700,
                         ),
                       ),
                     ],

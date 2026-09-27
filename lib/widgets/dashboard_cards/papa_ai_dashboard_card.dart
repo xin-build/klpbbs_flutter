@@ -35,6 +35,7 @@ class PapaAiDashboardCard extends StatelessWidget {
 
   Widget _buildCompact(BuildContext context, String title) {
     final colorScheme = Theme.of(context).colorScheme;
+    final accent = DashboardCardTheme.of(context).accentColor;
     return Row(
       children: [
         Container(
@@ -43,7 +44,7 @@ class PapaAiDashboardCard extends StatelessWidget {
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             gradient: LinearGradient(
-              colors: [Colors.teal.shade400, const Color(0xFF10B981)],
+              colors: [accent, accent.withAlpha(200)],
             ),
           ),
           child: const Icon(Icons.smart_toy_rounded, size: 18, color: Colors.white),
@@ -71,10 +72,10 @@ class PapaAiDashboardCard extends StatelessWidget {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
           decoration: BoxDecoration(
-            color: Colors.teal.withAlpha(30),
+            color: accent.withAlpha(30),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: const Text('对话 >', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.teal)),
+          child: Text('对话 >', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: accent)),
         ),
       ],
     );
@@ -82,13 +83,14 @@ class PapaAiDashboardCard extends StatelessWidget {
 
   Widget _buildExpanded(BuildContext context, String title) {
     final colorScheme = Theme.of(context).colorScheme;
+    final accent = DashboardCardTheme.of(context).accentColor;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
-            Icon(Icons.smart_toy_rounded, size: 17, color: Colors.teal.shade600),
+            Icon(Icons.smart_toy_rounded, size: 17, color: accent),
             const SizedBox(width: 6),
             Text(
               title,
@@ -102,12 +104,12 @@ class PapaAiDashboardCard extends StatelessWidget {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
-                color: Colors.teal.withAlpha(25),
+                color: accent.withAlpha(25),
                 borderRadius: BorderRadius.circular(6),
               ),
-              child: const Text(
+              child: Text(
                 '站内智能助手',
-                style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.teal),
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: accent),
               ),
             ),
           ],
@@ -137,9 +139,9 @@ class PapaAiDashboardCard extends StatelessWidget {
                       Wrap(
                         spacing: 4,
                         children: [
-                          _buildChip('找附加包'),
-                          _buildChip('红石指令'),
-                          _buildChip('游戏求助'),
+                          _buildChip('找附加包', accent),
+                          _buildChip('红石指令', accent),
+                          _buildChip('游戏求助', accent),
                         ],
                       ),
                     ],
@@ -161,14 +163,14 @@ class PapaAiDashboardCard extends StatelessWidget {
     );
   }
 
-  Widget _buildChip(String label) {
+  Widget _buildChip(String label, Color accent) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
       decoration: BoxDecoration(
-        color: Colors.teal.withAlpha(20),
+        color: accent.withAlpha(20),
         borderRadius: BorderRadius.circular(4),
       ),
-      child: Text(label, style: const TextStyle(fontSize: 9.5, color: Colors.teal)),
+      child: Text(label, style: TextStyle(fontSize: 9.5, color: accent)),
     );
   }
 }

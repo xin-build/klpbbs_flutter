@@ -284,7 +284,7 @@ class _UserCenterPageState extends State<UserCenterPage> {
                 _buildCardGroup([
                   _buildMenuTile(
                     icon: Icons.event_available_outlined,
-                    iconColor: const Color(0xFF2E7D32),
+                    iconColor: colorScheme.primary,
                     title: '每日签到',
                     subtitle: '每日打卡 / 连续签到奖励 / 签到榜单',
                     onTap: () => Navigator.of(context).push(

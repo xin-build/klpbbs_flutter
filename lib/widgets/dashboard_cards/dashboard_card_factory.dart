@@ -357,10 +357,10 @@ class DashboardCardFactory {
             children: [
               Row(
                 children: [
-                  const CircleAvatar(
+                  CircleAvatar(
                     radius: 17,
-                    backgroundColor: Color(0xFF3BA55D),
-                    child: Text('Y', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                    backgroundColor: colorScheme.primary,
+                    child: const Text('Y', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
                   ),
                   const SizedBox(width: 8),
                   Expanded(

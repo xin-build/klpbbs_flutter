@@ -524,12 +524,12 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                         width: 56,
                         height: 56,
                         decoration: BoxDecoration(
-                          color: const Color(0xFF4CAF50).withAlpha(30),
+                          color: theme.colorScheme.primary.withAlpha(30),
                           shape: BoxShape.circle,
                         ),
-                        child: const Icon(
+                        child: Icon(
                           Icons.terrain_rounded,
-                          color: Color(0xFF4CAF50),
+                          color: theme.colorScheme.primary,
                           size: 34,
                         ),
                       ),

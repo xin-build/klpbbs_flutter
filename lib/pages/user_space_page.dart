@@ -1530,7 +1530,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
               '帖子',
               user.stats['主题'] ?? user.stats['帖子'] ?? '0',
               Icons.chat_bubble_outline_rounded,
-              const Color(0xFF4CAF50),
+              theme.colorScheme.primary,
               () => setState(() => _selectedTab = 1),
             ),
             _buildClickableStat(

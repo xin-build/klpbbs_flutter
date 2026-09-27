@@ -92,6 +92,8 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
     final progress = (completedCount / totalCount).clamp(0.0, 1.0);
     final countText = _isSignedToday ? '今日已签到' : '$totalCount 个任务';
 
+    final accent = DashboardCardTheme.of(context).accentColor;
+
     return Row(
       children: [
         Container(
@@ -100,7 +102,7 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             gradient: LinearGradient(
-              colors: [Colors.cyan.shade400, Colors.blue.shade700],
+              colors: [accent, accent.withAlpha(200)],
             ),
           ),
           child: Icon(
@@ -128,7 +130,7 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
                   value: _isSignedToday ? progress.clamp(0.33, 1.0) : 0.15,
                   minHeight: 4,
                   backgroundColor: colorScheme.outlineVariant.withAlpha(50),
-                  color: _isSignedToday ? Colors.green : Colors.cyan,
+                  color: _isSignedToday ? Colors.green : accent,
                 ),
               ),
             ],
@@ -138,7 +140,7 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
           decoration: BoxDecoration(
-            color: (_isSignedToday ? Colors.green : Colors.cyan).withAlpha(30),
+            color: (_isSignedToday ? Colors.green : accent).withAlpha(30),
             borderRadius: BorderRadius.circular(6),
           ),
           child: Text(
@@ -146,7 +148,7 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
             style: TextStyle(
               fontSize: 10,
               fontWeight: FontWeight.bold,
-              color: _isSignedToday ? Colors.green.shade800 : Colors.cyan,
+              color: _isSignedToday ? Colors.green.shade800 : accent,
             ),
           ),
         ),
@@ -156,6 +158,7 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
 
   Widget _buildExpanded(BuildContext context, String title, List<({int id, String name, String reward})> tasks) {
     final colorScheme = Theme.of(context).colorScheme;
+    final accent = DashboardCardTheme.of(context).accentColor;
     final maxCount = widget.item.rowSpan >= 3 ? 5 : 3;
 
     // 构建整合任务列表（注入打卡、回帖、点赞等真实任务项与状态）
@@ -168,7 +171,7 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
         items.add((
           name: t.name,
           reward: isCompleted ? '已完成' : (t.reward.isNotEmpty ? t.reward : '奖励加成'),
-          color: isCompleted ? Colors.green : Colors.cyan,
+          color: isCompleted ? Colors.green : accent,
           isCompleted: isCompleted,
           onTap: isSignTask && !_isSignedToday ? _quickSignIn : null,
         ));

@@ -334,7 +334,6 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
                     icon: Icons.smart_toy_outlined,
                     selectedIcon: Icons.smart_toy_rounded,
                     title: '帕帕 AI 助手',
-                    color: const Color(0xFF2E7D32),
                     onTap: () => _pushPage(const PapaAiChatPage()),
                   ),
                   _buildNavItem(

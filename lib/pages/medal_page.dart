@@ -254,7 +254,7 @@ class _MedalPageState extends State<MedalPage> with SingleTickerProviderStateMix
                               _handleMedalAction(m);
                             },
                             style: FilledButton.styleFrom(
-                              backgroundColor: const Color(0xFF8BC34A),
+                              backgroundColor: Theme.of(ctx).colorScheme.primary,
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                             ),
                             child: Text(
@@ -545,7 +545,7 @@ class _MedalPageState extends State<MedalPage> with SingleTickerProviderStateMix
                           FilledButton(
                             onPressed: () => _showMedalDetailDialog(m),
                             style: FilledButton.styleFrom(
-                              backgroundColor: const Color(0xFF4CAF50),
+                              backgroundColor: theme.colorScheme.primary,
                               foregroundColor: Colors.white,
                               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                               minimumSize: Size.zero,
@@ -558,7 +558,7 @@ class _MedalPageState extends State<MedalPage> with SingleTickerProviderStateMix
                           FilledButton(
                             onPressed: () => _showMedalDetailDialog(m),
                             style: FilledButton.styleFrom(
-                              backgroundColor: const Color(0xFF4CAF50),
+                              backgroundColor: theme.colorScheme.primary,
                               foregroundColor: Colors.white,
                               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                               minimumSize: Size.zero,

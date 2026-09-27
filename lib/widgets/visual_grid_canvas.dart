@@ -3560,7 +3560,7 @@ class _VisualGridCanvasState extends State<VisualGridCanvas> {
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Icon(Icons.shield_outlined, size: 13, color: Colors.green.shade600),
+                          Icon(Icons.shield_outlined, size: 13, color: colorScheme.primary),
                           const SizedBox(width: 4),
                           Expanded(
                             child: Text(
@@ -3575,14 +3575,18 @@ class _VisualGridCanvasState extends State<VisualGridCanvas> {
                     ),
                     const SizedBox(height: 8),
 
-                    // 4. 苦力怕论坛·闲聊讨论 欢迎绿色大卡片 (1:1 对齐 media_1790399424134.png)
+                    // 4. 苦力怕论坛·闲聊讨论 欢迎大卡片
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        gradient: const LinearGradient(
+                        gradient: LinearGradient(
                           begin: Alignment.topLeft,
                           end: Alignment.bottomRight,
-                          colors: [Color(0xFF2E7D32), Color(0xFF1B5E20), Color(0xFF0F3D14)],
+                          colors: [
+                            colorScheme.primary,
+                            colorScheme.primary.withAlpha(210),
+                            colorScheme.surfaceContainerHighest,
+                          ],
                         ),
                         borderRadius: BorderRadius.circular(10),
                         boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))],
@@ -3600,11 +3604,11 @@ class _VisualGridCanvasState extends State<VisualGridCanvas> {
                                       width: 14,
                                       height: 14,
                                       decoration: BoxDecoration(
-                                        color: Colors.greenAccent,
+                                        color: colorScheme.onPrimary,
                                         borderRadius: BorderRadius.circular(3),
                                       ),
-                                      child: const Center(
-                                        child: Text('K', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.black)),
+                                      child: Center(
+                                        child: Text('K', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: colorScheme.primary)),
                                       ),
                                     ),
                                     const SizedBox(width: 4),
@@ -3619,9 +3623,9 @@ class _VisualGridCanvasState extends State<VisualGridCanvas> {
                                 const SizedBox(height: 2),
                                 const Text('欢迎来到闲聊讨论版块!', style: TextStyle(fontSize: 9.5, color: Colors.white60)),
                                 const SizedBox(height: 6),
-                                const Text('✦ 畅所欲言 友好交流!', style: TextStyle(fontSize: 9, color: Color(0xFFA5D6A7))),
-                                const Text('✦ 调侃心情 增长见识!', style: TextStyle(fontSize: 9, color: Color(0xFFA5D6A7))),
-                                const Text('✦ 游戏之旅 孤岛同行!', style: TextStyle(fontSize: 9, color: Color(0xFFA5D6A7))),
+                                Text('✦ 畅所欲言 友好交流!', style: TextStyle(fontSize: 9, color: colorScheme.onPrimary.withAlpha(220))),
+                                Text('✦ 调侃心情 增长见识!', style: TextStyle(fontSize: 9, color: colorScheme.onPrimary.withAlpha(220))),
+                                Text('✦ 游戏之旅 孤岛同行!', style: TextStyle(fontSize: 9, color: colorScheme.onPrimary.withAlpha(220))),
                               ],
                             ),
                           ),
@@ -3892,7 +3896,7 @@ class _VisualGridCanvasState extends State<VisualGridCanvas> {
             // 3. 真实论坛版块分类标题与过滤 Chips
             Row(
               children: [
-                Container(width: 3.5, height: 14, color: const Color(0xFF6B8E23), margin: const EdgeInsets.only(right: 6)),
+                Container(width: 3.5, height: 14, color: colorScheme.primary, margin: const EdgeInsets.only(right: 6)),
                 const Text('论坛版块分类', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold)),
                 const SizedBox(width: 6),
                 Text('展开全部分区 ▾', style: TextStyle(fontSize: 11, color: colorScheme.outline)),
@@ -3950,7 +3954,7 @@ class _VisualGridCanvasState extends State<VisualGridCanvas> {
             Container(
               padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
               decoration: BoxDecoration(
-                color: const Color(0xFF233020),
+                color: colorScheme.surfaceContainerHighest.withAlpha(120),
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: colorScheme.outlineVariant.withAlpha(50)),
               ),
@@ -3962,11 +3966,11 @@ class _VisualGridCanvasState extends State<VisualGridCanvas> {
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF4CAF50).withAlpha(45),
+                          color: colorScheme.primary.withAlpha(35),
                           borderRadius: BorderRadius.circular(4),
-                          border: Border.all(color: const Color(0xFF4CAF50).withAlpha(90), width: 0.8),
+                          border: Border.all(color: colorScheme.primary.withAlpha(90), width: 0.8),
                         ),
-                        child: const Text('推荐', style: TextStyle(fontSize: 9.5, color: Color(0xFF81C784), fontWeight: FontWeight.bold)),
+                        child: Text('推荐', style: TextStyle(fontSize: 9.5, color: colorScheme.primary, fontWeight: FontWeight.bold)),
                       ),
                       const SizedBox(width: 8),
                       const Expanded(
@@ -3986,7 +3990,7 @@ class _VisualGridCanvasState extends State<VisualGridCanvas> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Container(width: 14, height: 3.5, decoration: BoxDecoration(color: const Color(0xFF81C784), borderRadius: BorderRadius.circular(2))),
+                      Container(width: 14, height: 3.5, decoration: BoxDecoration(color: colorScheme.primary, borderRadius: BorderRadius.circular(2))),
                       const SizedBox(width: 4),
                       Container(width: 3.5, height: 3.5, decoration: const BoxDecoration(color: Colors.white30, shape: BoxShape.circle)),
                       const SizedBox(width: 4),
@@ -4134,21 +4138,21 @@ class _VisualGridCanvasState extends State<VisualGridCanvas> {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
-              color: const Color(0xFF384B1E),
+              color: colorScheme.primary,
               borderRadius: BorderRadius.circular(16),
               boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 6, offset: Offset(0, 2))],
             ),
-            child: const Row(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.edit_rounded, size: 16, color: Color(0xFFC5E1A5)),
-                SizedBox(width: 6),
+                Icon(Icons.edit_rounded, size: 16, color: colorScheme.onPrimary),
+                const SizedBox(width: 6),
                 Text(
                   '发帖',
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.bold,
-                    color: Color(0xFFC5E1A5),
+                    color: colorScheme.onPrimary,
                   ),
                 ),
               ],
@@ -4179,10 +4183,10 @@ class _VisualGridCanvasState extends State<VisualGridCanvas> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
               decoration: BoxDecoration(
-                color: const Color(0xFF2E3824),
+                color: colorScheme.primaryContainer,
                 borderRadius: BorderRadius.circular(4),
               ),
-              child: const Text('闲聊讨论', style: TextStyle(fontSize: 10, color: Color(0xFFC5E1A5), fontWeight: FontWeight.bold)),
+              child: Text('闲聊讨论', style: TextStyle(fontSize: 10, color: colorScheme.onPrimaryContainer, fontWeight: FontWeight.bold)),
             ),
           ],
         ),
@@ -4194,11 +4198,11 @@ class _VisualGridCanvasState extends State<VisualGridCanvas> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
-                color: const Color(0xFF10B981).withAlpha(25),
+                color: colorScheme.primary.withAlpha(25),
                 borderRadius: BorderRadius.circular(4),
-                border: Border.all(color: const Color(0xFF10B981), width: 0.8),
+                border: Border.all(color: colorScheme.primary, width: 0.8),
               ),
-              child: const Text('[闲聊]', style: TextStyle(fontSize: 10, color: Color(0xFF059669), fontWeight: FontWeight.bold)),
+              child: Text('[闲聊]', style: TextStyle(fontSize: 10, color: colorScheme.primary, fontWeight: FontWeight.bold)),
             ),
           ],
         ),

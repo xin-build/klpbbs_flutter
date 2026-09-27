@@ -650,7 +650,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3.5),
       decoration: BoxDecoration(
-        color: const Color(0xFF43A047),
+        color: Theme.of(context).colorScheme.primary,
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(
