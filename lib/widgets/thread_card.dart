@@ -283,6 +283,7 @@ class UserAvatarWidget extends StatelessWidget {
       Widget? pendantWidget;
       if (cleanUrl != null && cleanUrl.isNotEmpty) {
         if (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')) {
+          final pendantMemSize = (faceSize * 2.5).clamp(32, 256).toInt();
           pendantWidget = CachedNetworkImage(
             imageUrl: cleanUrl,
             cacheManager: KlpbbsCacheManager.instance,
@@ -290,6 +291,8 @@ class UserAvatarWidget extends StatelessWidget {
             width: faceSize,
             height: faceSize,
             fit: BoxFit.contain,
+            memCacheWidth: pendantMemSize,
+            memCacheHeight: pendantMemSize,
             placeholder: (_, __) => FacemallFrameWidget(
               frameIdOrUrl: cleanUrl,
               size: faceSize,

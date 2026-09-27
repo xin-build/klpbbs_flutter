@@ -95,19 +95,19 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  widget.child,
+                  RepaintBoundary(child: widget.child),
                   if (widget.bottomBar != null)
                     Positioned(
                       left: 0,
                       right: 0,
                       bottom: 0,
-                      child: widget.bottomBar!,
+                      child: RepaintBoundary(child: widget.bottomBar!),
                     ),
                   if (widget.floatingActionButton != null)
                     Positioned(
                       right: 16,
                       bottom: widget.bottomBar != null ? (bottomInset + 72) : (bottomInset + 16),
-                      child: widget.floatingActionButton!,
+                      child: RepaintBoundary(child: widget.floatingActionButton!),
                     ),
                 ],
               ),
@@ -128,18 +128,20 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      Center(
-                        child: ValueListenableBuilder<double>(
-                          valueListenable: AppConfig.threadContentMaxWidthNotifier,
-                          builder: (context, maxWidth, contentChild) {
-                            return ConstrainedBox(
-                              constraints: BoxConstraints(
-                                maxWidth: maxWidth > 0 ? maxWidth : double.infinity,
-                              ),
-                              child: contentChild,
-                            );
-                          },
-                          child: widget.child,
+                      RepaintBoundary(
+                        child: Center(
+                          child: ValueListenableBuilder<double>(
+                            valueListenable: AppConfig.threadContentMaxWidthNotifier,
+                            builder: (context, maxWidth, contentChild) {
+                              return ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  maxWidth: maxWidth > 0 ? maxWidth : double.infinity,
+                                ),
+                                child: contentChild,
+                              );
+                            },
+                            child: widget.child,
+                          ),
                         ),
                       ),
                       if (widget.bottomBar != null)
@@ -147,13 +149,13 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                           left: 0,
                           right: 0,
                           bottom: 0,
-                          child: widget.bottomBar!,
+                          child: RepaintBoundary(child: widget.bottomBar!),
                         ),
                       if (widget.floatingActionButton != null)
                         Positioned(
                           right: 16,
                           bottom: widget.bottomBar != null ? (bottomInset + 72) : (bottomInset + 16),
-                          child: widget.floatingActionButton!,
+                          child: RepaintBoundary(child: widget.floatingActionButton!),
                         ),
                     ],
                   ),
@@ -197,19 +199,21 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                         child: rightChild,
                       );
                     },
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: colorScheme.surfaceContainerLowest,
-                        border: Border(
-                          left: BorderSide(
-                            color: colorScheme.outlineVariant.withAlpha(35),
-                            width: 0.8,
+                    child: RepaintBoundary(
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: colorScheme.surfaceContainerLowest,
+                          border: Border(
+                            left: BorderSide(
+                              color: colorScheme.outlineVariant.withAlpha(35),
+                              width: 0.8,
+                            ),
                           ),
                         ),
-                      ),
-                      child: _buildPanelContent(
-                        context,
-                        modules: AppConfig.threadRightModules,
+                        child: _buildPanelContent(
+                          context,
+                          modules: AppConfig.threadRightModules,
+                        ),
                       ),
                     ),
                   ),

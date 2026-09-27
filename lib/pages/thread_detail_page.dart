@@ -73,8 +73,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   AiSummaryData? _aiSummary;
   final _scrollCtrl = ScrollController();
   int _page = 1;
-  bool _scrolled = false;
-  bool _showBackToTop = false;
+  final _scrolledNotifier = ValueNotifier<bool>(false);
+  final _showBackToTopNotifier = ValueNotifier<bool>(false);
   String _title = '';
   String? _stamp;
   String? _stampUrl;
@@ -134,12 +134,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
           }
         })
         .catchError((_) {});
-    // AppBar 标题滚动折叠：滚动超过 120px 显示帖子标题；超过 280px 显示回到顶部
+    // AppBar 标题滚动折叠：滚动超过 120px 显示帖子标题；超过 280px 显示回到顶部（通过 ValueNotifier 通知，杜绝触发整个三栏页面重构）
     _scrollCtrl.addListener(() {
       final show = _scrollCtrl.offset > 120;
-      if (show != _scrolled) setState(() => _scrolled = show);
+      if (show != _scrolledNotifier.value) _scrolledNotifier.value = show;
       final showTop = _scrollCtrl.offset > 280;
-      if (showTop != _showBackToTop) setState(() => _showBackToTop = showTop);
+      if (showTop != _showBackToTopNotifier.value) _showBackToTopNotifier.value = showTop;
     });
   }
 
@@ -308,6 +308,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     }
     _inThreadSearchCtrl.dispose();
     _scrollCtrl.dispose();
+    _scrolledNotifier.dispose();
+    _showBackToTopNotifier.dispose();
     super.dispose();
   }
 
@@ -1291,10 +1293,15 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                   showBackButton: widget.showBackButton,
                 )
               : 0,
-          title: Text(
-            _scrolled && _title.isNotEmpty ? _title : '帖子详情',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+          title: ValueListenableBuilder<bool>(
+            valueListenable: _scrolledNotifier,
+            builder: (context, scrolled, _) {
+              return Text(
+                scrolled && _title.isNotEmpty ? _title : '帖子详情',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              );
+            },
           ),
           actions: [
             IconButton(
@@ -1682,485 +1689,74 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                         )).toList() ?? const [],
                       );
                     },
-                    child: ListView(
-                      cacheExtent: 800.0,
+                    child: CustomScrollView(
+                      cacheExtent: 350.0,
                       controller: _scrollCtrl,
-                      padding: const EdgeInsets.only(bottom: 64),
-                      children: [
-                          if (title.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  // 顶部面包屑导航（如 论坛 › 灵感交流 › 闲聊讨论）
-                                  if ((data?.breadcrumbs ?? const []).isNotEmpty ||
-                                      (data?.forumName ?? '').isNotEmpty)
-                                    Padding(
-                                      padding: const EdgeInsets.only(bottom: 8),
-                                      child: Wrap(
-                                        crossAxisAlignment:
-                                            WrapCrossAlignment.center,
-                                        spacing: 4,
-                                        runSpacing: 4,
-                                        children: [
-                                          Icon(
-                                            Icons.home_outlined,
-                                            size: 14,
-                                            color: Theme.of(
-                                              context,
-                                            ).colorScheme.onSurfaceVariant.withAlpha(200),
-                                          ),
-                                          Text(
-                                            '论坛',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall
-                                                ?.copyWith(
-                                                  color: Theme.of(
-                                                    context,
-                                                  ).colorScheme.onSurfaceVariant,
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                          ),
-                                          for (final bc in (data?.breadcrumbs ?? [
-                                            if ((data?.forumName ?? '').isNotEmpty)
-                                              data!.forumName,
-                                          ])) ...[
-                                            Icon(
-                                              Icons.chevron_right,
-                                              size: 14,
-                                              color: Theme.of(
-                                                context,
-                                              ).colorScheme.outlineVariant,
-                                            ),
-                                            InkWell(
-                                              onTap: () {
-                                                if (data?.fid != null) {
-                                                  Navigator.push(
-                                                    context,
-                                                    MaterialPageRoute(
-                                                      builder: (_) => ThreadListPage(
-                                                        fid: data!.fid!,
-                                                        title: bc,
-                                                      ),
-                                                    ),
-                                                  );
-                                                }
-                                              },
-                                              borderRadius:
-                                                  BorderRadius.circular(4),
-                                              child: Container(
-                                                padding: const EdgeInsets.symmetric(
-                                                  horizontal: 6,
-                                                  vertical: 2,
-                                                ),
-                                                decoration: BoxDecoration(
-                                                  color: Theme.of(context)
-                                                      .colorScheme
-                                                      .primaryContainer
-                                                      .withAlpha(40),
-                                                  borderRadius:
-                                                      BorderRadius.circular(4),
-                                                ),
-                                                child: Text(
-                                                  bc,
-                                                  style: Theme.of(context)
-                                                      .textTheme
-                                                      .bodySmall
-                                                      ?.copyWith(
-                                                        color: Theme.of(
-                                                          context,
-                                                        ).colorScheme.primary,
-                                                        fontWeight:
-                                                            FontWeight.w600,
-                                                        fontSize: 12,
-                                                      ),
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ],
-                                      ),
-                                    ),
-                                  // 主题标签与图章行（美图/精/荐/原创/分类）
-                                  Builder(
-                                    builder: (context) {
-                                      final currentStamp = data?.stamp ?? _stamp;
-                                      final typeName = data?.typeName;
-                                      if ((currentStamp == null || currentStamp.isEmpty) &&
-                                          (typeName == null || typeName.isEmpty)) {
-                                        return const SizedBox.shrink();
-                                      }
-                                      return Padding(
-                                        padding: const EdgeInsets.only(bottom: 8),
-                                        child: Wrap(
-                                          spacing: 6,
-                                          runSpacing: 6,
-                                          crossAxisAlignment: WrapCrossAlignment.center,
-                                          children: [
-                                            if (currentStamp != null && currentStamp.isNotEmpty)
-                                              _buildStampBadge(currentStamp),
-                                            if (typeName != null && typeName.isNotEmpty)
-                                              Container(
-                                                padding: const EdgeInsets.symmetric(
-                                                  horizontal: 8,
-                                                  vertical: 3,
-                                                ),
-                                                decoration: BoxDecoration(
-                                                  color: Theme.of(context)
-                                                      .colorScheme
-                                                      .primaryContainer
-                                                      .withAlpha(120),
-                                                  borderRadius:
-                                                      BorderRadius.circular(6),
-                                                ),
-                                                child: Text(
-                                                  typeName,
-                                                  style: Theme.of(context)
-                                                      .textTheme
-                                                      .labelMedium
-                                                      ?.copyWith(
-                                                        color: Theme.of(context)
-                                                            .colorScheme
-                                                            .primary,
-                                                        fontWeight: FontWeight.bold,
-                                                      ),
-                                                ),
-                                              ),
-                                          ],
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                  Text(
-                                    title,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleLarge
-                                        ?.copyWith(
-                                          fontWeight: FontWeight.bold,
-                                          height: 1.35,
-                                          fontSize: 18,
-                                        ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          // 发布日期 + 最近回复日期 (左侧) + 浏览/回复/点赞量 (右侧)
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(14, 0, 14, 6),
-                            child: LayoutBuilder(
-                              builder: (context, constraints) {
-                                final dateItems = <Widget>[
-                                  if ((data?.publishDate ?? '').isNotEmpty)
-                                    Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(
-                                          Icons.schedule,
-                                          size: 13,
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.onSurfaceVariant.withAlpha(190),
-                                        ),
-                                        const SizedBox(width: 4),
-                                        Text(
-                                          '发布 ${data!.publishDate}',
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall
-                                              ?.copyWith(
-                                                color: Theme.of(
-                                                  context,
-                                                ).colorScheme.onSurfaceVariant.withAlpha(200),
-                                                fontSize: 11.5,
-                                              ),
-                                        ),
-                                      ],
-                                    ),
-                                  if ((data?.lastReplyDate ?? '').isNotEmpty)
-                                    Text(
-                                      '最近回复 ${data!.lastReplyDate}',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall
-                                          ?.copyWith(
-                                            color: Theme.of(
-                                              context,
-                                            ).colorScheme.onSurfaceVariant.withAlpha(200),
-                                            fontSize: 11.5,
-                                          ),
-                                    ),
-                                ];
-
-                                final statsWidget = Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.visibility_outlined,
-                                      size: 13,
-                                      color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(190),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      '${(_views > 0 ? _views : (data?.views ?? 0))} 浏览 · ${(_replies > 0 ? _replies : (data?.replies ?? (floors.length > 1 ? floors.length - 1 : 0)))} 回复 · ${(_likes > 0 ? _likes : (data?.likes ?? 0))} 点赞',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall
-                                          ?.copyWith(
-                                            color: Theme.of(
-                                              context,
-                                            ).colorScheme.onSurfaceVariant.withAlpha(200),
-                                            fontSize: 11.5,
-                                          ),
-                                    ),
-                                  ],
-                                );
-
-                                if (constraints.maxWidth > 520) {
-                                  return Row(
-                                    children: [
-                                      Wrap(
-                                        crossAxisAlignment: WrapCrossAlignment.center,
-                                        spacing: 12,
-                                        runSpacing: 4,
-                                        children: dateItems,
-                                      ),
-                                      const Spacer(),
-                                      statsWidget,
-                                    ],
-                                  );
-                                } else {
-                                  return Wrap(
-                                    alignment: WrapAlignment.spaceBetween,
-                                    crossAxisAlignment: WrapCrossAlignment.center,
-                                    spacing: 12,
-                                    runSpacing: 4,
-                                    children: [
-                                      Wrap(
-                                        crossAxisAlignment: WrapCrossAlignment.center,
-                                        spacing: 12,
-                                        runSpacing: 4,
-                                        children: dateItems,
-                                      ),
-                                      statsWidget,
-                                    ],
-                                  );
-                                }
-                              },
-                            ),
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      slivers: [
+                        if (title.isNotEmpty)
+                          SliverToBoxAdapter(
+                            child: _buildThreadHeaderWidget(title, data, floors, context),
                           ),
-                          for (var i = 0; i < floors.length; i++) ...[
-                            if (_page == 1 && i == 0 && (_aiSummary != null || data?.aiSummary != null))
-                              AiSummaryCard(
-                                tid: _effectiveTid,
-                                initialData: _aiSummary ?? data?.aiSummary,
-                                onRefresh: () {
-                                  if (mounted) setState(() {});
-                                },
-                              ),
-                            if ((_page == 1 && i == 1) || (_page > 1 && i == 0))
-                              _buildRepliesDivider(context, repliesCount: data?.replies ?? _replies),
-                            () {
+                        SliverList(
+                          delegate: SliverChildBuilderDelegate(
+                            (context, i) {
                               final isFirstFloor = (_page == 1 && i == 0);
                               final isThreadAuthor = floors[i].isThreadAuthor ||
                                   (_firstAuthorUid != null && floors[i].uid == _firstAuthorUid);
-                              return _FloorView(
-                                key: _floorItemKeys.putIfAbsent(i, () => GlobalKey()),
-                                floor: floors[i],
-                                index: i,
-                                page: _page,
-                                tid: _effectiveTid,
-                                fid: data?.fid,
-                                threadTitle: (data?.title ?? _title).isNotEmpty ? (data?.title ?? _title) : null,
-                                isFirstFloor: isFirstFloor,
-                                isThreadAuthor: isThreadAuthor,
-                                isDescOrder: data?.isDescOrder ?? _isDescOrder,
-                                totalReplies: data?.replies ?? _replies,
-                                isHighlighted: _highlightedFloorIndex == i,
-                                stamp: isFirstFloor ? (data?.stamp ?? _stamp) : null,
-                                stampUrl: isFirstFloor ? (data?.stampUrl ?? _stampUrl) : null,
-                                isLiked: isFirstFloor ? _liked : null,
-                                likesCount: isFirstFloor ? _likes : null,
-                                onLikeToggle: isFirstFloor ? _onLike : null,
-                                onReload: _reload,
-                                myUid: _myUid,
-                                canModerate: _canModerate,
+                              return Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  if (_page == 1 && i == 0 && (_aiSummary != null || data?.aiSummary != null))
+                                    AiSummaryCard(
+                                      tid: _effectiveTid,
+                                      initialData: _aiSummary ?? data?.aiSummary,
+                                      onRefresh: () {
+                                        if (mounted) setState(() {});
+                                      },
+                                    ),
+                                  if ((_page == 1 && i == 1) || (_page > 1 && i == 0))
+                                    _buildRepliesDivider(context, repliesCount: data?.replies ?? _replies),
+                                  _FloorView(
+                                    key: _floorItemKeys.putIfAbsent(i, () => GlobalKey()),
+                                    floor: floors[i],
+                                    index: i,
+                                    page: _page,
+                                    tid: _effectiveTid,
+                                    fid: data?.fid,
+                                    threadTitle: (data?.title ?? _title).isNotEmpty ? (data?.title ?? _title) : null,
+                                    isFirstFloor: isFirstFloor,
+                                    isThreadAuthor: isThreadAuthor,
+                                    isDescOrder: data?.isDescOrder ?? _isDescOrder,
+                                    totalReplies: data?.replies ?? _replies,
+                                    isHighlighted: _highlightedFloorIndex == i,
+                                    stamp: isFirstFloor ? (data?.stamp ?? _stamp) : null,
+                                    stampUrl: isFirstFloor ? (data?.stampUrl ?? _stampUrl) : null,
+                                    isLiked: isFirstFloor ? _liked : null,
+                                    likesCount: isFirstFloor ? _likes : null,
+                                    onLikeToggle: isFirstFloor ? _onLike : null,
+                                    onReload: _reload,
+                                    myUid: _myUid,
+                                    canModerate: _canModerate,
+                                  ),
+                                  if (_page == 1 && i == 0 && _tags.isNotEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(14, 6, 14, 6),
+                                      child: _buildTagsWrap(),
+                                    ),
+                                ],
                               );
-                            }(),
-                            // 首楼下方展示主题标签（仅第1页首楼且有标签时展示）
-                            if (_page == 1 && i == 0 && _tags.isNotEmpty)
-                              Padding(
-                                padding: const EdgeInsets.fromLTRB(14, 6, 14, 6),
-                                child: Wrap(
-                                  spacing: 6,
-                                  runSpacing: 6,
-                                  crossAxisAlignment: WrapCrossAlignment.center,
-                                  children: [
-                                    Icon(
-                                      Icons.local_offer_outlined,
-                                      size: 14,
-                                      color: Theme.of(context).colorScheme.primary,
-                                    ),
-                                    Text(
-                                      '标签：',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall
-                                          ?.copyWith(
-                                            fontWeight: FontWeight.bold,
-                                            color: Theme.of(context).colorScheme.primary,
-                                          ),
-                                    ),
-                                    for (final tag in _tags)
-                                      ActionChip(
-                                        visualDensity: VisualDensity.compact,
-                                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                                        labelPadding: EdgeInsets.zero,
-                                        backgroundColor: Theme.of(context)
-                                            .colorScheme
-                                            .primaryContainer
-                                            .withAlpha(45),
-                                        side: BorderSide(
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .primary
-                                              .withAlpha(70),
-                                          width: 0.6,
-                                        ),
-                                        label: Text(
-                                          tag,
-                                          style: TextStyle(
-                                            fontSize: 11,
-                                            color: Theme.of(context).colorScheme.primary,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                        onPressed: () {
-                                          Navigator.push(
-                                            context,
-                                            MaterialPageRoute(
-                                              builder: (_) => SearchPage(initialKeyword: tag),
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                  ],
-                                ),
-                              ),
-                          ],
-                          // 查看原文链接（复制到剪贴板）
-                          Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: Center(
-                              child: TextButton.icon(
-                                icon: const Icon(Icons.open_in_new, size: 16),
-                                label: const Text(
-                                  '查看原文（复制链接）',
-                                  style: TextStyle(fontSize: 13),
-                                ),
-                                onPressed: () async {
-                                  final url =
-                                      '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=${widget.tid}';
-                                  await Clipboard.setData(
-                                    ClipboardData(text: url),
-                                  );
-                                  if (context.mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(content: Text('链接已复制：$url')),
-                                    );
-                                  }
-                                },
-                              ),
-                            ),
+                            },
+                            childCount: floors.length,
+                            addRepaintBoundaries: false,
                           ),
-                          // 页码导航（多页时显示）
-                          if ((data?.totalPages ?? 1) > 1)
-                            SafeArea(
-                              top: false,
-                              child: Padding(
-                                padding: const EdgeInsets.all(10),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    IconButton(
-                                      icon: const Icon(Icons.chevron_left),
-                                      onPressed: _page > 1
-                                          ? () => _goPage(_page - 1)
-                                          : null,
-                                    ),
-                                    // 页数多时折叠为胶囊数字（当前/总），少时逐个显示
-                                    if (data!.totalPages <= 7)
-                                      for (var p = 1; p <= data.totalPages; p++)
-                                        Padding(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 4,
-                                          ),
-                                          child: ChoiceChip(
-                                            label: Text('$p'),
-                                            selected: p == _page,
-                                            onSelected: (_) => _goPage(p),
-                                            labelStyle: const TextStyle(
-                                              fontSize: 13,
-                                            ),
-                                            visualDensity:
-                                                VisualDensity.compact,
-                                          ),
-                                        )
-                                    else ...[
-                                      InkWell(
-                                        borderRadius: BorderRadius.circular(14),
-                                        onTap: () => _jumpPage(data.totalPages),
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 12,
-                                            vertical: 5,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: Theme.of(context)
-                                                .colorScheme
-                                                .primaryContainer
-                                                .withAlpha(70),
-                                            borderRadius: BorderRadius.circular(
-                                              14,
-                                            ),
-                                          ),
-                                          child: Text(
-                                            '$_page / ${data.totalPages} · 点此跳页',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodyMedium
-                                                ?.copyWith(
-                                                  fontWeight: FontWeight.w600,
-                                                  color: Theme.of(
-                                                    context,
-                                                  ).colorScheme.primary,
-                                                ),
-                                          ),
-                                        ),
-                                      ),
-                                      IconButton(
-                                        icon: const Icon(Icons.last_page),
-                                        tooltip: '末页',
-                                        onPressed: _page < data.totalPages
-                                            ? () => _goPage(data.totalPages)
-                                            : null,
-                                      ),
-                                    ],
-                                    IconButton(
-                                      icon: const Icon(Icons.chevron_right),
-                                      onPressed: _page < data.totalPages
-                                          ? () => _goPage(_page + 1)
-                                          : null,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
+                        ),
+                        SliverToBoxAdapter(
+                          child: _buildThreadFooterWidget(data, context),
+                        ),
+                      ],
+                    ),
                     ),
                   ),
                 ),
@@ -2176,30 +1772,398 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                 children: [
                   SizedBox(
                     width: AppConfig.threadForumSidebarWidth,
-                    child: ThreadListPage(
-                      fid: currentFid!,
-                      title: _forumName ?? ComiisParser.getForumNameByFid(currentFid) ?? '版块列表',
-                      isSidebar: true,
-                      activeTid: _effectiveTid,
-                      onThreadSelected: _onSidebarSelectThread,
-                      onCloseSidebar: () {
-                        setState(() {
-                          _showForumSidebar = false;
-                          AppConfig.setThreadLeftEnabled(false);
-                        });
-                      },
+                    child: RepaintBoundary(
+                      child: ThreadListPage(
+                        fid: currentFid!,
+                        title: _forumName ?? ComiisParser.getForumNameByFid(currentFid) ?? '版块列表',
+                        isSidebar: true,
+                        activeTid: _effectiveTid,
+                        onThreadSelected: _onSidebarSelectThread,
+                        onCloseSidebar: () {
+                          setState(() {
+                            _showForumSidebar = false;
+                            AppConfig.setThreadLeftEnabled(false);
+                          });
+                        },
+                      ),
                     ),
                   ),
                   _buildForumSidebarSplitter(),
-                  Expanded(child: mainDetailContent),
+                  Expanded(
+                    child: RepaintBoundary(
+                      child: mainDetailContent,
+                    ),
+                  ),
                 ],
               );
             }
 
-            return mainDetailContent;
+            return RepaintBoundary(child: mainDetailContent);
           },
         ),
       ),
+    );
+  }
+
+  Widget _buildTagsWrap() {
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Icon(
+          Icons.local_offer_outlined,
+          size: 14,
+          color: Theme.of(context).colorScheme.primary,
+        ),
+        Text(
+          '标签：',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+        ),
+        for (final tag in _tags)
+          ActionChip(
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            labelPadding: EdgeInsets.zero,
+            backgroundColor: Theme.of(context)
+                .colorScheme
+                .primaryContainer
+                .withAlpha(45),
+            side: BorderSide(
+              color: Theme.of(context)
+                  .colorScheme
+                  .primary
+                  .withAlpha(70),
+              width: 0.6,
+            ),
+            label: Text(
+              tag,
+              style: TextStyle(
+                fontSize: 11,
+                color: Theme.of(context).colorScheme.primary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => SearchPage(initialKeyword: tag),
+                ),
+              );
+            },
+          ),
+      ],
+    );
+  }
+
+  Widget _buildThreadHeaderWidget(String title, ThreadDetailParsed? data, List<PostFloor> floors, BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 顶部面包屑导航（如 论坛 › 灵感交流 › 闲聊讨论）
+              if ((data?.breadcrumbs ?? const []).isNotEmpty ||
+                  (data?.forumName ?? '').isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Wrap(
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 4,
+                    runSpacing: 4,
+                    children: [
+                      Icon(
+                        Icons.home_outlined,
+                        size: 14,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(200),
+                      ),
+                      Text(
+                        '论坛',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                      ),
+                      for (final bc in (data?.breadcrumbs ?? [
+                        if ((data?.forumName ?? '').isNotEmpty)
+                          data!.forumName,
+                      ])) ...[
+                        Icon(
+                          Icons.chevron_right,
+                          size: 14,
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                        ),
+                        InkWell(
+                          onTap: () {
+                            if (data?.fid != null) {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => ThreadListPage(
+                                    fid: data!.fid!,
+                                    title: bc,
+                                  ),
+                                ),
+                              );
+                            }
+                          },
+                          borderRadius: BorderRadius.circular(4),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).colorScheme.primaryContainer.withAlpha(40),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              bc,
+                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: Theme.of(context).colorScheme.primary,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 12,
+                                  ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              // 主题标签与图章行（美图/精/荐/原创/分类）
+              Builder(
+                builder: (context) {
+                  final currentStamp = data?.stamp ?? _stamp;
+                  final typeName = data?.typeName;
+                  if ((currentStamp == null || currentStamp.isEmpty) &&
+                      (typeName == null || typeName.isEmpty)) {
+                    return const SizedBox.shrink();
+                  }
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        if (currentStamp != null && currentStamp.isNotEmpty)
+                          _buildStampBadge(currentStamp),
+                        if (typeName != null && typeName.isNotEmpty)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).colorScheme.primaryContainer.withAlpha(120),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              typeName,
+                              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                                    color: Theme.of(context).colorScheme.primary,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+              Text(
+                title,
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      height: 1.35,
+                      fontSize: 18,
+                    ),
+              ),
+            ],
+          ),
+        ),
+        // 发布日期 + 最近回复日期 (左侧) + 浏览/回复/点赞量 (右侧)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 0, 14, 6),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final dateItems = <Widget>[
+                if ((data?.publishDate ?? '').isNotEmpty)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.schedule,
+                        size: 13,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(190),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        '发布 ${data!.publishDate}',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(200),
+                              fontSize: 11.5,
+                            ),
+                      ),
+                    ],
+                  ),
+                if ((data?.lastReplyDate ?? '').isNotEmpty)
+                  Text(
+                    '最近回复 ${data!.lastReplyDate}',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(200),
+                          fontSize: 11.5,
+                        ),
+                  ),
+              ];
+
+              final statsWidget = Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.visibility_outlined,
+                    size: 13,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(190),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    '${(_views > 0 ? _views : (data?.views ?? 0))} 浏览 · ${(_replies > 0 ? _replies : (data?.replies ?? (floors.length > 1 ? floors.length - 1 : 0)))} 回复 · ${(_likes > 0 ? _likes : (data?.likes ?? 0))} 点赞',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(200),
+                          fontSize: 11.5,
+                        ),
+                  ),
+                ],
+              );
+
+              if (constraints.maxWidth > 520) {
+                return Row(
+                  children: [
+                    Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 12,
+                      runSpacing: 4,
+                      children: dateItems,
+                    ),
+                    const Spacer(),
+                    statsWidget,
+                  ],
+                );
+              } else {
+                return Wrap(
+                  alignment: WrapAlignment.spaceBetween,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 12,
+                  runSpacing: 4,
+                  children: [
+                    Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 12,
+                      runSpacing: 4,
+                      children: dateItems,
+                    ),
+                    statsWidget,
+                  ],
+                );
+              }
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildThreadFooterWidget(ThreadDetailParsed? data, BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 查看原文链接（复制到剪贴板）
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Center(
+            child: TextButton.icon(
+              icon: const Icon(Icons.open_in_new, size: 16),
+              label: const Text(
+                '查看原文（复制链接）',
+                style: TextStyle(fontSize: 13),
+              ),
+              onPressed: () async {
+                final url = '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=${widget.tid}';
+                await Clipboard.setData(ClipboardData(text: url));
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('链接已复制：$url')),
+                  );
+                }
+              },
+            ),
+          ),
+        ),
+        // 页码导航（多页时显示）
+        if ((data?.totalPages ?? 1) > 1)
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.all(10),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.chevron_left),
+                    onPressed: _page > 1 ? () => _goPage(_page - 1) : null,
+                  ),
+                  if (data!.totalPages <= 7)
+                    for (var p = 1; p <= data.totalPages; p++)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: ChoiceChip(
+                          label: Text('$p'),
+                          selected: p == _page,
+                          onSelected: (_) => _goPage(p),
+                          labelStyle: const TextStyle(fontSize: 13),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      )
+                  else ...[
+                    InkWell(
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: () => _jumpPage(data.totalPages),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.primaryContainer.withAlpha(70),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Text(
+                          '$_page / ${data.totalPages} · 点此跳页',
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.last_page),
+                      tooltip: '末页',
+                      onPressed: _page < data.totalPages ? () => _goPage(data.totalPages) : null,
+                    ),
+                  ],
+                  IconButton(
+                    icon: const Icon(Icons.chevron_right),
+                    onPressed: _page < data.totalPages ? () => _goPage(_page + 1) : null,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        const SizedBox(height: 64),
+      ],
     );
   }
 
@@ -2281,45 +2245,50 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
 
   Widget _buildBackTopFab() {
     final isDesktop = ResponsiveBreakpoints.isDesktop(context);
-    return ScrollDirectionAwareFab(
-      isVisible: _showBackToTop,
-      child: SafeArea(
-        child: isDesktop
-            ? FloatingActionButton.extended(
-                heroTag: 'back_top',
-                tooltip: '回到顶部 (Home / PgUp)',
-                elevation: 4,
-                onPressed: () {
-                  if (_scrollCtrl.hasClients) {
-                    _scrollCtrl.animateTo(
-                      0,
-                      duration: const Duration(milliseconds: 350),
-                      curve: Curves.easeOutCubic,
-                    );
-                  }
-                },
-                icon: const Icon(Icons.arrow_upward_rounded, size: 20),
-                label: const Text(
-                  '回到顶部',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
-                ),
-              )
-            : FloatingActionButton.small(
-                heroTag: 'back_top',
-                tooltip: '回顶部',
-                elevation: 3,
-                onPressed: () {
-                  if (_scrollCtrl.hasClients) {
-                    _scrollCtrl.animateTo(
-                      0,
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeOut,
-                    );
-                  }
-                },
-                child: const Icon(Icons.arrow_upward, size: 18),
-              ),
-      ),
+    return ValueListenableBuilder<bool>(
+      valueListenable: _showBackToTopNotifier,
+      builder: (context, showTop, _) {
+        return ScrollDirectionAwareFab(
+          isVisible: showTop,
+          child: SafeArea(
+            child: isDesktop
+                ? FloatingActionButton.extended(
+                    heroTag: 'back_top',
+                    tooltip: '回到顶部 (Home / PgUp)',
+                    elevation: 4,
+                    onPressed: () {
+                      if (_scrollCtrl.hasClients) {
+                        _scrollCtrl.animateTo(
+                          0,
+                          duration: const Duration(milliseconds: 350),
+                          curve: Curves.easeOutCubic,
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.arrow_upward_rounded, size: 20),
+                    label: const Text(
+                      '回到顶部',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                    ),
+                  )
+                : FloatingActionButton.small(
+                    heroTag: 'back_top',
+                    tooltip: '回顶部',
+                    elevation: 3,
+                    onPressed: () {
+                      if (_scrollCtrl.hasClients) {
+                        _scrollCtrl.animateTo(
+                          0,
+                          duration: const Duration(milliseconds: 300),
+                          curve: Curves.easeOut,
+                        );
+                      }
+                    },
+                    child: const Icon(Icons.arrow_upward, size: 18),
+                  ),
+          ),
+        );
+      },
     );
   }
 
@@ -3330,9 +3299,8 @@ class _FloorViewState extends State<_FloorView> {
           : null,
     );
 
-    return RepaintBoundary(
-      child: GestureDetector(
-        onLongPress: () => _onFloorLongPress(context),
+    return GestureDetector(
+      onLongPress: () => _onFloorLongPress(context),
       child: Container(
         margin: EdgeInsets.symmetric(
           horizontal: isDesktop ? 16 : 10,
@@ -3448,6 +3416,7 @@ class _FloorViewState extends State<_FloorView> {
                               imageUrl: md,
                               httpHeaders: AppConfig.imageHeaders,
                               height: 16,
+                              memCacheHeight: 48,
                               fit: BoxFit.contain,
                               errorWidget: (_, __, ___) =>
                                   const SizedBox.shrink(),
@@ -3658,7 +3627,6 @@ class _FloorViewState extends State<_FloorView> {
           ],
         ),
       ),
-    ),
     );
   }
 
@@ -3775,6 +3743,8 @@ class _FloorViewState extends State<_FloorView> {
                                     ? u.avatarUrl
                                     : AppConfig.avatarUrl(u.uid ?? 0),
                                 fit: BoxFit.cover,
+                                memCacheWidth: 64,
+                                memCacheHeight: 64,
                                 errorWidget: (_, __, ___) => const Icon(
                                   Icons.person,
                                   size: 16,

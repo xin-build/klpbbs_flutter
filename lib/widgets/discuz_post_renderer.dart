@@ -859,74 +859,72 @@ class DiscuzPostRenderer extends StatelessWidget {
           onTap: () => _openLightbox(context, imageUrl),
           onSecondaryTapDown: (details) =>
               _showImageContextMenu(context, details.globalPosition, imageUrl),
-          child: RepaintBoundary(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: isCentered
-                  ? CrossAxisAlignment.center
-                  : (isRight
-                      ? CrossAxisAlignment.end
-                      : CrossAxisAlignment.start),
-              children: [
-                ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    maxHeight: 700,
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: RetryImage(
-                      imageUrl: imageUrl,
-                      fit: BoxFit.contain,
-                      placeholder: (_, __) => const PulsePlaceholder(
-                        width: 280,
-                        height: 180,
-                        radius: BorderRadius.all(Radius.circular(8)),
-                      ),
-                      errorWidget: (_, __, ___) => Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.surfaceContainerHighest
-                              .withAlpha(80),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: theme.colorScheme.outlineVariant.withAlpha(60),
-                          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: isCentered
+                ? CrossAxisAlignment.center
+                : (isRight
+                    ? CrossAxisAlignment.end
+                    : CrossAxisAlignment.start),
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxHeight: 700,
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: RetryImage(
+                    imageUrl: imageUrl,
+                    fit: BoxFit.contain,
+                    placeholder: (_, __) => const PulsePlaceholder(
+                      width: 280,
+                      height: 180,
+                      radius: BorderRadius.all(Radius.circular(8)),
+                    ),
+                    errorWidget: (_, __, ___) => Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest
+                            .withAlpha(80),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: theme.colorScheme.outlineVariant.withAlpha(60),
                         ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.broken_image_outlined,
-                              size: 20,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.broken_image_outlined,
+                            size: 20,
+                            color: theme.colorScheme.outline,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            '图片加载失败（点击重试或查看原图）',
+                            style: TextStyle(
+                              fontSize: 12,
                               color: theme.colorScheme.outline,
                             ),
-                            const SizedBox(width: 8),
-                            Text(
-                              '图片加载失败（点击重试或查看原图）',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: theme.colorScheme.outline,
-                              ),
-                            ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
                 ),
-                if (caption != null && caption.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    caption,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: theme.colorScheme.outline,
-                      fontStyle: FontStyle.italic,
-                    ),
+              ),
+              if (caption != null && caption.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  caption,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: theme.colorScheme.outline,
+                    fontStyle: FontStyle.italic,
                   ),
-                ],
+                ),
               ],
-            ),
+            ],
           ),
         ),
       ),

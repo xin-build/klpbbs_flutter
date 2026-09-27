@@ -325,7 +325,7 @@ class AppConfig extends ChangeNotifier {
   static bool gpuAcceleration = true;
   static bool highRefreshRate = true;
   static ImageQuality imageQuality = ImageQuality.original;
-  static int imageCacheMaxMb = 250;
+  static int imageCacheMaxMb = 128;
   static bool smoothScrollPhysics = true;
   static bool enableMultiThreadParsing = true;
   static bool enableGpuAcceleratedRendering = true;
@@ -579,7 +579,7 @@ class AppConfig extends ChangeNotifier {
           orElse: () => ImageQuality.original,
         );
       }
-      imageCacheMaxMb = sp.getInt('image_cache_max_mb') ?? 250;
+      imageCacheMaxMb = sp.getInt('image_cache_max_mb') ?? 128;
       PaintingBinding.instance.imageCache.maximumSizeBytes = imageCacheMaxMb << 20;
       smoothScrollPhysics = sp.getBool('smooth_scroll_physics') ?? true;
       enableMultiThreadParsing = sp.getBool('enable_multithread_parsing') ?? true;

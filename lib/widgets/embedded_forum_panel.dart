@@ -319,7 +319,8 @@ class _EmbeddedForumPanelState extends State<EmbeddedForumPanel> {
     final colorScheme = Theme.of(context).colorScheme;
     final isCurrent = t.tid == widget.currentTid;
 
-    return PressScaleEffect(
+    return RepaintBoundary(
+      child: PressScaleEffect(
       scaleDown: 0.982,
       child: Container(
         margin: const EdgeInsets.only(bottom: 5),
@@ -412,6 +413,7 @@ class _EmbeddedForumPanelState extends State<EmbeddedForumPanel> {
         ),
       ),
     ),
-  );
+  ),
+);
 }
 }
