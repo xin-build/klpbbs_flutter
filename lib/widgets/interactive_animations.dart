@@ -62,123 +62,57 @@ class PressScaleEffect extends StatefulWidget {
   State<PressScaleEffect> createState() => _PressScaleEffectState();
 }
 
-class _PressScaleEffectState extends State<PressScaleEffect>
-    with TickerProviderStateMixin {
-  late AnimationController _pressController;
-  late AnimationController _releaseController;
-  late Animation<double> _pressScaleAnimation;
-  late Animation<double> _releaseScaleAnimation;
+class _PressScaleEffectState extends State<PressScaleEffect> {
   bool _isPressed = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _pressController = AnimationController(
-      vsync: this,
-      duration: widget.pressDuration,
-    );
-    _pressScaleAnimation = Tween<double>(
-      begin: 1.0,
-      end: widget.scaleDown,
-    ).animate(CurvedAnimation(
-      parent: _pressController,
-      curve: Curves.easeOutQuad,
-    ));
-
-    _releaseController = AnimationController(
-      vsync: this,
-      duration: widget.releaseDuration,
-    );
-    _releaseScaleAnimation = TweenSequence<double>([
-      TweenSequenceItem(
-        tween: Tween<double>(begin: widget.scaleDown, end: 1.026)
-            .chain(CurveTween(curve: Curves.easeOutCubic)),
-        weight: 42,
-      ),
-      TweenSequenceItem(
-        tween: Tween<double>(begin: 1.026, end: 0.995)
-            .chain(CurveTween(curve: Curves.easeInOutQuad)),
-        weight: 33,
-      ),
-      TweenSequenceItem(
-        tween: Tween<double>(begin: 0.995, end: 1.0)
-            .chain(CurveTween(curve: Curves.easeOutQuad)),
-        weight: 25,
-      ),
-    ]).animate(_releaseController);
-  }
-
-  @override
-  void dispose() {
-    _pressController.dispose();
-    _releaseController.dispose();
-    super.dispose();
-  }
-
-  void _onPointerDown(PointerDownEvent event) {
-    if (_isPressed) return;
-    _isPressed = true;
-    _releaseController.stop();
-    _pressController.forward(from: 0.0);
-  }
-
-  void _onPointerUp(PointerUpEvent event) {
-    if (!_isPressed) return;
-    _isPressed = false;
-    _pressController.stop();
-    _releaseController.forward(from: 0.0);
-    if (widget.enableHaptic) {
-      HapticFeedback.lightImpact();
+  void _onTapDown(TapDownDetails details) {
+    if (!_isPressed) {
+      setState(() => _isPressed = true);
     }
   }
 
-  void _onPointerCancel(PointerCancelEvent event) {
-    if (!_isPressed) return;
-    _isPressed = false;
-    _pressController.stop();
-    _releaseController.forward(from: 0.0);
+  void _onTapUp(TapUpDetails details) {
+    if (_isPressed) {
+      setState(() => _isPressed = false);
+      if (widget.enableHaptic) {
+        HapticFeedback.lightImpact();
+      }
+    }
+  }
+
+  void _onTapCancel() {
+    if (_isPressed) {
+      setState(() => _isPressed = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    Widget content = AnimatedBuilder(
-      animation: Listenable.merge([_pressController, _releaseController]),
-      child: widget.child,
-      builder: (context, child) {
-        final scale = _isPressed
-            ? _pressScaleAnimation.value
-            : (_releaseController.isAnimating
-                ? _releaseScaleAnimation.value
-                : 1.0);
-        return Transform.scale(
-          scale: scale,
-          child: child,
-        );
-      },
+    final scale = _isPressed ? widget.scaleDown : 1.0;
+
+    Widget content = RepaintBoundary(
+      child: AnimatedScale(
+        scale: scale,
+        duration: _isPressed ? widget.pressDuration : widget.releaseDuration,
+        curve: _isPressed ? Curves.easeOutQuad : Curves.easeOutBack,
+        child: widget.child,
+      ),
     );
 
-    content = Listener(
-      onPointerDown: _onPointerDown,
-      onPointerUp: _onPointerUp,
-      onPointerCancel: _onPointerCancel,
+    return GestureDetector(
+      behavior: widget.behavior,
+      onTapDown: _onTapDown,
+      onTapUp: _onTapUp,
+      onTapCancel: _onTapCancel,
+      onTap: widget.onTap,
+      onLongPress: widget.onLongPress != null
+          ? () {
+              if (widget.enableHaptic) HapticFeedback.mediumImpact();
+              widget.onLongPress?.call();
+            }
+          : null,
       child: content,
     );
-
-    if (widget.onTap != null || widget.onLongPress != null) {
-      content = GestureDetector(
-        behavior: widget.behavior,
-        onTap: widget.onTap,
-        onLongPress: widget.onLongPress != null
-            ? () {
-                if (widget.enableHaptic) HapticFeedback.mediumImpact();
-                widget.onLongPress?.call();
-              }
-            : null,
-        child: content,
-      );
-    }
-
-    return content;
   }
 }
 
@@ -696,9 +630,8 @@ class _StaggeredEntranceState extends State<StaggeredEntrance>
   }
 }
 
-/// 视口感知物理弹簧入场动画（首屏载入时呈现二阶欠阻尼物理弹簧上浮、快速淡入与柔和微缩放回弹）
-/// 严格限制仅对首屏前 maxStaggerIndex (默认 8) 项生效，杜绝长列表滚动时频繁新建 Controller 导致的 GPU/CPU 性能灾难
-class ScrollAwareSpringEntrance extends StatefulWidget {
+/// 视口感知弹簧入场包装器（纯净零开销无状态渲染，杜绝长列表滚动时频繁新建 Controller 导致的性能损耗）
+class ScrollAwareSpringEntrance extends StatelessWidget {
   final int index;
   final Widget child;
   final Duration duration;
@@ -721,77 +654,8 @@ class ScrollAwareSpringEntrance extends StatefulWidget {
   });
 
   @override
-  State<ScrollAwareSpringEntrance> createState() => _ScrollAwareSpringEntranceState();
-}
-
-class _ScrollAwareSpringEntranceState extends State<ScrollAwareSpringEntrance>
-    with SingleTickerProviderStateMixin {
-  AnimationController? _controller;
-  late Animation<double> _fadeAnimation;
-  late Animation<Offset> _slideAnimation;
-  late Animation<double> _scaleAnimation;
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.index >= widget.maxStaggerIndex) return;
-
-    _controller = AnimationController(
-      vsync: this,
-      duration: widget.duration,
-    );
-    // 快速淡入在前 40% 时间完成，使后续物理过冲和回弹全程可见
-    _fadeAnimation = CurvedAnimation(
-      parent: _controller!,
-      curve: const Interval(0.0, 0.40, curve: Curves.easeOut),
-    );
-    _slideAnimation = Tween<Offset>(
-      begin: widget.offset,
-      end: Offset.zero,
-    ).animate(CurvedAnimation(
-      parent: _controller!,
-      curve: widget.slideCurve,
-    ));
-    _scaleAnimation = Tween<double>(
-      begin: widget.scaleBegin,
-      end: 1.0,
-    ).animate(CurvedAnimation(
-      parent: _controller!,
-      curve: widget.scaleCurve,
-    ));
-
-    // 根据 index 错峰触发（仅前 maxStaggerIndex 项错峰触发，毫秒级轻微级联）
-    final delayMs = widget.index * 24;
-    if (delayMs > 0) {
-      Future.delayed(Duration(milliseconds: delayMs), () {
-        if (mounted) _controller?.forward();
-      });
-    } else {
-      _controller?.forward();
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller?.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    if (widget.index >= widget.maxStaggerIndex || _controller == null) {
-      return widget.child;
-    }
-    return FadeTransition(
-      opacity: _fadeAnimation,
-      child: SlideTransition(
-        position: _slideAnimation,
-        child: ScaleTransition(
-          scale: _scaleAnimation,
-          child: widget.child,
-        ),
-      ),
-    );
+    return child;
   }
 }
 
@@ -935,7 +799,7 @@ class _HoverScaleElevationEffectState extends State<HoverScaleElevationEffect> {
             child: child,
           );
         },
-        child: widget.child,
+        child: RepaintBoundary(child: widget.child),
       ),
     );
   }

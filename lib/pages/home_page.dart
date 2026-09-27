@@ -1469,7 +1469,6 @@ class _HomePageState extends State<HomePage> {
           SliverPadding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             sliver: SliverGrid.builder(
-              addRepaintBoundaries: false,
               gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
                 maxCrossAxisExtent: 520,
                 mainAxisExtent: 138,
@@ -1479,36 +1478,9 @@ class _HomePageState extends State<HomePage> {
               itemCount: allThreads.length,
               itemBuilder: (ctx, i) {
                 final t = allThreads[i];
-                return ScrollAwareSpringEntrance(
-                  index: i,
-                  child: ThreadCard(
-                    thread: t,
-                    isGrid: true,
-                    onTap: () => _openThread(t.tid, fid: t.fid),
-                    onAuthorTap: t.uid == null
-                        ? null
-                        : () => Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => UserSpacePage(uid: t.uid!),
-                              ),
-                            ),
-                  ),
-                );
-              },
-            ),
-          ),
-        );
-      } else {
-        slivers.add(
-          SliverList.builder(
-            addRepaintBoundaries: false,
-            itemCount: allThreads.length,
-            itemBuilder: (ctx, i) {
-              final t = allThreads[i];
-              return ScrollAwareSpringEntrance(
-                index: i,
-                child: ThreadCard(
+                return ThreadCard(
                   thread: t,
+                  isGrid: true,
                   onTap: () => _openThread(t.tid, fid: t.fid),
                   onAuthorTap: t.uid == null
                       ? null
@@ -1517,7 +1489,27 @@ class _HomePageState extends State<HomePage> {
                               builder: (_) => UserSpacePage(uid: t.uid!),
                             ),
                           ),
-                ),
+                );
+              },
+            ),
+          ),
+        );
+      } else {
+        slivers.add(
+          SliverList.builder(
+            itemCount: allThreads.length,
+            itemBuilder: (ctx, i) {
+              final t = allThreads[i];
+              return ThreadCard(
+                thread: t,
+                onTap: () => _openThread(t.tid, fid: t.fid),
+                onAuthorTap: t.uid == null
+                    ? null
+                    : () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => UserSpacePage(uid: t.uid!),
+                          ),
+                        ),
               );
             },
           ),

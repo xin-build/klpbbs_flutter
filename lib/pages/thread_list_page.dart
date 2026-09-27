@@ -669,38 +669,34 @@ class _ThreadListPageState extends State<ThreadListPage> {
     } else {
       slivers.add(
         SliverList.builder(
-          addRepaintBoundaries: false,
           itemCount: _normalThreads.length,
           itemBuilder: (context, index) {
             final t = _normalThreads[index];
-            return ScrollAwareSpringEntrance(
-              index: index,
-              child: Container(
-                margin: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 3,
-                ),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  border: ((_selectedTid == t.tid || widget.activeTid == t.tid) &&
-                          (isDesktop || widget.isSidebar))
-                      ? Border.all(
-                          color: colorScheme.primary,
-                          width: 1.8,
-                        )
-                      : null,
-                ),
-                child: ThreadCard(
-                  thread: t,
-                  onTap: () => _openThread(t.tid),
-                  onAuthorTap: t.uid == null
-                      ? null
-                      : () => Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => UserSpacePage(uid: t.uid!),
-                            ),
+            return Container(
+              margin: const EdgeInsets.symmetric(
+                horizontal: 8,
+                vertical: 3,
+              ),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: ((_selectedTid == t.tid || widget.activeTid == t.tid) &&
+                        (isDesktop || widget.isSidebar))
+                    ? Border.all(
+                        color: colorScheme.primary,
+                        width: 1.8,
+                      )
+                    : null,
+              ),
+              child: ThreadCard(
+                thread: t,
+                onTap: () => _openThread(t.tid),
+                onAuthorTap: t.uid == null
+                    ? null
+                    : () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => UserSpacePage(uid: t.uid!),
                           ),
-                ),
+                        ),
               ),
             );
           },

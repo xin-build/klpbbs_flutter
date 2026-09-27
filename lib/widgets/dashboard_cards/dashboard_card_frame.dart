@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../../models/dashboard_card_model.dart';
-import '../interactive_animations.dart';
 
 /// 卡片质感风格预设
 enum DashboardCardStyle {
@@ -198,13 +197,7 @@ class DashboardCardFrame extends StatelessWidget {
 
     return DashboardCardTheme(
       data: themeData,
-      child: onTap != null
-          ? HoverScaleElevationEffect(
-              translateY: -2.0,
-              duration: const Duration(milliseconds: 160),
-              child: cardWidget,
-            )
-          : cardWidget,
+      child: RepaintBoundary(child: cardWidget),
     );
   }
 }

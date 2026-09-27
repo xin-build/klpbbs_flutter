@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../models/site_stats.dart';
-import 'interactive_animations.dart';
 
 /// 全站统计看板（今日 / 昨日 / 帖子 / 会员，严格还原手机端与全平台视觉）
 class SiteStatsCard extends StatelessWidget {
@@ -18,8 +17,7 @@ class SiteStatsCard extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    return HoverScaleElevationEffect(
-      translateY: -1.5,
+    return RepaintBoundary(
       child: Container(
       margin: margin,
       padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),

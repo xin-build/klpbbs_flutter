@@ -622,53 +622,47 @@ class _ForumsPageState extends State<ForumsPage> {
         mainAxisExtent: 78,
       ),
       itemCount: forums.length,
-      itemBuilder: (ctx, i) => ScrollAwareSpringEntrance(
-        index: i,
-        child: _buildForumCard(ctx, forums[i]),
-      ),
+      itemBuilder: (ctx, i) => _buildForumCard(ctx, forums[i]),
     );
   }
 
-  /// 高保真版块卡片（按压微缩放、PC悬停微浮起、星标弹跳动效、高清图标、名称、今日帖数、右上角橙色角标）
+  /// 高保真版块卡片（原生水波纹与悬浮色，隔离重绘边界，极致流畅）
   Widget _buildForumCard(BuildContext context, Forum forum) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final isFav = _favFids.contains(forum.fid);
 
-    return HoverScaleElevationEffect(
-      child: PressScaleEffect(
-        scaleDown: 0.968,
-        enableHaptic: true,
-        onTap: () {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => ThreadListPage(
-                fid: forum.fid,
-                title: forum.name,
-              ),
-            ),
-          );
-        },
-      child: Container(
-        decoration: BoxDecoration(
-          color: colorScheme.surfaceContainerLow,
+    return RepaintBoundary(
+      child: Card(
+        margin: EdgeInsets.zero,
+        elevation: 0.5,
+        shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(
+          side: BorderSide(
             color: colorScheme.outlineVariant.withAlpha(50),
             width: 0.8,
           ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withAlpha(theme.brightness == Brightness.dark ? 20 : 6),
-              blurRadius: 3,
-              offset: const Offset(0, 1),
-            ),
-          ],
         ),
-        child: Stack(
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        clipBehavior: Clip.antiAlias,
+        color: colorScheme.surfaceContainerLow,
+        child: InkWell(
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => ThreadListPage(
+                  fid: forum.fid,
+                  title: forum.name,
+                ),
+              ),
+            );
+          },
+          hoverColor: colorScheme.surfaceContainerHigh,
+          splashColor: colorScheme.primary.withAlpha(25),
+          highlightColor: colorScheme.primary.withAlpha(12),
+          child: Stack(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               child: Row(
                 children: [
                   // 版块图标

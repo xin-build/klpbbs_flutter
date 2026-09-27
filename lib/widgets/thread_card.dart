@@ -7,7 +7,6 @@ import '../core/app_config.dart';
 import '../core/cache_manager.dart';
 import '../models/thread_summary.dart';
 import 'facemall_frame_widget.dart';
-import 'interactive_animations.dart';
 import 'retry_image.dart';
 
 /// 自定义形状头像组件
@@ -451,14 +450,7 @@ class _ThreadCardState extends State<ThreadCard> {
       ),
     );
 
-    if (widget.onTap != null) {
-      return HoverScaleElevationEffect(
-        translateY: -2.0,
-        duration: const Duration(milliseconds: 160),
-        child: cardWidget,
-      );
-    }
-    return cardWidget;
+    return RepaintBoundary(child: cardWidget);
   }
 
   Widget _buildCardContent(BuildContext context, CardStyle style) {
