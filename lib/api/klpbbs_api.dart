@@ -1323,10 +1323,70 @@ class KlpbbsApi {
       }
     }
     final currentIsDesc = (ordertype != null && ordertype > 0) ? (ordertype == 1) : detail.isDescOrder;
+
+    // 关键防御：若在第 1 页，但返回的楼层列表中缺少真正的楼主主帖
+    // （典型如服务端按 dateline 排序未锁定 1 楼，或 ordertype 反序查询遗漏主帖）
+    if (page == 1 && detail.floors.isNotEmpty) {
+      final hasLouzhu = detail.floors.any(
+        (f) => f.floorNumber == '楼主' ||
+            (detail.authorUid != null && f.uid == detail.authorUid && (f.floorNumber.isEmpty || f.floorNumber == '1#')),
+      );
+      if (!hasLouzhu) {
+        try {
+          // 请求默认的第 1 页（默认正序或倒序下，服务端第一条永远是主帖楼主）
+          final baseKey = 'thread_detail_${tid}_1';
+          ThreadDetailParsed? baseDetail = PreloadService.instance.get<ThreadDetailParsed>(baseKey);
+          if (baseDetail == null || !baseDetail.floors.any((f) => f.floorNumber == '楼主' || (detail.authorUid != null && f.uid == detail.authorUid))) {
+            final baseHtml = await _get('forum.php?mod=viewthread&tid=$tid&mobile=2&page=1');
+            baseDetail = ComiisParser.parseThreadDetail(baseHtml);
+          }
+          final realLouzhu = baseDetail.floors.firstWhere(
+            (f) => f.floorNumber == '楼主' || (detail.authorUid != null && f.uid == detail.authorUid),
+            orElse: () => baseDetail!.floors.first,
+          );
+          if (realLouzhu.floorNumber == '楼主' || (detail.authorUid != null && realLouzhu.uid == detail.authorUid)) {
+            // 将真实楼主补全到第 1 楼（排除当前列表里若有重复 pid 的节点）
+            final dedupedFloors = detail.floors.where((f) => f.pid != realLouzhu.pid).toList();
+            detail = (
+              title: detail.title,
+              floors: [realLouzhu, ...dedupedFloors],
+              totalPages: detail.totalPages,
+              firstAuthorCredits: detail.firstAuthorCredits,
+              publishDate: detail.publishDate,
+              lastReplyDate: detail.lastReplyDate,
+              forumName: detail.forumName,
+              fid: detail.fid,
+              breadcrumbs: detail.breadcrumbs,
+              typeName: detail.typeName,
+              typeid: detail.typeid,
+              likes: detail.likes,
+              favorites: detail.favorites,
+              views: detail.views,
+              replies: detail.replies,
+              tags: detail.tags,
+              stamp: detail.stamp,
+              stampUrl: detail.stampUrl,
+              coverUrl: detail.coverUrl,
+              isFavorited: detail.isFavorited,
+              hasExplicitFavState: detail.hasExplicitFavState,
+              isLiked: detail.isLiked,
+              favid: detail.favid,
+              aiSummary: detail.aiSummary,
+              isDescOrder: currentIsDesc,
+              targetOrdertype: currentIsDesc ? 2 : 1,
+              authorUid: detail.authorUid,
+              author: detail.author,
+            );
+          }
+        } catch (_) {}
+      }
+    }
+
     final normalizedFloors = _normalizeFloorsOrder(
       detail.floors,
       isDescOrder: currentIsDesc,
       page: page,
+      threadAuthorUid: detail.authorUid,
     );
     if (detail.isDescOrder != currentIsDesc || detail.floors != normalizedFloors) {
       detail = (
@@ -1356,6 +1416,8 @@ class KlpbbsApi {
         aiSummary: detail.aiSummary,
         isDescOrder: currentIsDesc,
         targetOrdertype: currentIsDesc ? 2 : 1,
+        authorUid: detail.authorUid,
+        author: detail.author,
       );
     }
     return detail;
@@ -1368,45 +1430,59 @@ class KlpbbsApi {
     List<PostFloor> floors, {
     required bool isDescOrder,
     required int page,
+    int? threadAuthorUid,
   }) {
     if (floors.length <= 1) return floors;
     if (page == 1) {
-      // 在第 1 页，无条件首先寻找真正的楼主节点（isThreadAuthor 或 floorNumber == '楼主'）
-      int louzhuIdx = floors.indexWhere((f) => f.floorNumber == '楼主' || f.isThreadAuthor);
-      if (louzhuIdx < 0) louzhuIdx = 0; // 若未显式标记，按规范第 0 个即为楼主
-      final louzhu = floors[louzhuIdx];
-
-      // 提取所有回复楼层（排除楼主）
-      final replies = <PostFloor>[];
-      for (int i = 0; i < floors.length; i++) {
-        if (i != louzhuIdx) replies.add(floors[i]);
+      // 在第 1 页，无条件首先寻找真正的楼主节点
+      int louzhuIdx = floors.indexWhere(
+        (f) => f.floorNumber == '楼主' && (threadAuthorUid == null || f.uid == threadAuthorUid),
+      );
+      if (louzhuIdx < 0) {
+        louzhuIdx = floors.indexWhere((f) => f.floorNumber == '楼主');
       }
-      if (replies.length <= 1) return [louzhu, ...replies];
-
-      // 检查回复楼层的单调性
-      final numFloors = <int>[];
-      for (final r in replies) {
-        final n = int.tryParse(r.floorNumber.replaceAll(RegExp(r'[^\d]'), ''));
-        if (n != null && n > 0) numFloors.add(n);
+      if (louzhuIdx < 0 && threadAuthorUid != null) {
+        louzhuIdx = floors.indexWhere(
+          (f) => f.uid == threadAuthorUid && (f.floorNumber.isEmpty || f.floorNumber == '1#'),
+        );
       }
-      bool isRepliesDesc = false;
-      if (numFloors.length >= 2) {
-        int desc = 0;
-        int asc = 0;
-        for (int i = 0; i < numFloors.length - 1; i++) {
-          if (numFloors[i] > numFloors[i + 1]) desc++;
-          if (numFloors[i] < numFloors[i + 1]) asc++;
+
+      if (louzhuIdx >= 0) {
+        final louzhu = floors[louzhuIdx];
+
+        // 提取所有回复楼层（排除楼主）
+        final replies = <PostFloor>[];
+        for (int i = 0; i < floors.length; i++) {
+          if (i != louzhuIdx) replies.add(floors[i]);
         }
-        isRepliesDesc = desc > asc;
+        if (replies.length <= 1) return [louzhu, ...replies];
+
+        // 检查回复楼层的单调性
+        final numFloors = <int>[];
+        for (final r in replies) {
+          final n = int.tryParse(r.floorNumber.replaceAll(RegExp(r'[^\d]'), ''));
+          if (n != null && n > 0) numFloors.add(n);
+        }
+        bool isRepliesDesc = false;
+        if (numFloors.length >= 2) {
+          int desc = 0;
+          int asc = 0;
+          for (int i = 0; i < numFloors.length - 1; i++) {
+            if (numFloors[i] > numFloors[i + 1]) desc++;
+            if (numFloors[i] < numFloors[i + 1]) asc++;
+          }
+          isRepliesDesc = desc > asc;
+        }
+        if (isDescOrder && !isRepliesDesc && numFloors.isNotEmpty) {
+          // 请求倒序，但回复为升序：反转回复列表，楼主永远锁定在 index 0！
+          return [louzhu, ...replies.reversed];
+        } else if (!isDescOrder && isRepliesDesc && numFloors.isNotEmpty) {
+          // 请求正序，但回复为降序：反转回复列表，楼主永远锁定在 index 0！
+          return [louzhu, ...replies.reversed];
+        }
+        return [louzhu, ...replies];
       }
-      if (isDescOrder && !isRepliesDesc && numFloors.isNotEmpty) {
-        // 请求倒序，但回复为升序：反转回复列表，楼主永远锁定在 index 0！
-        return [louzhu, ...replies.reversed];
-      } else if (!isDescOrder && isRepliesDesc && numFloors.isNotEmpty) {
-        // 请求正序，但回复为降序：反转回复列表，楼主永远锁定在 index 0！
-        return [louzhu, ...replies.reversed];
-      }
-      return [louzhu, ...replies];
+      return floors;
     } else {
       // 第 2 页及之后均为回复，无楼主
       final numFloors = <int>[];

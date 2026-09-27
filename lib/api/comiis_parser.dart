@@ -56,6 +56,8 @@ typedef ThreadDetailParsed = ({
   AiSummaryData? aiSummary,
   bool isDescOrder,
   int? targetOrdertype,
+  int? authorUid,
+  String? author,
 });
 
 /// comiis_app（克米设计）手机模板 HTML 解析器
@@ -4753,6 +4755,49 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       }
     }
 
+    // 提取主题全局作者信息（100% 权威，杜绝任何倒序、分页或模板 BUG 造成的作者错乱）
+    int? threadAuthorUid;
+    String? threadAuthor;
+
+    // a. 优先从 Discuz 全局 JS 变量中提取 authorid (例: authorid = '254543')
+    final mAid = RegExp(r'\bauthorid\s*=\s*[\x27\x22](\d+)[\x27\x22]').firstMatch(html);
+    if (mAid != null) {
+      threadAuthorUid = int.tryParse(mAid.group(1)!);
+    }
+
+    // b. 从克米移动端顶部主题作者卡片提取 (.comiis_view_topuser / .view_topuserbg)
+    final topUserA = doc.querySelector('.comiis_view_topuser a, .view_topuserbg a');
+    if (topUserA != null) {
+      if (threadAuthorUid == null) {
+        final href = topUserA.attributes['href'] ?? '';
+        final mUid = RegExp(r'uid=(\d+)').firstMatch(href);
+        if (mUid != null) threadAuthorUid = int.tryParse(mUid.group(1)!);
+      }
+      final nameText = topUserA.text.trim();
+      if (nameText.isNotEmpty) threadAuthor = nameText;
+    }
+
+    // c. 从全局结构化数据 JSON-LD 中提取作者名称
+    if (threadAuthor == null || threadAuthor.isEmpty) {
+      for (final sc in doc.querySelectorAll('script[type*="json"]')) {
+        final jm = RegExp(r'"author"\s*:\s*\{\s*"@type"\s*:\s*"Person"\s*,\s*"name"\s*:\s*"([^"]+)"').firstMatch(sc.text);
+        if (jm != null) {
+          threadAuthor = jm.group(1);
+          break;
+        }
+      }
+    }
+
+    // d. 从 meta description 中提取 (例: YesNewBee 发布于)
+    if (threadAuthor == null || threadAuthor.isEmpty) {
+      final descEl = doc.querySelector('meta[name="description"]');
+      final descContent = descEl?.attributes['content'] ?? '';
+      final dm = RegExp(r'(?:版块[，,]\s*)?([^\s，,]+)\s+发布于').firstMatch(descContent);
+      if (dm != null) {
+        threadAuthor = dm.group(1)!.trim();
+      }
+    }
+
     // 楼层容器：优先 div.comiis_postli，其次 Discuz 严格 post_DIGITS 或 table[id^="pid"]
     var postElements = doc.querySelectorAll('div.comiis_postli');
     if (postElements.isEmpty) {
@@ -4850,12 +4895,16 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
         if (cm != null) levelColor = cm.group(1)!;
       }
 
-      // 楼主徽章：top_lev 中文本为「楼主」的项
-      var isThreadAuthor = false;
-      for (final lv in post.querySelectorAll('.top_lev')) {
-        if (lv.text.trim() == '楼主') {
-          isThreadAuthor = true;
-          break;
+      // 楼主与作者标识判定（以全局权威 threadAuthorUid / threadAuthor 为准，杜绝模板混乱）
+      final bool isAuthorPost = (threadAuthorUid != null && uid != null && uid == threadAuthorUid) ||
+          (threadAuthor != null && threadAuthor.isNotEmpty && author.isNotEmpty && author == threadAuthor);
+      var isThreadAuthor = isAuthorPost;
+      if (!isThreadAuthor) {
+        for (final lv in post.querySelectorAll('.top_lev')) {
+          if (lv.text.trim() == '楼主' && (threadAuthorUid == null || uid == threadAuthorUid)) {
+            isThreadAuthor = true;
+            break;
+          }
         }
       }
 
@@ -5041,41 +5090,45 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
 
       // 提取楼层标识（优先从帖子自身的顶部元素提取真实楼层号）
       var floorNumber = '';
-      if (floors.isEmpty && parsedCurrentPage == 1) {
-        // 第 1 页第 1 楼无条件铁定为楼主
-        floorNumber = '楼主';
-        isThreadAuthor = true;
-      } else {
-        final floorEl = post.querySelector(
-          '.comiis_postli_top h2 span.y, .comiis_postli_top span.f_d.y, .comiis_postli_top span.y, .authi li.mtit span.y, .authi .mtit span.y, .authi span.y, a.node em, a[id^="postnum"] em, a[id^="postnum"], .pi strong a em, .pi strong a, .pi strong, .postinfo strong a, .postinfo strong, .floor, .comiis_postli_top em.y',
-        );
-        if (floorEl != null) {
-          final t = floorEl.text.trim();
-          if (t.isNotEmpty &&
-              !t.contains('举报') &&
-              !t.contains('道具') &&
-              !t.contains('评分') &&
-              !t.contains('回复') &&
-              !t.contains('赞') &&
-              !t.contains(':') &&
-              !t.contains('：')) {
-            final numM = RegExp(r'(?:来自\s*)?(\d+)\s*#?').firstMatch(t);
-            if (numM != null) {
-              floorNumber = '${numM.group(1)}#';
-            } else if (t == '楼主' || t == '沙发' || t == '板凳' || t == '地板') {
-              floorNumber = t;
-              if (t == '楼主') isThreadAuthor = true;
+      final floorEl = post.querySelector(
+        '.comiis_postli_top h2 span.y, .comiis_postli_top span.f_d.y, .comiis_postli_top span.y, .authi li.mtit span.y, .authi .mtit span.y, .authi span.y, a.node em, a[id^="postnum"] em, a[id^="postnum"], .pi strong a em, .pi strong a, .pi strong, .postinfo strong a, .postinfo strong, .floor, .comiis_postli_top em.y',
+      );
+      if (floorEl != null) {
+        final t = floorEl.text.trim();
+        if (t.isNotEmpty &&
+            !t.contains('举报') &&
+            !t.contains('道具') &&
+            !t.contains('评分') &&
+            !t.contains('回复') &&
+            !t.contains('赞') &&
+            !t.contains(':') &&
+            !t.contains('：')) {
+          final numM = RegExp(r'(?:来自\s*)?(\d+)\s*#?').firstMatch(t);
+          if (numM != null) {
+            floorNumber = '${numM.group(1)}#';
+          } else if (t == '沙发' || t == '板凳' || t == '地板') {
+            floorNumber = t;
+          } else if (t == '楼主') {
+            // 关键：只有当前楼层的发帖者确实是主题作者，且不是明确的楼中楼回复时，才接受「楼主」标识！
+            // 防止服务端倒序或排序混乱时，第 1 个元素错误挂上楼主标签
+            if (isAuthorPost && replyFloor.floorNumber.isEmpty) {
+              floorNumber = '楼主';
             }
           }
         }
-        // 若顶栏未提取到，且不是第1页首楼，才回退到 replyFloor
-        if (floorNumber.isEmpty && replyFloor.floorNumber.isNotEmpty) {
-          floorNumber = replyFloor.floorNumber;
-        }
+      }
+      // 若顶栏未提取到，才回退到 replyFloor
+      if (floorNumber.isEmpty && replyFloor.floorNumber.isNotEmpty) {
+        floorNumber = replyFloor.floorNumber;
+      }
+      // 如果当前楼层确实是作者且是首楼且没有任何序号，标记为楼主
+      if (floorNumber.isEmpty && isAuthorPost && floors.isEmpty && parsedCurrentPage == 1) {
+        floorNumber = '楼主';
       }
 
+      final isCurrentLouzhu = floorNumber == '楼主' || (isAuthorPost && floors.isEmpty && parsedCurrentPage == 1);
       final magicItems = _parseMagicItems(post);
-      final rawBlocks = parseStructuredBlocks(coreBody, isFirstFloor: floors.isEmpty);
+      final rawBlocks = parseStructuredBlocks(coreBody, isFirstFloor: isCurrentLouzhu);
 
       // 全面扫描楼层内所有独立附件容器（仅提取在 coreBody 外部的附件，防止二次重复解析）
       final existingAttachKeys = <String>{};
@@ -5751,33 +5804,22 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
     // 回帖排序方式识别（正序 / 倒序）
     bool isDescOrder = false;
     int? targetOrdertype;
-    final orderLink = doc.querySelector(
-      '.comiis_ordertype a[href*="ordertype"], a[href*="ordertype"], a[href*="order="]',
-    );
+    final orderLink = doc.querySelectorAll(
+      '.comiis_ordertype a, a.show[href*="ordertype"], a[href*="ordertype"], a[href*="order="]',
+    ).where((a) {
+      final t = a.text.trim();
+      return t.contains('正序') || t.contains('倒序');
+    }).firstOrNull;
     if (orderLink != null) {
       final t = orderLink.text.trim();
-      final href = orderLink.attributes['href'] ?? '';
-      final om = RegExp(r'ordertype=(\d+)').firstMatch(href);
-      if (om != null) {
-        final ot = int.tryParse(om.group(1)!);
-        if (ot == 1) {
-          // 目标链接是指向倒序，说明当前处于正序
-          isDescOrder = false;
-          targetOrdertype = 1;
-        } else if (ot == 2) {
-          // 目标链接是指向正序，说明当前处于倒序
-          isDescOrder = true;
-          targetOrdertype = 2;
-        }
-      }
       if (t.contains('正序')) {
         // 按钮显示「正序」或「正序浏览」，说明当前处于【倒序】，点击该链接将切换为【正序】
         isDescOrder = true;
-        targetOrdertype ??= 2;
+        targetOrdertype = 2;
       } else if (t.contains('倒序')) {
         // 按钮显示「倒序」或「倒序浏览」，说明当前处于【正序】，点击该链接将切换为【倒序】
         isDescOrder = false;
-        targetOrdertype ??= 1;
+        targetOrdertype = 1;
       }
     } else {
       // 保底推断：通过楼层编号序列的单调性（递增 vs 递减）严格判定排序
@@ -5841,7 +5883,9 @@ var smthumb = '20';var smilies_type = new Array();smilies_type['_12'] = ['贴吧
       favid: favid,
       aiSummary: aiSummary,
       isDescOrder: isDescOrder,
-      targetOrdertype: targetOrdertype,
+      targetOrdertype: targetOrdertype ?? (isDescOrder ? 2 : 1),
+      authorUid: threadAuthorUid,
+      author: threadAuthor,
     );
   }
 

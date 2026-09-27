@@ -196,9 +196,18 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
 
   void _applyThreadData(dynamic r, SharedPreferences prefs) {
     _title = r.title;
-    // 仅在第1页记录主题作者（楼主）的 uid，避免翻页后被回复者 uid 覆盖
-    if (_page == 1 && r.floors.isNotEmpty) {
-      _firstAuthorUid = r.floors.first.uid;
+    // 记录主题作者（楼主）的 uid：优先使用页面解析出的权威 authorUid
+    if (r.authorUid != null && (r.authorUid as int) > 0) {
+      _firstAuthorUid = r.authorUid as int;
+    } else if (r.floors.isNotEmpty) {
+      final floorsList = r.floors as List<PostFloor>;
+      final louzhuFloor = floorsList.firstWhere(
+        (f) => f.floorNumber == '楼主' || f.isThreadAuthor,
+        orElse: () => floorsList.first,
+      );
+      if (_firstAuthorUid == null || louzhuFloor.floorNumber == '楼主' || louzhuFloor.isThreadAuthor) {
+        _firstAuthorUid = louzhuFloor.uid;
+      }
     }
 
     if (r.forumName != null && (r.forumName as String).trim().isNotEmpty) {
@@ -1701,9 +1710,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                         SliverList(
                           delegate: SliverChildBuilderDelegate(
                             (context, i) {
-                              final isFirstFloor = (_page == 1 && i == 0);
                               final isThreadAuthor = floors[i].isThreadAuthor ||
                                   (_firstAuthorUid != null && floors[i].uid == _firstAuthorUid);
+                              final isFirstFloor = _page == 1 &&
+                                  i == 0 &&
+                                  (floors[i].floorNumber == '楼主' ||
+                                      (_firstAuthorUid != null
+                                          ? (isThreadAuthor && !floors[i].floorNumber.contains(RegExp(r'\d+')))
+                                          : !floors[i].floorNumber.contains(RegExp(r'\d+'))));
                               return Column(
                                 mainAxisSize: MainAxisSize.min,
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2769,12 +2783,19 @@ class _FloorViewState extends State<_FloorView> {
   }
 
   bool get _isFirstFloorOverall {
-    return widget.isFirstFloor ||
-        (widget.page == 1 && index == 0) ||
-        floor.floorNumber == '1' ||
-        floor.floorNumber == '1楼' ||
-        floor.floorNumber == '楼主' ||
-        floor.floorNumber == '1#';
+    if (widget.isFirstFloor) return true;
+    if (widget.page == 1 && index == 0) {
+      if (floor.floorNumber == '楼主' ||
+          floor.floorNumber == '1' ||
+          floor.floorNumber == '1楼' ||
+          floor.floorNumber == '1#') {
+        return true;
+      }
+      if (widget.isThreadAuthor && !floor.floorNumber.contains(RegExp(r'\d+'))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<void> _onEditFloor(BuildContext context) async {
@@ -2836,7 +2857,7 @@ class _FloorViewState extends State<_FloorView> {
       final total = widget.totalReplies ?? 0;
       if (total > 0) {
         final offset = widget.page == 1
-            ? (index - 1)
+            ? (index > 0 ? index - 1 : 0)
             : 9 + (widget.page - 2) * 10 + index;
         final descFloor = (total + 1) - offset;
         if (descFloor == 2) return '2 楼 (沙发)';
@@ -2847,10 +2868,12 @@ class _FloorViewState extends State<_FloorView> {
       return '回帖';
     } else {
       if (widget.page == 1) {
-        if (index == 1) return '2 楼 (沙发)';
-        if (index == 2) return '3 楼 (板凳)';
-        if (index == 3) return '4 楼 (地板)';
-        return '${index + 1} 楼';
+        final floorNum = widget.isFirstFloor ? 1 : (index + 1);
+        if (floorNum == 2) return '2 楼 (沙发)';
+        if (floorNum == 3) return '3 楼 (板凳)';
+        if (floorNum == 4) return '4 楼 (地板)';
+        if (floorNum > 1) return '$floorNum 楼';
+        return '回帖';
       } else {
         final globalFloor = (widget.page - 1) * 10 + index + 1;
         return '$globalFloor 楼';
