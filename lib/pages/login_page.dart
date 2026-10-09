@@ -1,3 +1,4 @@
+import '../widgets/app_motion.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -707,7 +708,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                               child: SizedBox(
                                 width: 20,
                                 height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: AppLoadingIndicator(strokeWidth: 2),
                               ),
                             )
                           : _seccodeBytes != null
@@ -754,7 +755,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                 ? const SizedBox(
                     width: 18,
                     height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    child: AppLoadingIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.login_rounded),
             label: Text(_loading ? '正在验证登录...' : '立即登录'),
@@ -888,7 +889,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                               child: SizedBox(
                                 width: 20,
                                 height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: AppLoadingIndicator(strokeWidth: 2),
                               ),
                             )
                           : _regSecCodeBytes != null
@@ -935,7 +936,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                 ? const SizedBox(
                     width: 18,
                     height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    child: AppLoadingIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.app_registration_rounded),
             label: Text(_loading ? '正在提交注册...' : '立即注册账号'),
@@ -1049,7 +1050,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                   ? const SizedBox(
                       width: 16,
                       height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      child: AppLoadingIndicator(strokeWidth: 2),
                     )
                   : const Text('检测同步'),
             ),

@@ -1,84 +1,71 @@
-import 'dart:convert';
-
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
-import 'package:html/parser.dart' as hp;
+import '../api/klpbbs_api.dart';
+import '../core/app_config.dart';
+import '../core/discuz_request_policy.dart';
+import '../core/klpbbs_developer_platform.dart';
+import '../core/klpbbs_authorizations.dart';
+import 'authorized_apps_page.dart';
+import 'membership_page.dart';
+import 'developer_console_page.dart';
+import 'native_discuz_page.dart';
+import 'avatar_edit_page.dart';
+import 'phone_bind_page.dart';
+import 'facemall_page.dart';
 
-import '../core/dio_client.dart';
-import '../widgets/global_app_drawer.dart';
-import '../widgets/global_nav.dart';
-
-/// 通用功能列表页（勋章/道具/任务等 Discuz 用户中心页面）
-class FuncListPage extends StatefulWidget {
+/// 保留旧调用位置，实际内容由原生表单与数据页面承接。
+class FuncListPage extends StatelessWidget {
   final String title;
-  final String path; // 页面路径（相对 baseUrl）
-
+  final String path;
   const FuncListPage({super.key, required this.title, required this.path});
 
   @override
-  State<FuncListPage> createState() => _FuncListPageState();
-}
-
-class _FuncListPageState extends State<FuncListPage> {
-  late Future<List<String>> _future;
-
-  @override
-  void initState() {
-    super.initState();
-    _future = _load();
-  }
-
-  Future<List<String>> _load() async {
-    final resp = await DioClient.dio.get<List<int>>(
-      widget.path,
-      options: Options(responseType: ResponseType.bytes),
-    );
-    final html = const Utf8Decoder(
-      allowMalformed: true,
-    ).convert(resp.data ?? const []);
-    // 提取条目：li 文本（去重、去空）
-    final doc = hp.parse(html);
-    final items = <String>{};
-    for (final li in doc.querySelectorAll('li')) {
-      final t = li.text.trim();
-      if (t.length >= 2 && t.length <= 50) items.add(t);
-    }
-    return items.toList();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      drawer: const GlobalAppDrawer(),
-      drawerEdgeDragWidth: 50.0,
-      appBar: AppBar(
-        leading: const GlobalNavLeading(),
-        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
-        title: Text(widget.title),
-      ),
-      body: FutureBuilder<List<String>>(
-        future: _future,
-        builder: (context, snap) {
-          if (snap.connectionState != ConnectionState.done) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snap.hasError) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text('加载失败：${snap.error}', textAlign: TextAlign.center),
-              ),
-            );
-          }
-          final items = snap.data!;
-          if (items.isEmpty) return const Center(child: Text('暂无数据'));
-          return ListView.separated(
-            itemCount: items.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (context, i) => ListTile(title: Text(items[i])),
-          );
-        },
-      ),
-    );
+    final uri = Uri.tryParse(path);
+    final query = uri?.queryParameters ?? const <String, String>{};
+    final accountUid = int.tryParse(query['uid'] ?? '');
+    final ownAccount = query['uid'] == null ||
+        (accountUid != null && accountUid == KlpbbsApi.currentCachedMyUid);
+    final base = Uri.parse(AppConfig.baseUrl);
+    final localRoute = uri != null &&
+        DiscuzRequestPolicy.sameOrigin(base, base.resolveUri(uri));
+    final developerView = localRoute
+        ? KlpbbsDeveloperPlatform.viewFor(base.resolveUri(uri))
+        : null;
+    if (developerView != null) {
+      return DeveloperConsolePage(initialView: developerView);
+    }
+    if (localRoute &&
+        ownAccount &&
+        KlpbbsAuthorizations.isListPage(base.resolveUri(uri))) {
+      return const AuthorizedAppsPage();
+    }
+    if (localRoute &&
+        ownAccount &&
+        uri.path.split('/').last == 'home.php' &&
+        query['mod'] == 'spacecp' &&
+        query['ac'] == 'usergroup' &&
+        query['do'] == 'list' &&
+        uri.queryParametersAll.values.every((values) => values.length == 1) &&
+        query.keys.every((key) =>
+            const {'mod', 'ac', 'do', 'mobile', 'uid'}.contains(key))) {
+      return const MembershipPage();
+    }
+    if (localRoute &&
+        (uri.path == 'home.php' || uri.path.endsWith('/home.php')) &&
+        query['mod'] == 'spacecp' &&
+        query['ac'] == 'plugin' &&
+        query['id'] == 'sunju_facemall:face' &&
+        ownAccount) {
+      return const FacemallPage();
+    }
+    if (uri?.queryParameters['id'] == 'klpbbs_pnbind:my_bind') {
+      return const PhoneBindPage();
+    }
+    if (uri?.path.endsWith('home.php') == true &&
+        uri?.queryParameters['mod'] == 'spacecp' &&
+        uri?.queryParameters['ac'] == 'avatar') {
+      return const AvatarEditPage();
+    }
+    return NativeDiscuzPage(title: title, path: path);
   }
 }

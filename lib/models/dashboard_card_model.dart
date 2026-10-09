@@ -70,7 +70,8 @@ class DashboardGridItem {
 
   factory DashboardGridItem.fromJson(Map<String, dynamic> json) {
     return DashboardGridItem(
-      id: json['id'] as String? ?? 'item_${DateTime.now().millisecondsSinceEpoch}',
+      id: json['id'] as String? ??
+          'item_${DateTime.now().millisecondsSinceEpoch}',
       cardType: json['cardType'] as String? ?? 'user_profile',
       col: (json['col'] as num?)?.toInt() ?? 0,
       row: (json['row'] as num?)?.toInt() ?? 0,
@@ -176,8 +177,8 @@ class CardRegistry {
     // 5. 每日签到与今日运势（首页、导读页、帖子页）
     'sign_fortune': CardDefinition(
       cardType: 'sign_fortune',
-      name: '签到与今日运势',
-      description: '今日运势签文诗号、打卡天数与一键签到',
+      name: '签到与游戏提示',
+      description: '真实签到状态、一键签到与本地 Minecraft 趣味提示',
       icon: Icons.event_available_rounded,
       category: DashboardCardCategory.tool,
       supportedPages: {'home', 'guide', 'thread'},
@@ -271,11 +272,11 @@ class CardRegistry {
       defaultRowSpan: 3,
     ),
 
-    // 11. 全站热门帖子（首页、导读页）
+    // 当前数据流帖子（首页、导读页）
     'hot_threads': CardDefinition(
       cardType: 'hot_threads',
-      name: '全站热帖榜',
-      description: '精选全站最高赞、最高回复热门帖子',
+      name: '当前帖子榜单',
+      description: '按当前数据流的回复、浏览计数排列帖子',
       icon: Icons.local_fire_department_rounded,
       category: DashboardCardCategory.content,
       supportedPages: {'home', 'guide'},
@@ -316,7 +317,7 @@ class CardRegistry {
     // 14. 小黑屋违规动态（首页）
     'darkroom_log': CardDefinition(
       cardType: 'darkroom_log',
-      name: '小黑屋动态',
+      name: '封神榜动态',
       description: '全站最新违规封禁记录与警示',
       icon: Icons.gavel_rounded,
       category: DashboardCardCategory.social,
@@ -774,7 +775,8 @@ class DashboardGridResolver {
 
       // 从第 0 行开始向上试探，尽可能贴紧上方卡片
       int bestRow = 0;
-      while (hasConflict(bestRow, targetCol, rowSpan, colSpan) && bestRow < 100) {
+      while (
+          hasConflict(bestRow, targetCol, rowSpan, colSpan) && bestRow < 100) {
         bestRow++;
       }
 
@@ -878,12 +880,15 @@ class DashboardGridResolver {
     for (final item in sorted) {
       int targetColSpan;
       if (totalCols <= 4) {
-        targetColSpan = (item.colSpan <= 2) ? math.min(2, totalCols) : totalCols;
+        targetColSpan =
+            (item.colSpan <= 2) ? math.min(2, totalCols) : totalCols;
       } else {
         // totalCols == 8
-        targetColSpan = ((item.colSpan / 12.0) * totalCols).round().clamp(2, totalCols);
+        targetColSpan =
+            ((item.colSpan / 12.0) * totalCols).round().clamp(2, totalCols);
       }
-      int targetRowSpan = item.rowSpan.clamp(1, 4);
+      // Responsive reflow changes columns, not the user's saved card height.
+      int targetRowSpan = math.max(1, item.rowSpan);
 
       int tryR = 0;
       int tryC = 0;
@@ -924,4 +929,3 @@ class DashboardGridResolver {
     return resolved;
   }
 }
-

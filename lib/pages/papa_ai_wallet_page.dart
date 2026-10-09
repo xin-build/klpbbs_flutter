@@ -1,3 +1,4 @@
+import '../widgets/app_motion.dart';
 import 'package:flutter/material.dart';
 import '../api/klpbbs_api.dart';
 import '../models/papa_ai.dart';
@@ -162,7 +163,7 @@ class _PapaAiWalletPageState extends State<PapaAiWalletPage> {
         ],
       ),
       body: _loading
-          ? Center(child: CircularProgressIndicator(color: pal.primaryStrong))
+          ? Center(child: AppLoadingIndicator(color: pal.primaryStrong))
           : RefreshIndicator(
               onRefresh: _loadData,
               color: pal.primaryStrong,

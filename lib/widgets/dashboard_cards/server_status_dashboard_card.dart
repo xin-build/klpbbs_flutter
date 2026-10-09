@@ -1,3 +1,4 @@
+import '../app_motion.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -19,53 +20,22 @@ class ServerStatusDashboardCard extends StatefulWidget {
     this.isPreview = false,
   });
 
-  static ServerStatusData get fixedMockData => _ServerStatusDashboardCardState.fixedMockData;
+  static ServerStatusData get unavailableData =>
+      _ServerStatusDashboardCardState.unavailableData;
 
   @override
-  State<ServerStatusDashboardCard> createState() => _ServerStatusDashboardCardState();
+  State<ServerStatusDashboardCard> createState() =>
+      _ServerStatusDashboardCardState();
 }
 
 class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
   ServerStatusData? _data;
   bool _loading = false;
 
-  // 专属高保真固定演示数据（严格对齐 status.klpz.net 真实节点）
-  static ServerStatusData get _fixedMockData => fixedMockData;
-  static final ServerStatusData fixedMockData = ServerStatusData(
-    siteName: '服务状态面板',
-    overallRaw: 'operational',
-    groups: const [
-      ServerStatusGroup(id: 1, name: '核心服务'),
-      ServerStatusGroup(id: 2, name: '存储服务'),
-      ServerStatusGroup(id: 3, name: '其他业务'),
-      ServerStatusGroup(id: 4, name: '边缘节点'),
-    ],
-    services: const [
-      ServerStatusService(id: 1, groupId: 1, name: '主站服务', currentStatusRaw: 'operational', lastLatencyMs: 232),
-      ServerStatusService(id: 2, groupId: 1, name: '用户中心', currentStatusRaw: 'operational', lastLatencyMs: 1242),
-      ServerStatusService(id: 3, groupId: 2, name: '广东存储', currentStatusRaw: 'operational', lastLatencyMs: 79),
-      ServerStatusService(id: 4, groupId: 2, name: '附件存储', currentStatusRaw: 'operational', lastLatencyMs: 161),
-      ServerStatusService(id: 5, groupId: 2, name: '宁波存储', currentStatusRaw: 'operational', lastLatencyMs: 288),
-      ServerStatusService(id: 6, groupId: 3, name: '下载站', currentStatusRaw: 'operational', lastLatencyMs: 455),
-      ServerStatusService(id: 7, groupId: 3, name: '博客', currentStatusRaw: 'operational', lastLatencyMs: 641),
-      ServerStatusService(id: 15, groupId: 3, name: 'KlpWiki', currentStatusRaw: 'operational', lastLatencyMs: 2780),
-      ServerStatusService(id: 17, groupId: 4, name: '103.*.*.186', currentStatusRaw: 'operational', lastLatencyMs: 54),
-      ServerStatusService(id: 18, groupId: 4, name: '38.*.*.93', currentStatusRaw: 'operational', lastLatencyMs: 50),
-    ],
-    incidents: const [
-      ServerStatusIncident(
-        id: 1279,
-        serviceId: 15,
-        serviceName: 'KlpWiki',
-        title: 'KlpWiki 出现故障',
-        status: 'resolved',
-        message: '系统检测到服务已完全恢复。',
-        startedAt: '2026-09-19 15:11',
-        resolvedAt: '2026-09-19 17:18',
-      ),
-    ],
-    updatedAt: DateTime.now(),
-  );
+  static ServerStatusData get unavailableData => ServerStatusData(
+      siteName: '服务器状态',
+      overallRaw: 'unknown',
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(0));
 
   Timer? _pollTimer;
 
@@ -73,11 +43,15 @@ class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
   void initState() {
     super.initState();
     if (widget.isPreview) {
-      _data = _fixedMockData;
+      _data = KlpbbsApi.cachedServerStatus;
     } else {
       _loadStatus();
       _pollTimer = Timer.periodic(const Duration(seconds: 45), (_) {
-        if (mounted && !widget.isPreview) {
+        if (mounted &&
+            !widget.isPreview &&
+            TickerMode.getNotifier(context).value &&
+            WidgetsBinding.instance.lifecycleState ==
+                AppLifecycleState.resumed) {
           _loadStatus(force: true);
         }
       });
@@ -92,9 +66,7 @@ class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
 
   Future<void> _loadStatus({bool force = false}) async {
     if (_loading) return;
-    if (_data == null && mounted) {
-      setState(() => _loading = true);
-    }
+    if (mounted) setState(() => _loading = true);
     try {
       final res = await KlpbbsApi.getServerStatus(forceRefresh: force);
       if (mounted) {
@@ -121,12 +93,31 @@ class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
   Widget build(BuildContext context) {
     final isNarrow = widget.item.colSpan <= 2;
     final customTitle = widget.item.customParams['customTitle'] as String?;
-    final title = (customTitle != null && customTitle.isNotEmpty) ? customTitle : '服务器状态';
+    final title =
+        (customTitle != null && customTitle.isNotEmpty) ? customTitle : '服务器状态';
 
-    final data = _data ?? _fixedMockData;
+    if (_data == null) {
+      return DashboardCardFrame(
+          item: widget.item,
+          onTap: _openDetails,
+          child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                const SizedBox(height: 6),
+                Text(_loading ? '正在获取监控数据…' : '尚未取得监控数据',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant)),
+              ]));
+    }
+    final data = _data!;
     final overall = data.overallStatus;
 
-    final rawDataStyle = widget.item.customParams['dataStyle'] as String? ?? 'auto';
+    final rawDataStyle =
+        widget.item.customParams['dataStyle'] as String? ?? 'auto';
     final String dataStyle;
     if (rawDataStyle == 'auto') {
       final isCompact = widget.item.rowSpan <= 1;
@@ -185,7 +176,8 @@ class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
                 title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                style: const TextStyle(
+                    fontSize: 12.5, fontWeight: FontWeight.bold),
               ),
               Text(
                 '主站 ${mainService.lastLatencyMs}ms · ${overall.label}',
@@ -216,7 +208,10 @@ class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
               const SizedBox(width: 4),
               Text(
                 overall.label,
-                style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: overall.color),
+                style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: overall.color),
               ),
             ],
           ),
@@ -242,11 +237,15 @@ class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
         // 1. 标题与总体状态指示
         Row(
           children: [
-            Icon(Icons.dns_rounded, size: 17, color: DashboardCardTheme.of(context).accentColor),
+            Icon(Icons.dns_rounded,
+                size: 17, color: DashboardCardTheme.of(context).accentColor),
             const SizedBox(width: 6),
             Text(
               title,
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: colorScheme.onSurface),
+              style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  color: colorScheme.onSurface),
             ),
             const Spacer(),
             Container(
@@ -254,7 +253,8 @@ class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
               decoration: BoxDecoration(
                 color: overall.color.withAlpha(25),
                 borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: overall.color.withAlpha(60), width: 0.8),
+                border:
+                    Border.all(color: overall.color.withAlpha(60), width: 0.8),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -262,12 +262,16 @@ class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
                   Container(
                     width: 6,
                     height: 6,
-                    decoration: BoxDecoration(shape: BoxShape.circle, color: overall.color),
+                    decoration: BoxDecoration(
+                        shape: BoxShape.circle, color: overall.color),
                   ),
                   const SizedBox(width: 5),
                   Text(
                     overall.label,
-                    style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: overall.color),
+                    style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.bold,
+                        color: overall.color),
                   ),
                 ],
               ),
@@ -284,10 +288,14 @@ class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
                 child: Row(
                   children: [
                     if (displayServices.isNotEmpty)
-                      Expanded(child: _buildServiceTile(context, displayServices[0])),
+                      Expanded(
+                          child:
+                              _buildServiceTile(context, displayServices[0])),
                     if (!isNarrow && displayServices.length > 1) ...[
                       const SizedBox(width: 8),
-                      Expanded(child: _buildServiceTile(context, displayServices[1])),
+                      Expanded(
+                          child:
+                              _buildServiceTile(context, displayServices[1])),
                     ],
                   ],
                 ),
@@ -297,12 +305,17 @@ class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
                 child: Row(
                   children: [
                     if (isNarrow && displayServices.length > 1)
-                      Expanded(child: _buildServiceTile(context, displayServices[1]))
+                      Expanded(
+                          child: _buildServiceTile(context, displayServices[1]))
                     else if (!isNarrow && displayServices.length > 2) ...[
-                      Expanded(child: _buildServiceTile(context, displayServices[2])),
+                      Expanded(
+                          child:
+                              _buildServiceTile(context, displayServices[2])),
                       if (displayServices.length > 3) ...[
                         const SizedBox(width: 8),
-                        Expanded(child: _buildServiceTile(context, displayServices[3])),
+                        Expanded(
+                            child:
+                                _buildServiceTile(context, displayServices[3])),
                       ],
                     ],
                   ],
@@ -316,13 +329,17 @@ class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
         Row(
           children: [
             Text(
-              '数据源 status.klpz.net',
-              style: TextStyle(fontSize: 9.5, color: colorScheme.outline.withAlpha(150)),
+              '${DateTime.now().difference(data.updatedAt).inSeconds > 90 ? '缓存 · ' : ''}${data.updatedAt.hour.toString().padLeft(2, '0')}:${data.updatedAt.minute.toString().padLeft(2, '0')}',
+              style: TextStyle(
+                  fontSize: 9.5, color: colorScheme.outline.withAlpha(150)),
             ),
             const Spacer(),
             Text(
               '点击查看详情 >',
-              style: TextStyle(fontSize: 10, color: colorScheme.primary, fontWeight: FontWeight.w500),
+              style: TextStyle(
+                  fontSize: 10,
+                  color: colorScheme.primary,
+                  fontWeight: FontWeight.w500),
             ),
           ],
         ),
@@ -339,14 +356,16 @@ class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
       decoration: BoxDecoration(
         color: colorScheme.surfaceContainerHigh.withAlpha(70),
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: colorScheme.outlineVariant.withAlpha(40), width: 0.6),
+        border: Border.all(
+            color: colorScheme.outlineVariant.withAlpha(40), width: 0.6),
       ),
       child: Row(
         children: [
           Container(
             width: 7,
             height: 7,
-            decoration: BoxDecoration(shape: BoxShape.circle, color: s.status.color),
+            decoration:
+                BoxDecoration(shape: BoxShape.circle, color: s.status.color),
           ),
           const SizedBox(width: 6),
           Expanded(
@@ -358,8 +377,9 @@ class _ServerStatusDashboardCardState extends State<ServerStatusDashboardCard> {
             ),
           ),
           Text(
-            '${s.lastLatencyMs}ms',
-            style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: latColor),
+            s.latencyLabel,
+            style: TextStyle(
+                fontSize: 10.5, fontWeight: FontWeight.bold, color: latColor),
           ),
         ],
       ),
@@ -373,7 +393,8 @@ class ServerStatusDetailDialog extends StatefulWidget {
 
   const ServerStatusDetailDialog({super.key, this.initialData});
 
-  static Future<void> show(BuildContext context, {ServerStatusData? initialData}) {
+  static Future<void> show(BuildContext context,
+      {ServerStatusData? initialData}) {
     return showDialog(
       context: context,
       builder: (ctx) => ServerStatusDetailDialog(initialData: initialData),
@@ -381,7 +402,8 @@ class ServerStatusDetailDialog extends StatefulWidget {
   }
 
   @override
-  State<ServerStatusDetailDialog> createState() => _ServerStatusDetailDialogState();
+  State<ServerStatusDetailDialog> createState() =>
+      _ServerStatusDetailDialogState();
 }
 
 class _ServerStatusDetailDialogState extends State<ServerStatusDetailDialog> {
@@ -391,7 +413,8 @@ class _ServerStatusDetailDialogState extends State<ServerStatusDetailDialog> {
   @override
   void initState() {
     super.initState();
-    _data = widget.initialData ?? _ServerStatusDashboardCardState.fixedMockData;
+    _data =
+        widget.initialData ?? _ServerStatusDashboardCardState.unavailableData;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _refresh();
     });
@@ -446,18 +469,25 @@ class _ServerStatusDetailDialogState extends State<ServerStatusDetailDialog> {
                     children: [
                       Text(
                         _data.siteName,
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold),
                       ),
                       Text(
                         '状态: ${overall.label} · 实时监控',
-                        style: TextStyle(fontSize: 11, color: overall.color, fontWeight: FontWeight.w600),
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: overall.color,
+                            fontWeight: FontWeight.w600),
                       ),
                     ],
                   ),
                   const Spacer(),
                   IconButton(
                     icon: _refreshing
-                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: AppLoadingIndicator(strokeWidth: 2))
                         : const Icon(Icons.refresh_rounded, size: 20),
                     tooltip: '刷新状态',
                     onPressed: _refreshing ? null : _refresh,
@@ -479,7 +509,8 @@ class _ServerStatusDetailDialogState extends State<ServerStatusDetailDialog> {
             // 滚动服务列表
             Expanded(
               child: ListView(
-                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
                 children: [
                   // 1. 最近事件记录 (若有)
                   if (_data.incidents.isNotEmpty) ...[
@@ -487,7 +518,9 @@ class _ServerStatusDetailDialogState extends State<ServerStatusDetailDialog> {
                       children: [
                         const Icon(Icons.event_note_rounded, size: 16),
                         const SizedBox(width: 6),
-                        const Text('最近故障与维护事件', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                        const Text('最近故障与维护事件',
+                            style: TextStyle(
+                                fontSize: 13, fontWeight: FontWeight.bold)),
                       ],
                     ),
                     const SizedBox(height: 8),
@@ -514,18 +547,26 @@ class _ServerStatusDetailDialogState extends State<ServerStatusDetailDialog> {
                               children: [
                                 Text(
                                   inc.title,
-                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                  style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold),
                                 ),
                                 const Spacer(),
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 5, vertical: 1),
                                   decoration: BoxDecoration(
-                                    color: inc.isResolved ? Colors.green : Colors.amber.shade700,
+                                    color: inc.isResolved
+                                        ? Colors.green
+                                        : Colors.amber.shade700,
                                     borderRadius: BorderRadius.circular(4),
                                   ),
                                   child: Text(
                                     inc.isResolved ? '已恢复' : '处理中',
-                                    style: const TextStyle(fontSize: 9.5, color: Colors.white, fontWeight: FontWeight.bold),
+                                    style: const TextStyle(
+                                        fontSize: 9.5,
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold),
                                   ),
                                 ),
                               ],
@@ -533,12 +574,15 @@ class _ServerStatusDetailDialogState extends State<ServerStatusDetailDialog> {
                             const SizedBox(height: 4),
                             Text(
                               inc.message,
-                              style: TextStyle(fontSize: 11, color: colorScheme.onSurfaceVariant),
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  color: colorScheme.onSurfaceVariant),
                             ),
                             const SizedBox(height: 2),
                             Text(
                               '开始: ${inc.startedAt} ${inc.resolvedAt != null ? "· 恢复: ${inc.resolvedAt}" : ""}',
-                              style: TextStyle(fontSize: 9.5, color: colorScheme.outline),
+                              style: TextStyle(
+                                  fontSize: 9.5, color: colorScheme.outline),
                             ),
                           ],
                         ),
@@ -550,7 +594,9 @@ class _ServerStatusDetailDialogState extends State<ServerStatusDetailDialog> {
                   // 2. 按分组展示所有服务节点
                   for (final group in _data.groups) ...[
                     Builder(builder: (context) {
-                      final groupServices = _data.services.where((s) => s.groupId == group.id).toList();
+                      final groupServices = _data.services
+                          .where((s) => s.groupId == group.id)
+                          .toList();
                       if (groupServices.isEmpty) return const SizedBox.shrink();
 
                       return Column(
@@ -571,12 +617,15 @@ class _ServerStatusDetailDialogState extends State<ServerStatusDetailDialog> {
                                 const SizedBox(width: 8),
                                 Text(
                                   group.name,
-                                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                                  style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold),
                                 ),
                                 const SizedBox(width: 6),
                                 Text(
                                   '(${groupServices.length})',
-                                  style: TextStyle(fontSize: 11, color: colorScheme.outline),
+                                  style: TextStyle(
+                                      fontSize: 11, color: colorScheme.outline),
                                 ),
                               ],
                             ),
@@ -588,12 +637,15 @@ class _ServerStatusDetailDialogState extends State<ServerStatusDetailDialog> {
                               final latColor = service.latencyColor;
                               return Container(
                                 width: 180,
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 8),
                                 decoration: BoxDecoration(
-                                  color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                                  color: colorScheme.surfaceContainerHighest
+                                      .withAlpha(80),
                                   borderRadius: BorderRadius.circular(8),
                                   border: Border.all(
-                                    color: colorScheme.outlineVariant.withAlpha(50),
+                                    color: colorScheme.outlineVariant
+                                        .withAlpha(50),
                                     width: 0.6,
                                   ),
                                 ),
@@ -616,7 +668,9 @@ class _ServerStatusDetailDialogState extends State<ServerStatusDetailDialog> {
                                             service.name,
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                                            style: const TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w600),
                                           ),
                                         ),
                                       ],
@@ -626,7 +680,10 @@ class _ServerStatusDetailDialogState extends State<ServerStatusDetailDialog> {
                                       children: [
                                         Text(
                                           service.status.label,
-                                          style: TextStyle(fontSize: 10, color: service.status.color, fontWeight: FontWeight.w500),
+                                          style: TextStyle(
+                                              fontSize: 10,
+                                              color: service.status.color,
+                                              fontWeight: FontWeight.w500),
                                         ),
                                         const Spacer(),
                                         Text(
@@ -658,7 +715,10 @@ class _ServerStatusDetailDialogState extends State<ServerStatusDetailDialog> {
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
               decoration: BoxDecoration(
                 color: colorScheme.surfaceContainerLow,
-                border: Border(top: BorderSide(color: colorScheme.outlineVariant.withAlpha(40), width: 0.8)),
+                border: Border(
+                    top: BorderSide(
+                        color: colorScheme.outlineVariant.withAlpha(40),
+                        width: 0.8)),
               ),
               child: Row(
                 children: [

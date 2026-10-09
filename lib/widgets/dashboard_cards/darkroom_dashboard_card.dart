@@ -1,5 +1,8 @@
+import '../app_motion.dart';
 import 'package:flutter/material.dart';
 import '../../api/klpbbs_api.dart';
+import '../../core/dio_client.dart';
+import '../../core/preload_service.dart';
 import '../../models/darkroom_entry.dart';
 import '../../models/dashboard_card_model.dart';
 import '../../pages/darkroom_page.dart';
@@ -23,15 +26,18 @@ class DarkroomDashboardCard extends StatefulWidget {
 class _DarkroomDashboardCardState extends State<DarkroomDashboardCard> {
   List<DarkroomEntry> _entries = [];
   bool _loading = true;
+  bool _known = false, _failed = false;
 
   @override
   void initState() {
     super.initState();
+    final cached = PreloadService.instance
+        .get<({List<DarkroomEntry> entries, int? nextCid})>('darkroom_null_1',
+            ignoreExpired: true);
+    _entries = cached?.entries ?? [];
+    _known = cached != null;
+    _loading = !widget.isPreview && !_known;
     if (widget.isPreview) {
-      _entries = const [
-        DarkroomEntry(uid: 10001, username: '违规推广账号', reason: '发布批量违规推广信息', action: '永久封禁', dateline: '今天 12:30'),
-        DarkroomEntry(uid: 10002, username: '社区违规灌水', reason: '短时间内无意义恶意刷帖', action: '禁言 7 天', dateline: '今天 09:15'),
-      ];
       _loading = false;
     } else {
       _loadData();
@@ -39,17 +45,23 @@ class _DarkroomDashboardCardState extends State<DarkroomDashboardCard> {
   }
 
   Future<void> _loadData() async {
+    final session = DioClient.sessionKey;
     try {
       final res = await KlpbbsApi.getDarkroom(page: 1);
-      if (mounted) {
+      if (mounted && session == DioClient.sessionKey) {
         setState(() {
           _entries = res.entries;
+          _known = true;
+          _failed = false;
           _loading = false;
         });
       }
     } catch (_) {
-      if (mounted) {
-        setState(() => _loading = false);
+      if (mounted && session == DioClient.sessionKey) {
+        setState(() {
+          _loading = false;
+          _failed = true;
+        });
       }
     }
   }
@@ -59,15 +71,21 @@ class _DarkroomDashboardCardState extends State<DarkroomDashboardCard> {
     final isCompact = widget.item.rowSpan <= 1;
     final isNarrow = widget.item.colSpan <= 2;
     final customTitle = widget.item.customParams['customTitle'] as String?;
-    final title = (customTitle != null && customTitle.isNotEmpty) ? customTitle : '小黑屋公示';
+    final title =
+        (customTitle != null && customTitle.isNotEmpty) ? customTitle : '封神榜公示';
 
     return RepaintBoundary(
       child: DashboardCardFrame(
         item: widget.item,
         padding: const EdgeInsets.all(12),
-        onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DarkroomPage())),
+        onTap: () => Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => const DarkroomPage())),
         child: _loading
-            ? const Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)))
+            ? const Center(
+                child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: AppLoadingIndicator(strokeWidth: 2)))
             : (isCompact || isNarrow)
                 ? _buildCompact(context, title)
                 : _buildExpanded(context, title),
@@ -100,10 +118,13 @@ class _DarkroomDashboardCardState extends State<DarkroomDashboardCard> {
                 title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                style: const TextStyle(
+                    fontSize: 12.5, fontWeight: FontWeight.bold),
               ),
               Text(
-                first != null ? '${first.username} · ${first.action}' : '全站最新违规处罚公示',
+                first != null
+                    ? '${first.username} · ${first.action}'
+                    : '全站最新违规处罚公示',
                 maxLines: 1,
                 style: TextStyle(fontSize: 10, color: colorScheme.outline),
               ),
@@ -134,7 +155,8 @@ class _DarkroomDashboardCardState extends State<DarkroomDashboardCard> {
               ),
             ),
             const Spacer(),
-            Text('查看公示 >', style: TextStyle(fontSize: 11, color: colorScheme.primary)),
+            Text('查看公示 >',
+                style: TextStyle(fontSize: 11, color: colorScheme.primary)),
           ],
         ),
         const SizedBox(height: 8),
@@ -142,13 +164,18 @@ class _DarkroomDashboardCardState extends State<DarkroomDashboardCard> {
           child: _entries.isEmpty
               ? Center(
                   child: Text(
-                    '近期暂无违规公示记录',
+                    _failed
+                        ? '暂时无法读取公示'
+                        : !_known
+                            ? '尚未载入公示数据'
+                            : '近期暂无违规公示记录',
                     style: TextStyle(fontSize: 11, color: colorScheme.outline),
                   ),
                 )
               : ListView.separated(
                   physics: const NeverScrollableScrollPhysics(),
-                  itemCount: _entries.take(widget.item.rowSpan > 2 ? 4 : 2).length,
+                  itemCount:
+                      _entries.take(widget.item.rowSpan > 2 ? 4 : 2).length,
                   separatorBuilder: (_, __) => const Divider(height: 8),
                   itemBuilder: (context, idx) {
                     final e = _entries[idx];
@@ -179,7 +206,11 @@ class _DarkroomDashboardCardState extends State<DarkroomDashboardCard> {
             color: Colors.red.withAlpha(25),
             borderRadius: BorderRadius.circular(4),
           ),
-          child: Text(action, style: const TextStyle(fontSize: 9.5, color: Colors.red, fontWeight: FontWeight.bold)),
+          child: Text(action,
+              style: const TextStyle(
+                  fontSize: 9.5,
+                  color: Colors.red,
+                  fontWeight: FontWeight.bold)),
         ),
       ],
     );

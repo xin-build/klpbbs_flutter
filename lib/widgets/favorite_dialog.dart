@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
@@ -66,36 +67,58 @@ class _FavoriteDialogState extends State<FavoriteDialog> {
   final _selectedTags = <String>{};
   List<String> _userTags = [];
   bool _loadingTags = true;
+  bool _supportsDescription = false;
+  bool _supportsTags = false;
+  String? _formError;
   bool _submitting = false;
+  bool _expired = false;
+  final String _sessionAtOpen = DioClient.sessionKey;
 
   @override
   void initState() {
     super.initState();
+    DioClient.sessionChanges.addListener(_onSessionChanged);
     _loadUserTags();
   }
 
   @override
   void dispose() {
+    DioClient.sessionChanges.removeListener(_onSessionChanged);
     _descCtrl.dispose();
     _tagInputCtrl.dispose();
     super.dispose();
   }
 
+  void _onSessionChanged() {
+    if (!mounted) return;
+    setState(() {
+      _expired = true;
+      _submitting = false;
+    });
+  }
+
   Future<void> _loadUserTags() async {
+    if (widget.isFavorited) {
+      _loadingTags = false;
+      return;
+    }
     try {
-      final tags = await KlpbbsApi.getFavoriteTags();
-      if (mounted) {
-        setState(() {
-          _userTags = tags;
-          _loadingTags = false;
-        });
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _loadingTags = false;
-        });
-      }
+      final options = await KlpbbsApi.getThreadFavoriteOptions(widget.tid);
+      final tags =
+          options.tags ? await KlpbbsApi.getFavoriteTags() : const <String>[];
+      if (!mounted || _sessionAtOpen != DioClient.sessionKey) return;
+      setState(() {
+        _supportsDescription = options.description;
+        _supportsTags = options.tags;
+        _userTags = tags;
+        _loadingTags = false;
+      });
+    } catch (error) {
+      if (!mounted || _sessionAtOpen != DioClient.sessionKey) return;
+      setState(() {
+        _formError = error.toString();
+        _loadingTags = false;
+      });
     }
   }
 
@@ -109,78 +132,44 @@ class _FavoriteDialogState extends State<FavoriteDialog> {
     }
   }
 
-  Future<void> _submitFavorite() async {
-    if (!DioClient.isLoggedIn) {
-      Navigator.of(context).pop();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('请先登录论坛账号后再进行收藏'),
-          action: SnackBarAction(
-            label: '去登录',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const LoginPage()),
-            ),
-          ),
-        ),
-      );
+  Future<void> _submitFavorite() => _submit(false);
+  Future<void> _submitUnfavorite() => _submit(true);
+
+  Future<void> _submit(bool remove) async {
+    if (_submitting || _expired || _sessionAtOpen != DioClient.sessionKey) {
       return;
     }
-
-    setState(() => _submitting = true);
-    final desc = _descCtrl.text.trim();
-    final tagStr = _selectedTags.join(' ');
-
-    try {
-      final res = await KlpbbsApi.favoriteThread(
-        widget.tid,
-        description: desc,
-        favtag: tagStr,
-      );
-      if (mounted) {
-        setState(() => _submitting = false);
-        Navigator.of(context).pop(true);
-        widget.onFavoritedChanged?.call(true);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(res.message.isNotEmpty ? res.message : '收藏成功！'),
-            duration: const Duration(seconds: 2),
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _submitting = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('收藏失败：$e')),
-        );
-      }
+    final messenger = ScaffoldMessenger.of(context);
+    if (!DioClient.isLoggedIn) {
+      final navigator = Navigator.of(context);
+      navigator.pop();
+      messenger.showSnackBar(SnackBar(
+        content: const Text('请先登录论坛账号后再进行收藏'),
+        action: SnackBarAction(
+            label: '去登录',
+            onPressed: () => navigator
+                .push(MaterialPageRoute(builder: (_) => const LoginPage()))),
+      ));
+      return;
     }
-  }
-
-  Future<void> _submitUnfavorite() async {
-    if (!DioClient.isLoggedIn) return;
-
     setState(() => _submitting = true);
     try {
-      final res = await KlpbbsApi.unfavoriteThread(widget.tid, favid: widget.favid);
-      if (mounted) {
-        setState(() => _submitting = false);
-        Navigator.of(context).pop(false);
-        widget.onFavoritedChanged?.call(false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(res.message.isNotEmpty ? res.message : '已取消收藏'),
-            duration: const Duration(seconds: 2),
-          ),
-        );
+      final result = remove
+          ? await KlpbbsApi.unfavoriteThread(widget.tid, favid: widget.favid)
+          : await KlpbbsApi.favoriteThread(widget.tid,
+              description: _descCtrl.text.trim(),
+              favtag: _selectedTags.join(' '));
+      if (!mounted || _sessionAtOpen != DioClient.sessionKey) return;
+      setState(() => _submitting = false);
+      messenger.showSnackBar(SnackBar(content: Text(result.message)));
+      if (result.success) {
+        widget.onFavoritedChanged?.call(!remove);
+        Navigator.of(context).pop(!remove);
       }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _submitting = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('取消收藏失败：$e')),
-        );
-      }
+    } catch (error) {
+      if (!mounted || _sessionAtOpen != DioClient.sessionKey) return;
+      setState(() => _submitting = false);
+      messenger.showSnackBar(SnackBar(content: Text('收藏操作失败：$error')));
     }
   }
 
@@ -227,11 +216,18 @@ class _FavoriteDialogState extends State<FavoriteDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (_expired)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: Text('登录状态已改变，请关闭此窗口后重新操作',
+                      style: TextStyle(color: theme.colorScheme.error)),
+                ),
               // 帖子标题预览
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHighest.withAlpha(80),
+                  color:
+                      theme.colorScheme.surfaceContainerHighest.withAlpha(80),
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(
                     color: theme.colorScheme.outlineVariant.withAlpha(60),
@@ -247,7 +243,9 @@ class _FavoriteDialogState extends State<FavoriteDialog> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        widget.title.isNotEmpty ? widget.title : '帖子 #${widget.tid}',
+                        widget.title.isNotEmpty
+                            ? widget.title
+                            : '帖子 #${widget.tid}',
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
@@ -261,122 +259,140 @@ class _FavoriteDialogState extends State<FavoriteDialog> {
               ),
               const SizedBox(height: 16),
 
-              // 收藏分类/标签选择
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    '选择分类标签',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.bold,
-                      color: theme.colorScheme.onSurface,
-                    ),
-                  ),
-                  if (_loadingTags)
-                    const SizedBox(
-                      width: 12,
-                      height: 12,
-                      child: CircularProgressIndicator(strokeWidth: 1.5),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 8),
-
-              // 标签 Chips
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: allAvailableTags.map((tag) {
-                  final isSelected = _selectedTags.contains(tag);
-                  return FilterChip(
-                    label: Text(tag),
-                    selected: isSelected,
-                    labelStyle: TextStyle(
-                      fontSize: 12,
-                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                      color: isSelected
-                          ? theme.colorScheme.primary
-                          : theme.colorScheme.onSurfaceVariant,
-                    ),
-                    selectedColor: theme.colorScheme.primaryContainer.withAlpha(120),
-                    backgroundColor: theme.colorScheme.surfaceContainerHighest.withAlpha(60),
-                    checkmarkColor: theme.colorScheme.primary,
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    visualDensity: VisualDensity.compact,
-                    onSelected: (selected) {
-                      setState(() {
-                        if (selected) {
-                          _selectedTags.add(tag);
-                        } else {
-                          _selectedTags.remove(tag);
-                        }
-                      });
-                    },
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 10),
-
-              // 自定义标签输入
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _tagInputCtrl,
-                      decoration: InputDecoration(
-                        hintText: '输入自定义标签...',
-                        hintStyle: TextStyle(fontSize: 12, color: theme.colorScheme.outline),
-                        isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide(color: theme.colorScheme.outlineVariant),
-                        ),
+              if (_loadingTags) const AppLoadingBar(),
+              if (_formError != null)
+                Text(_formError!,
+                    style: TextStyle(color: theme.colorScheme.error)),
+              if (widget.isFavorited) const Text('已收藏，可到收藏列表查看。'),
+              if (_supportsTags) ...[
+                // 收藏分类/标签选择
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '选择分类标签',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: theme.colorScheme.onSurface,
                       ),
-                      onSubmitted: (_) => _addCustomTag(),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  OutlinedButton.icon(
-                    onPressed: _addCustomTag,
-                    icon: const Icon(Icons.add, size: 16),
-                    label: const Text('添加', style: TextStyle(fontSize: 12)),
-                    style: OutlinedButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
+                    if (_loadingTags)
+                      const SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: AppLoadingIndicator(strokeWidth: 1.5),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
 
-              // 收藏备注输入框
-              Text(
-                '收藏备注（可选）',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
-                  color: theme.colorScheme.onSurface,
+                // 标签 Chips
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: allAvailableTags.map((tag) {
+                    final isSelected = _selectedTags.contains(tag);
+                    return FilterChip(
+                      label: Text(tag),
+                      selected: isSelected,
+                      labelStyle: TextStyle(
+                        fontSize: 12,
+                        fontWeight:
+                            isSelected ? FontWeight.bold : FontWeight.normal,
+                        color: isSelected
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.onSurfaceVariant,
+                      ),
+                      selectedColor:
+                          theme.colorScheme.primaryContainer.withAlpha(120),
+                      backgroundColor: theme.colorScheme.surfaceContainerHighest
+                          .withAlpha(60),
+                      checkmarkColor: theme.colorScheme.primary,
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      visualDensity: VisualDensity.compact,
+                      onSelected: (selected) {
+                        setState(() {
+                          if (selected) {
+                            _selectedTags.add(tag);
+                          } else {
+                            _selectedTags.remove(tag);
+                          }
+                        });
+                      },
+                    );
+                  }).toList(),
                 ),
-              ),
-              const SizedBox(height: 6),
-              TextField(
-                controller: _descCtrl,
-                maxLines: 2,
-                maxLength: 100,
-                decoration: InputDecoration(
-                  hintText: '记录备忘或心得（如：3楼有配置、优质教程）',
-                  hintStyle: TextStyle(fontSize: 12, color: theme.colorScheme.outline),
-                  isDense: true,
-                  contentPadding: const EdgeInsets.all(10),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide(color: theme.colorScheme.outlineVariant),
+                const SizedBox(height: 10),
+
+                // 自定义标签输入
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _tagInputCtrl,
+                        decoration: InputDecoration(
+                          hintText: '输入自定义标签...',
+                          hintStyle: TextStyle(
+                              fontSize: 12, color: theme.colorScheme.outline),
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 8),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide(
+                                color: theme.colorScheme.outlineVariant),
+                          ),
+                        ),
+                        onSubmitted: (_) => _addCustomTag(),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      onPressed: _addCustomTag,
+                      icon: const Icon(Icons.add, size: 16),
+                      label: const Text('添加', style: TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+              ],
+              if (_supportsDescription) ...[
+                // 收藏备注输入框
+                Text(
+                  '收藏备注（可选）',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: theme.colorScheme.onSurface,
                   ),
                 ),
-              ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _descCtrl,
+                  maxLines: 2,
+                  maxLength: 100,
+                  decoration: InputDecoration(
+                    hintText: '记录备忘或心得（如：3楼有配置、优质教程）',
+                    hintStyle: TextStyle(
+                        fontSize: 12, color: theme.colorScheme.outline),
+                    isDense: true,
+                    contentPadding: const EdgeInsets.all(10),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide:
+                          BorderSide(color: theme.colorScheme.outlineVariant),
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -384,28 +400,34 @@ class _FavoriteDialogState extends State<FavoriteDialog> {
       actions: [
         if (widget.isFavorited)
           TextButton.icon(
-            onPressed: _submitting ? null : _submitUnfavorite,
+            onPressed: _submitting || _expired ? null : _submitUnfavorite,
             icon: const Icon(Icons.delete_outline, size: 16, color: Colors.red),
-            label: const Text('取消收藏', style: TextStyle(color: Colors.red, fontSize: 13)),
+            label: const Text('取消收藏',
+                style: TextStyle(color: Colors.red, fontSize: 13)),
           ),
         TextButton(
           onPressed: _submitting ? null : () => Navigator.of(context).pop(),
           child: const Text('取消', style: TextStyle(fontSize: 13)),
         ),
-        FilledButton.icon(
-          onPressed: _submitting ? null : _submitFavorite,
-          icon: _submitting
-              ? const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                )
-              : const Icon(Icons.check, size: 16),
-          label: Text(
-            widget.isFavorited ? '更新收藏' : '确认收藏',
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+        if (!widget.isFavorited)
+          FilledButton.icon(
+            onPressed:
+                _submitting || _expired || _loadingTags || _formError != null
+                    ? null
+                    : _submitFavorite,
+            icon: _submitting
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: AppLoadingIndicator(
+                        strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.check, size: 16),
+            label: Text(
+              '确认收藏',
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+            ),
           ),
-        ),
       ],
     );
   }

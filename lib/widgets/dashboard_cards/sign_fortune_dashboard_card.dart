@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 import '../../api/klpbbs_api.dart';
+import '../../core/dio_client.dart';
+import '../../core/discuz_sign_response.dart';
 import '../../models/dashboard_card_model.dart';
+import '../../models/sign_entry.dart';
+import '../../pages/login_page.dart';
 import '../../pages/sign_rank_page.dart';
 import '../../services/auto_sign_service.dart';
 import 'dashboard_card_frame.dart';
 
-/// 7. 每日签到与今日运势卡片（对接真实签到状态与连签天数，支持 GPU 隔离与 LOD 尺寸自适应）
+/// 7. 每日签到与本地游戏提示，签到字段取自当前账号的站点响应
 class SignFortuneDashboardCard extends StatefulWidget {
   final DashboardGridItem item;
   final bool isPreview;
@@ -17,23 +21,27 @@ class SignFortuneDashboardCard extends StatefulWidget {
   });
 
   @override
-  State<SignFortuneDashboardCard> createState() => _SignFortuneDashboardCardState();
+  State<SignFortuneDashboardCard> createState() =>
+      _SignFortuneDashboardCardState();
 }
 
 class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
   bool _signed = false;
+  bool _stateKnown = false;
+  bool _streakKnown = false;
+  String _stateDay = '';
   int _streakDays = 0;
   int _retroSignDays = 0;
   bool _signing = false;
 
   static const List<(String, String)> _fortuneList = [
-    ('大吉 · 鸿运当头', '宜：下界探宝 忌：直线下挖'),
-    ('中吉 · 紫气东来', '宜：附魔武器 忌：直视末影人'),
-    ('吉 · 顺遂无虞', '宜：建造庇护所 忌：夜晚逗留'),
-    ('小吉 · 平安喜乐', '宜：驯服野狼 忌：岩浆游泳'),
-    ('大吉 · 欧皇附体', '宜：挖掘钻石 忌：挑衅铁傀儡'),
-    ('上上签 · 福星高照', '宜：探索末地 忌：忘带金苹果'),
-    ('吉 · 硕果累累', '宜：开垦农田 忌：乱拆红石线'),
+    ('本地提示 · 下界探宝', '宜：下界探宝 忌：直线下挖'),
+    ('本地提示 · 武器附魔', '宜：附魔武器 忌：直视末影人'),
+    ('本地提示 · 建造庇护所', '宜：建造庇护所 忌：夜晚逗留'),
+    ('本地提示 · 驯服伙伴', '宜：驯服野狼 忌：岩浆游泳'),
+    ('本地提示 · 钻石探索', '宜：挖掘钻石 忌：挑衅铁傀儡'),
+    ('本地提示 · 末地探索', '宜：探索末地 忌：忘带金苹果'),
+    ('本地提示 · 农田建设', '宜：开垦农田 忌：乱拆红石线'),
   ];
 
   (String, String) get _todayFortune {
@@ -45,72 +53,114 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
   @override
   void initState() {
     super.initState();
-    if (widget.isPreview) {
-      _signed = AutoSignService.instance.isSignedToday();
-      _streakDays = AutoSignService.instance.continuousDays > 0 ? AutoSignService.instance.continuousDays : 7;
-      _retroSignDays = 0;
-      return;
-    }
+    _syncLocalState();
+    if (widget.isPreview) return;
     AutoSignService.instance.addListener(_onAutoSignChanged);
-    _signed = AutoSignService.instance.isSignedToday();
-    if (AutoSignService.instance.continuousDays > 0) {
-      _streakDays = AutoSignService.instance.continuousDays;
-    }
+    DioClient.sessionChanges.addListener(_onAccountChanged);
     _checkSignStatus();
+  }
+
+  void _applyHeader(SignHeaderInfo info) {
+    if (info.hasPersonalState && DioClient.isLoggedIn) {
+      _stateKnown = true;
+      _signed = info.isSignedToday;
+      _retroSignDays = info.retroSignDays;
+    }
+    if (info.hasContinuousDays && DioClient.isLoggedIn) {
+      _streakDays = info.continuousDays;
+      _streakKnown = true;
+    }
+  }
+
+  void _syncLocalState() {
+    final service = AutoSignService.instance;
+    final day = service.serverTodayStr;
+    if (_stateDay != day) {
+      _signed = false;
+      _stateKnown = false;
+      _streakKnown = false;
+      _streakDays = 0;
+      _retroSignDays = 0;
+    }
+    _stateDay = day;
+    final state = service.confirmedTodayState;
+    if (state != null) {
+      _stateKnown = true;
+      _signed = state;
+    }
+    final days = service.currentContinuousDays;
+    if (days != null) {
+      _streakDays = days;
+      _streakKnown = true;
+    }
+    final cached = KlpbbsApi.cachedSignHeaderInfo;
+    if (cached != null) _applyHeader(cached);
+  }
+
+  void _onAccountChanged() {
+    if (!mounted) return;
+    setState(() {
+      _stateDay = '';
+      _signing = false;
+      _syncLocalState();
+    });
+    _checkSignStatus();
+  }
+
+  String get _statusText {
+    if (!DioClient.isLoggedIn) return '登录后查看签到状态';
+    if (!_stateKnown || _stateDay != AutoSignService.instance.serverTodayStr) {
+      return '签到状态待确认';
+    }
+    if (_signed) {
+      return _streakKnown && _streakDays > 0
+          ? '已连续打卡 $_streakDays 天'
+          : '今日已完成打卡';
+    }
+    return _retroSignDays > 0 ? '可补签 $_retroSignDays 天' : '今日尚未打卡';
   }
 
   @override
   void dispose() {
     if (!widget.isPreview) {
       AutoSignService.instance.removeListener(_onAutoSignChanged);
+      DioClient.sessionChanges.removeListener(_onAccountChanged);
     }
     super.dispose();
   }
 
   void _onAutoSignChanged() {
     if (!mounted || widget.isPreview) return;
-    setState(() {
-      _signed = AutoSignService.instance.isSignedToday();
-      if (AutoSignService.instance.continuousDays > 0) {
-        _streakDays = AutoSignService.instance.continuousDays;
-      }
-    });
+    setState(_syncLocalState);
   }
 
   Future<void> _checkSignStatus() async {
+    final session = DioClient.sessionKey;
+    final day = AutoSignService.instance.serverTodayStr;
+    if (!DioClient.isLoggedIn) return;
     try {
-      final info = await KlpbbsApi.getSignHeaderInfo();
-      if (mounted) {
+      final info = await KlpbbsApi.getSignHeaderInfo(forceRefresh: false);
+      if (mounted &&
+          session == DioClient.sessionKey &&
+          day == AutoSignService.instance.serverTodayStr) {
         setState(() {
-          _signed = info.isSignedToday || AutoSignService.instance.isSignedToday();
-          if (info.continuousDays > 0) {
-            _streakDays = info.continuousDays;
-          } else if (AutoSignService.instance.continuousDays > 0) {
-            _streakDays = AutoSignService.instance.continuousDays;
-          }
-          if (info.retroSignDays > 0) {
-            _retroSignDays = info.retroSignDays;
-          }
+          _stateDay = day;
+          _applyHeader(info);
         });
       }
     } catch (_) {}
   }
 
   Future<void> _handleSign() async {
+    if (_signing) return;
     if (widget.isPreview) {
-      if (_signed) {
-        Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => const SignRankPage()),
-        );
-      } else {
-        setState(() {
-          _signed = true;
-          _streakDays++;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('预览模式：签到成功！铁粒 +20，连签天数已更新')),
-        );
-      }
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('布局预览中不会提交签到')));
+      return;
+    }
+    if (!DioClient.isLoggedIn) {
+      await Navigator.of(context)
+          .push(MaterialPageRoute(builder: (_) => const LoginPage()));
       return;
     }
 
@@ -121,50 +171,70 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
       return;
     }
 
+    final session = DioClient.sessionKey;
+    final day = AutoSignService.instance.serverTodayStr;
     setState(() => _signing = true);
     final messenger = ScaffoldMessenger.of(context);
     try {
       final res = await KlpbbsApi.signIn();
-      if (mounted) {
-        final success = res.success || res.message.contains('已经签到') || res.message.contains('今日已签');
+      if (mounted &&
+          session == DioClient.sessionKey &&
+          day == AutoSignService.instance.serverTodayStr) {
+        final success = res.confirmed;
         setState(() {
-          _signed = success;
-          if (res.continuousDays != null && res.continuousDays! > 0) {
+          if (success) {
+            _signed = true;
+            _stateKnown = true;
+            _stateDay = day;
+          }
+          if (res.continuousDays != null) {
             _streakDays = res.continuousDays!;
-          } else if (res.success) {
-            _streakDays++;
+            _streakKnown = true;
           }
         });
         if (success) {
           await AutoSignService.instance.markSignedToday(
             rank: res.rank,
-            continuousDays: _streakDays,
+            continuousDays: res.continuousDays,
+            expectedSession: session,
             rewardIron: res.rewardIron,
             rewardExp: res.rewardExp,
-            notify: true,
+            notify: res.success,
           );
-          if (!mounted) return;
+          if (!mounted ||
+              session != DioClient.sessionKey ||
+              day != AutoSignService.instance.serverTodayStr) {
+            return;
+          }
+          if (res.alreadySigned) {
+            messenger.showSnackBar(SnackBar(content: Text(res.message)));
+            return;
+          }
           _showSignSuccessDialog(
             context: context,
             message: res.message.isNotEmpty ? res.message : '打卡成功！',
             iron: res.rewardIron,
             exp: res.rewardExp,
             rank: res.rank,
-            days: _streakDays,
+            days: res.continuousDays,
           );
         } else {
           if (!mounted) return;
           messenger.showSnackBar(
-            SnackBar(content: Text(res.message.isNotEmpty ? res.message : '打卡未完成，请稍后重试')),
+            SnackBar(
+                content:
+                    Text(res.message.isNotEmpty ? res.message : '打卡未完成，请稍后重试')),
           );
         }
       }
     } catch (e) {
-      if (mounted) {
+      if (mounted && session == DioClient.sessionKey) {
         messenger.showSnackBar(SnackBar(content: Text('签到异常: $e')));
       }
     } finally {
-      if (mounted) setState(() => _signing = false);
+      if (mounted && session == DioClient.sessionKey) {
+        setState(() => _signing = false);
+      }
     }
   }
 
@@ -190,11 +260,14 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
                 color: scheme.primaryContainer,
                 shape: BoxShape.circle,
               ),
-              child: Icon(Icons.check_circle_rounded, color: scheme.primary, size: 26),
+              child: Icon(Icons.check_circle_rounded,
+                  color: scheme.primary, size: 26),
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Text(message, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+              child: Text(message,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 18)),
             ),
           ],
         ),
@@ -204,30 +277,49 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
             if (iron != null && iron.isNotEmpty)
               ListTile(
                 dense: true,
-                leading: const Icon(Icons.monetization_on_rounded, color: Colors.amber),
+                leading:
+                    Icon(Icons.monetization_on_rounded, color: scheme.primary),
                 title: const Text('获得铁粒'),
-                trailing: Text('+$iron 粒', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.amber, fontSize: 14)),
+                trailing: Text('+$iron 粒',
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: scheme.primary,
+                        fontSize: 14)),
               ),
             if (exp != null && exp.isNotEmpty)
               ListTile(
                 dense: true,
-                leading: const Icon(Icons.star_rounded, color: Colors.blue),
+                leading: Icon(Icons.star_rounded, color: scheme.primary),
                 title: const Text('获得经验'),
-                trailing: Text('+$exp 点', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue, fontSize: 14)),
+                trailing: Text('+$exp 点',
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: scheme.primary,
+                        fontSize: 14)),
               ),
             if (rank != null && rank > 0)
               ListTile(
                 dense: true,
-                leading: const Icon(Icons.emoji_events_rounded, color: Colors.orange),
+                leading:
+                    Icon(Icons.emoji_events_rounded, color: scheme.primary),
                 title: const Text('今日排名'),
-                trailing: Text('第 $rank 名', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange, fontSize: 14)),
+                trailing: Text('第 $rank 名',
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: scheme.primary,
+                        fontSize: 14)),
               ),
             if (days != null && days > 0)
               ListTile(
                 dense: true,
-                leading: const Icon(Icons.calendar_today_rounded, color: Colors.green),
+                leading:
+                    Icon(Icons.calendar_today_rounded, color: scheme.primary),
                 title: const Text('连续签到'),
-                trailing: Text('$days 天', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 14)),
+                trailing: Text('$days 天',
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: scheme.primary,
+                        fontSize: 14)),
               ),
           ],
         ),
@@ -239,7 +331,8 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
           FilledButton(
             onPressed: () {
               Navigator.pop(dialogCtx);
-              Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SignRankPage()));
+              Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const SignRankPage()));
             },
             child: const Text('查看风云榜'),
           ),
@@ -251,9 +344,12 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
   @override
   Widget build(BuildContext context) {
     final customTitle = widget.item.customParams['customTitle'] as String?;
-    final title = (customTitle != null && customTitle.isNotEmpty) ? customTitle : '今日运势与签到';
+    final title = (customTitle != null && customTitle.isNotEmpty)
+        ? customTitle
+        : '签到与游戏提示';
 
-    final rawDataStyle = widget.item.customParams['dataStyle'] as String? ?? 'auto';
+    final rawDataStyle =
+        widget.item.customParams['dataStyle'] as String? ?? 'auto';
     final String dataStyle;
     if (rawDataStyle == 'auto') {
       final isCompact = widget.item.rowSpan <= 1;
@@ -286,11 +382,9 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
           height: 32,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            gradient: LinearGradient(
-              colors: [accent, accent.withAlpha(200)],
-            ),
+            color: accent.withAlpha(24),
           ),
-          child: const Icon(Icons.auto_awesome_rounded, size: 18, color: Colors.white),
+          child: Icon(Icons.auto_awesome_rounded, size: 18, color: accent),
         ),
         const SizedBox(width: 8),
         Expanded(
@@ -302,17 +396,20 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
                 fortune.$1,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                style:
+                    const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
               ),
               Text(
-                _signed
-                    ? (_streakDays > 0 ? '已连续打卡 $_streakDays 天' : '今日已完成打卡')
-                    : (_retroSignDays > 0 ? '断签可使用补签卡' : '今日尚未打卡'),
+                _statusText,
                 maxLines: 1,
                 style: TextStyle(
                   fontSize: 10,
-                  color: !_signed && _retroSignDays > 0 ? Colors.orange.shade800 : colorScheme.outline,
-                  fontWeight: !_signed && _retroSignDays > 0 ? FontWeight.bold : FontWeight.normal,
+                  color: _stateKnown && !_signed && _retroSignDays > 0
+                      ? Colors.orange.shade800
+                      : colorScheme.outline,
+                  fontWeight: _stateKnown && !_signed && _retroSignDays > 0
+                      ? FontWeight.bold
+                      : FontWeight.normal,
                 ),
               ),
             ],
@@ -322,11 +419,16 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
           style: FilledButton.styleFrom(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             visualDensity: VisualDensity.compact,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           ),
           onPressed: _signing ? null : _handleSign,
           child: Text(
-            _signed ? '已签' : (_signing ? '中...' : '签到'),
+            !DioClient.isLoggedIn
+                ? '登录'
+                : _signed
+                    ? '已签'
+                    : (_signing ? '签到中' : '签到'),
             style: const TextStyle(fontSize: 11),
           ),
         ),
@@ -346,17 +448,20 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
           children: [
             Icon(Icons.event_available_rounded, size: 17, color: accent),
             const SizedBox(width: 6),
-            Text(
+            Expanded(
+                child: Text(
               title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.bold,
                 color: colorScheme.onSurface,
               ),
-            ),
-            const Spacer(),
+            )),
             InkWell(
-              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SignRankPage())),
+              onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const SignRankPage())),
               child: Text(
                 '风云榜 >',
                 style: TextStyle(fontSize: 11, color: colorScheme.primary),
@@ -389,7 +494,8 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
                               fortune.$1,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                              style: const TextStyle(
+                                  fontSize: 12.5, fontWeight: FontWeight.bold),
                             ),
                           ),
                         ],
@@ -399,19 +505,22 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
                         fortune.$2,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 10.5, color: colorScheme.outline),
+                        style: TextStyle(
+                            fontSize: 10.5, color: colorScheme.outline),
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        _signed
-                            ? (_streakDays > 0 ? '🔥 连续打卡第 $_streakDays 天' : '✨ 今日已完成打卡')
-                            : (_retroSignDays > 0 ? '💡 有 $_retroSignDays 天断签，可用补签卡恢复' : '🌟 今天还没有打卡哦'),
+                        _statusText,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: 10,
                           fontWeight: FontWeight.bold,
-                          color: _signed ? accent : Colors.orange.shade700,
+                          color: !_stateKnown
+                              ? colorScheme.onSurfaceVariant
+                              : _signed
+                                  ? accent
+                                  : colorScheme.tertiary,
                         ),
                       ),
                     ],
@@ -419,12 +528,23 @@ class _SignFortuneDashboardCardState extends State<SignFortuneDashboardCard> {
                 ),
                 FilledButton(
                   style: FilledButton.styleFrom(
-                    backgroundColor: _signed ? Colors.grey.shade400 : colorScheme.primary,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    backgroundColor: _signed
+                        ? colorScheme.secondaryContainer
+                        : colorScheme.primary,
+                    foregroundColor: _signed
+                        ? colorScheme.onSecondaryContainer
+                        : colorScheme.onPrimary,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   ),
                   onPressed: _signing ? null : _handleSign,
-                  child: Text(_signed ? '已打卡' : (_signing ? '打卡中' : '立即签到')),
+                  child: Text(!DioClient.isLoggedIn
+                      ? '登录'
+                      : _signed
+                          ? '已打卡'
+                          : (_signing ? '打卡中' : '立即签到')),
                 ),
               ],
             ),

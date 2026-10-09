@@ -3,6 +3,7 @@ class FriendItem {
   final int uid;
   final String username;
   final String avatarUrl;
+  final String? faceUrl;
   final String usergroup;
   final String credits;
 
@@ -22,6 +23,7 @@ class FriendItem {
     required this.uid,
     required this.username,
     this.avatarUrl = '',
+    this.faceUrl,
     this.usergroup = '',
     this.credits = '',
     this.isOnline = false,
@@ -34,6 +36,7 @@ class FriendItem {
     int? uid,
     String? username,
     String? avatarUrl,
+    String? faceUrl,
     String? usergroup,
     String? credits,
     bool? isOnline,
@@ -45,6 +48,7 @@ class FriendItem {
         uid: uid ?? this.uid,
         username: username ?? this.username,
         avatarUrl: avatarUrl ?? this.avatarUrl,
+        faceUrl: faceUrl ?? this.faceUrl,
         usergroup: usergroup ?? this.usergroup,
         credits: credits ?? this.credits,
         isOnline: isOnline ?? this.isOnline,
@@ -57,6 +61,7 @@ class FriendItem {
         'uid': uid,
         'username': username,
         'avatarUrl': avatarUrl,
+        'faceUrl': faceUrl,
         'usergroup': usergroup,
         'credits': credits,
         'isOnline': isOnline,
@@ -69,6 +74,7 @@ class FriendItem {
         uid: json['uid'] as int? ?? 0,
         username: json['username'] as String? ?? '',
         avatarUrl: json['avatarUrl'] as String? ?? '',
+        faceUrl: json['faceUrl'] as String?,
         usergroup: json['usergroup'] as String? ?? '',
         credits: json['credits'] as String? ?? '',
         isOnline: json['isOnline'] as bool? ?? false,

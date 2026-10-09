@@ -18,47 +18,60 @@ class PaginationControl extends StatelessWidget {
     this.compact = false,
   });
 
-  void _showJumpDialog(BuildContext context) {
+  Future<void> _showJumpDialog(BuildContext context) async {
     final ctrl = TextEditingController(text: '$page');
-    showDialog(
+    final form = GlobalKey<FormState>();
+    void submit(BuildContext ctx) {
+      if (form.currentState?.validate() != true) return;
+      final target = int.parse(ctrl.text.trim());
+      Navigator.of(ctx).pop();
+      onPageChanged(target);
+    }
+
+    final route = DialogRoute<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('跳转页码'),
-        content: TextField(
-          controller: ctrl,
-          keyboardType: TextInputType.number,
-          autofocus: true,
-          decoration: InputDecoration(
-            labelText: '输入目标页码',
-            helperText: totalPages != null ? '共 $totalPages 页' : null,
-            border: const OutlineInputBorder(),
-          ),
-          onSubmitted: (val) {
-            final p = int.tryParse(val);
-            if (p != null && p > 0) {
-              Navigator.of(ctx).pop();
-              onPageChanged(p);
-            }
-          },
-        ),
+        content: Form(
+            key: form,
+            child: TextFormField(
+              key: const ValueKey('pagination-jump-input'),
+              controller: ctrl,
+              keyboardType: TextInputType.number,
+              autofocus: true,
+              autovalidateMode: AutovalidateMode.onUserInteraction,
+              validator: (value) {
+                final target = int.tryParse(value?.trim() ?? '');
+                if (target == null || target < 1) return '请输入大于零的整数';
+                if (totalPages != null &&
+                    totalPages! > 0 &&
+                    target > totalPages!) {
+                  return '页码范围为 1～$totalPages';
+                }
+                return null;
+              },
+              decoration: InputDecoration(
+                labelText: '输入目标页码',
+                helperText: totalPages != null ? '共 $totalPages 页' : null,
+                border: const OutlineInputBorder(),
+              ),
+              onFieldSubmitted: (_) => submit(ctx),
+            )),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
             child: const Text('取消'),
           ),
           FilledButton(
-            onPressed: () {
-              final p = int.tryParse(ctrl.text);
-              if (p != null && p > 0) {
-                Navigator.of(ctx).pop();
-                onPageChanged(p);
-              }
-            },
+            onPressed: () => submit(ctx),
             child: const Text('跳转'),
           ),
         ],
       ),
     );
+    await Navigator.of(context, rootNavigator: true).push(route);
+    await route.completed;
+    ctrl.dispose();
   }
 
   @override
@@ -84,8 +97,10 @@ class PaginationControl extends StatelessWidget {
           children: [
             OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20)),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               ),
               onPressed: page > 1 ? () => onPageChanged(page - 1) : null,
               icon: const Icon(Icons.chevron_left, size: 18),
@@ -95,11 +110,13 @@ class PaginationControl extends StatelessWidget {
               onTap: () => _showJumpDialog(context),
               borderRadius: BorderRadius.circular(16),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                 decoration: BoxDecoration(
                   color: colorScheme.surfaceContainerHighest.withAlpha(80),
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: colorScheme.outlineVariant.withAlpha(60)),
+                  border: Border.all(
+                      color: colorScheme.outlineVariant.withAlpha(60)),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -124,8 +141,10 @@ class PaginationControl extends StatelessWidget {
             ),
             OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20)),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               ),
               onPressed: (totalPages != null ? page < totalPages! : hasMore)
                   ? () => onPageChanged(page + 1)

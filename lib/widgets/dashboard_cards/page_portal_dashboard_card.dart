@@ -73,7 +73,9 @@ class PagePortalDashboardCard extends StatelessWidget {
     final targetPage = item.customParams['targetPage'] as String? ?? 'medal';
     final pageName = item.customParams['pageName'] as String? ?? '勋章中心';
     final customTitle = item.customParams['customTitle'] as String?;
-    final title = (customTitle != null && customTitle.isNotEmpty) ? customTitle : pageName;
+    final title = (customTitle != null && customTitle.isNotEmpty)
+        ? customTitle
+        : pageName;
 
     return RepaintBoundary(
       child: DashboardCardFrame(
@@ -89,7 +91,8 @@ class PagePortalDashboardCard extends StatelessWidget {
                 color: colorScheme.primaryContainer.withAlpha(120),
                 shape: BoxShape.circle,
               ),
-              child: Icon(Icons.open_in_new_rounded, size: 18, color: colorScheme.primary),
+              child: Icon(Icons.open_in_new_rounded,
+                  size: 18, color: colorScheme.primary),
             ),
             const SizedBox(width: 8),
             Expanded(
@@ -101,7 +104,8 @@ class PagePortalDashboardCard extends StatelessWidget {
                     title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                        fontSize: 12.5, fontWeight: FontWeight.bold),
                   ),
                   Text(
                     '传送门 · 直达 $pageName',
@@ -111,7 +115,8 @@ class PagePortalDashboardCard extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(Icons.chevron_right_rounded, size: 18, color: colorScheme.outline),
+            Icon(Icons.chevron_right_rounded,
+                size: 18, color: colorScheme.outline),
           ],
         ),
       ),

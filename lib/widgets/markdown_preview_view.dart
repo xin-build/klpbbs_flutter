@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'dart:math';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -934,7 +935,7 @@ class _MarkdownPreviewViewState extends State<MarkdownPreviewView> {
                 placeholder: (_, __) => Container(
                   height: 120,
                   color: colorScheme.surfaceContainerHighest.withAlpha(60),
-                  child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                  child: const Center(child: AppLoadingIndicator(strokeWidth: 2)),
                 ),
                 errorWidget: (_, __, ___) => Container(
                   height: 60,

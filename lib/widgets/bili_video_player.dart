@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'dart:async';
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -225,7 +226,7 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> with TickerProviderSt
     if (_selectedSubtitle == null || _subtitleLines.isEmpty) return null;
     for (final line in _subtitleLines) {
       if (line.from <= currentSec && currentSec <= line.to) {
-        if (_transEnabled && (line.translation == null || line.translation!.isEmpty)) {
+        if (_transEnabled && line.translation == null) {
           _triggerTranslation(line);
         }
         return line;
@@ -238,10 +239,14 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> with TickerProviderSt
     if (_translatingFrom.contains(line.from)) return;
     _translatingFrom.add(line.from);
     BiliApi.translateText(line.content, targetLang: _transLang).then((trans) {
-      if (trans != null && mounted) {
-        setState(() => line.translation = trans);
+      if (mounted) {
+        setState(() => line.translation = trans ?? '');
+      } else {
+        line.translation = trans ?? '';
       }
-    }).catchError((_) {}).whenComplete(() {
+    }).catchError((_) {
+      line.translation = '';
+    }).whenComplete(() {
       _translatingFrom.remove(line.from);
     });
   }
@@ -358,12 +363,9 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> with TickerProviderSt
             if (mounted && info != null) {
               BiliVideoPlayer._infoCache[widget.bvid] = info;
               setState(() => _info = info);
-              _loadDanmakuAndSubtitles();
             }
           })
           .catchError((_) {});
-    } else if (_info != null && (_danmakus.isEmpty || _subtitles.isEmpty)) {
-      _loadDanmakuAndSubtitles();
     }
   }
 
@@ -733,7 +735,7 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> with TickerProviderSt
                   width: 90,
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(3),
-                    child: LinearProgressIndicator(
+                    child: AppLoadingBar(
                       value: effectiveVol / 100.0,
                       backgroundColor: Colors.white24,
                       valueColor: AlwaysStoppedAnimation<Color>(primary),
@@ -1441,7 +1443,7 @@ class _BiliVideoPlayerState extends State<BiliVideoPlayer> with TickerProviderSt
                         ? const SizedBox(
                             width: 24,
                             height: 24,
-                            child: CircularProgressIndicator(
+                            child: AppLoadingIndicator(
                               strokeWidth: 2.5,
                               color: Colors.white,
                             ),
@@ -2520,7 +2522,7 @@ class _FullscreenBiliPlayerState extends State<_FullscreenBiliPlayer> with Ticke
     if (_selectedSubtitle == null || _subtitleLines.isEmpty) return null;
     for (final line in _subtitleLines) {
       if (line.from <= currentSec && currentSec <= line.to) {
-        if (_transEnabled && (line.translation == null || line.translation!.isEmpty)) {
+        if (_transEnabled && line.translation == null) {
           _triggerTranslation(line);
         }
         return line;
@@ -2533,10 +2535,14 @@ class _FullscreenBiliPlayerState extends State<_FullscreenBiliPlayer> with Ticke
     if (_translatingFrom.contains(line.from)) return;
     _translatingFrom.add(line.from);
     BiliApi.translateText(line.content, targetLang: _transLang).then((trans) {
-      if (trans != null && mounted) {
-        setState(() => line.translation = trans);
+      if (mounted) {
+        setState(() => line.translation = trans ?? '');
+      } else {
+        line.translation = trans ?? '';
       }
-    }).catchError((_) {}).whenComplete(() {
+    }).catchError((_) {
+      line.translation = '';
+    }).whenComplete(() {
       _translatingFrom.remove(line.from);
     });
   }
@@ -2803,7 +2809,7 @@ class _FullscreenBiliPlayerState extends State<_FullscreenBiliPlayer> with Ticke
                   width: 110,
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(3),
-                    child: LinearProgressIndicator(
+                    child: AppLoadingBar(
                       value: effectiveVol / 100.0,
                       backgroundColor: Colors.white24,
                       valueColor: AlwaysStoppedAnimation<Color>(primary),

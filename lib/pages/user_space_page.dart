@@ -1,15 +1,18 @@
-import 'dart:async';
+import '../widgets/app_motion.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:flutter/services.dart';
 
+import '../widgets/usergroup_comparison_sheet.dart';
 import '../api/comiis_parser.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
+import '../core/cache_manager.dart';
+import '../core/dio_client.dart';
 import '../core/preload_service.dart';
 import '../models/server_outage_info.dart';
 import '../models/user_space.dart';
-import '../models/usergroup_comparison.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/inline_html_text.dart';
@@ -19,7 +22,6 @@ import 'credit_page.dart';
 import 'friend_page.dart';
 import 'homestyle_page.dart';
 import 'login_page.dart';
-import 'magic_page.dart';
 import 'medal_page.dart';
 import 'pm_detail_page.dart';
 import 'profile_settings_page.dart';
@@ -27,13 +29,15 @@ import 'user_threads_page.dart';
 
 /// 苦力怕论坛个人空间 / 我的空间（深度复刻图二：官方移动端空间完整资料与操作体系，100% 防塌陷架构）
 class UserSpacePage extends StatefulWidget {
-  final int uid;
+  final int? uid;
+  final String? username;
   final bool? isMe;
   final UserSpace? initialUser;
 
   const UserSpacePage({
     super.key,
-    required this.uid,
+    this.uid,
+    this.username,
     this.isMe,
     this.initialUser,
   });
@@ -45,13 +49,34 @@ class UserSpacePage extends StatefulWidget {
 class _UserSpacePageState extends State<UserSpacePage> {
   late Future<UserSpace?> _future;
   int _selectedTab = 0; // 0: 资料, 1: 帖子
+  bool _threadsVisited = false;
   bool _isMe = false;
+  int _resolvedUid = 0;
+  UserSpace? _cachedUser;
+  int _loadSequence = 0;
+  late final String _initialSession;
+
+  int get targetUid => _resolvedUid > 0 ? _resolvedUid : (widget.uid ?? 0);
 
   @override
   void initState() {
     super.initState();
-    if (widget.initialUser != null) {
-      _future = Future.value(widget.initialUser);
+    _initialSession = DioClient.sessionKey;
+    DioClient.sessionChanges.addListener(_onSessionChanged);
+    KlpbbsApi.profileChanges.addListener(_onProfileChanged);
+    _resolvedUid = widget.uid ?? widget.initialUser?.uid ?? 0;
+    final effectiveUid =
+        (widget.uid != null && widget.uid! > 0) ? widget.uid! : _resolvedUid;
+    if (effectiveUid > 0) {
+      _cachedUser = PreloadService.instance.get<UserSpace>(
+              'user_space_$effectiveUid',
+              ignoreExpired: true) ??
+          widget.initialUser;
+    } else {
+      _cachedUser = widget.initialUser;
+    }
+    if (_cachedUser != null) {
+      _future = Future.value(_cachedUser);
       _isMe = widget.isMe ?? false;
       _loadData();
     } else {
@@ -60,33 +85,112 @@ class _UserSpacePageState extends State<UserSpacePage> {
   }
 
   void _loadData({bool forceRefresh = false}) {
-    if (forceRefresh) {
-      PreloadService.instance.remove('user_space_${widget.uid}');
-    }
-    final cached = PreloadService.instance.get<UserSpace>('user_space_${widget.uid}', ignoreExpired: true);
-    if (!forceRefresh && cached != null) {
-      _future = Future.value(cached);
-      unawaited(
-        KlpbbsApi.getUserSpace(widget.uid, forceRefresh: true).then((fresh) {
-          if (mounted && fresh != null) {
-            setState(() => _future = Future.value(fresh));
-          }
-        }).catchError((_) {}),
-      );
-    } else {
+    final sequence = ++_loadSequence;
+    final session = DioClient.sessionKey;
+    bool current() =>
+        mounted && sequence == _loadSequence && session == DioClient.sessionKey;
+    final effectiveUid =
+        (widget.uid != null && widget.uid! > 0) ? widget.uid! : _resolvedUid;
+    if (effectiveUid > 0) {
+      final cached = PreloadService.instance
+          .get<UserSpace>('user_space_$effectiveUid', ignoreExpired: true);
+      final candidate = cached ??
+          _cachedUser ??
+          (session == _initialSession ? widget.initialUser : null);
+      final initialCandidate =
+          candidate?.uid == effectiveUid ? candidate : null;
+      if (initialCandidate != null) {
+        _cachedUser = initialCandidate;
+      }
+      final bool hasFullData = initialCandidate != null &&
+          (initialCandidate.creditsDetail.isNotEmpty ||
+              initialCandidate.stats.isNotEmpty ||
+              initialCandidate.isLocked);
+      if (!forceRefresh &&
+          hasFullData &&
+          PreloadService.instance.has('user_space_$effectiveUid')) {
+        _future = Future.value(initialCandidate);
+      } else {
+        if (initialCandidate != null) {
+          _future =
+              KlpbbsApi.getUserSpace(effectiveUid, forceRefresh: forceRefresh)
+                  .then((fresh) {
+            if (current() && fresh != null && fresh.uid > 0) {
+              setState(() {
+                _resolvedUid = fresh.uid;
+                _cachedUser = fresh;
+                _future = Future.value(fresh);
+              });
+            }
+            return fresh ?? initialCandidate;
+          });
+        } else {
+          setState(() {
+            _future =
+                KlpbbsApi.getUserSpace(effectiveUid, forceRefresh: forceRefresh)
+                    .then((fresh) {
+              if (current() && fresh != null && fresh.uid > 0) {
+                setState(() {
+                  _resolvedUid = fresh.uid;
+                  _cachedUser = fresh;
+                });
+              }
+              return fresh;
+            });
+          });
+        }
+      }
+    } else if (widget.username != null && widget.username!.isNotEmpty) {
       setState(() {
-        _future = KlpbbsApi.getUserSpace(widget.uid, forceRefresh: forceRefresh);
+        _future = KlpbbsApi.getUserSpaceByName(widget.username!).then((fresh) {
+          if (current() && fresh != null && fresh.uid > 0) {
+            setState(() {
+              _resolvedUid = fresh.uid;
+              _cachedUser = fresh;
+            });
+          }
+          return fresh;
+        });
       });
+    } else {
+      _future = Future.value(null);
     }
-    if (widget.isMe != null) {
-      _isMe = widget.isMe!;
+
+    _future.ignore();
+    if (!DioClient.isLoggedIn) {
+      _isMe = false;
+    } else if (KlpbbsApi.currentCachedMyUid != null) {
+      _isMe = KlpbbsApi.currentCachedMyUid == targetUid;
     } else {
       KlpbbsApi.getMyUid().then((myUid) {
-        if (mounted && myUid != null) {
-          setState(() => _isMe = (myUid == widget.uid));
+        if (current() && myUid != null) {
+          setState(() => _isMe = (myUid == targetUid));
         }
-      });
+      }).catchError((_) {});
     }
+  }
+
+  void _onSessionChanged() {
+    if (!mounted) return;
+    setState(() {
+      _cachedUser = null;
+      _isMe = false;
+      _loadData(forceRefresh: true);
+    });
+  }
+
+  void _onProfileChanged() {
+    if (mounted && targetUid == KlpbbsApi.currentCachedMyUid) {
+      setState(() => _loadData(forceRefresh: true));
+    }
+  }
+
+  @override
+  void dispose() {
+    _loadSequence++;
+    DioClient.sessionChanges.removeListener(_onSessionChanged);
+    KlpbbsApi.profileChanges.removeListener(_onProfileChanged);
+    super.dispose();
   }
 
   void _showQrCodeDialog(UserSpace user) {
@@ -105,19 +209,25 @@ class _UserSpacePageState extends State<UserSpacePage> {
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: Colors.grey.withAlpha(50)),
               ),
-              child: const Icon(Icons.qr_code_2, size: 160, color: Colors.black87),
+              child: QrImageView(
+                  data: '${AppConfig.baseUrl}space-uid-${user.uid}.html',
+                  size: 180,
+                  padding: const EdgeInsets.all(12),
+                  backgroundColor: Colors.white),
             ),
             const SizedBox(height: 12),
             SelectableText(
-              'https://klpbbs.com/?${user.uid}',
-              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.outline),
+              '${AppConfig.baseUrl}space-uid-${user.uid}.html',
+              style: TextStyle(
+                  fontSize: 12, color: Theme.of(context).colorScheme.outline),
             ),
           ],
         ),
         actions: [
           TextButton(
             onPressed: () {
-              Clipboard.setData(ClipboardData(text: 'https://klpbbs.com/?${user.uid}'));
+              Clipboard.setData(ClipboardData(
+                  text: '${AppConfig.baseUrl}space-uid-${user.uid}.html'));
               Navigator.of(ctx).pop();
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('已复制个人空间链接')),
@@ -125,456 +235,22 @@ class _UserSpacePageState extends State<UserSpacePage> {
             },
             child: const Text('复制链接'),
           ),
-          FilledButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('关闭')),
+          FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('关闭')),
         ],
       ),
     );
   }
 
-  /// 用户组权限与全等级对照系统抽屉（100% 还原 home.php?mod=spacecp&ac=usergroup 网页真实数据）
-  /// 用户组权限与全等级对照系统抽屉（100% 还原 home.php?mod=spacecp&ac=usergroup 网页真实数据与菜单分类）
   void _showUsergroupPrivilegesDialog(UserSpace user) {
-    int? selectedGid;
-    String selectedGroupName = 'Lv.5 金牌会员';
-
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => StatefulBuilder(
-        builder: (context, setModalState) => DefaultTabController(
-          length: 2,
-          child: DraggableScrollableSheet(
-            initialChildSize: 0.88,
-            maxChildSize: 0.96,
-            minChildSize: 0.5,
-            expand: false,
-            builder: (c, scroll) => Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.shield_outlined, color: Color(0xFFF57C00), size: 24),
-                      const SizedBox(width: 8),
-                      const Text(
-                        '用户组权限对照系统',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
-                      ),
-                      const Spacer(),
-                      IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.of(ctx).pop()),
-                    ],
-                  ),
-                ),
-                const TabBar(
-                  tabs: [
-                    Tab(text: '我的与目标组对比'),
-                    Tab(text: '全等级权限对照表'),
-                  ],
-                ),
-                Expanded(
-                  child: TabBarView(
-                    children: [
-                      // Tab 1: 网页真实双列对照（我的主用户组 vs 选定用户组）
-                      Column(
-                        children: [
-                          // 顶部用户组切换栏（对应网页右上角：晋级用户组 / 站点管理组 / 普通用户组）
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                            color: Theme.of(context).colorScheme.surfaceContainerHighest.withAlpha(80),
-                            child: Row(
-                              children: [
-                                const Text('对比目标：', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: SingleChildScrollView(
-                                    scrollDirection: Axis.horizontal,
-                                    child: Row(
-                                      children: [
-                                        // 晋级用户组快捷标签
-                                        for (final g in UsergroupComparison.allGroups.where((e) => e.category == '晋级用户组'))
-                                          Padding(
-                                            padding: const EdgeInsets.only(right: 6),
-                                            child: ChoiceChip(
-                                              label: Text(g.name, style: const TextStyle(fontSize: 11.5)),
-                                              selected: selectedGroupName == g.name,
-                                              onSelected: (selected) {
-                                                if (selected) {
-                                                  setModalState(() {
-                                                    selectedGroupName = g.name;
-                                                    selectedGid = g.gid;
-                                                  });
-                                                }
-                                              },
-                                            ),
-                                          ),
-                                        // 更多用户组选择（站点管理组 / 普通用户组）
-                                        PopupMenuButton<KlpbbsUserGroupMeta>(
-                                          tooltip: '更多用户组',
-                                          child: Chip(
-                                            avatar: const Icon(Icons.more_horiz, size: 16),
-                                            label: Text(
-                                              UsergroupComparison.allGroups.any((e) => e.name == selectedGroupName && e.category != '晋级用户组')
-                                                  ? selectedGroupName
-                                                  : '管理/特殊组...',
-                                              style: const TextStyle(fontSize: 11.5),
-                                            ),
-                                          ),
-                                          itemBuilder: (ctx) => [
-                                            const PopupMenuItem<KlpbbsUserGroupMeta>(
-                                              enabled: false,
-                                              child: Text('—— 站点管理组 ——', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                                            ),
-                                            for (final g in UsergroupComparison.allGroups.where((e) => e.category == '站点管理组'))
-                                              PopupMenuItem(value: g, child: Text(g.name, style: const TextStyle(fontSize: 13))),
-                                            const PopupMenuItem<KlpbbsUserGroupMeta>(
-                                              enabled: false,
-                                              child: Text('—— 普通用户组 ——', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                                            ),
-                                            for (final g in UsergroupComparison.allGroups.where((e) => e.category == '普通用户组'))
-                                              PopupMenuItem(value: g, child: Text(g.name, style: const TextStyle(fontSize: 13))),
-                                          ],
-                                          onSelected: (meta) {
-                                            setModalState(() {
-                                              selectedGroupName = meta.name;
-                                              selectedGid = meta.gid;
-                                            });
-                                          },
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Expanded(
-                            child: FutureBuilder<UsergroupComparison>(
-                              key: ValueKey('usergroup_${selectedGroupName}_${selectedGid ?? 0}'),
-                              future: KlpbbsApi.getUsergroupComparison(
-                                currentGroupName: user.levelName.isNotEmpty ? user.levelName : user.level,
-                                currentCredits: int.tryParse(user.credits),
-                                targetGroupName: selectedGroupName,
-                                gid: selectedGid,
-                              ),
-                              builder: (context, snapshot) {
-                                if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
-                                  return const Center(
-                                    child: Padding(
-                                      padding: EdgeInsets.all(40),
-                                      child: CircularProgressIndicator(),
-                                    ),
-                                  );
-                                }
-
-                                final comp = snapshot.data ??
-                                    ComiisParser.defaultUsergroupComparison(
-                                      currentGroupName: user.levelName.isNotEmpty ? user.levelName : user.level,
-                                      currentCredits: int.tryParse(user.credits),
-                                      targetGroupName: selectedGroupName,
-                                      gid: selectedGid,
-                                    );
-
-                                return ListView(
-                                  controller: scroll,
-                                  padding: const EdgeInsets.all(12),
-                                  children: [
-                                    // 1. 顶部橙绿双列标头
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-                                            decoration: const BoxDecoration(
-                                              color: Color(0xFFF57C00),
-                                              borderRadius: BorderRadius.horizontal(left: Radius.circular(8)),
-                                            ),
-                                            child: Column(
-                                              children: [
-                                                Text(
-                                                  comp.myGroup.title,
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontWeight: FontWeight.bold,
-                                                    fontSize: 13,
-                                                  ),
-                                                  textAlign: TextAlign.center,
-                                                ),
-                                                if (comp.myGroup.subtitle.isNotEmpty) ...[
-                                                  const SizedBox(height: 3),
-                                                  Text(
-                                                    '💡 ${comp.myGroup.subtitle}',
-                                                    style: const TextStyle(
-                                                      color: Colors.white,
-                                                      fontSize: 11,
-                                                    ),
-                                                    textAlign: TextAlign.center,
-                                                  ),
-                                                ],
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 2),
-                                        Expanded(
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-                                            decoration: const BoxDecoration(
-                                              color: Color(0xFF00897B),
-                                              borderRadius: BorderRadius.horizontal(right: Radius.circular(8)),
-                                            ),
-                                            child: Column(
-                                              children: [
-                                                Text(
-                                                  comp.upgradeGroup?.title ?? '对比目标 - $selectedGroupName',
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontWeight: FontWeight.bold,
-                                                    fontSize: 13,
-                                                  ),
-                                                  textAlign: TextAlign.center,
-                                                ),
-                                                if (comp.upgradeGroup?.subtitle.isNotEmpty == true) ...[
-                                                  const SizedBox(height: 3),
-                                                  Text(
-                                                    '💡 ${comp.upgradeGroup!.subtitle}',
-                                                    style: const TextStyle(
-                                                      color: Colors.white,
-                                                      fontSize: 11,
-                                                    ),
-                                                    textAlign: TextAlign.center,
-                                                  ),
-                                                ],
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 8),
-                                    // 2. 权限明细对照表
-                                    Container(
-                                      decoration: BoxDecoration(
-                                        color: Theme.of(context).colorScheme.surface,
-                                        borderRadius: BorderRadius.circular(8),
-                                        border: Border.all(
-                                          color: Theme.of(context).colorScheme.outlineVariant.withAlpha(80),
-                                        ),
-                                      ),
-                                      child: Column(
-                                        children: [
-                                          for (int i = 0; i < comp.permissions.length; i++)
-                                            _buildComparisonItemRow(
-                                              comp.permissions[i],
-                                              i % 2 == 0,
-                                              Theme.of(context),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                );
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-                      // Tab 2: 全等级对照表（严格对应苦力怕论坛真实用户组数据）
-                      ListView(
-                        padding: const EdgeInsets.all(16),
-                        children: [
-                          _buildMatrixGroup('限制会员 (积分 < 0)', [
-                            '积分下限：-999999999 (积分 < 0)',
-                            '阅读权限 10，访问论坛 ✔，发新话题/回复 ✔',
-                            '允许发短消息 ✔，允许加好友 ✔，允许 @ 10 人',
-                            '最大签名长度 100 字节，支持编辑器代码，单个附件上限 5 MB',
-                          ]),
-                          _buildMatrixGroup('Lv.1 新手上路 (0 - 199 积分)', [
-                            '积分下限：0 积分',
-                            '阅读权限 10，允许常规版块发帖与回复 ✔',
-                            '允许参与评分 ✔，加好友 ✖，打招呼 ✖，允许 @ 10 人',
-                            '最大签名长度 100 字节，单个附件 50 MB，每天附件上限 50 MB',
-                          ]),
-                          _buildMatrixGroup('Lv.2 注册会员 (200 - 999 积分)', [
-                            '积分下限：200 积分',
-                            '阅读权限 20，解锁加好友 ✔，打招呼 ✔，回帖奖励 ✔，参与点评 ✔',
-                            '签名支持 [img] 图文代码 ✔，最大签名长度 200 字节',
-                            '允许 @ 15 人，单个附件 50 MB，每天附件上限 50 MB',
-                          ]),
-                          _buildMatrixGroup('Lv.3 中级会员 (1000 - 4999 积分)', [
-                            '积分下限：1000 积分',
-                            '阅读权限 30，解锁自定义头衔 ✔，发表辩论 ✔',
-                            '允许创建 5 个淘专辑 ✔，允许 @ 20 人',
-                            '最大签名长度 300 字节，每天附件上限 100 MB',
-                          ]),
-                          _buildMatrixGroup('Lv.4 高级会员 (5000 - 9999 积分)', [
-                            '积分下限：5000 积分',
-                            '阅读权限 50，自定义头衔 ✔，解锁设置附件权限 ✔',
-                            '允许 @ 25 人，允许创建 5 个淘专辑 ✔',
-                            '最大签名长度 500 字节，每天附件上限 300 MB',
-                          ]),
-                          _buildMatrixGroup('Lv.5 金牌会员 (10000 - 49999 积分)', [
-                            '积分下限：10000 积分',
-                            '阅读权限 70，解锁隐身特权 ✔，发表活动 ✔',
-                            '允许 @ 30 人，允许创建 5 个淘专辑 ✔',
-                            '最大签名长度 1000 字节，每天附件上限 500 MB',
-                          ]),
-                          _buildMatrixGroup('Lv.6 论坛元老 (50000+ 积分)', [
-                            '积分下限：50000 积分',
-                            '阅读权限 90，隐身特权 ✔，发表活动 ✔',
-                            '允许 @ 50 人，允许创建 5 个淘专辑 ✔',
-                            '最大签名长度 2000 字节，每天附件上限 1 GB (1024 MB)',
-                          ]),
-                          _buildMatrixGroup('👑 站点管理组 (管理员 / 超级版主 / 版主 / 实习版主 / 网站编辑 / 信息监察员 / 审核员)', [
-                            '管理员：阅读权限 255，查看统计报表 ✔，发表文章 ✔，发帖不受限制 ✔，签名 3000 字节',
-                            '超级版主：阅读权限 150，查看统计报表 ✔，发帖不受限制 ✔，签名 2000 字节，允许 @ 50 人',
-                            '版主：阅读权限 100，查看统计报表 ✔，发帖不受限制 ✔，签名 1500 字节，允许 @ 50 人',
-                            '实习版主 / 网站编辑 / 信息监察员 / 审核员：阅读权限 100 - 200，发帖不受限制与专属管理权限',
-                          ]),
-                          _buildMatrixGroup('💎 普通与特殊组 (SVIP / VIP / QQ游客 / 等待邮箱验证 / 游客 / 禁止发言 / 禁止访问 / 禁止 IP)', [
-                            'SVIP：阅读权限 80，隐身 ✔，发表活动 ✔，允许 @ 50 人，签名 2000 字节，每天附件 300 MB',
-                            'VIP：阅读权限 60，隐身 ✔，允许 @ 40 人，签名 1000 字节，每天附件 100 MB',
-                            'QQ游客 / 游客：阅读权限 1，支持基础全站浏览',
-                            '封禁用户组：禁止发言（只读）、禁止访问（封禁）、禁止 IP（全局封锁）',
-                          ]),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildComparisonItemRow(
-    UsergroupPermissionItem item,
-    bool isEven,
-    ThemeData theme,
-  ) {
-    if (item.isCategoryHeader) {
-      return Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        color: theme.colorScheme.surfaceContainerHighest.withAlpha(120),
-        child: Text(
-          item.title,
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            fontSize: 12.5,
-            color: theme.colorScheme.primary,
-          ),
-        ),
-      );
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: isEven
-            ? theme.colorScheme.surfaceContainerLowest
-            : theme.colorScheme.surface,
-        border: Border(
-          bottom: BorderSide(
-            color: theme.colorScheme.outlineVariant.withAlpha(40),
-            width: 0.5,
-          ),
-        ),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            flex: 4,
-            child: Text(
-              item.title,
-              style: TextStyle(
-                fontSize: 12.5,
-                color: theme.colorScheme.onSurface,
-              ),
-            ),
-          ),
-          Expanded(
-            flex: 3,
-            child: Center(
-              child: _buildPermissionValue(item.myValue, item.isMyBool, item.isMyAllowed, theme),
-            ),
-          ),
-          Expanded(
-            flex: 3,
-            child: Center(
-              child: _buildPermissionValue(item.nextValue, item.isNextBool, item.isNextAllowed, theme),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPermissionValue(
-    String val,
-    bool isBool,
-    bool isAllowed,
-    ThemeData theme,
-  ) {
-    if (val == '✔' || val == 'true') {
-      return const Icon(Icons.check_circle_rounded, color: Color(0xFF2E7D32), size: 18);
-    }
-    if (val == '✖' || val == 'false') {
-      return const Icon(Icons.cancel_rounded, color: Color(0xFFC62828), size: 18);
-    }
-    return Text(
-      val,
-      style: TextStyle(
-        fontSize: 11.5,
-        fontWeight: FontWeight.w600,
-        color: isAllowed ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant,
-      ),
-      textAlign: TextAlign.center,
-      maxLines: 2,
-      overflow: TextOverflow.ellipsis,
-    );
-  }
-
-  Widget _buildMatrixGroup(String groupName, List<String> rules) {
-    return Card(
-      elevation: 0,
-      margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(10),
-        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant.withAlpha(80)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              groupName,
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
-                color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFFFFB74D) : const Color(0xFFE65100),
-              ),
-            ),
-            const SizedBox(height: 6),
-            for (final r in rules)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('• ', style: TextStyle(fontWeight: FontWeight.bold)),
-                    Expanded(child: Text(r, style: const TextStyle(fontSize: 12.5))),
-                  ],
-                ),
-              ),
-          ],
-        ),
+      constraints: const BoxConstraints(maxWidth: 900),
+      builder: (_) => SizedBox(
+        height: MediaQuery.sizeOf(context).height * 0.88,
+        child: const UsergroupComparisonSheet(),
       ),
     );
   }
@@ -601,7 +277,8 @@ class _UserSpacePageState extends State<UserSpacePage> {
               leading: const Icon(Icons.link),
               title: const Text('复制空间链接'),
               onTap: () {
-                Clipboard.setData(ClipboardData(text: 'https://klpbbs.com/?${user.uid}'));
+                Clipboard.setData(ClipboardData(
+                    text: '${AppConfig.baseUrl}space-uid-${user.uid}.html'));
                 Navigator.of(ctx).pop();
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('已复制个人空间链接')),
@@ -614,9 +291,12 @@ class _UserSpacePageState extends State<UserSpacePage> {
                 title: const Text('资料设置'),
                 onTap: () {
                   Navigator.of(ctx).pop();
-                  Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => ProfileSettingsPage(uid: widget.uid)),
-                  ).then((_) => _loadData());
+                  Navigator.of(context)
+                      .push(
+                        MaterialPageRoute(
+                            builder: (_) => ProfileSettingsPage(uid: user.uid)),
+                      )
+                      .then((_) => _loadData());
                 },
               ),
           ],
@@ -672,7 +352,8 @@ class _UserSpacePageState extends State<UserSpacePage> {
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         color: colorScheme.surface,
-                        border: Border.all(color: colorScheme.surface, width: 3),
+                        border:
+                            Border.all(color: colorScheme.surface, width: 3),
                         boxShadow: [
                           BoxShadow(
                             color: Colors.black.withAlpha(25),
@@ -740,36 +421,40 @@ class _UserSpacePageState extends State<UserSpacePage> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
+                padding:
+                    const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
                 decoration: BoxDecoration(
                   color: colorScheme.surfaceContainerLow,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: colorScheme.outlineVariant.withAlpha(40)),
+                  border: Border.all(
+                      color: colorScheme.outlineVariant.withAlpha(40)),
                 ),
                 child: Row(
-                  children: List.generate(4, (i) => Expanded(
-                    child: Column(
-                      children: [
-                        Container(
-                          width: 32,
-                          height: 16,
-                          decoration: BoxDecoration(
-                            color: placeholderColor,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Container(
-                          width: 24,
-                          height: 12,
-                          decoration: BoxDecoration(
-                            color: placeholderColor.withAlpha(140),
-                            borderRadius: BorderRadius.circular(3),
-                          ),
-                        ),
-                      ],
-                    ),
-                  )),
+                  children: List.generate(
+                      4,
+                      (i) => Expanded(
+                            child: Column(
+                              children: [
+                                Container(
+                                  width: 32,
+                                  height: 16,
+                                  decoration: BoxDecoration(
+                                    color: placeholderColor,
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Container(
+                                  width: 24,
+                                  height: 12,
+                                  decoration: BoxDecoration(
+                                    color: placeholderColor.withAlpha(140),
+                                    borderRadius: BorderRadius.circular(3),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )),
                 ),
               ),
             ),
@@ -813,37 +498,41 @@ class _UserSpacePageState extends State<UserSpacePage> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Column(
-                children: List.generate(3, (i) => Container(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: colorScheme.surface,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: colorScheme.outlineVariant.withAlpha(35)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Container(
-                        width: double.infinity,
-                        height: 16,
-                        decoration: BoxDecoration(
-                          color: placeholderColor,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Container(
-                        width: 180,
-                        height: 12,
-                        decoration: BoxDecoration(
-                          color: placeholderColor.withAlpha(120),
-                          borderRadius: BorderRadius.circular(3),
-                        ),
-                      ),
-                    ],
-                  ),
-                )),
+                children: List.generate(
+                    3,
+                    (i) => Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: colorScheme.surface,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                                color:
+                                    colorScheme.outlineVariant.withAlpha(35)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                width: double.infinity,
+                                height: 16,
+                                decoration: BoxDecoration(
+                                  color: placeholderColor,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Container(
+                                width: 180,
+                                height: 12,
+                                decoration: BoxDecoration(
+                                  color: placeholderColor.withAlpha(120),
+                                  borderRadius: BorderRadius.circular(3),
+                                ),
+                              ),
+                            ],
+                          ),
+                        )),
               ),
             ),
           ],
@@ -857,16 +546,23 @@ class _UserSpacePageState extends State<UserSpacePage> {
     final theme = Theme.of(context);
 
     return FutureBuilder<UserSpace?>(
-      initialData: widget.initialUser,
+      initialData: _cachedUser ??
+          (_initialSession == DioClient.sessionKey ? widget.initialUser : null),
       future: _future,
       builder: (context, snap) {
+        Widget content;
         if (snap.connectionState != ConnectionState.done && snap.data == null) {
-          return _buildSpaceSkeleton(context);
-        }
-        if (snap.hasError) {
-          final outage = ServerOutageInfo.tryParse(snap.error);
-          if (outage != null) {
-            return Scaffold(
+          content = KeyedSubtree(
+            key: const ValueKey('space_skeleton'),
+            child: _buildSpaceSkeleton(context),
+          );
+        } else if (snap.hasError &&
+            snap.data == null &&
+            ServerOutageInfo.tryParse(snap.error) != null) {
+          final outage = ServerOutageInfo.tryParse(snap.error)!;
+          content = KeyedSubtree(
+            key: const ValueKey('space_outage'),
+            child: Scaffold(
               appBar: AppBar(
                 title: Text(_isMe ? '我的空间' : 'Ta 的空间'),
               ),
@@ -879,100 +575,282 @@ class _UserSpacePageState extends State<UserSpacePage> {
                   }
                 },
               ),
-            );
-          }
-        }
-        final user = snap.data;
-        if (user == null) {
-          return Scaffold(
-            drawer: const GlobalAppDrawer(),
-            drawerEdgeDragWidth: 50.0,
-            appBar: AppBar(
-              leading: const GlobalNavLeading(),
-              leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
-              title: Text(_isMe ? '我的空间' : 'Ta 的空间'),
-            ),
-            body: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.error_outline, size: 48, color: theme.colorScheme.error),
-                  const SizedBox(height: 12),
-                  const Text('用户信息加载失败', style: TextStyle(fontSize: 16)),
-                  const SizedBox(height: 12),
-                  FilledButton(onPressed: _loadData, child: const Text('重新加载')),
-                ],
-              ),
             ),
           );
-        }
-
-        if (user.isLocked) {
-          return Scaffold(
-            drawer: const GlobalAppDrawer(),
-            drawerEdgeDragWidth: 50.0,
-            appBar: AppBar(
-              leading: const GlobalNavLeading(),
-              leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
-              title: const Text('提示信息'),
-              centerTitle: true,
-            ),
-            body: Center(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 48),
+        } else if (snap.data == null) {
+          content = KeyedSubtree(
+            key: const ValueKey('space_error'),
+            child: Scaffold(
+              drawer: const GlobalAppDrawer(),
+              drawerEdgeDragWidth: 50.0,
+              appBar: AppBar(
+                leading: const GlobalNavLeading(),
+                leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
+                title: Text(_isMe ? '我的空间' : 'Ta 的空间'),
+              ),
+              body: Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Container(
-                      width: 100,
-                      height: 100,
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.surfaceContainerHighest.withAlpha(80),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(
-                        Icons.lightbulb_outline_rounded,
-                        size: 56,
-                        color: theme.colorScheme.outlineVariant,
-                      ),
-                    ),
-                    const SizedBox(height: 28),
-                    Text(
-                      user.lockReason.isNotEmpty
-                          ? user.lockReason
-                          : '空间已被锁定无法访问，如有疑问请联系管理员',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: theme.colorScheme.outline,
-                        fontSize: 15,
-                        height: 1.5,
-                      ),
-                    ),
-                    const SizedBox(height: 36),
-                    SizedBox(
-                      width: 260,
-                      height: 44,
-                      child: FilledButton(
-                        style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFF4FC3F7),
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(22),
+                    Icon(Icons.error_outline,
+                        size: 48, color: theme.colorScheme.error),
+                    const SizedBox(height: 12),
+                    const Text('用户信息加载失败', style: TextStyle(fontSize: 16)),
+                    const SizedBox(height: 12),
+                    FilledButton(
+                        onPressed: _loadData, child: const Text('重新加载')),
+                  ],
+                ),
+              ),
+            ),
+          );
+        } else {
+          final user = snap.data!;
+          if (user.isLocked) {
+            content = KeyedSubtree(
+              key: ValueKey('space_locked_${user.uid}'),
+              child: Scaffold(
+                drawer: const GlobalAppDrawer(),
+                drawerEdgeDragWidth: 50.0,
+                appBar: AppBar(
+                  leading: const GlobalNavLeading(),
+                  leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
+                  title: const Text('提示信息'),
+                  centerTitle: true,
+                ),
+                body: Center(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 32, vertical: 48),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Container(
+                          width: 100,
+                          height: 100,
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.surfaceContainerHighest
+                                .withAlpha(80),
+                            shape: BoxShape.circle,
                           ),
-                          elevation: 0,
+                          child: Icon(
+                            Icons.lightbulb_outline_rounded,
+                            size: 56,
+                            color: theme.colorScheme.outlineVariant,
+                          ),
                         ),
-                        onPressed: () {
-                          if (Navigator.of(context).canPop()) {
-                            Navigator.of(context).pop();
-                          }
+                        const SizedBox(height: 28),
+                        Text(
+                          user.lockReason.isNotEmpty
+                              ? user.lockReason
+                              : '空间已被锁定无法访问，如有疑问请联系管理员',
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.outline,
+                            fontSize: 15,
+                            height: 1.5,
+                          ),
+                        ),
+                        const SizedBox(height: 36),
+                        SizedBox(
+                          width: 260,
+                          height: 44,
+                          child: FilledButton(
+                            style: FilledButton.styleFrom(
+                              backgroundColor: const Color(0xFF4FC3F7),
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(22),
+                              ),
+                              elevation: 0,
+                            ),
+                            onPressed: () {
+                              if (Navigator.of(context).canPop()) {
+                                Navigator.of(context).pop();
+                              }
+                            },
+                            child: const Text(
+                              '返回上一页',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          } else {
+            content = KeyedSubtree(
+              key: ValueKey('space_content_${user.uid}'),
+              child: Scaffold(
+                drawer: const GlobalAppDrawer(),
+                drawerEdgeDragWidth: 50.0,
+                body: Column(
+                  children: [
+                    Expanded(
+                      child: RefreshIndicator(
+                        onRefresh: () async {
+                          _loadData(forceRefresh: true);
+                          await _future;
                         },
-                        child: const Text(
-                          '[ 点击这里返回上一页 ]',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                          ),
+                        child: CustomScrollView(
+                          physics: const AlwaysScrollableScrollPhysics(
+                              parent: BouncingScrollPhysics()),
+                          slivers: [
+                            // 1. 顶部 Minecraft 森林沉浸式 Hero 顶栏
+                            SliverAppBar(
+                              expandedHeight: 220,
+                              pinned: true,
+                              foregroundColor: Colors.white,
+                              backgroundColor: theme.colorScheme.primary,
+                              leading:
+                                  const GlobalNavLeading(color: Colors.white),
+                              leadingWidth:
+                                  GlobalNavLeading.preferredLeadingWidth(
+                                      context),
+                              title: Text(
+                                _isMe ? '我的空间' : 'Ta 的空间',
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold, fontSize: 17),
+                              ),
+                              actions: [
+                                IconButton(
+                                  icon: const Icon(Icons.more_horiz),
+                                  tooltip: '更多',
+                                  onPressed: () => _showMoreActions(user),
+                                ),
+                              ],
+                              flexibleSpace: FlexibleSpaceBar(
+                                background: _buildHeroHeader(user, theme),
+                              ),
+                            ),
+
+                            // 2. Tab 切换栏 (资料 / 帖子)
+                            SliverToBoxAdapter(
+                              child: Container(
+                                color: theme.colorScheme.surface,
+                                child: Center(
+                                  child: ConstrainedBox(
+                                    constraints:
+                                        const BoxConstraints(maxWidth: 880),
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        border: Border(
+                                          bottom: BorderSide(
+                                              color: theme
+                                                  .colorScheme.outlineVariant
+                                                  .withAlpha(60)),
+                                        ),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          _buildTabItem(0, '资料', theme),
+                                          _buildTabItem(
+                                              1,
+                                              '帖子 (${_cleanNumericStat(user.stats['主题'] ?? user.stats['帖子'])})',
+                                              theme),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+
+                            // 3. Tab 内容区 (多端自适应响应式排版 + 平滑过渡动画)
+                            SliverToBoxAdapter(
+                              child: AnimatedCrossFade(
+                                duration: AppMotion.duration(context, 240),
+                                sizeCurve: AppMotion.emphasized,
+                                firstCurve: AppMotion.emphasized,
+                                secondCurve: AppMotion.emphasized,
+                                crossFadeState: _selectedTab == 0
+                                    ? CrossFadeState.showFirst
+                                    : CrossFadeState.showSecond,
+                                firstChild: TickerMode(
+                                    enabled: _selectedTab == 0,
+                                    child: _buildProfileTab(user, theme)),
+                                secondChild: TickerMode(
+                                    enabled: _selectedTab == 1,
+                                    child: _threadsVisited
+                                        ? _buildThreadsTab(user, theme)
+                                        : const SizedBox.shrink()),
+                              ),
+                            ),
+                          ],
                         ),
+                      ),
+                    ),
+                    _buildBottomActions(context, user),
+                  ],
+                ),
+              ),
+            );
+          }
+        }
+        return AnimatedSwitcher(
+          duration: AppMotion.duration(context, 240),
+          switchInCurve: AppMotion.emphasized,
+          switchOutCurve: AppMotion.exit,
+          child: content,
+        );
+      },
+    );
+  }
+
+  Widget _staggerCard(Widget child, int index) {
+    return AppFadeIn(
+      key: ValueKey('space_card_${widget.uid}_$index'),
+      index: index,
+      child: child,
+    );
+  }
+
+  Widget _buildProfileTab(UserSpace user, ThemeData theme) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isWide = constraints.maxWidth >= 780;
+        if (isWide) {
+          // PC 桌面端 / 平板宽屏：优雅双列卡片布局
+          return Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1080),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 40),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // 左列（约 380px 固定）：用户组、4 大核心统计、基本资料
+                    SizedBox(
+                      width: 380,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _staggerCard(_buildUsergroupCard(user, theme), 0),
+                          const SizedBox(height: 12),
+                          _staggerCard(_buildStatsCard(user, theme), 2),
+                          const SizedBox(height: 12),
+                          _staggerCard(_buildBasicInfoCard(user, theme), 4),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    // 右列（弹性铺满）：勋章墙、积分资产明细表、个人签名
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _staggerCard(_buildMedalCard(user, theme), 1),
+                          const SizedBox(height: 12),
+                          _staggerCard(_buildCreditsCard(user, theme), 3),
+                          const SizedBox(height: 12),
+                          _staggerCard(_buildSignatureCard(user, theme), 5),
+                        ],
                       ),
                     ),
                   ],
@@ -982,136 +860,51 @@ class _UserSpacePageState extends State<UserSpacePage> {
           );
         }
 
-        return Scaffold(
-          drawer: const GlobalAppDrawer(),
-          drawerEdgeDragWidth: 50.0,
-          body: Column(
-            children: [
-              Expanded(
-                child: RefreshIndicator(
-                  onRefresh: () async {
-                    _loadData(forceRefresh: true);
-                    await _future;
-                  },
-                  child: CustomScrollView(
-                    physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
-                    slivers: [
-                      // 1. 顶部 Minecraft 森林沉浸式 Hero 顶栏
-                      SliverAppBar(
-                        expandedHeight: 220,
-                        pinned: true,
-                        foregroundColor: Colors.white,
-                        backgroundColor: theme.colorScheme.primary,
-                        leading: const GlobalNavLeading(),
-                        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
-                        title: Text(
-                          _isMe ? '我的空间' : 'Ta 的空间',
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
-                        ),
-                        actions: [
-                          IconButton(
-                            icon: const Icon(Icons.more_horiz),
-                            tooltip: '更多',
-                            onPressed: () => _showMoreActions(user),
-                          ),
-                        ],
-                        flexibleSpace: FlexibleSpaceBar(
-                          background: _buildHeroHeader(user, theme),
-                        ),
-                      ),
-
-                      // 2. Tab 切换栏 (资料 / 帖子)
-                      SliverToBoxAdapter(
-                        child: Container(
-                          color: theme.colorScheme.surface,
-                          child: Center(
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 880),
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  border: Border(
-                                    bottom: BorderSide(color: theme.colorScheme.outlineVariant.withAlpha(60)),
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    _buildTabItem(0, '资料', theme),
-                                    _buildTabItem(1, '帖子 (${user.stats['主题'] ?? user.stats['帖子'] ?? '0'})', theme),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-
-                      // 3. Tab 内容区 (100% 居中无塌陷渲染)
-                      if (_selectedTab == 0)
-                        SliverToBoxAdapter(
-                          child: Center(
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 880),
-                              child: Padding(
-                                padding: const EdgeInsets.fromLTRB(16, 14, 16, 40),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                                  children: [
-                                    // 1. 用户组卡片 (图二: Lv.4 高级会员  看看我能做什么 >)
-                                    _buildUsergroupCard(user, theme),
-                                    const SizedBox(height: 10),
-
-                                    // 2. 勋章荣誉卡片
-                                    _buildMedalCard(user, theme),
-                                    const SizedBox(height: 10),
-
-                                    // 3. 个人签名与头衔卡片
-                                    _buildSignatureCard(user, theme),
-                                    const SizedBox(height: 10),
-
-                                    // 4. 4 大统计徽章 (🟢 帖子, 🟠 回复, 🔵 好友, 🟡 人气)
-                                    _buildStatsCard(user, theme),
-                                    const SizedBox(height: 10),
-
-                                    // 5. 积分资产明细表格 (图二双列表格，自动消重单位)
-                                    _buildCreditsCard(user, theme),
-                                    const SizedBox(height: 10),
-
-                                    // 6. 基本资料
-                                    _buildBasicInfoCard(user, theme),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        )
-                      else
-                        SliverToBoxAdapter(
-                          child: Center(
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 880),
-                              child: Padding(
-                                padding: const EdgeInsets.only(bottom: 20),
-                                child: UserThreadsPage(
-                                  uid: widget.uid,
-                                  type: 'thread',
-                                  title: '${user.username} 的主题',
-                                  showAppBar: false,
-                                  shrinkWrap: true,
-                                  physics: const NeverScrollableScrollPhysics(),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
+        // 移动端 / 窄屏：单列流式卡片布局
+        return Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 620),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 40),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _staggerCard(_buildUsergroupCard(user, theme), 0),
+                  const SizedBox(height: 10),
+                  _staggerCard(_buildMedalCard(user, theme), 1),
+                  const SizedBox(height: 10),
+                  _staggerCard(_buildSignatureCard(user, theme), 2),
+                  const SizedBox(height: 10),
+                  _staggerCard(_buildStatsCard(user, theme), 3),
+                  const SizedBox(height: 10),
+                  _staggerCard(_buildCreditsCard(user, theme), 4),
+                  const SizedBox(height: 10),
+                  _staggerCard(_buildBasicInfoCard(user, theme), 5),
+                ],
               ),
-              _buildBottomActions(context, user),
-            ],
+            ),
           ),
         );
       },
+    );
+  }
+
+  Widget _buildThreadsTab(UserSpace user, ThemeData theme) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 960),
+        child: Padding(
+          padding: const EdgeInsets.only(bottom: 20),
+          child: UserThreadsPage(
+            uid: user.uid,
+            type: 'thread',
+            title: '${user.username} 的主题',
+            showAppBar: false,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+          ),
+        ),
+      ),
     );
   }
 
@@ -1119,25 +912,35 @@ class _UserSpacePageState extends State<UserSpacePage> {
     final isSelected = _selectedTab == index;
     return Expanded(
       child: InkWell(
-        onTap: () => setState(() => _selectedTab = index),
-        child: Container(
+        onTap: () => setState(() {
+          _selectedTab = index;
+          _threadsVisited = _threadsVisited || index == 1;
+        }),
+        borderRadius: BorderRadius.circular(8),
+        child: AnimatedContainer(
+          duration: AppMotion.duration(context, 200),
+          curve: AppMotion.emphasized,
           padding: const EdgeInsets.symmetric(vertical: 13),
           decoration: BoxDecoration(
             border: Border(
               bottom: BorderSide(
-                color: isSelected ? theme.colorScheme.primary : Colors.transparent,
+                color:
+                    isSelected ? theme.colorScheme.primary : Colors.transparent,
                 width: 3,
               ),
             ),
           ),
           child: Center(
-            child: Text(
-              title,
+            child: AnimatedDefaultTextStyle(
+              duration: const Duration(milliseconds: 200),
               style: TextStyle(
                 fontSize: 14.5,
                 fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                color: isSelected ? theme.colorScheme.primary : theme.colorScheme.outline,
+                color: isSelected
+                    ? theme.colorScheme.primary
+                    : theme.colorScheme.outline,
               ),
+              child: Text(title),
             ),
           ),
         ),
@@ -1147,10 +950,23 @@ class _UserSpacePageState extends State<UserSpacePage> {
 
   Widget _buildHeroHeader(UserSpace user, ThemeData theme) {
     // 空间壁纸：优先 user.bgUrl，其次 AppConfig.spaceWallpaper，默认 klpbbs 官方风景空间壁纸
-    final defaultBg = 'https://klpbbs.com/source/plugin/comiis_app_homestyle/image/home_bg/fengjing/1.png';
-    final wallpaperUrl = user.bgUrl.isNotEmpty
+    const defaultBg =
+        'https://klpbbs.com/source/plugin/comiis_app_homestyle/image/home_bg/fengjing/1.png';
+    final rawWallpaper = user.bgUrl.isNotEmpty
         ? user.bgUrl
         : (_isMe ? (AppConfig.spaceWallpaper ?? defaultBg) : defaultBg);
+    // Keep the actual declared asset, including its animation format. Guessed
+    // filename substitutions made the saved style and its space look different.
+    final declared = Uri.tryParse(rawWallpaper);
+    final resolved = declared == null
+        ? null
+        : Uri.parse(AppConfig.baseUrl).resolveUri(declared);
+    final wallpaperUrl = resolved != null &&
+            const {'http', 'https'}.contains(resolved.scheme) &&
+            resolved.host.isNotEmpty &&
+            resolved.userInfo.isEmpty
+        ? resolved.toString()
+        : defaultBg;
     final hasWallpaper = wallpaperUrl.isNotEmpty;
 
     return Stack(
@@ -1159,9 +975,21 @@ class _UserSpacePageState extends State<UserSpacePage> {
         // 空间壁纸或深色纯色背景
         CachedNetworkImage(
           imageUrl: wallpaperUrl,
+          cacheKey: KlpbbsCacheManager.normalizeCacheKey(wallpaperUrl),
+          cacheManager: KlpbbsCacheManager.instance,
           fit: BoxFit.cover,
-          placeholder: (_, __) => Container(color: const Color(0xFF1B3828)),
-          errorWidget: (_, __, ___) => Container(color: const Color(0xFF1B3828)),
+          placeholder: (_, __) =>
+              Container(color: theme.colorScheme.surfaceContainerHighest),
+          errorWidget: (_, __, ___) => wallpaperUrl != defaultBg
+              ? CachedNetworkImage(
+                  imageUrl: defaultBg,
+                  cacheKey: KlpbbsCacheManager.normalizeCacheKey(defaultBg),
+                  cacheManager: KlpbbsCacheManager.instance,
+                  fit: BoxFit.cover,
+                  errorWidget: (_, __, ___) => Container(
+                      color: theme.colorScheme.surfaceContainerHighest),
+                )
+              : Container(color: theme.colorScheme.surfaceContainerHighest),
         ),
         // 半透明微暗遮罩（确保文字在任何壁纸下均清晰可见）
         Container(
@@ -1177,38 +1005,14 @@ class _UserSpacePageState extends State<UserSpacePage> {
               constraints: const BoxConstraints(maxWidth: 880),
               child: Row(
                 children: [
-                  Builder(
-                    builder: (context) {
-                      final shape = AppConfig.avatarShape;
-                      final isCircle = shape == AvatarShape.circle;
-                      final radius = shape == AvatarShape.roundedRect
-                          ? BorderRadius.circular(64 * 0.25 + 2.5)
-                          : (shape == AvatarShape.hexagon
-                              ? BorderRadius.circular(64 * 0.35 + 2.5)
-                              : BorderRadius.circular(34.5));
-                      return Container(
-                        padding: const EdgeInsets.all(2.5),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.surface,
-                          shape: isCircle ? BoxShape.circle : BoxShape.rectangle,
-                          borderRadius: isCircle ? null : radius,
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withAlpha(80),
-                              blurRadius: 8,
-                            ),
-                          ],
-                        ),
-                        child: UserAvatarWidget(
-                          uid: user.uid,
-                          author: user.username,
-                          size: 64,
-                          faceUrl: user.faceUrl.isNotEmpty ? user.faceUrl : null,
-                          isOnline: user.isOnline,
-                          showOnlineBadge: true,
-                        ),
-                      );
-                    },
+                  UserAvatarWidget(
+                    reserveFrameSpace: true,
+                    uid: user.uid,
+                    author: user.username,
+                    size: 64,
+                    faceUrl: UserAvatarWidget.optionalFrame(user.faceUrl),
+                    isOnline: user.isOnline,
+                    showOnlineBadge: true,
                   ),
                   const SizedBox(width: 14),
                   Expanded(
@@ -1227,7 +1031,9 @@ class _UserSpacePageState extends State<UserSpacePage> {
                                   color: Colors.white,
                                   fontSize: 20,
                                   fontWeight: FontWeight.bold,
-                                  shadows: [Shadow(color: Colors.black54, blurRadius: 4)],
+                                  shadows: [
+                                    Shadow(color: Colors.black54, blurRadius: 4)
+                                  ],
                                 ),
                               ),
                             ),
@@ -1236,14 +1042,17 @@ class _UserSpacePageState extends State<UserSpacePage> {
                               builder: (context) {
                                 final isOnline = _isMe || user.isOnline;
                                 return Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 7, vertical: 2),
                                   decoration: BoxDecoration(
                                     color: isOnline
                                         ? const Color(0xFF4CAF50).withAlpha(220)
                                         : Colors.black.withAlpha(120),
                                     borderRadius: BorderRadius.circular(10),
                                     border: Border.all(
-                                      color: isOnline ? const Color(0xFF81C784) : Colors.white24,
+                                      color: isOnline
+                                          ? const Color(0xFF81C784)
+                                          : Colors.white24,
                                       width: 0.8,
                                     ),
                                   ),
@@ -1256,7 +1065,9 @@ class _UserSpacePageState extends State<UserSpacePage> {
                                         margin: const EdgeInsets.only(right: 4),
                                         decoration: BoxDecoration(
                                           shape: BoxShape.circle,
-                                          color: isOnline ? Colors.white : Colors.white54,
+                                          color: isOnline
+                                              ? Colors.white
+                                              : Colors.white54,
                                         ),
                                       ),
                                       Text(
@@ -1276,18 +1087,25 @@ class _UserSpacePageState extends State<UserSpacePage> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          '${user.stats['人气'] ?? '0'} 人气 · ${user.credits.isNotEmpty ? user.credits : (user.creditsDetail['积分'] ?? '0')} 积分',
+                          [
+                            if (user.stats['人气']?.isNotEmpty == true)
+                              '${user.stats['人气']} 人气',
+                            if (user.credits.isNotEmpty) '${user.credits} 积分',
+                          ].join(' · '),
                           style: const TextStyle(
                             color: Colors.white70,
                             fontSize: 12.5,
-                            shadows: [Shadow(color: Colors.black38, blurRadius: 3)],
+                            shadows: [
+                              Shadow(color: Colors.black38, blurRadius: 3)
+                            ],
                           ),
                         ),
                         const SizedBox(height: 6),
                         Wrap(
                           spacing: 6,
                           children: [
-                            if (user.gameProfile['性别'] == '男' || user.gameProfile['性别'] == '女')
+                            if (user.gameProfile['性别'] == '男' ||
+                                user.gameProfile['性别'] == '女')
                               _buildSmallBadge(
                                 user.gameProfile['性别'] == '女' ? '♀ 女' : '♂ 男',
                                 user.gameProfile['性别'] == '女'
@@ -1318,7 +1136,8 @@ class _UserSpacePageState extends State<UserSpacePage> {
     if (lvlName.isEmpty && lvl.isEmpty) return '注册会员';
     if (lvlName.isEmpty) return lvl;
     if (lvl.isEmpty) return lvlName;
-    if (lvlName.toLowerCase().startsWith(lvl.toLowerCase()) || lvlName.contains(lvl)) {
+    if (lvlName.toLowerCase().startsWith(lvl.toLowerCase()) ||
+        lvlName.contains(lvl)) {
       return lvlName;
     }
     if (RegExp(r'^Lv\.\d+', caseSensitive: false).hasMatch(lvlName)) {
@@ -1336,7 +1155,8 @@ class _UserSpacePageState extends State<UserSpacePage> {
       ),
       child: Text(
         text,
-        style: const TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.bold),
+        style: const TextStyle(
+            color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.bold),
       ),
     );
   }
@@ -1352,7 +1172,11 @@ class _UserSpacePageState extends State<UserSpacePage> {
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         child: Row(
           children: [
-            Text('用户组', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: theme.colorScheme.onSurfaceVariant)),
+            Text('用户组',
+                style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.onSurfaceVariant)),
             const SizedBox(width: 14),
             _buildSmallBadge(
               _formatUserLevel(user),
@@ -1363,7 +1187,11 @@ class _UserSpacePageState extends State<UserSpacePage> {
               onTap: () => _showUsergroupPrivilegesDialog(user),
               child: const Row(
                 children: [
-                  Text('看看我能做什么', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: Color(0xFFF57C00))),
+                  Text('用户组权限详情',
+                      style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFFF57C00))),
                   Icon(Icons.chevron_right, size: 16, color: Color(0xFFF57C00)),
                 ],
               ),
@@ -1388,7 +1216,11 @@ class _UserSpacePageState extends State<UserSpacePage> {
           children: [
             Row(
               children: [
-                Text('勋章荣誉', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: theme.colorScheme.onSurfaceVariant)),
+                Text('勋章荣誉',
+                    style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                        color: theme.colorScheme.onSurfaceVariant)),
                 const Spacer(),
                 InkWell(
                   onTap: () => Navigator.of(context).push(
@@ -1396,8 +1228,13 @@ class _UserSpacePageState extends State<UserSpacePage> {
                   ),
                   child: Row(
                     children: [
-                      Text('勋章中心', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500, color: theme.colorScheme.primary)),
-                      Icon(Icons.chevron_right, size: 16, color: theme.colorScheme.primary),
+                      Text('勋章中心',
+                          style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w500,
+                              color: theme.colorScheme.primary)),
+                      Icon(Icons.chevron_right,
+                          size: 16, color: theme.colorScheme.primary),
                     ],
                   ),
                 ),
@@ -1417,6 +1254,9 @@ class _UserSpacePageState extends State<UserSpacePage> {
                           message: '${m.name}\n${m.desc}',
                           child: CachedNetworkImage(
                             imageUrl: m.img,
+                            cacheKey:
+                                KlpbbsCacheManager.normalizeCacheKey(m.img),
+                            cacheManager: KlpbbsCacheManager.instance,
                             httpHeaders: AppConfig.imageHeaders,
                             width: 36,
                             height: 36,
@@ -1428,7 +1268,8 @@ class _UserSpacePageState extends State<UserSpacePage> {
                                 color: Colors.amber.withAlpha(30),
                                 borderRadius: BorderRadius.circular(6),
                               ),
-                              child: const Icon(Icons.military_tech, size: 20, color: Colors.amber),
+                              child: const Icon(Icons.military_tech,
+                                  size: 20, color: Colors.amber),
                             ),
                           ),
                         );
@@ -1436,7 +1277,9 @@ class _UserSpacePageState extends State<UserSpacePage> {
                     )
                   : Align(
                       alignment: Alignment.centerLeft,
-                      child: Text('暂无佩戴勋章', style: TextStyle(fontSize: 12, color: theme.colorScheme.outline)),
+                      child: Text('暂无佩戴勋章',
+                          style: TextStyle(
+                              fontSize: 12, color: theme.colorScheme.outline)),
                     ),
             ),
           ],
@@ -1449,7 +1292,8 @@ class _UserSpacePageState extends State<UserSpacePage> {
     final sigRaw = user.signature.isNotEmpty
         ? user.signature
         : (user.gameProfile['个人签名'] ?? '暂未设置个性签名');
-    final sigHtml = sigRaw.contains('<') ? sigRaw : ComiisParser.bbcodeToHtml(sigRaw);
+    final sigHtml =
+        sigRaw.contains('<') ? sigRaw : ComiisParser.bbcodeToHtml(sigRaw);
 
     return Card(
       elevation: 0,
@@ -1464,7 +1308,8 @@ class _UserSpacePageState extends State<UserSpacePage> {
           children: [
             Row(
               children: [
-                Icon(Icons.edit_note_rounded, size: 16, color: theme.colorScheme.primary),
+                Icon(Icons.edit_note_rounded,
+                    size: 16, color: theme.colorScheme.primary),
                 const SizedBox(width: 6),
                 Text(
                   '个人签名',
@@ -1493,19 +1338,28 @@ class _UserSpacePageState extends State<UserSpacePage> {
                 ),
               ),
             ),
-            if (user.gameProfile['自定义头衔'] != null && user.gameProfile['自定义头衔']!.isNotEmpty) ...[
-              Divider(height: 16, color: theme.colorScheme.outlineVariant.withAlpha(40)),
+            if (user.gameProfile['自定义头衔'] != null &&
+                user.gameProfile['自定义头衔']!.isNotEmpty) ...[
+              Divider(
+                  height: 16,
+                  color: theme.colorScheme.outlineVariant.withAlpha(40)),
               _buildInfoRow('自定义头衔', user.gameProfile['自定义头衔']!, theme),
             ],
-            Divider(height: 16, color: theme.colorScheme.outlineVariant.withAlpha(40)),
+            Divider(
+                height: 16,
+                color: theme.colorScheme.outlineVariant.withAlpha(40)),
             InkWell(
               onTap: () => _showQrCodeDialog(user),
               child: Row(
                 children: [
-                  Text('二维码', style: TextStyle(fontSize: 13.5, color: theme.colorScheme.outline)),
+                  Text('二维码',
+                      style: TextStyle(
+                          fontSize: 13.5, color: theme.colorScheme.outline)),
                   const Spacer(),
-                  Icon(Icons.qr_code, size: 18, color: theme.colorScheme.outline),
-                  Icon(Icons.chevron_right, size: 18, color: theme.colorScheme.outline),
+                  Icon(Icons.qr_code,
+                      size: 18, color: theme.colorScheme.outline),
+                  Icon(Icons.chevron_right,
+                      size: 18, color: theme.colorScheme.outline),
                 ],
               ),
             ),
@@ -1516,6 +1370,10 @@ class _UserSpacePageState extends State<UserSpacePage> {
   }
 
   Widget _buildStatsCard(UserSpace user, ThemeData theme) {
+    if (!['主题', '帖子', '回复', '回帖', '好友', '人气']
+        .any((key) => user.stats[key]?.isNotEmpty == true)) {
+      return const SizedBox.shrink();
+    }
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(
@@ -1526,46 +1384,55 @@ class _UserSpacePageState extends State<UserSpacePage> {
         padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
         child: Row(
           children: [
-            _buildClickableStat(
-              '帖子',
-              user.stats['主题'] ?? user.stats['帖子'] ?? '0',
-              Icons.chat_bubble_outline_rounded,
-              theme.colorScheme.primary,
-              () => setState(() => _selectedTab = 1),
-            ),
-            _buildClickableStat(
-              '回复',
-              user.stats['回复'] ?? user.stats['回帖'] ?? '0',
-              Icons.reply_rounded,
-              const Color(0xFFFF9800),
-              () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => UserThreadsPage(uid: user.uid, type: 'reply', title: '${user.username} 的回复'),
-                ),
+            if (user.stats['主题']?.isNotEmpty == true ||
+                user.stats['帖子']?.isNotEmpty == true)
+              _buildClickableStat(
+                '帖子',
+                _cleanNumericStat(user.stats['主题'] ?? user.stats['帖子']),
+                Icons.chat_bubble_outline_rounded,
+                theme.colorScheme.primary,
+                () => setState(() => _selectedTab = 1),
               ),
-            ),
-            _buildClickableStat(
-              '好友',
-              user.stats['好友'] ?? '0',
-              Icons.people_outline_rounded,
-              const Color(0xFF2196F3),
-              () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => FriendPage(
-                    uid: user.uid,
-                    username: user.username,
-                    isMe: _isMe,
+            if (user.stats['回复']?.isNotEmpty == true ||
+                user.stats['回帖']?.isNotEmpty == true)
+              _buildClickableStat(
+                '回复',
+                _cleanNumericStat(user.stats['回复'] ?? user.stats['回帖']),
+                Icons.reply_rounded,
+                const Color(0xFFFF9800),
+                () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => UserThreadsPage(
+                        uid: user.uid,
+                        type: 'reply',
+                        title: '${user.username} 的回复'),
                   ),
                 ),
               ),
-            ),
-            _buildClickableStat(
-              '人气',
-              user.stats['人气'] ?? '0',
-              Icons.local_fire_department_outlined,
-              const Color(0xFFE91E63),
-              null,
-            ),
+            if (user.stats['好友']?.isNotEmpty == true)
+              _buildClickableStat(
+                '好友',
+                _cleanNumericStat(user.stats['好友']),
+                Icons.people_outline_rounded,
+                const Color(0xFF2196F3),
+                () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => FriendPage(
+                      uid: user.uid,
+                      username: user.username,
+                      isMe: _isMe,
+                    ),
+                  ),
+                ),
+              ),
+            if (user.stats['人气']?.isNotEmpty == true)
+              _buildClickableStat(
+                '人气',
+                _cleanNumericStat(user.stats['人气']),
+                Icons.local_fire_department_outlined,
+                const Color(0xFFE91E63),
+                null,
+              ),
           ],
         ),
       ),
@@ -1573,75 +1440,32 @@ class _UserSpacePageState extends State<UserSpacePage> {
   }
 
   Widget _buildCreditsCard(UserSpace user, ThemeData theme) {
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(10),
-        side: BorderSide(color: theme.colorScheme.outlineVariant.withAlpha(60)),
-      ),
+    final assets = <String, String>{
+      ...user.creditsDetail,
+      if (user.credits.isNotEmpty) '积分': user.credits,
+    }..removeWhere((key, value) => value.trim().isEmpty);
+    if (assets.isEmpty) return const SizedBox.shrink();
+    return Card.filled(
       child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          children: [
-            Table(
-              border: TableBorder.all(color: theme.colorScheme.outlineVariant.withAlpha(40), width: 0.8),
-              children: [
-                TableRow(
-                  children: [
-                    _buildAssetCell('积分', _cleanUnit(user.credits.isNotEmpty ? user.credits : user.creditsDetail['积分'], '0', ''), theme),
-                    _buildAssetCell('经验', _cleanUnit(user.creditsDetail['经验'], '0', 'EP'), theme),
-                  ],
-                ),
-                TableRow(
-                  children: [
-                    _buildAssetCell('铁粒', _cleanUnit(user.creditsDetail['铁粒'], '0', '粒'), theme),
-                    _buildAssetCell('铁锭[已弃用]', _cleanUnit(user.creditsDetail['铁锭'], '0', '块'), theme),
-                  ],
-                ),
-                TableRow(
-                  children: [
-                    _buildAssetCell('贡献', _cleanUnit(user.creditsDetail['贡献'], '0', '点'), theme),
-                    _buildAssetCell('钻石', _cleanUnit(user.creditsDetail['钻石'], '0', '个'), theme),
-                  ],
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const CreditPage(initialTabIndex: 2)),
-                    ),
-                    icon: const Icon(Icons.receipt_long_outlined, size: 15),
-                    label: const Text('积分记录', style: TextStyle(fontSize: 12)),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const CreditPage(initialTabIndex: 1)),
-                    ),
-                    icon: const Icon(Icons.swap_horiz_rounded, size: 15),
-                    label: const Text('积分转账', style: TextStyle(fontSize: 12)),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const MagicPage()),
-                    ),
-                    icon: const Icon(Icons.auto_fix_high_outlined, size: 15),
-                    label: const Text('道具中心', style: TextStyle(fontSize: 12)),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
+        padding: const EdgeInsets.all(16),
+        child: LayoutBuilder(
+            builder: (context, constraints) =>
+                Wrap(spacing: 12, runSpacing: 12, children: [
+                  for (final entry in assets.entries)
+                    SizedBox(
+                        width: (constraints.maxWidth - 12) / 2,
+                        child: _buildAssetCell(entry.key, entry.value, theme)),
+                  if (_isMe)
+                    SizedBox(
+                        width: constraints.maxWidth,
+                        child: OutlinedButton.icon(
+                            onPressed: () => Navigator.of(context).push(
+                                MaterialPageRoute(
+                                    builder: (_) =>
+                                        const CreditPage(initialTabIndex: 2))),
+                            icon: const Icon(Icons.receipt_long_outlined),
+                            label: const Text('积分记录'))),
+                ])),
       ),
     );
   }
@@ -1659,47 +1483,85 @@ class _UserSpacePageState extends State<UserSpacePage> {
           children: [
             _buildFieldRow('用户ID', '${user.uid}', theme),
             if (user.gameProfile.containsKey('生日')) ...[
-              Divider(height: 12, color: theme.colorScheme.outlineVariant.withAlpha(40)),
+              Divider(
+                  height: 12,
+                  color: theme.colorScheme.outlineVariant.withAlpha(40)),
               _buildFieldRow('生日', user.gameProfile['生日']!, theme),
             ],
             if (user.gameProfile.containsKey('基岩版用户名')) ...[
-              Divider(height: 12, color: theme.colorScheme.outlineVariant.withAlpha(40)),
+              Divider(
+                  height: 12,
+                  color: theme.colorScheme.outlineVariant.withAlpha(40)),
               _buildFieldRow('基岩版用户名', user.gameProfile['基岩版用户名']!, theme),
             ],
-            if (user.gameProfile.containsKey('网易用户名') || user.gameProfile.containsKey('网易版用户名')) ...[
-              Divider(height: 12, color: theme.colorScheme.outlineVariant.withAlpha(40)),
-              _buildFieldRow('网易用户名', (user.gameProfile['网易用户名'] ?? user.gameProfile['网易版用户名'])!, theme),
+            if (user.gameProfile.containsKey('网易用户名') ||
+                user.gameProfile.containsKey('网易版用户名')) ...[
+              Divider(
+                  height: 12,
+                  color: theme.colorScheme.outlineVariant.withAlpha(40)),
+              _buildFieldRow(
+                  '网易用户名',
+                  (user.gameProfile['网易用户名'] ?? user.gameProfile['网易版用户名'])!,
+                  theme),
             ],
             if (user.gameProfile.containsKey('QQ')) ...[
-              Divider(height: 12, color: theme.colorScheme.outlineVariant.withAlpha(40)),
+              Divider(
+                  height: 12,
+                  color: theme.colorScheme.outlineVariant.withAlpha(40)),
               _buildFieldRow('QQ', user.gameProfile['QQ']!, theme),
             ],
             if (user.gameProfile.containsKey('代表作')) ...[
-              Divider(height: 12, color: theme.colorScheme.outlineVariant.withAlpha(40)),
+              Divider(
+                  height: 12,
+                  color: theme.colorScheme.outlineVariant.withAlpha(40)),
               _buildFieldRow('代表作', user.gameProfile['代表作']!, theme),
             ],
             if (user.gameProfile.containsKey('性别')) ...[
-              Divider(height: 12, color: theme.colorScheme.outlineVariant.withAlpha(40)),
+              Divider(
+                  height: 12,
+                  color: theme.colorScheme.outlineVariant.withAlpha(40)),
               _buildFieldRow('性别', user.gameProfile['性别']!, theme),
             ],
             if (user.gameProfile.containsKey('在线时间')) ...[
-              Divider(height: 12, color: theme.colorScheme.outlineVariant.withAlpha(40)),
+              Divider(
+                  height: 12,
+                  color: theme.colorScheme.outlineVariant.withAlpha(40)),
               _buildFieldRow('在线时间', user.gameProfile['在线时间']!, theme),
             ],
-            if (user.regdate.isNotEmpty || user.gameProfile.containsKey('注册时间')) ...[
-              Divider(height: 12, color: theme.colorScheme.outlineVariant.withAlpha(40)),
-              _buildFieldRow('注册时间', user.regdate.isNotEmpty ? user.regdate : user.gameProfile['注册时间']!, theme),
+            if (user.regdate.isNotEmpty ||
+                user.gameProfile.containsKey('注册时间')) ...[
+              Divider(
+                  height: 12,
+                  color: theme.colorScheme.outlineVariant.withAlpha(40)),
+              _buildFieldRow(
+                  '注册时间',
+                  user.regdate.isNotEmpty
+                      ? user.regdate
+                      : user.gameProfile['注册时间']!,
+                  theme),
             ],
-            if (user.lastvisit.isNotEmpty || user.gameProfile.containsKey('最后访问')) ...[
-              Divider(height: 12, color: theme.colorScheme.outlineVariant.withAlpha(40)),
-              _buildFieldRow('最后访问', user.lastvisit.isNotEmpty ? user.lastvisit : user.gameProfile['最后访问']!, theme),
+            if (user.lastvisit.isNotEmpty ||
+                user.gameProfile.containsKey('最后访问')) ...[
+              Divider(
+                  height: 12,
+                  color: theme.colorScheme.outlineVariant.withAlpha(40)),
+              _buildFieldRow(
+                  '最后访问',
+                  user.lastvisit.isNotEmpty
+                      ? user.lastvisit
+                      : user.gameProfile['最后访问']!,
+                  theme),
             ],
             if (user.gameProfile.containsKey('上次活动时间')) ...[
-              Divider(height: 12, color: theme.colorScheme.outlineVariant.withAlpha(40)),
+              Divider(
+                  height: 12,
+                  color: theme.colorScheme.outlineVariant.withAlpha(40)),
               _buildFieldRow('上次活动时间', user.gameProfile['上次活动时间']!, theme),
             ],
             if (user.gameProfile.containsKey('上次发表时间')) ...[
-              Divider(height: 12, color: theme.colorScheme.outlineVariant.withAlpha(40)),
+              Divider(
+                  height: 12,
+                  color: theme.colorScheme.outlineVariant.withAlpha(40)),
               _buildFieldRow('上次发表时间', user.gameProfile['上次发表时间']!, theme),
             ],
           ],
@@ -1708,37 +1570,36 @@ class _UserSpacePageState extends State<UserSpacePage> {
     );
   }
 
-  String _cleanUnit(String? raw, String fallback, String unit) {
-    if (raw == null || raw.isEmpty) return unit.isEmpty ? fallback : '$fallback $unit';
-    final trimmed = raw.trim();
-    if (unit.isEmpty) return trimmed;
-    if (trimmed.endsWith(unit) ||
-        trimmed.endsWith('EP') ||
-        trimmed.endsWith('粒') ||
-        trimmed.endsWith('块') ||
-        trimmed.endsWith('点') ||
-        trimmed.endsWith('个')) {
-      return trimmed;
-    }
-    return '$trimmed $unit';
+  static String _cleanNumericStat(String? raw) {
+    if (raw == null || raw.trim().isEmpty) return '—';
+    final m = RegExp(r'[\d,，]+(?:\.\d+)?\s*[万亿]?').firstMatch(raw.trim());
+    return m?.group(0)?.trim() ?? '—';
   }
 
   Widget _buildInfoRow(String label, String value, ThemeData theme) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SizedBox(width: 80, child: Text(label, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500, color: theme.colorScheme.onSurfaceVariant))),
+        SizedBox(
+            width: 80,
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w500,
+                    color: theme.colorScheme.onSurfaceVariant))),
         Expanded(
           child: SelectableText(
             value,
-            style: TextStyle(fontSize: 13.5, color: theme.colorScheme.onSurface),
+            style:
+                TextStyle(fontSize: 13.5, color: theme.colorScheme.onSurface),
           ),
         ),
       ],
     );
   }
 
-  Widget _buildClickableStat(String label, String count, IconData icon, Color color, VoidCallback? onTap) {
+  Widget _buildClickableStat(String label, String count, IconData icon,
+      Color color, VoidCallback? onTap) {
     return Expanded(
       child: InkWell(
         onTap: onTap,
@@ -1766,7 +1627,11 @@ class _UserSpacePageState extends State<UserSpacePage> {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       child: Row(
         children: [
-          Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: theme.colorScheme.onSurfaceVariant)),
+          Text(label,
+              style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: theme.colorScheme.onSurfaceVariant)),
           const Spacer(),
           Text(
             val,
@@ -1793,7 +1658,11 @@ class _UserSpacePageState extends State<UserSpacePage> {
       children: [
         SizedBox(
           width: 90,
-          child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: theme.colorScheme.onSurfaceVariant)),
+          child: Text(label,
+              style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: theme.colorScheme.onSurfaceVariant)),
         ),
         Expanded(
           child: SelectableText(
@@ -1814,7 +1683,8 @@ class _UserSpacePageState extends State<UserSpacePage> {
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
         border: Border(
-          top: BorderSide(color: theme.colorScheme.outlineVariant.withAlpha(80)),
+          top:
+              BorderSide(color: theme.colorScheme.outlineVariant.withAlpha(80)),
         ),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1831,26 +1701,33 @@ class _UserSpacePageState extends State<UserSpacePage> {
                           icon: const Icon(Icons.edit_outlined, size: 17),
                           label: const Text('更新资料'),
                           onPressed: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(builder: (_) => ProfileSettingsPage(uid: widget.uid)),
-                            ).then((_) => _loadData());
+                            Navigator.of(context)
+                                .push(
+                                  MaterialPageRoute(
+                                      builder: (_) =>
+                                          ProfileSettingsPage(uid: user.uid)),
+                                )
+                                .then((_) => _loadData());
                           },
                         ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
                         child: FilledButton.tonalIcon(
-                          icon: const Icon(Icons.auto_awesome_outlined, size: 17),
+                          icon:
+                              const Icon(Icons.auto_awesome_outlined, size: 17),
                           label: const Text('装扮空间'),
                           onPressed: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => HomeStylePage(
-                                  uid: widget.uid,
-                                  username: user.username,
-                                ),
-                              ),
-                            ).then((_) => _loadData());
+                            Navigator.of(context)
+                                .push(
+                                  MaterialPageRoute(
+                                    builder: (_) => HomeStylePage(
+                                      uid: user.uid,
+                                      username: user.username,
+                                    ),
+                                  ),
+                                )
+                                .then((_) => _loadData());
                           },
                         ),
                       ),
@@ -1879,11 +1756,13 @@ class _UserSpacePageState extends State<UserSpacePage> {
                                 ),
                                 actions: [
                                   TextButton(
-                                    onPressed: () => Navigator.of(ctx).pop(false),
+                                    onPressed: () =>
+                                        Navigator.of(ctx).pop(false),
                                     child: const Text('取消'),
                                   ),
                                   FilledButton(
-                                    onPressed: () => Navigator.of(ctx).pop(true),
+                                    onPressed: () =>
+                                        Navigator.of(ctx).pop(true),
                                     child: const Text('发送申请'),
                                   ),
                                 ],
@@ -1893,7 +1772,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
                             final messenger = ScaffoldMessenger.of(context);
                             try {
                               final ok = await KlpbbsApi.addFriend(
-                                widget.uid,
+                                user.uid,
                                 noteCtrl.text.trim(),
                               );
                               messenger.showSnackBar(
@@ -1917,7 +1796,7 @@ class _UserSpacePageState extends State<UserSpacePage> {
                           onPressed: () => Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (_) => PmDetailPage(
-                                touid: widget.uid,
+                                touid: user.uid,
                                 toUsername: user.username,
                                 isOnline: user.isOnline,
                                 onlineStatusText: user.onlineStatusText,
@@ -1970,7 +1849,7 @@ class _MySpacePageState extends State<MySpacePage> {
     if (_loading) {
       return const Scaffold(
         drawer: GlobalAppDrawer(),
-        body: Center(child: CircularProgressIndicator()),
+        body: Center(child: AppLoadingIndicator()),
       );
     }
 
@@ -1997,7 +1876,8 @@ class _MySpacePageState extends State<MySpacePage> {
                     color: theme.colorScheme.primaryContainer.withAlpha(100),
                     shape: BoxShape.circle,
                   ),
-                  child: Icon(Icons.person_pin_rounded, size: 52, color: theme.colorScheme.primary),
+                  child: Icon(Icons.person_pin_rounded,
+                      size: 52, color: theme.colorScheme.primary),
                 ),
                 const SizedBox(height: 18),
                 const Text(
@@ -2008,7 +1888,10 @@ class _MySpacePageState extends State<MySpacePage> {
                 Text(
                   '登录苦力怕论坛账号，查看您的积分资产、勋章荣誉与空间装扮',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 13, color: theme.colorScheme.outline, height: 1.4),
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: theme.colorScheme.outline,
+                      height: 1.4),
                 ),
                 const SizedBox(height: 24),
                 SizedBox(
@@ -2016,13 +1899,17 @@ class _MySpacePageState extends State<MySpacePage> {
                   height: 44,
                   child: FilledButton(
                     onPressed: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const LoginPage()),
-                      ).then((_) => _checkLogin());
+                      Navigator.of(context)
+                          .push(
+                            MaterialPageRoute(
+                                builder: (_) => const LoginPage()),
+                          )
+                          .then((_) => _checkLogin());
                     },
                     child: const Text(
                       '立即登录 / 注册',
-                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                      style:
+                          TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                     ),
                   ),
                 ),

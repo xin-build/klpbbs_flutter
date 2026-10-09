@@ -1,12 +1,17 @@
+import '../widgets/app_motion.dart';
+import '../widgets/sliver_two_column_feed.dart';
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
+import '../core/dio_client.dart';
 import '../core/forum_events.dart';
 import '../core/preload_service.dart';
+import '../core/discuz_thread_types.dart';
 import '../models/forum.dart';
 import '../models/forum_header_info.dart';
 import '../models/server_outage_info.dart';
@@ -25,11 +30,20 @@ import '../widgets/pagination_control.dart';
 import '../widgets/responsive_layout.dart';
 import '../widgets/skeleton_list.dart';
 import '../widgets/thread_card.dart';
+import '../widgets/smooth_scroll_controller.dart';
+import '../widgets/subforum_panel.dart';
 import '../widgets/interactive_animations.dart';
 import 'post_page.dart';
 import 'search_page.dart';
 import 'thread_detail_page.dart';
 import 'user_space_page.dart';
+
+typedef _ForumBundle = ({
+  List<ThreadSummary> threads,
+  ForumHeaderInfo header,
+  List<({int typeid, String name})> types,
+  List<Forum> subForums,
+});
 
 /// 版块帖子列表（深度复刻 Discuz 原版版块布局：图三与图四）
 class ThreadListPage extends StatefulWidget {
@@ -60,6 +74,12 @@ class _ThreadListPageState extends State<ThreadListPage> {
   List<ThreadSummary> _normalThreads = [];
   bool _isInitialLoading = true;
   bool _isPageLoading = false;
+  int get _activeForumFid => _headerInfo != null && _headerInfo!.fid > 0
+      ? _headerInfo!.fid
+      : widget.fid;
+  String get _activeForumTitle =>
+      _headerInfo?.name.isNotEmpty == true ? _headerInfo!.name : widget.title;
+
   Object? _loadError;
   ServerOutageInfo? _activeOutage;
   bool _viewCacheAnyway = false;
@@ -71,6 +91,16 @@ class _ThreadListPageState extends State<ThreadListPage> {
   String? _orderby;
   int? _selectedTid;
   bool _isFav = false;
+  bool _favoriteBusy = false;
+  int _requestSequence = 0;
+  final Map<String, _ForumBundle> _snapshots = {};
+  final Map<String, DateTime> _snapshotAt = {};
+  final Map<String, int> _filterPages = {};
+  final Map<String, double> _offsets = {};
+  String _displayedFilter = '0_';
+  String get _filter => '${_selectedType ?? 0}_${_orderby ?? ''}';
+  String _bundleKey(int page) =>
+      'forum_bundle_${_activeForumFid}_${page}_$_filter';
 
   List<Forum> _subForums = [];
   bool _stickyCollapsed = false;
@@ -83,7 +113,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
     });
   }
 
-  final ScrollController _scrollController = ScrollController();
+  final ScrollController _scrollController = SmoothScrollController();
   bool _showBackToTop = false;
 
   void _onThreadListScroll() {
@@ -113,20 +143,22 @@ class _ThreadListPageState extends State<ThreadListPage> {
       _selectedTid = widget.activeTid;
     }
     ForumFavoriteNotifier.instance.addListener(_onFavEvent);
+    DioClient.sessionChanges.addListener(_onSessionChanged);
     _loadFavStatus();
     _loadCollapsePreferences();
     _fetchData(page: 1, isInitial: true);
-    _loadTypes();
-    _loadSubForums();
   }
 
   Future<void> _loadCollapsePreferences() async {
+    final fid = _activeForumFid;
     try {
       final sp = await SharedPreferences.getInstance();
-      if (mounted) {
+      if (mounted && fid == _activeForumFid) {
         setState(() {
-          _stickyCollapsed = sp.getBool('fid_${widget.fid}_sticky_collapsed') ?? false;
-          _subforumsCollapsed = sp.getBool('fid_${widget.fid}_subforums_collapsed') ?? false;
+          _stickyCollapsed =
+              sp.getBool('fid_${_activeForumFid}_sticky_collapsed') ?? false;
+          _subforumsCollapsed =
+              sp.getBool('fid_${_activeForumFid}_subforums_collapsed') ?? false;
         });
       }
     } catch (_) {}
@@ -136,7 +168,8 @@ class _ThreadListPageState extends State<ThreadListPage> {
     setState(() => _stickyCollapsed = !_stickyCollapsed);
     try {
       final sp = await SharedPreferences.getInstance();
-      await sp.setBool('fid_${widget.fid}_sticky_collapsed', _stickyCollapsed);
+      await sp.setBool(
+          'fid_${_activeForumFid}_sticky_collapsed', _stickyCollapsed);
     } catch (_) {}
   }
 
@@ -144,7 +177,8 @@ class _ThreadListPageState extends State<ThreadListPage> {
     setState(() => _subforumsCollapsed = !_subforumsCollapsed);
     try {
       final sp = await SharedPreferences.getInstance();
-      await sp.setBool('fid_${widget.fid}_subforums_collapsed', _subforumsCollapsed);
+      await sp.setBool(
+          'fid_${_activeForumFid}_subforums_collapsed', _subforumsCollapsed);
     } catch (_) {}
   }
 
@@ -155,6 +189,23 @@ class _ThreadListPageState extends State<ThreadListPage> {
       setState(() => _selectedTid = widget.activeTid);
     }
     if (widget.fid != oldWidget.fid) {
+      _requestSequence++;
+      _snapshots.clear();
+      _snapshotAt.clear();
+      _filterPages.clear();
+      _offsets.clear();
+      _favoriteBusy = false;
+      _headerInfo = null;
+      _stickyThreads = [];
+      _normalThreads = [];
+      _subForums = [];
+      _types = const [];
+      _selectedType = null;
+      _orderby = null;
+      _selectedTid = widget.activeTid;
+      _isFav = false;
+      _loadFavStatus();
+      _loadCollapsePreferences();
       _fetchData(page: 1, isInitial: true, forceRefresh: true);
     }
   }
@@ -168,14 +219,41 @@ class _ThreadListPageState extends State<ThreadListPage> {
     GeneralVideoPlayer.stopAll();
     _scrollController.dispose();
     ForumFavoriteNotifier.instance.removeListener(_onFavEvent);
+    DioClient.sessionChanges.removeListener(_onSessionChanged);
     super.dispose();
+  }
+
+  void _onSessionChanged() {
+    if (!mounted) return;
+    _requestSequence++;
+    setState(() {
+      _snapshots.clear();
+      _snapshotAt.clear();
+      _filterPages.clear();
+      _offsets.clear();
+      _headerInfo = null;
+      _normalThreads = [];
+      _stickyThreads = [];
+      _subForums = [];
+      _types = const [];
+      _isFav = false;
+      _favoriteBusy = false;
+      _selectedTid = null;
+      _loadError = null;
+      _activeOutage = null;
+      _viewCacheAnyway = false;
+      _page = 1;
+    });
+    _loadFavStatus();
+    _fetchData(page: 1, isInitial: true, forceRefresh: true);
   }
 
   void _onFavEvent() {
     if (!mounted) return;
     final lastFid = ForumFavoriteNotifier.instance.lastChangedFid;
-    if (lastFid == widget.fid) {
-      final isFav = ForumFavoriteNotifier.instance.lastIsFav ?? false;
+    if (lastFid == null || lastFid == _activeForumFid) {
+      final isFav =
+          ForumFavoriteNotifier.instance.ids.contains(_activeForumFid);
       if (_isFav != isFav) {
         setState(() => _isFav = isFav);
       }
@@ -183,44 +261,58 @@ class _ThreadListPageState extends State<ThreadListPage> {
   }
 
   Future<void> _loadFavStatus() async {
+    final fid = _activeForumFid;
+    final session = DioClient.sessionKey;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final list = prefs.getStringList('fav_forums') ?? [];
-      final isFav = list.contains('${widget.fid}');
-      if (mounted) setState(() => _isFav = isFav);
+      final ids = await KlpbbsApi.getSavedFavoriteForumIds();
+      if (mounted &&
+          fid == _activeForumFid &&
+          session == DioClient.sessionKey) {
+        setState(() => _isFav = ids.contains(fid));
+      }
+      final uid = await KlpbbsApi.getMyUid();
+      if (uid == null || session != DioClient.sessionKey) return;
+      final forums = await KlpbbsApi.getFavoriteForums(uid);
+      if (mounted &&
+          fid == _activeForumFid &&
+          session == DioClient.sessionKey) {
+        setState(() => _isFav = forums.any((forum) => forum.fid == fid));
+      }
     } catch (_) {}
   }
 
   Future<void> _toggleFav() async {
-    final nextFav = !_isFav;
-    setState(() => _isFav = nextFav);
-
+    if (_favoriteBusy) return;
+    final fid = _activeForumFid;
+    final session = DioClient.sessionKey;
+    final next = !_isFav;
+    setState(() => _favoriteBusy = true);
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final set = (prefs.getStringList('fav_forums') ?? []).toSet();
-      if (nextFav) {
-        set.add('${widget.fid}');
-      } else {
-        set.remove('${widget.fid}');
+      final result = next
+          ? await KlpbbsApi.favoriteForum(fid)
+          : await KlpbbsApi.unfavoriteForum(fid);
+      if (!mounted ||
+          _activeForumFid != fid ||
+          session != DioClient.sessionKey) {
+        return;
       }
-      await prefs.setStringList('fav_forums', set.toList());
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(nextFav ? '已收藏版块「${widget.title}」' : '已取消收藏「${widget.title}」'),
-            duration: const Duration(seconds: 2),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+      if (result.success) setState(() => _isFav = next);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(result.message)));
+    } catch (error) {
+      if (mounted &&
+          _activeForumFid == fid &&
+          session == DioClient.sessionKey) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('收藏操作失败：$error')));
       }
-      if (nextFav) {
-        await KlpbbsApi.favoriteForum(widget.fid);
-      } else {
-        await KlpbbsApi.unfavoriteForum(widget.fid);
+    } finally {
+      if (mounted &&
+          _activeForumFid == fid &&
+          session == DioClient.sessionKey) {
+        setState(() => _favoriteBusy = false);
       }
-    } catch (_) {}
+    }
   }
 
   Future<void> _fetchData({
@@ -228,38 +320,51 @@ class _ThreadListPageState extends State<ThreadListPage> {
     bool forceRefresh = false,
     bool isInitial = false,
   }) async {
-    final cacheKey = 'forum_bundle_${widget.fid}_${page}_${_selectedType ?? 0}_${_orderby ?? ""}';
-    final cached = PreloadService.instance.get<
-      ({
-        List<ThreadSummary> threads,
-        ForumHeaderInfo header,
-        List<({int typeid, String name})> types,
-        List<Forum> subForums,
-      })
-    >(cacheKey);
+    final sequence = ++_requestSequence;
+    final fid = _activeForumFid;
+    final session = DioClient.sessionKey;
+    final selectedType = _selectedType;
+    final orderby = _orderby;
+    final requestedFilter = _filter;
+    final cacheKey = _bundleKey(page);
+    final local = _snapshotAt[cacheKey] != null &&
+            DateTime.now().difference(_snapshotAt[cacheKey]!) <
+                const Duration(minutes: 5)
+        ? _snapshots[cacheKey]
+        : null;
+    final cached = local ?? PreloadService.instance.get<_ForumBundle>(cacheKey);
 
-    if (isInitial && cached != null && !forceRefresh) {
+    if (cached != null && !forceRefresh) {
       if (mounted) {
         setState(() {
           _headerInfo = cached.header;
-          if (cached.types.isNotEmpty) _types = cached.types;
-          if (cached.subForums.isNotEmpty) _subForums = cached.subForums;
+          _types = DiscuzThreadTypes.merge(_types, cached.types);
+          _subForums = cached.subForums;
           _stickyThreads = cached.threads.where((t) => t.isSticky).toList();
           _normalThreads = cached.threads.where((t) => !t.isSticky).toList();
           _isInitialLoading = false;
           _isPageLoading = false;
           _page = page;
+          _displayedFilter = requestedFilter;
+          _loadError = null;
+          _activeOutage = null;
+          _loadingTargetPage = null;
           if (_selectedTid == null && cached.threads.isNotEmpty) {
             _selectedTid = cached.threads.first.tid;
           }
         });
       }
-      unawaited(_fetchData(page: page, forceRefresh: true));
+      _restorePosition(cacheKey);
+      if (isInitial) unawaited(_fetchData(page: page, forceRefresh: true));
       return;
     }
 
     if (mounted) {
       setState(() {
+        if (_displayedFilter != requestedFilter) {
+          _normalThreads = [];
+          _stickyThreads = [];
+        }
         if (_headerInfo == null && isInitial) {
           _isInitialLoading = true;
         } else {
@@ -273,21 +378,47 @@ class _ThreadListPageState extends State<ThreadListPage> {
 
     try {
       final bundle = await KlpbbsApi.getForumBundle(
-        widget.fid,
+        fid,
         page: page,
-        typeid: _selectedType,
-        orderby: _orderby,
+        typeid: selectedType,
+        orderby: orderby,
         forceRefresh: forceRefresh,
       );
 
-      if (!mounted) return;
+      if (!mounted ||
+          sequence != _requestSequence ||
+          _activeForumFid != fid ||
+          session != DioClient.sessionKey) {
+        return;
+      }
+      final changingPage = _page != page || _displayedFilter != requestedFilter;
+      final redirected = bundle.header.fid > 0 && bundle.header.fid != fid;
+      final acceptedCacheKey = redirected
+          ? 'forum_bundle_${bundle.header.fid}_${page}_$requestedFilter'
+          : cacheKey;
       setState(() {
+        if (redirected) {
+          _snapshots.clear();
+          _snapshotAt.clear();
+          _offsets.clear();
+          _isFav = false;
+        }
+        _snapshots[acceptedCacheKey] = bundle;
+        _snapshotAt[acceptedCacheKey] = DateTime.now();
+        if (_snapshots.length > 24) {
+          final oldest = _snapshots.keys.first;
+          _snapshots.remove(oldest);
+          _snapshotAt.remove(oldest);
+        }
         _headerInfo = bundle.header;
-        if (bundle.types.isNotEmpty) _types = bundle.types;
-        if (bundle.subForums.isNotEmpty) _subForums = bundle.subForums;
+        _types = redirected || (page == 1 && (selectedType ?? 0) == 0)
+            ? bundle.types
+            : DiscuzThreadTypes.merge(_types, bundle.types);
+        _subForums = bundle.subForums;
         _stickyThreads = bundle.threads.where((t) => t.isSticky).toList();
         _normalThreads = bundle.threads.where((t) => !t.isSticky).toList();
         _page = page;
+        _displayedFilter = requestedFilter;
         _loadingTargetPage = null;
         _isInitialLoading = false;
         _isPageLoading = false;
@@ -296,25 +427,20 @@ class _ThreadListPageState extends State<ThreadListPage> {
         if (_selectedTid == null && bundle.threads.isNotEmpty) {
           _selectedTid = bundle.threads.first.tid;
         }
-        if (bundle.header.isFavorited && !_isFav) {
-          _isFav = true;
-          SharedPreferences.getInstance().then((prefs) {
-            final list = (prefs.getStringList('fav_forums') ?? []).toSet();
-            if (list.add('${widget.fid}')) {
-              prefs.setStringList('fav_forums', list.toList());
-            }
-          }).catchError((_) {});
-        }
       });
-      if (_scrollController.hasClients && _scrollController.offset > 280) {
-        _scrollController.animateTo(
-          280,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut,
-        );
+      if (redirected) {
+        _loadFavStatus();
+        _loadCollapsePreferences();
+      } else if (changingPage) {
+        _restorePosition(cacheKey);
       }
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted ||
+          sequence != _requestSequence ||
+          _activeForumFid != fid ||
+          session != DioClient.sessionKey) {
+        return;
+      }
       final outage = ServerOutageInfo.tryParse(e);
       setState(() {
         _loadingTargetPage = null;
@@ -331,44 +457,63 @@ class _ThreadListPageState extends State<ThreadListPage> {
     }
   }
 
-  Future<void> _loadSubForums() async {
-    try {
-      final list = await KlpbbsApi.getSubForums(widget.fid);
-      if (mounted) setState(() => _subForums = list);
-    } catch (_) {}
-  }
-
-  Future<void> _loadTypes() async {
-    try {
-      final list = await KlpbbsApi.getThreadTypes(widget.fid);
-      if (mounted) setState(() => _types = list);
-    } catch (_) {}
-  }
-
-  void _reload() {
+  Future<void> _reload() async {
     setState(() {
       _viewCacheAnyway = false;
       _activeOutage = null;
     });
-    _fetchData(page: _page, forceRefresh: true);
+    await _fetchData(page: _page, forceRefresh: true);
   }
 
   Future<void> _openPostPage() async {
     final posted = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
-        builder: (_) => PostPage(fid: widget.fid),
+        builder: (_) => PostPage(fid: _activeForumFid),
       ),
     );
     if (posted == true) _reload();
   }
 
   void _goPage(int page) {
+    if (page < 1) return;
     if (page == _page && !_isPageLoading) return;
+    _rememberPosition();
     setState(() {
       _viewCacheAnyway = false;
       _activeOutage = null;
     });
     _fetchData(page: page);
+  }
+
+  void _rememberPosition() {
+    _filterPages[_displayedFilter] = _page;
+    if (_scrollController.hasClients) {
+      _offsets['forum_bundle_${_activeForumFid}_${_page}_$_displayedFilter'] =
+          _scrollController.offset;
+    }
+  }
+
+  void _restorePosition(String key) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          _bundleKey(_page) != key ||
+          !_scrollController.hasClients) {
+        return;
+      }
+      _scrollController.jumpTo((_offsets[key] ?? 0)
+          .clamp(0.0, _scrollController.position.maxScrollExtent));
+    });
+  }
+
+  void _selectFilter({int? typeid, String? orderby}) {
+    _rememberPosition();
+    setState(() {
+      _selectedType = typeid;
+      _orderby = orderby;
+      _viewCacheAnyway = false;
+      _activeOutage = null;
+    });
+    _fetchData(page: _filterPages[_filter] ?? 1);
   }
 
   void _openThread(int tid) {
@@ -395,7 +540,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
         MaterialPageRoute(
           builder: (_) => ThreadDetailPage(
             tid: tid,
-            fid: widget.fid,
+            fid: _activeForumFid,
             canShowForumSidebar: false,
           ),
         ),
@@ -413,7 +558,8 @@ class _ThreadListPageState extends State<ThreadListPage> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    final header = _headerInfo ?? ForumHeaderInfo(fid: widget.fid, name: widget.title);
+    final header = _headerInfo ??
+        ForumHeaderInfo(fid: _activeForumFid, name: _activeForumTitle);
 
     // 首次加载且无缓存直出时展示骨架屏
     if (_isInitialLoading && _headerInfo == null) {
@@ -432,17 +578,18 @@ class _ThreadListPageState extends State<ThreadListPage> {
                       onPressed: () => Navigator.of(context).maybePop(),
                     )
                   : null),
-          title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+          title: Text(_activeForumTitle,
+              maxLines: 1, overflow: TextOverflow.ellipsis),
         ),
         body: ForumThreadListSkeleton(isSidebar: widget.isSidebar),
       );
     }
 
-    // 当遇到 502/服务端故障且用户未选择“强制浏览离线缓存”时，坚决优先全屏展示 502 诊断页（无论之前是否有缓存直出）
-    if (_activeOutage != null && !_viewCacheAnyway) {
+    // 没有有效内容时展示完整故障页；已有内容时保留列表并显示故障提示。
+    if (_activeOutage != null && !_viewCacheAnyway && _headerInfo == null) {
       final hasCache = _headerInfo != null ||
           PreloadService.instance.has(
-            'forum_bundle_${widget.fid}_${_page}_${_selectedType ?? 0}_${_orderby ?? ""}',
+            'forum_bundle_${_activeForumFid}_${_page}_${_selectedType ?? 0}_${_orderby ?? ""}',
           );
       return Scaffold(
         appBar: AppBar(
@@ -459,7 +606,8 @@ class _ThreadListPageState extends State<ThreadListPage> {
                       onPressed: () => Navigator.of(context).maybePop(),
                     )
                   : null),
-          title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+          title: Text(_activeForumTitle,
+              maxLines: 1, overflow: TextOverflow.ellipsis),
           actions: [
             IconButton(
               icon: const Icon(Icons.refresh_rounded),
@@ -503,7 +651,8 @@ class _ThreadListPageState extends State<ThreadListPage> {
                   onPressed: () => Navigator.of(context).maybePop(),
                 )
               : null,
-          title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+          title: Text(_activeForumTitle,
+              maxLines: 1, overflow: TextOverflow.ellipsis),
         ),
         body: Center(
           child: Padding(
@@ -520,16 +669,16 @@ class _ThreadListPageState extends State<ThreadListPage> {
                 Text(
                   '版块内容加载失败',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
+                        fontWeight: FontWeight.bold,
+                      ),
                 ),
                 const SizedBox(height: 8),
                 Text(
                   '$_loadError',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                 ),
                 const SizedBox(height: 20),
                 FilledButton.icon(
@@ -545,17 +694,31 @@ class _ThreadListPageState extends State<ThreadListPage> {
     }
 
     final List<Widget> slivers = [];
+    if (_loadError != null && _headerInfo != null && _activeOutage == null) {
+      slivers.add(SliverToBoxAdapter(
+          child: MaterialBanner(
+              key: const ValueKey('forum-refresh-error'),
+              content: const Text('加载失败，已保留当前版块内容。'),
+              actions: [
+            TextButton(onPressed: _reload, child: const Text('重试'))
+          ])));
+    }
     if (_activeOutage != null) {
       slivers.add(
         SliverToBoxAdapter(
           child: ServerOutageBanner(
+            key: const ValueKey('forum-outage-banner'),
             outage: _activeOutage!,
             onRetry: () {
               setState(() => _viewCacheAnyway = false);
               _reload();
             },
             onViewDetails: () {
-              setState(() => _viewCacheAnyway = false);
+              ServerOutageView.showAsDialog(
+                context,
+                outage: _activeOutage!,
+                onRetry: _reload,
+              );
             },
             onDismiss: () => setState(() => _activeOutage = null),
           ),
@@ -618,7 +781,8 @@ class _ThreadListPageState extends State<ThreadListPage> {
             child: Column(
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                   decoration: BoxDecoration(
                     color: colorScheme.surfaceContainerHighest.withAlpha(80),
                     borderRadius: BorderRadius.circular(20),
@@ -629,7 +793,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
                       SizedBox(
                         width: 14,
                         height: 14,
-                        child: CircularProgressIndicator(
+                        child: AppLoadingIndicator(
                           strokeWidth: 2,
                           color: colorScheme.primary,
                         ),
@@ -647,13 +811,16 @@ class _ThreadListPageState extends State<ThreadListPage> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                const SkeletonList(itemCount: 3, withThumbnail: false, isGrid: false),
+                if (_normalThreads.isEmpty && _stickyThreads.isEmpty)
+                  const SkeletonList(
+                      itemCount: 3, withThumbnail: false, isGrid: false),
               ],
             ),
           ),
         ),
       );
-    } else if (_normalThreads.isEmpty && _stickyThreads.isEmpty) {
+    }
+    if (_normalThreads.isEmpty && _stickyThreads.isEmpty && !_isPageLoading) {
       slivers.add(
         const SliverToBoxAdapter(
           child: Padding(
@@ -666,41 +833,54 @@ class _ThreadListPageState extends State<ThreadListPage> {
           ),
         ),
       );
-    } else {
+    } else if (_normalThreads.isNotEmpty) {
       slivers.add(
-        SliverList.builder(
-          itemCount: _normalThreads.length,
-          itemBuilder: (context, index) {
+        SliverLayoutBuilder(builder: (context, constraints) {
+          final grid = isDesktop &&
+              !widget.isSidebar &&
+              constraints.crossAxisExtent >= 620;
+          Widget itemBuilder(BuildContext context, int index) {
             final t = _normalThreads[index];
             return Container(
-              margin: const EdgeInsets.symmetric(
-                horizontal: 8,
-                vertical: 3,
-              ),
+              key: ValueKey(t.tid),
+              margin: grid
+                  ? EdgeInsets.zero
+                  : const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(16),
                 border: ((_selectedTid == t.tid || widget.activeTid == t.tid) &&
                         (isDesktop || widget.isSidebar))
-                    ? Border.all(
-                        color: colorScheme.primary,
-                        width: 1.8,
-                      )
+                    ? Border.all(color: colorScheme.primary, width: 1.8)
                     : null,
               ),
               child: ThreadCard(
                 thread: t,
+                isGrid: grid,
+                adaptiveHeight: true,
+                margin: EdgeInsets.zero,
                 onTap: () => _openThread(t.tid),
                 onAuthorTap: t.uid == null
                     ? null
                     : () => Navigator.of(context).push(
                           MaterialPageRoute(
-                            builder: (_) => UserSpacePage(uid: t.uid!),
-                          ),
+                              builder: (_) => UserSpacePage(uid: t.uid!)),
                         ),
               ),
             );
-          },
-        ),
+          }
+
+          if (!grid) {
+            return SliverList.builder(
+                itemCount: _normalThreads.length, itemBuilder: itemBuilder);
+          }
+          return SliverPadding(
+            padding: const EdgeInsets.all(12),
+            sliver: SliverTwoColumnFeed(
+              itemCount: _normalThreads.length,
+              itemBuilder: itemBuilder,
+            ),
+          );
+        }),
       );
     }
 
@@ -716,10 +896,11 @@ class _ThreadListPageState extends State<ThreadListPage> {
 
     final listView = RepaintBoundary(
       child: RefreshIndicator(
-        onRefresh: () async => _reload(),
+        onRefresh: _reload,
         child: CustomScrollView(
           controller: _scrollController,
-          key: PageStorageKey('thread_list_${widget.fid}_${_selectedType ?? 0}'),
+          key: PageStorageKey(
+              'thread_list_${_activeForumFid}_${_selectedType ?? 0}'),
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: slivers,
         ),
@@ -753,7 +934,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
                             )
                           : null,
                       title: Text(
-                        widget.title,
+                        _activeForumTitle,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -762,15 +943,18 @@ class _ThreadListPageState extends State<ThreadListPage> {
                           isTriggered: _isFav,
                           size: 22,
                           tooltip: _isFav ? '已收藏版块（点击取消）' : '收藏版块',
-                          activeIcon: const Icon(Icons.star_rounded, size: 22, color: Color(0xFFFFB300)),
-                          inactiveIcon: const Icon(Icons.star_border_rounded, size: 22),
+                          activeIcon: const Icon(Icons.star_rounded,
+                              size: 22, color: Color(0xFFFFB300)),
+                          inactiveIcon:
+                              const Icon(Icons.star_border_rounded, size: 22),
                           onTap: _toggleFav,
                         ),
                         IconButton(
                           icon: const Icon(Icons.search, size: 20),
                           tooltip: '搜索',
                           padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                          constraints:
+                              const BoxConstraints(minWidth: 36, minHeight: 36),
                           onPressed: () {
                             Navigator.of(context).push(
                               MaterialPageRoute(
@@ -783,21 +967,24 @@ class _ThreadListPageState extends State<ThreadListPage> {
                           icon: const Icon(Icons.refresh, size: 20),
                           tooltip: '刷新',
                           padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                          constraints:
+                              const BoxConstraints(minWidth: 36, minHeight: 36),
                           onPressed: _reload,
                         ),
                         IconButton(
                           icon: const Icon(Icons.edit, size: 20),
                           tooltip: '发帖',
                           padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                          constraints:
+                              const BoxConstraints(minWidth: 36, minHeight: 36),
                           onPressed: _openPostPage,
                         ),
                         IconButton(
                           icon: const Icon(Icons.first_page_rounded, size: 22),
                           tooltip: '收起版块列表',
                           padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                          constraints:
+                              const BoxConstraints(minWidth: 36, minHeight: 36),
                           onPressed: _toggleMasterCollapse,
                         ),
                         const SizedBox(width: 6),
@@ -822,7 +1009,8 @@ class _ThreadListPageState extends State<ThreadListPage> {
                           appBar: AppBar(
                             leading: _isForumCollapsed
                                 ? IconButton(
-                                    icon: const Icon(Icons.view_sidebar_outlined),
+                                    icon:
+                                        const Icon(Icons.view_sidebar_outlined),
                                     tooltip: '展开版块列表',
                                     onPressed: _toggleMasterCollapse,
                                   )
@@ -853,7 +1041,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
                       : ThreadDetailPage(
                           key: ValueKey(_selectedTid),
                           tid: _selectedTid!,
-                          fid: widget.fid,
+                          fid: _activeForumFid,
                           showBackButton: false,
                           stopPlayersOnDispose: false,
                           canShowForumSidebar: false,
@@ -881,14 +1069,18 @@ class _ThreadListPageState extends State<ThreadListPage> {
                   onPressed: widget.onCloseSidebar,
                 )
               : const GlobalNavLeading(),
-          leadingWidth: widget.isSidebar ? null : GlobalNavLeading.preferredLeadingWidth(context),
-          title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+          leadingWidth: widget.isSidebar
+              ? null
+              : GlobalNavLeading.preferredLeadingWidth(context),
+          title: Text(_activeForumTitle,
+              maxLines: 1, overflow: TextOverflow.ellipsis),
           actions: [
             BouncingIcon(
               isTriggered: _isFav,
               size: 22,
               tooltip: _isFav ? '已收藏版块（点击取消）' : '收藏版块',
-              activeIcon: const Icon(Icons.star_rounded, size: 22, color: Color(0xFFFFB300)),
+              activeIcon: const Icon(Icons.star_rounded,
+                  size: 22, color: Color(0xFFFFB300)),
               inactiveIcon: const Icon(Icons.star_border_rounded, size: 22),
               onTap: _toggleFav,
             ),
@@ -898,7 +1090,8 @@ class _ThreadListPageState extends State<ThreadListPage> {
                 tooltip: '进入完整版块',
                 onPressed: () => Navigator.of(context).push(
                   MaterialPageRoute(
-                    builder: (_) => ThreadListPage(fid: widget.fid, title: widget.title),
+                    builder: (_) => ThreadListPage(
+                        fid: _activeForumFid, title: _activeForumTitle),
                   ),
                 ),
               )
@@ -948,40 +1141,30 @@ class _ThreadListPageState extends State<ThreadListPage> {
     final colorScheme = theme.colorScheme;
 
     return Container(
-      height: 36,
+      height: _chipStripHeight(context, 12),
       margin: const EdgeInsets.fromLTRB(8, 4, 8, 2),
       child: ListView(
         scrollDirection: Axis.horizontal,
         children: [
           _buildFilterChip(
+            key: const ValueKey('forum-type-all'),
             label: '全部',
             selected: _selectedType == null,
             onSelected: () {
               if (_selectedType == null) return;
-              setState(() {
-                _selectedType = null;
-                _page = 1;
-                _viewCacheAnyway = false;
-                _activeOutage = null;
-              });
-              _fetchData(page: 1);
+              _selectFilter(orderby: _orderby);
             },
             colorScheme: colorScheme,
           ),
           for (final t in _types) ...[
             const SizedBox(width: 6),
             _buildFilterChip(
+              key: ValueKey('forum-type-${t.typeid}'),
               label: t.name,
               selected: _selectedType == t.typeid,
               onSelected: () {
                 if (_selectedType == t.typeid) return;
-                setState(() {
-                  _selectedType = t.typeid;
-                  _page = 1;
-                  _viewCacheAnyway = false;
-                  _activeOutage = null;
-                });
-                _fetchData(page: 1);
+                _selectFilter(typeid: t.typeid, orderby: _orderby);
               },
               colorScheme: colorScheme,
             ),
@@ -992,6 +1175,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
   }
 
   Widget _buildFilterChip({
+    Key? key,
     required String label,
     required bool selected,
     required VoidCallback onSelected,
@@ -1000,12 +1184,14 @@ class _ThreadListPageState extends State<ThreadListPage> {
     return PressScaleEffect(
       scaleDown: 0.94,
       child: FilterChip(
+        key: key,
         label: Text(
           label,
           style: TextStyle(
             fontSize: 12,
             fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-            color: selected ? colorScheme.primary : colorScheme.onSurfaceVariant,
+            color:
+                selected ? colorScheme.primary : colorScheme.onSurfaceVariant,
           ),
         ),
         selected: selected,
@@ -1028,143 +1214,17 @@ class _ThreadListPageState extends State<ThreadListPage> {
   }
 
   /// 4. 真实子版块展示（仅当版块确实存在子版块时显示，支持收起/展开与记忆）
-  Widget _buildSubforumSection(ThemeData theme) {
-    final validSubs = _subForums.where((s) =>
-        s.fid != widget.fid &&
-        s.fid > 0 &&
-        s.name.trim().isNotEmpty &&
-        s.name != '首页' &&
-        s.name != '论坛' &&
-        s.name != '全部' &&
-        s.name != '服务器列表'
-    ).toList();
-    if (validSubs.isEmpty) return const SizedBox.shrink();
-
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(10, 2, 10, 6),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerLowest,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: colorScheme.outlineVariant.withAlpha(50),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InkWell(
-            onTap: _toggleSubforumsCollapse,
-            borderRadius: BorderRadius.circular(8),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              child: Row(
-                children: [
-                  Icon(Icons.folder_special_rounded, size: 14, color: colorScheme.primary),
-                  const SizedBox(width: 6),
-                  Text(
-                    '子版块 (${validSubs.length})',
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.bold,
-                      color: colorScheme.primary,
-                    ),
-                  ),
-                  const Spacer(),
-                  AnimatedExpandArrow(
-                    isCollapsed: _subforumsCollapsed,
-                    size: 16,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          AnimatedCollapseSection(
-            isCollapsed: _subforumsCollapsed,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 6,
-                children: [
-                  for (final sub in validSubs)
-                    PressScaleEffect(
-                      scaleDown: 0.95,
-                      child: InkWell(
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => ThreadListPage(
-                                fid: sub.fid,
-                                title: sub.name,
-                              ),
-                            ),
-                          );
-                        },
-                        borderRadius: BorderRadius.circular(6),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: colorScheme.surfaceContainerLow,
-                            borderRadius: BorderRadius.circular(6),
-                            border: Border.all(
-                              color: colorScheme.outlineVariant.withAlpha(60),
-                              width: 0.6,
-                            ),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.subdirectory_arrow_right,
-                                size: 13,
-                                color: colorScheme.primary,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                sub.name,
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                              if (sub.todayCount > 0) ...[
-                                const SizedBox(width: 4),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 4,
-                                    vertical: 1,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Colors.orange[800],
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                  child: Text(
-                                    '${sub.todayCount}',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 9,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildSubforumSection(ThemeData theme) => SubforumPanel(
+      forums: _subForums
+          .where((forum) =>
+              forum.fid > 0 &&
+              forum.fid != _activeForumFid &&
+              forum.name.trim().isNotEmpty)
+          .toList(),
+      collapsed: _subforumsCollapsed,
+      onToggle: _toggleSubforumsCollapse,
+      onOpen: (forum) => Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => ThreadListPage(fid: forum.fid, title: forum.name))));
 
   /// 5. 彩色置顶帖区（支持一键收起/展开与记忆）
   Widget _buildStickySection(
@@ -1246,7 +1306,8 @@ class _ThreadListPageState extends State<ThreadListPage> {
                                 color: colors[i % colors.length].withAlpha(30),
                                 borderRadius: BorderRadius.circular(4),
                                 border: Border.all(
-                                  color: colors[i % colors.length].withAlpha(100),
+                                  color:
+                                      colors[i % colors.length].withAlpha(100),
                                   width: 0.6,
                                 ),
                               ),
@@ -1295,7 +1356,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
   /// 7. 排序 Chips
   Widget _buildOrderChips(ThemeData theme) {
     return SizedBox(
-      height: 42,
+      height: _chipStripHeight(context, 14),
       child: ListView(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -1315,13 +1376,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
                 visualDensity: VisualDensity.compact,
                 onSelected: (_) {
                   if (_orderby == key) return;
-                  setState(() {
-                    _orderby = key;
-                    _page = 1;
-                    _viewCacheAnyway = false;
-                    _activeOutage = null;
-                  });
-                  _fetchData(page: 1);
+                  _selectFilter(typeid: _selectedType, orderby: key);
                 },
               ),
             ),
@@ -1330,11 +1385,22 @@ class _ThreadListPageState extends State<ThreadListPage> {
     );
   }
 
+  static double _chipStripHeight(BuildContext context, double fontSize) {
+    final painter = TextPainter(
+        text: TextSpan(text: '最新回复', style: TextStyle(fontSize: fontSize)),
+        textScaler: MediaQuery.textScalerOf(context),
+        textDirection: Directionality.of(context))
+      ..layout();
+    return math.max(48, painter.height + 24);
+  }
+
   /// 9. 统一底部翻页控件
   Widget _buildPagination(ThemeData theme) {
     return PaginationControl(
       page: _page,
-      hasMore: true,
+      hasMore: KlpbbsApi.forumHasNextPage(_activeForumFid, _page,
+              typeid: _selectedType, orderby: _orderby) ==
+          true,
       onPageChanged: _goPage,
     );
   }
@@ -1386,7 +1452,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
               RotatedBox(
                 quarterTurns: 1,
                 child: Text(
-                  widget.title,
+                  _activeForumTitle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
@@ -1436,12 +1502,14 @@ class _MasterDetailSplitterState extends State<_MasterDetailSplitter> {
         },
         onHorizontalDragEnd: (_) {
           setState(() => _isDragging = false);
-          AppConfig.setThreadForumSidebarWidth(AppConfig.threadForumSidebarWidth);
+          AppConfig.setThreadForumSidebarWidth(
+              AppConfig.threadForumSidebarWidth);
         },
         onHorizontalDragCancel: () => setState(() => _isDragging = false),
         child: Container(
           width: 14,
-          color: active ? colorScheme.primary.withAlpha(20) : Colors.transparent,
+          color:
+              active ? colorScheme.primary.withAlpha(20) : Colors.transparent,
           child: Stack(
             alignment: Alignment.center,
             children: [

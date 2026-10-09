@@ -1,6 +1,9 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../../models/dashboard_card_model.dart';
+import '../../core/preload_service.dart';
+import '../../core/forum_events.dart';
+import '../../models/forum.dart';
 import '../../pages/thread_list_page.dart';
 import '../interactive_animations.dart';
 import 'dashboard_card_frame.dart';
@@ -16,19 +19,41 @@ class ForumNavDashboardCard extends StatelessWidget {
     this.isPreview = false,
   });
 
-  static const List<({int fid, String name, IconData icon, Color color})> _forums = [
-    (fid: 41, name: '闲聊讨论', icon: Icons.chat_bubble_outline_rounded, color: Colors.blue),
-    (fid: 52, name: 'BE附加包', icon: Icons.extension_rounded, color: Colors.green),
-    (fid: 140, name: 'JE模组', icon: Icons.view_in_ar_rounded, color: Colors.teal),
-    (fid: 53, name: 'BE材质光影', icon: Icons.wb_sunny_outlined, color: Colors.amber),
-    (fid: 51, name: 'BE地图', icon: Icons.map_outlined, color: Colors.deepOrange),
-    (fid: 56, name: '服务器大厅', icon: Icons.dns_rounded, color: Colors.purple),
-  ];
+  List<({int fid, String name, IconData icon, Color color})> get _forums {
+    final groups = PreloadService.instance
+            .get<List<ForumGroup>>('forum_groups', ignoreExpired: true) ??
+        const [];
+    final seen = <int>{};
+    final forums = groups
+        .expand((group) => group.forums)
+        .where((forum) =>
+            forum.fid > 0 && forum.name.isNotEmpty && seen.add(forum.fid))
+        .toList();
+    final favorites = ForumFavoriteNotifier.instance.ids;
+    final ordered = [
+      ...forums.where((forum) => favorites.contains(forum.fid)),
+      ...forums.where((forum) => !favorites.contains(forum.fid))
+    ];
+    return ordered
+        .take(6)
+        .map((forum) => (
+              fid: forum.fid,
+              name: forum.name,
+              icon: Icons.forum_outlined,
+              color: const Color(0xFF518E65)
+            ))
+        .toList();
+  }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(
+      listenable: ForumFavoriteNotifier.instance,
+      builder: (context, _) => _buildBody(context));
+
+  Widget _buildBody(BuildContext context) {
     final customTitle = item.customParams['customTitle'] as String?;
-    final title = (customTitle != null && customTitle.isNotEmpty) ? customTitle : '快捷版块';
+    final title =
+        (customTitle != null && customTitle.isNotEmpty) ? customTitle : '快捷版块';
 
     final rawDataStyle = item.customParams['dataStyle'] as String? ?? 'auto';
     final String dataStyle;
@@ -44,9 +69,11 @@ class ForumNavDashboardCard extends StatelessWidget {
       child: DashboardCardFrame(
         item: item,
         padding: const EdgeInsets.all(12),
-        child: dataStyle == 'chips'
-            ? _buildCompact(context, title)
-            : _buildExpanded(context, title),
+        child: _forums.isEmpty
+            ? const Center(child: Text('尚未载入版块'))
+            : dataStyle == 'chips'
+                ? _buildCompact(context, title)
+                : _buildExpanded(context, title),
       ),
     );
   }
@@ -60,7 +87,8 @@ class ForumNavDashboardCard extends StatelessWidget {
           child: InkWell(
             onTap: () {
               Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => ThreadListPage(fid: f.fid, title: f.name)),
+                MaterialPageRoute(
+                    builder: (_) => ThreadListPage(fid: f.fid, title: f.name)),
               );
             },
             borderRadius: BorderRadius.circular(8),
@@ -71,7 +99,9 @@ class ForumNavDashboardCard extends StatelessWidget {
                 children: [
                   Icon(f.icon, size: 20, color: f.color),
                   const SizedBox(height: 2),
-                  Text(f.name, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w500)),
+                  Text(f.name,
+                      style: const TextStyle(
+                          fontSize: 10, fontWeight: FontWeight.w500)),
                 ],
               ),
             ),
@@ -106,7 +136,8 @@ class ForumNavDashboardCard extends StatelessWidget {
           child: LayoutBuilder(
             builder: (ctx, constraints) {
               final crossCount = constraints.maxWidth > 280 ? 3 : 2;
-              final maxItems = (crossCount == 2 && item.rowSpan <= 2) ? 4 : _forums.length;
+              final maxItems =
+                  (crossCount == 2 && item.rowSpan <= 2) ? 4 : _forums.length;
               return GridView.builder(
                 physics: const NeverScrollableScrollPhysics(),
                 padding: EdgeInsets.zero,
@@ -124,16 +155,20 @@ class ForumNavDashboardCard extends StatelessWidget {
                     child: InkWell(
                       onTap: () {
                         Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => ThreadListPage(fid: f.fid, title: f.name)),
+                          MaterialPageRoute(
+                              builder: (_) =>
+                                  ThreadListPage(fid: f.fid, title: f.name)),
                         );
                       },
                       borderRadius: BorderRadius.circular(8),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
                         decoration: BoxDecoration(
                           color: f.color.withAlpha(20),
                           borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: f.color.withAlpha(50), width: 0.8),
+                          border: Border.all(
+                              color: f.color.withAlpha(50), width: 0.8),
                         ),
                         child: Row(
                           children: [
@@ -144,7 +179,9 @@ class ForumNavDashboardCard extends StatelessWidget {
                                 f.name,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600),
+                                style: const TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w600),
                               ),
                             ),
                           ],

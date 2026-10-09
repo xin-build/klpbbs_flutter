@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'package:flutter/material.dart';
 import '../api/klpbbs_api.dart';
 
@@ -284,7 +285,7 @@ class _TopicAdminDialogState extends State<TopicAdminDialog>
                   ),
                   if (_submitting) ...[
                     const SizedBox(height: 12),
-                    const LinearProgressIndicator(),
+                    const AppLoadingBar(),
                   ],
                 ],
               ),

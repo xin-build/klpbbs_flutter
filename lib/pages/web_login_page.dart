@@ -1,3 +1,4 @@
+import '../widgets/app_motion.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
@@ -8,9 +9,9 @@ import 'package:url_launcher/url_launcher.dart' as url_launcher;
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
 import '../core/dio_client.dart';
+import '../core/discuz_cookie_jar.dart';
 import '../core/preload_service.dart';
-import '../main.dart' show appWebViewEnvironment;
-import '../widgets/app_back_button.dart';
+import '../main.dart' show appWebViewEnvironment, ensureAppWebViewEnvironment;
 
 /// 苦力怕论坛 - 内嵌网页登录与授权中心
 ///
@@ -21,6 +22,7 @@ class WebLoginPage extends StatefulWidget {
   final String? initialUrl;
   final String? customTitle;
   final bool switchAccount;
+  final bool browserMode;
 
   const WebLoginPage({
     super.key,
@@ -28,6 +30,7 @@ class WebLoginPage extends StatefulWidget {
     this.initialUrl,
     this.customTitle,
     this.switchAccount = false,
+    this.browserMode = false,
   });
 
   @override
@@ -43,34 +46,92 @@ class _WebLoginPageState extends State<WebLoginPage> {
   bool _hasLoggedIn = false;
   String _currentUrl = '';
   Timer? _cookiePollTimer;
+  bool _sessionReady = false;
+  String? _sessionError;
+  bool _closing = false;
+  bool _closingInProgress = false;
+  bool _browserHadAuth = false;
 
   String get _mobileLoginUrl =>
       '${AppConfig.baseUrl}member.php?mod=logging&action=login&mobile=2';
   String get _pcLoginUrl =>
-      '${AppConfig.baseUrl}member.php?mod=logging&action=login';
+      '${AppConfig.baseUrl}member.php?mod=logging&action=login&mobile=no';
 
-  String get _targetUrl => widget.initialUrl ?? (_isPcMode ? _pcLoginUrl : _mobileLoginUrl);
+  String get _targetUrl {
+    if (widget.initialUrl == null) {
+      return _isPcMode ? _pcLoginUrl : _mobileLoginUrl;
+    }
+    final uri = Uri.parse(widget.initialUrl!);
+    return uri.replace(queryParameters: {
+      ...uri.queryParameters,
+      'mobile': _isPcMode ? 'no' : '2'
+    }).toString();
+  }
 
   @override
   void initState() {
     super.initState();
     _isPcMode = widget.initialPcMode;
-    _currentUrl = widget.initialUrl ?? _targetUrl;
-    if (widget.switchAccount) {
-      _clearWebSession();
+    _currentUrl = _targetUrl;
+    unawaited(_prepareSession());
+  }
+
+  Future<void> _prepareSession() async {
+    if (mounted) {
+      setState(() {
+        _sessionReady = false;
+        _sessionError = null;
+      });
     }
-    _startCookiePolling();
+    try {
+      await ensureAppWebViewEnvironment();
+      if (widget.switchAccount) await _clearWebSession();
+      _browserHadAuth = DioClient.isLoggedIn;
+      if (widget.browserMode &&
+          !kIsWeb &&
+          defaultTargetPlatform != TargetPlatform.linux) {
+        final manager = defaultTargetPlatform == TargetPlatform.windows &&
+                appWebViewEnvironment != null
+            ? CookieManager.instance(webViewEnvironment: appWebViewEnvironment)
+            : CookieManager.instance();
+        final target = Uri.tryParse(_targetUrl);
+        if (target != null &&
+            DiscuzCookieJar.domainMatches(
+                target.host, Uri.parse(AppConfig.baseUrl).host)) {
+          for (final cookie in DioClient.browserCookiesFor(_targetUrl)) {
+            await manager.setCookie(
+                url: WebUri(_targetUrl),
+                name: cookie.name,
+                value: cookie.value,
+                domain: cookie.hostOnly ? null : cookie.domain,
+                path: cookie.path,
+                isSecure: cookie.secure,
+                isHttpOnly: DiscuzCookieJar.isAuthCookie(cookie.name),
+                expiresDate: cookie.expires?.millisecondsSinceEpoch);
+          }
+        }
+      }
+      if (!mounted) return;
+      setState(() => _sessionReady = true);
+      if (!widget.browserMode) _startCookiePolling();
+    } catch (error) {
+      if (mounted) setState(() => _sessionError = '无法准备论坛会话：$error');
+    }
   }
 
   Future<void> _clearWebSession() async {
     try {
-      final cookieManager = (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows && appWebViewEnvironment != null)
+      final cookieManager = (!kIsWeb &&
+              defaultTargetPlatform == TargetPlatform.windows &&
+              appWebViewEnvironment != null)
           ? CookieManager.instance(webViewEnvironment: appWebViewEnvironment)
           : CookieManager.instance();
       await cookieManager.deleteAllCookies();
       await _webViewController?.clearCache();
     } catch (_) {}
     await DioClient.clearCookies();
+    _hasLoggedIn = false;
+    _browserHadAuth = false;
   }
 
   @override
@@ -91,20 +152,27 @@ class _WebLoginPageState extends State<WebLoginPage> {
 
   /// 检查并同步 WebView 中的登录 Cookies 与会话状态
   Future<bool> _checkAndSyncCookies({bool silent = false}) async {
-    if (_hasLoggedIn) return true;
+    if (_hasLoggedIn && !widget.browserMode) return true;
+    if (_isSyncing) return false;
+    _isSyncing = true;
     try {
       // 1. 获取对应运行环境的 CookieManager（Windows 必须绑定当前 appWebViewEnvironment，否则查不到 WebView2 Cookie）
-      final cookieManager = (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows && appWebViewEnvironment != null)
+      final cookieManager = (!kIsWeb &&
+              defaultTargetPlatform == TargetPlatform.windows &&
+              appWebViewEnvironment != null)
           ? CookieManager.instance(webViewEnvironment: appWebViewEnvironment)
           : CookieManager.instance();
 
       // 待探测的目标 URL 列表（覆盖基准域、根路径及当前加载中的实际页面路径）
       final urlsToQuery = <WebUri>[
         WebUri(AppConfig.baseUrl),
-        WebUri('https://klpbbs.com/'),
-        WebUri('https://klpbbs.com'),
+        WebUri(Uri.parse(AppConfig.baseUrl).resolve('member.php').toString()),
       ];
-      if (_currentUrl.isNotEmpty && _currentUrl.startsWith('http')) {
+      final currentUri = Uri.tryParse(_currentUrl);
+      final forumHost = Uri.parse(AppConfig.baseUrl).host;
+      final isForumPage = currentUri != null &&
+          DiscuzCookieJar.domainMatches(currentUri.host, forumHost);
+      if (isForumPage) {
         try {
           final cur = WebUri(_currentUrl);
           if (!urlsToQuery.any((u) => u.rawValue == cur.rawValue)) {
@@ -121,9 +189,11 @@ class _WebLoginPageState extends State<WebLoginPage> {
         try {
           final cookies = await cookieManager.getCookies(url: u);
           for (final c in cookies) {
-            if (c.name.isNotEmpty && c.value.isNotEmpty && c.value != 'deleted') {
+            if (c.name.isNotEmpty &&
+                c.value.isNotEmpty &&
+                c.value != 'deleted') {
               cookieMap[c.name] = c.value;
-              if ((c.name.endsWith('auth') && c.name != 'activationauth') || c.name == 'auth') {
+              if (DiscuzCookieJar.isAuthCookie(c.name)) {
                 if (c.value.length > 10) {
                   foundAuth = true;
                 }
@@ -137,12 +207,14 @@ class _WebLoginPageState extends State<WebLoginPage> {
 
       // 3. 辅助通道：通过 Controller 执行 JavaScript 提取非 HttpOnly Cookie 及 DOM 登录态
       bool domLoggedIn = false;
-      if (_webViewController != null) {
+      if (_webViewController != null && isForumPage) {
         try {
           final jsCookies = await _webViewController?.evaluateJavascript(
             source: 'document.cookie',
           );
-          if (jsCookies != null && jsCookies is String && jsCookies.isNotEmpty) {
+          if (jsCookies != null &&
+              jsCookies is String &&
+              jsCookies.isNotEmpty) {
             final pairs = jsCookies.split(';');
             for (final p in pairs) {
               final idx = p.indexOf('=');
@@ -151,7 +223,7 @@ class _WebLoginPageState extends State<WebLoginPage> {
                 final v = p.substring(idx + 1).trim();
                 if (k.isNotEmpty && v.isNotEmpty && v != 'deleted') {
                   cookieMap.putIfAbsent(k, () => v);
-                  if ((k.endsWith('auth') && k != 'activationauth') || k == 'auth') {
+                  if (DiscuzCookieJar.isAuthCookie(k)) {
                     if (v.length > 10) {
                       foundAuth = true;
                     }
@@ -173,7 +245,7 @@ class _WebLoginPageState extends State<WebLoginPage> {
                     uid: uid,
                     hasLogout: !!logoutLink,
                     hasUserItem: !!userItem,
-                    isLogged: (uid !== "0" && uid !== "") || !!logoutLink || !!userItem
+                    isLogged: (uid !== "0" && uid !== "") || !!logoutLink
                   });
                 } catch(e) {
                   return JSON.stringify({uid: "0", hasLogout: false, isLogged: false});
@@ -182,7 +254,8 @@ class _WebLoginPageState extends State<WebLoginPage> {
             ''',
           );
           if (domCheck != null) {
-            final parsed = jsonDecode(domCheck is String ? domCheck : jsonEncode(domCheck));
+            final parsed = jsonDecode(
+                domCheck is String ? domCheck : jsonEncode(domCheck));
             if (parsed is Map && parsed['isLogged'] == true) {
               domLoggedIn = true;
             }
@@ -197,9 +270,11 @@ class _WebLoginPageState extends State<WebLoginPage> {
           try {
             final cookies = await cookieManager.getCookies(url: u);
             for (final c in cookies) {
-              if (c.name.isNotEmpty && c.value.isNotEmpty && c.value != 'deleted') {
+              if (c.name.isNotEmpty &&
+                  c.value.isNotEmpty &&
+                  c.value != 'deleted') {
                 cookieMap[c.name] = c.value;
-                if ((c.name.endsWith('auth') && c.name != 'activationauth') || c.name == 'auth') {
+                if (DiscuzCookieJar.isAuthCookie(c.name)) {
                   if (c.value.length > 10) {
                     foundAuth = true;
                   }
@@ -212,9 +287,16 @@ class _WebLoginPageState extends State<WebLoginPage> {
 
       // 5. 若已发现有效 Auth，或 DOM 已识别已登录且提取到了基础会话凭证
       if (foundAuth || (domLoggedIn && cookieMap.isNotEmpty)) {
-        _hasLoggedIn = true;
-        _cookiePollTimer?.cancel();
-        if (mounted) setState(() => _isSyncing = true);
+        if (widget.browserMode &&
+            foundAuth &&
+            cookieMap.entries
+                .where((entry) =>
+                    DiscuzCookieJar.isAuthCookie(entry.key) ||
+                    entry.key.endsWith('_saltkey'))
+                .every((entry) => DioClient.cookie(entry.key) == entry.value)) {
+          return true;
+        }
+        if (mounted && !widget.browserMode) setState(() {});
 
         // 导入并持久化到 DioClient
         await DioClient.importCookies(cookieMap);
@@ -225,12 +307,20 @@ class _WebLoginPageState extends State<WebLoginPage> {
         // 强制刷新实时验证登录态
         final status = await KlpbbsApi.checkLoginStatus(forceRefresh: true);
 
-        if (status.isLoggedIn || DioClient.isLoggedIn) {
+        if (status.isLoggedIn && status.uid != null) {
+          if (widget.browserMode) {
+            _browserHadAuth = true;
+            if (mounted) setState(() => _isSyncing = false);
+            return true;
+          }
+          _hasLoggedIn = true;
+          _cookiePollTimer?.cancel();
           if (mounted) {
             setState(() => _isSyncing = false);
-            final uname = (status.username != null && status.username!.isNotEmpty)
-                ? status.username!
-                : '坛友';
+            final uname =
+                (status.username != null && status.username!.isNotEmpty)
+                    ? status.username!
+                    : '坛友';
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text('网页登录成功！欢迎回来，$uname'),
@@ -255,6 +345,12 @@ class _WebLoginPageState extends State<WebLoginPage> {
           }
           return false;
         }
+      } else if (widget.browserMode &&
+          isForumPage &&
+          _browserHadAuth &&
+          !domLoggedIn) {
+        await DioClient.clearCookies();
+        _browserHadAuth = false;
       } else if (!silent) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -274,20 +370,36 @@ class _WebLoginPageState extends State<WebLoginPage> {
           ),
         );
       }
+    } finally {
+      if (mounted) setState(() => _isSyncing = false);
     }
     return false;
   }
 
-  void _togglePcMode() {
+  Future<void> _closeBrowser() async {
+    if (_closingInProgress) return;
+    _closingInProgress = true;
+    await _checkAndSyncCookies(silent: true);
+    if (!mounted) return;
+    setState(() => _closing = true);
+    Navigator.of(context).pop(true);
+  }
+
+  Future<void> _togglePcMode() async {
     setState(() {
       _isPcMode = !_isPcMode;
       _currentUrl = _targetUrl;
     });
-    _webViewController?.loadUrl(
+    await _webViewController?.setSettings(
+        settings: InAppWebViewSettings(
+      userAgent: _isPcMode ? AppConfig.pcUserAgent : AppConfig.mobileUserAgent,
+    ));
+    await _webViewController?.loadUrl(
       urlRequest: URLRequest(
         url: WebUri(_currentUrl),
         headers: {
-          'User-Agent': _isPcMode ? AppConfig.pcUserAgent : AppConfig.mobileUserAgent,
+          'User-Agent':
+              _isPcMode ? AppConfig.pcUserAgent : AppConfig.mobileUserAgent,
         },
       ),
     );
@@ -334,10 +446,11 @@ class _WebLoginPageState extends State<WebLoginPage> {
               PreloadService.instance.clear();
               final status = await KlpbbsApi.checkLoginStatus();
               if (mounted) {
-                if (status.isLoggedIn || DioClient.isLoggedIn) {
-                  final uname = (status.username != null && status.username!.isNotEmpty)
-                      ? status.username!
-                      : '已登录';
+                if (status.isLoggedIn && status.uid != null) {
+                  final uname =
+                      (status.username != null && status.username!.isNotEmpty)
+                          ? status.username!
+                          : '已登录';
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('Cookie 导入成功！已识别为「$uname」'),
@@ -366,290 +479,297 @@ class _WebLoginPageState extends State<WebLoginPage> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    return Scaffold(
-      appBar: AppBar(
-        leading: const AppBackButton(),
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              widget.customTitle ?? '苦力怕论坛 - 网页内嵌登录',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            Text(
-              _isPcMode ? '电脑版模式' : '手机版模式',
-              style: TextStyle(
-                fontSize: 11,
-                color: colorScheme.onSurfaceVariant.withAlpha(200),
-              ),
-            ),
-          ],
-        ),
-        bottom: _isLoading
-            ? PreferredSize(
-                preferredSize: const Size.fromHeight(2.5),
-                child: LinearProgressIndicator(
-                  value: _progress > 0 ? _progress : null,
-                  minHeight: 2.5,
-                  color: colorScheme.primary,
-                  backgroundColor: colorScheme.surfaceContainerHighest,
-                ),
-              )
-            : null,
-        actions: [
-          // 切换手机版 / 电脑版
-          TextButton.icon(
-            onPressed: _togglePcMode,
-            icon: Icon(
-              _isPcMode ? Icons.phone_android : Icons.desktop_windows,
-              size: 18,
-            ),
-            label: Text(_isPcMode ? '切换手机版' : '切换电脑版'),
-            style: TextButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.open_in_browser_rounded),
-            tooltip: '在系统默认浏览器中打开',
-            onPressed: () {
-              url_launcher.launchUrl(
-                Uri.parse(_currentUrl.isNotEmpty ? _currentUrl : _targetUrl),
-                mode: url_launcher.LaunchMode.externalApplication,
-              );
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: '刷新页面',
-            onPressed: () => _webViewController?.reload(),
-          ),
-          IconButton(
-            icon: const Icon(Icons.switch_account_outlined),
-            tooltip: '切换账号 / 清除网页登录态',
-            onPressed: () async {
-              await _clearWebSession();
-              if (!context.mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('已清除网页端会话，可输入新账号登录')),
-              );
-              _webViewController?.loadUrl(
-                urlRequest: URLRequest(url: WebUri(_targetUrl)),
-              );
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.vpn_key_outlined),
-            tooltip: '手动粘贴 Cookie',
-            onPressed: _showManualCookieDialog,
-          ),
-        ],
-      ),
-      body: defaultTargetPlatform == TargetPlatform.linux
-          ? _buildLinuxFallback(theme)
-          : (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows && appWebViewEnvironment == null)
-              ? _buildWindowsMissingWebView2Fallback(theme)
-              : Stack(
-                  children: [
-                    InAppWebView(
-                      webViewEnvironment: appWebViewEnvironment,
-                      initialUrlRequest: URLRequest(
-                        url: WebUri(_currentUrl),
-                      ),
-                      initialSettings: InAppWebViewSettings(
-                        useShouldOverrideUrlLoading: true,
-                        mediaPlaybackRequiresUserGesture: false,
-                        javaScriptEnabled: true,
-                        javaScriptCanOpenWindowsAutomatically: true,
-                        supportMultipleWindows: true,
-                        userAgent: _isPcMode ? AppConfig.pcUserAgent : AppConfig.mobileUserAgent,
-                        mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
-                        cacheEnabled: true,
-                        domStorageEnabled: true,
-                        databaseEnabled: true,
-                        transparentBackground: false,
-                        allowsInlineMediaPlayback: true,
-                        sharedCookiesEnabled: true,
-                      ),
-                      onWebViewCreated: (controller) async {
-                        _webViewController = controller;
-                        // Windows / 桌面端兜底主动导航，防止初始化异步导致未触发首帧渲染
-                        if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
-                          Future.delayed(const Duration(milliseconds: 100), () async {
-                            final cur = await controller.getUrl();
-                            if (cur == null && mounted) {
-                              controller.loadUrl(
-                                urlRequest: URLRequest(url: WebUri(_currentUrl)),
-                              );
-                            }
-                          });
-                        }
-                      },
-                      shouldOverrideUrlLoading: (controller, navigationAction) async {
-                        final uri = navigationAction.request.url;
-                        if (uri == null) return NavigationActionPolicy.ALLOW;
-
-                        final scheme = uri.scheme.toLowerCase();
-                        // 拦截第三方客户端协议（如 QQ/微信/支付宝等）并唤醒外部系统应用
-                        if (scheme != 'http' && scheme != 'https' && scheme != 'about') {
-                          try {
-                            if (await url_launcher.canLaunchUrl(uri)) {
-                              await url_launcher.launchUrl(
-                                uri,
-                                mode: url_launcher.LaunchMode.externalApplication,
-                              );
-                            }
-                          } catch (_) {}
-                          return NavigationActionPolicy.CANCEL;
-                        }
-
-                        // 放行所有正常的论坛网页与第三方登录回调重定向（QQ互联、微博等）
-                        return NavigationActionPolicy.ALLOW;
-                      },
-                      onCreateWindow: (controller, createWindowAction) async {
-                        final req = createWindowAction.request;
-                        if (req.url != null) {
-                          await controller.loadUrl(urlRequest: req);
-                          return true;
-                        }
-                        return false;
-                      },
-                      onLoadStart: (controller, url) {
-                        if (mounted) {
-                          setState(() {
-                            _isLoading = true;
-                            _currentUrl = url?.toString() ?? '';
-                          });
-                        }
-                      },
-                      onProgressChanged: (controller, progress) {
-                        if (mounted) {
-                          setState(() {
-                            _progress = progress / 100;
-                            if (progress >= 100) _isLoading = false;
-                          });
-                        }
-                        if (progress >= 100) {
-                          _checkAndSyncCookies(silent: true);
-                        }
-                      },
-                      onLoadStop: (controller, url) async {
-                        if (mounted) {
-                          setState(() {
-                            _isLoading = false;
-                            _currentUrl = url?.toString() ?? '';
-                          });
-                        }
-                        await _checkAndSyncCookies(silent: true);
-                      },
-                      onReceivedError: (controller, request, error) {
-                        if (mounted) {
-                          setState(() {
-                            _isLoading = false;
-                          });
-                        }
-                      },
-                    ),
-                    if (_isSyncing)
-                      Container(
-                        color: Colors.black45,
-                        child: const Center(
-                          child: Card(
-                            child: Padding(
-                              padding: EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  SizedBox(
-                                    width: 24,
-                                    height: 24,
-                                    child: CircularProgressIndicator(strokeWidth: 2.5),
-                                  ),
-                                  SizedBox(width: 16),
-                                  Text(
-                                    '正在同步登录凭证...',
-                                    style: TextStyle(fontWeight: FontWeight.bold),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-      bottomNavigationBar: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surface,
-          border: Border(
-            top: BorderSide(
-              color: colorScheme.outlineVariant.withAlpha(50),
-            ),
-          ),
-        ),
-        child: SafeArea(
-          child: Row(
+    return PopScope(
+      canPop: !widget.browserMode || _closing,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && widget.browserMode) unawaited(_closeBrowser());
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: BackButton(
+              onPressed: widget.browserMode
+                  ? _closeBrowser
+                  : () => Navigator.of(context).maybePop()),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
-              IconButton(
-                icon: const Icon(Icons.arrow_back_ios, size: 16),
-                tooltip: '后退',
-                onPressed: () async {
-                  if (await _webViewController?.canGoBack() ?? false) {
-                    await _webViewController?.goBack();
-                  }
-                },
+              Text(
+                widget.customTitle ?? '苦力怕论坛 - 网页内嵌登录',
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
-              IconButton(
-                icon: const Icon(Icons.arrow_forward_ios, size: 16),
-                tooltip: '前进',
-                onPressed: () async {
-                  if (await _webViewController?.canGoForward() ?? false) {
-                    await _webViewController?.goForward();
-                  }
-                },
-              ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: colorScheme.primaryContainer.withAlpha(120),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 7,
-                      height: 7,
-                      decoration: BoxDecoration(
-                        color: colorScheme.primary,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      '已开启凭证自动嗅探',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: colorScheme.onPrimaryContainer,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const Spacer(),
-              FilledButton.icon(
-                onPressed: () => _checkAndSyncCookies(silent: false),
-                icon: const Icon(Icons.sync_rounded, size: 18),
-                label: const Text('一键同步凭证'),
-                style: FilledButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
+              Text(
+                _isPcMode ? '电脑版模式' : '手机版模式',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: colorScheme.onSurfaceVariant.withAlpha(200),
                 ),
               ),
             ],
+          ),
+          bottom: _isLoading
+              ? PreferredSize(
+                  preferredSize: const Size.fromHeight(2.5),
+                  child: AppLoadingBar(
+                    value: _progress > 0 ? _progress : null,
+                    minHeight: 2.5,
+                    color: colorScheme.primary,
+                    backgroundColor: colorScheme.surfaceContainerHighest,
+                  ),
+                )
+              : null,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: '刷新页面',
+              onPressed: () => _webViewController?.reload(),
+            ),
+            PopupMenuButton<String>(
+              tooltip: '更多浏览器操作',
+              onSelected: (value) async {
+                if (value == 'mode') await _togglePcMode();
+                if (value == 'external') {
+                  await url_launcher.launchUrl(
+                      Uri.parse(
+                          _currentUrl.isNotEmpty ? _currentUrl : _targetUrl),
+                      mode: url_launcher.LaunchMode.externalApplication);
+                }
+                if (value == 'cookie') _showManualCookieDialog();
+                if (value == 'account') {
+                  await _clearWebSession();
+                  _startCookiePolling();
+                  await _webViewController?.loadUrl(
+                      urlRequest: URLRequest(url: WebUri(_targetUrl)));
+                }
+              },
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                    value: 'mode', child: Text(_isPcMode ? '切换手机版' : '切换电脑版')),
+                const PopupMenuItem(value: 'external', child: Text('在系统浏览器打开')),
+                if (!widget.browserMode) ...[
+                  const PopupMenuDivider(),
+                  const PopupMenuItem(value: 'account', child: Text('切换账号')),
+                  const PopupMenuItem(
+                      value: 'cookie', child: Text('导入登录 Cookie')),
+                ],
+              ],
+            ),
+          ],
+        ),
+        body: _sessionError != null
+            ? Center(
+                child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Text(_sessionError!, textAlign: TextAlign.center),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                      onPressed: _prepareSession, child: const Text('重试')),
+                ]),
+              ))
+            : !_sessionReady
+                ? const Center(child: AppLoadingIndicator())
+                : defaultTargetPlatform == TargetPlatform.linux
+                    ? _buildLinuxFallback(theme)
+                    : (!kIsWeb &&
+                            defaultTargetPlatform == TargetPlatform.windows &&
+                            appWebViewEnvironment == null)
+                        ? _buildWindowsMissingWebView2Fallback(theme)
+                        : Stack(
+                            children: [
+                              InAppWebView(
+                                webViewEnvironment: appWebViewEnvironment,
+                                initialUrlRequest: URLRequest(
+                                  url: WebUri(_currentUrl),
+                                ),
+                                initialSettings: InAppWebViewSettings(
+                                  useShouldOverrideUrlLoading: true,
+                                  mediaPlaybackRequiresUserGesture: false,
+                                  javaScriptEnabled: true,
+                                  javaScriptCanOpenWindowsAutomatically: true,
+                                  supportMultipleWindows: true,
+                                  userAgent: _isPcMode
+                                      ? AppConfig.pcUserAgent
+                                      : AppConfig.mobileUserAgent,
+                                  mixedContentMode: MixedContentMode
+                                      .MIXED_CONTENT_ALWAYS_ALLOW,
+                                  cacheEnabled: true,
+                                  domStorageEnabled: true,
+                                  databaseEnabled: true,
+                                  transparentBackground: false,
+                                  allowsInlineMediaPlayback: true,
+                                  sharedCookiesEnabled: true,
+                                ),
+                                onWebViewCreated: (controller) async {
+                                  _webViewController = controller;
+                                  // Windows / 桌面端兜底主动导航，防止初始化异步导致未触发首帧渲染
+                                  if (!kIsWeb &&
+                                      defaultTargetPlatform ==
+                                          TargetPlatform.windows) {
+                                    Future.delayed(
+                                        const Duration(milliseconds: 100),
+                                        () async {
+                                      final cur = await controller.getUrl();
+                                      if (cur == null && mounted) {
+                                        controller.loadUrl(
+                                          urlRequest: URLRequest(
+                                              url: WebUri(_currentUrl)),
+                                        );
+                                      }
+                                    });
+                                  }
+                                },
+                                shouldOverrideUrlLoading:
+                                    (controller, navigationAction) async {
+                                  final uri = navigationAction.request.url;
+                                  if (uri == null) {
+                                    return NavigationActionPolicy.ALLOW;
+                                  }
+
+                                  final scheme = uri.scheme.toLowerCase();
+                                  // 拦截第三方客户端协议（如 QQ/微信/支付宝等）并唤醒外部系统应用
+                                  if (scheme != 'http' &&
+                                      scheme != 'https' &&
+                                      scheme != 'about') {
+                                    try {
+                                      if (await url_launcher
+                                          .canLaunchUrl(uri)) {
+                                        await url_launcher.launchUrl(
+                                          uri,
+                                          mode: url_launcher
+                                              .LaunchMode.externalApplication,
+                                        );
+                                      }
+                                    } catch (_) {}
+                                    return NavigationActionPolicy.CANCEL;
+                                  }
+
+                                  // 放行所有正常的论坛网页与第三方登录回调重定向（QQ互联、微博等）
+                                  return NavigationActionPolicy.ALLOW;
+                                },
+                                onCreateWindow:
+                                    (controller, createWindowAction) async {
+                                  final req = createWindowAction.request;
+                                  if (req.url != null) {
+                                    await controller.loadUrl(urlRequest: req);
+                                    return true;
+                                  }
+                                  return false;
+                                },
+                                onLoadStart: (controller, url) {
+                                  if (mounted) {
+                                    setState(() {
+                                      _isLoading = true;
+                                      _currentUrl = url?.toString() ?? '';
+                                    });
+                                  }
+                                },
+                                onProgressChanged: (controller, progress) {
+                                  if (mounted) {
+                                    setState(() {
+                                      _progress = progress / 100;
+                                      if (progress >= 100) _isLoading = false;
+                                    });
+                                  }
+                                  if (progress >= 100) {
+                                    _checkAndSyncCookies(silent: true);
+                                  }
+                                },
+                                onLoadStop: (controller, url) async {
+                                  if (mounted) {
+                                    setState(() {
+                                      _isLoading = false;
+                                      _currentUrl = url?.toString() ?? '';
+                                    });
+                                  }
+                                  await _checkAndSyncCookies(silent: true);
+                                },
+                                onReceivedError: (controller, request, error) {
+                                  if (mounted) {
+                                    setState(() {
+                                      _isLoading = false;
+                                    });
+                                  }
+                                },
+                              ),
+                              if (_isSyncing && !widget.browserMode)
+                                Container(
+                                  color: Colors.black45,
+                                  child: const Center(
+                                    child: Card(
+                                      child: Padding(
+                                        padding: EdgeInsets.symmetric(
+                                            horizontal: 24, vertical: 16),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            SizedBox(
+                                              width: 24,
+                                              height: 24,
+                                              child: AppLoadingIndicator(
+                                                  strokeWidth: 2.5),
+                                            ),
+                                            SizedBox(width: 16),
+                                            Text(
+                                              '正在同步登录凭证...',
+                                              style: TextStyle(
+                                                  fontWeight: FontWeight.bold),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+        bottomNavigationBar: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface,
+            border: Border(
+              top: BorderSide(
+                color: colorScheme.outlineVariant.withAlpha(50),
+              ),
+            ),
+          ),
+          child: SafeArea(
+            child: Row(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.arrow_back_ios, size: 16),
+                  tooltip: '后退',
+                  onPressed: () async {
+                    if (await _webViewController?.canGoBack() ?? false) {
+                      await _webViewController?.goBack();
+                    }
+                  },
+                ),
+                IconButton(
+                  icon: const Icon(Icons.arrow_forward_ios, size: 16),
+                  tooltip: '前进',
+                  onPressed: () async {
+                    if (await _webViewController?.canGoForward() ?? false) {
+                      await _webViewController?.goForward();
+                    }
+                  },
+                ),
+                const Spacer(),
+                FilledButton.icon(
+                  onPressed: widget.browserMode
+                      ? _closeBrowser
+                      : () => _checkAndSyncCookies(silent: false),
+                  icon: Icon(
+                      widget.browserMode ? Icons.check : Icons.sync_rounded,
+                      size: 18),
+                  label: Text(widget.browserMode ? '返回应用' : '同步登录'),
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -786,7 +906,8 @@ class _WebLoginPageState extends State<WebLoginPage> {
               OutlinedButton.icon(
                 onPressed: () {
                   url_launcher.launchUrl(
-                    Uri.parse('https://developer.microsoft.com/microsoft-edge/webview2/'),
+                    Uri.parse(
+                        'https://developer.microsoft.com/microsoft-edge/webview2/'),
                     mode: url_launcher.LaunchMode.externalApplication,
                   );
                 },

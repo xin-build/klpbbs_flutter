@@ -63,16 +63,22 @@ class ServerOutageInfo {
         lower.contains('error 521') ||
         lower.contains('error 522') ||
         lower.contains('error 523') ||
+        lower.contains('status code of 403') ||
+        lower.contains('status code of 502') ||
+        lower.contains('status code of 503') ||
+        lower.contains('status code of 504') ||
+        lower.contains('403 forbidden') ||
         (html.contains('502') && (html.contains('Gateway') || html.contains('gateway')));
   }
 
-  /// 检查 HTTP 状态码是否属于服务器端/网关宕机故障
+  /// 检查 HTTP 状态码是否属于服务器端/网关宕机或安全拦截故障
   static bool isOutageStatusCode(int? code) {
     if (code == null) return false;
     return code == 502 ||
         code == 503 ||
         code == 504 ||
         code == 500 ||
+        code == 403 ||
         (code >= 520 && code <= 524);
   }
 
@@ -263,7 +269,7 @@ class ServerOutageInfo {
         return ServerOutageInfo.fromDioException(error);
       }
       final code = error.response?.statusCode;
-      if (code != null && code >= 500 && code <= 599) {
+      if (code != null && ((code >= 500 && code <= 599) || code == 403)) {
         return ServerOutageInfo.fromDioException(error);
       }
       return null;
@@ -278,11 +284,15 @@ class ServerOutageInfo {
         str.contains('520') ||
         str.contains('521') ||
         str.contains('522') ||
+        str.contains('403') ||
         lower.contains('bad gateway') ||
         lower.contains('bad upstream') ||
-        (lower.contains('bad response') && (str.contains('50') || str.contains('52')))) {
+        lower.contains('status code of 403') ||
+        lower.contains('status code of 50') ||
+        lower.contains('403 forbidden') ||
+        (lower.contains('bad response') && (str.contains('50') || str.contains('52') || str.contains('403')))) {
       int code = 502;
-      final m = RegExp(r'\b(502|503|504|520|521|522|523|524|500)\b').firstMatch(str);
+      final m = RegExp(r'\b(403|502|503|504|520|521|522|523|524|500)\b').firstMatch(str);
       if (m != null) {
         code = int.tryParse(m.group(1) ?? '') ?? 502;
       }
@@ -302,6 +312,17 @@ class ServerOutageInfo {
     String originDetail,
   }) _getTemplateByCode(int code) {
     switch (code) {
+      case 403:
+        return (
+          badgeText: 'ACCESS FORBIDDEN',
+          title: 'Access Denied (403)',
+          subtitleZh: '访问被拒绝或防火墙拦截',
+          descZh: '源站服务器或安全防护盾（如 Cloudflare WAF / 防 CC 机制）拦截了请求。常见原因是短时间内请求频次过高、安全人机验证未通过或当前账号权限不足。',
+          descEn:
+              'The server understood the request but refuses to authorize it. Cloudflare WAF or rate limiting may have blocked the access.',
+          originStatus: 'FORBIDDEN',
+          originDetail: '请求被拒绝或受限 / 403 forbidden',
+        );
       case 504:
         return (
           badgeText: 'GATEWAY TIMEOUT',

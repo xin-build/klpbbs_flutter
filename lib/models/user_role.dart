@@ -37,16 +37,15 @@ class DiscuzUserRole {
   });
 
   /// 是否属于任意管理组（拥有管理权限）
-  bool get hasAnyModPermission => isAdmin || isSuperMod || isModerator;
+  bool get hasAnyModPermission => !isBanned && (isAdmin || isSuperMod || isModerator);
 
   /// 判断对指定版块是否具备管理权限
   /// - 管理员和超级版主：全站所有版块均有权管理
   /// - 版主：管辖版块列表中包含目标 fid，或尚未指定具体版块时默认具有本版管理权
   bool canModerateFid(int? fid) {
+    if (isBanned || fid == null || fid <= 0) return false;
     if (isAdmin || isSuperMod) return true;
     if (isModerator) {
-      if (fid == null || fid <= 0) return true;
-      if (moderatedFids.isEmpty) return true;
       return moderatedFids.contains(fid);
     }
     return false;

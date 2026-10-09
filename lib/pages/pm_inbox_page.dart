@@ -1,3 +1,5 @@
+import '../widgets/app_motion.dart';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -7,9 +9,13 @@ import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 
 import '../api/klpbbs_api.dart';
+import '../core/dio_client.dart';
 import '../models/pm_models.dart';
+import '../models/server_outage_info.dart';
 import '../services/push_notification_service.dart';
+import '../widgets/server_outage_view.dart';
 import '../widgets/thread_card.dart';
+import 'login_page.dart';
 import 'pm_detail_page.dart';
 import 'user_space_page.dart';
 
@@ -31,25 +37,111 @@ class _PmInboxPageState extends State<PmInboxPage> {
   bool _selectionMode = false;
   final Set<int> _selected = {};
   final Set<int> _deletedTouids = {};
+  final Set<int> _deletingTouids = {};
+  final Map<int, String> _successfulDismissals = {};
+  bool _batchDeleting = false;
   List<PmConversation> _allConvs = const [];
+  int? _selectedTouid;
+  String? _selectedUsername;
 
   @override
   void initState() {
     super.initState();
     _future = KlpbbsApi.getPmList();
-    PushNotificationService.instance.clearPm();
+    _future.ignore();
+    DioClient.sessionChanges.addListener(_onSessionChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      PushNotificationService.instance.clearPm();
+    });
     _loadRead();
     _loadPinned();
     _loadSearchHistory();
+  }
+
+  @override
+  void dispose() {
+    DioClient.sessionChanges.removeListener(_onSessionChanged);
+    super.dispose();
+  }
+
+  void _onSessionChanged() {
+    if (!mounted) return;
+    setState(() {
+      _deletedTouids.clear();
+      _deletingTouids.clear();
+      _successfulDismissals.clear();
+      _batchDeleting = false;
+      _selected.clear();
+      _selectionMode = false;
+      _selectedTouid = null;
+      _selectedUsername = null;
+      _allConvs = const [];
+      _future = KlpbbsApi.getPmList();
+      _future.ignore();
+    });
+  }
+
+  void _removeDeletedConversation(int touid) {
+    setState(() {
+      _deletedTouids.add(touid);
+      _deletingTouids.remove(touid);
+      _selected.remove(touid);
+      if (_selectedTouid == touid) {
+        _selectedTouid = null;
+        _selectedUsername = null;
+      }
+    });
+  }
+
+  Future<bool> _deleteConversation(int touid,
+      {bool removeImmediately = true, bool notifyFailure = true}) async {
+    if (!mounted ||
+        touid <= 0 ||
+        _deletingTouids.contains(touid) ||
+        _deletedTouids.contains(touid)) {
+      return false;
+    }
+    final session = DioClient.sessionKey;
+    setState(() => _deletingTouids.add(touid));
+    var succeeded = false;
+    try {
+      succeeded = await KlpbbsApi.deletePm(touid);
+      if (!mounted || session != DioClient.sessionKey) return false;
+      if (!succeeded) {
+        if (notifyFailure) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('删除失败，会话仍保留。')));
+        }
+        return false;
+      }
+      if (removeImmediately) {
+        _removeDeletedConversation(touid);
+      } else {
+        // Dismissible stays mounted until its resize animation completes.
+        _successfulDismissals[touid] = session;
+      }
+      return true;
+    } catch (_) {
+      if (mounted && session == DioClient.sessionKey && notifyFailure) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('删除失败，会话仍保留。')));
+      }
+      return false;
+    } finally {
+      if (mounted &&
+          session == DioClient.sessionKey &&
+          (removeImmediately || !succeeded)) {
+        setState(() => _deletingTouids.remove(touid));
+      }
+    }
   }
 
   Future<void> _loadRead() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() {
-      _read = (prefs.getStringList('pm_read') ?? const [])
-          .map(int.parse)
-          .toSet();
+      _read =
+          (prefs.getStringList('pm_read') ?? const []).map(int.parse).toSet();
       _unreadOverride = (prefs.getStringList('pm_unread_override') ?? const [])
           .map(int.parse)
           .toSet();
@@ -60,9 +152,8 @@ class _PmInboxPageState extends State<PmInboxPage> {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(
-      () => _pinned = (prefs.getStringList('pm_pin') ?? const [])
-          .map(int.parse)
-          .toSet(),
+      () => _pinned =
+          (prefs.getStringList('pm_pin') ?? const []).map(int.parse).toSet(),
     );
   }
 
@@ -128,6 +219,9 @@ class _PmInboxPageState extends State<PmInboxPage> {
 
   /// 会话长按菜单（置顶/已读/删除）
   void _showConvMenu(PmConversation c) {
+    if (_deletingTouids.contains(c.touid) || _batchDeleting) {
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -171,24 +265,22 @@ class _PmInboxPageState extends State<PmInboxPage> {
               },
             ),
             ListTile(
+              key: ValueKey('pm-delete-menu-${c.touid}'),
               leading: const Icon(Icons.delete_outline),
               title: const Text('删除会话'),
               onTap: () async {
                 Navigator.of(ctx).pop();
-                final messenger = ScaffoldMessenger.of(context);
+                final session = DioClient.sessionKey;
                 final confirmed = await confirmWrite(context, '删除会话');
-                if (!confirmed || !context.mounted) return;
-                final targetUid = c.touid;
-                setState(() {
-                  _deletedTouids.add(targetUid);
-                });
-                try {
-                  final ok = await KlpbbsApi.deletePm(targetUid);
-                  if (ok && mounted) {
-                    messenger.showSnackBar(const SnackBar(content: Text('已删除会话')));
-                    _reload();
-                  }
-                } catch (_) {}
+                if (!confirmed || !mounted || session != DioClient.sessionKey) {
+                  return;
+                }
+                final ok = await _deleteConversation(c.touid);
+                if (ok && mounted && session == DioClient.sessionKey) {
+                  ScaffoldMessenger.of(context)
+                      .showSnackBar(const SnackBar(content: Text('已删除会话')));
+                  _reload();
+                }
               },
             ),
             const SizedBox(height: 8),
@@ -279,11 +371,868 @@ class _PmInboxPageState extends State<PmInboxPage> {
   }
 
   void _reload() {
-    setState(() => _future = KlpbbsApi.getPmList());
+    if (!mounted) return;
+    setState(() {
+      _future = KlpbbsApi.getPmList();
+      _future.ignore();
+    });
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildSearchField() {
+    return TextField(
+      onChanged: (v) {
+        setState(() => _kw = v.trim());
+        if (v.trim().isNotEmpty) _saveSearchHistory(v.trim());
+      },
+      decoration: InputDecoration(
+        hintText: '搜索会话',
+        prefixIcon: const Icon(Icons.search, size: 20),
+        suffixIcon: _kw.isEmpty
+            ? null
+            : IconButton(
+                icon: const Icon(Icons.clear, size: 18),
+                onPressed: () => setState(() => _kw = ''),
+              ),
+        isDense: true,
+        filled: true,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: BorderSide.none,
+        ),
+        contentPadding: EdgeInsets.zero,
+      ),
+    );
+  }
+
+  Widget _buildSearchHistoryChips() {
+    return SizedBox(
+      height: 40,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 6,
+        ),
+        children: [
+          for (final h in _searchHistory)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: ActionChip(
+                label: Text(h, style: const TextStyle(fontSize: 12)),
+                visualDensity: VisualDensity.compact,
+                onPressed: () => setState(() => _kw = h),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyDetailPlaceholder(ThemeData theme) {
+    final colorScheme = theme.colorScheme;
+    return Container(
+      color: colorScheme.surface,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(22),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: colorScheme.surfaceContainerHighest.withAlpha(120),
+              ),
+              child: Icon(
+                Icons.forum_outlined,
+                size: 52,
+                color: colorScheme.outline,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '选择左侧会话开始聊天',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '与论坛好友随时畅聊，支持快捷短语与表情回复',
+              style: TextStyle(
+                fontSize: 13,
+                color: colorScheme.outline,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildConversationList({required bool isWide}) {
+    if (!DioClient.isLoggedIn) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 72,
+                height: 72,
+                decoration: BoxDecoration(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .primaryContainer
+                      .withAlpha(120),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.lock_outline_rounded,
+                  size: 36,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                '请先登录论坛账号',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '登录后即可查看与回复私信会话',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Theme.of(context).colorScheme.outline,
+                ),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: () {
+                  Navigator.of(context)
+                      .push(
+                    MaterialPageRoute(
+                      builder: (_) => const LoginPage(),
+                    ),
+                  )
+                      .then((_) {
+                    if (mounted) _reload();
+                  });
+                },
+                icon: const Icon(Icons.login, size: 18),
+                label: const Text('立即登录'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return FutureBuilder<List<PmConversation>>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(child: AppLoadingIndicator());
+        }
+        if (snap.hasError) {
+          final outage = ServerOutageInfo.tryParse(snap.error);
+          if (outage != null) {
+            return ServerOutageView(
+              outage: outage,
+              onRetry: _reload,
+            );
+          }
+          final isAuthError = snap.error.toString().contains('未登录') ||
+              snap.error.toString().contains('过期');
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 64,
+                    height: 64,
+                    decoration: BoxDecoration(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .errorContainer
+                          .withAlpha(120),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      isAuthError
+                          ? Icons.lock_outline_rounded
+                          : Icons.error_outline_rounded,
+                      size: 32,
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    isAuthError ? '登录状态已失效' : '私信加载失败',
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '${snap.error}',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontSize: 12.5,
+                        color: Theme.of(context).colorScheme.outline),
+                  ),
+                  const SizedBox(height: 14),
+                  if (isAuthError)
+                    FilledButton.icon(
+                      onPressed: () {
+                        Navigator.of(context)
+                            .push(
+                          MaterialPageRoute(
+                            builder: (_) => const LoginPage(),
+                          ),
+                        )
+                            .then((_) {
+                          if (mounted) _reload();
+                        });
+                      },
+                      icon: const Icon(Icons.login, size: 18),
+                      label: const Text('重新登录'),
+                    )
+                  else
+                    FilledButton.icon(
+                      onPressed: _reload,
+                      icon: const Icon(Icons.refresh, size: 18),
+                      label: const Text('重试'),
+                    ),
+                ],
+              ),
+            ),
+          );
+        }
+        final rawAll = snap.data!;
+        final all =
+            rawAll.where((c) => !_deletedTouids.contains(c.touid)).toList();
+        _allConvs = all;
+        final filtered = _kw.isEmpty
+            ? all
+            : all
+                .where(
+                  (c) => c.username.contains(_kw) || c.summary.contains(_kw),
+                )
+                .toList();
+        // 排序：置顶 > 未读 > 其余
+        final list = [
+          ...filtered.where((c) => _pinned.contains(c.touid)),
+          ...filtered.where(
+            (c) =>
+                !_pinned.contains(c.touid) &&
+                ((c.isNew && !_read.contains(c.touid)) ||
+                    _unreadOverride.contains(c.touid)),
+          ),
+          ...filtered.where(
+            (c) =>
+                !_pinned.contains(c.touid) &&
+                !((c.isNew && !_read.contains(c.touid)) ||
+                    _unreadOverride.contains(c.touid)),
+          ),
+        ];
+
+        // 宽屏模式下若未选会话且列表非空，自动选中首项
+        if (isWide && _selectedTouid == null && list.isNotEmpty) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _selectedTouid == null && list.isNotEmpty) {
+              setState(() {
+                _selectedTouid = list.first.touid;
+                _selectedUsername = list.first.username;
+              });
+            }
+          });
+        }
+
+        if (all.isEmpty) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 64,
+                    height: 64,
+                    decoration: BoxDecoration(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .surfaceContainerHighest
+                          .withAlpha(120),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      Icons.mail_outline_rounded,
+                      size: 32,
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    '暂无私信会话',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '收到新私信后会在这里显示',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  OutlinedButton.icon(
+                    onPressed: _reload,
+                    icon: const Icon(Icons.refresh, size: 16),
+                    label: const Text('刷新会话'),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+        if (list.isEmpty) {
+          return const EmptyView(
+            icon: Icons.search_off,
+            title: '未找到匹配会话',
+          );
+        }
+        return RefreshIndicator(
+          onRefresh: () async => _reload(),
+          color: Theme.of(context).colorScheme.primary,
+          displacement: 40,
+          edgeOffset: 8,
+          child: ListView.separated(
+            itemCount: list.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (context, i) {
+              final c = list[i];
+              final unread = (c.isNew && !_read.contains(c.touid)) ||
+                  _unreadOverride.contains(c.touid);
+              final isSelected = isWide && _selectedTouid == c.touid;
+              return Dismissible(
+                key: ValueKey('pm_${c.plid}_${c.touid}'),
+                direction: DismissDirection.endToStart,
+                background: Container(
+                  color: Theme.of(context).colorScheme.errorContainer,
+                  alignment: Alignment.centerRight,
+                  padding: const EdgeInsets.only(right: 20),
+                  child: Icon(
+                    Icons.delete_outline,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
+                confirmDismiss: (_) async {
+                  if (_batchDeleting || _deletingTouids.contains(c.touid)) {
+                    return false;
+                  }
+                  final session = DioClient.sessionKey;
+                  final confirmed = await confirmWrite(context, '删除会话');
+                  if (!confirmed ||
+                      !mounted ||
+                      session != DioClient.sessionKey) {
+                    return false;
+                  }
+                  return _deleteConversation(c.touid, removeImmediately: false);
+                },
+                onDismissed: (_) {
+                  final session = _successfulDismissals.remove(c.touid);
+                  if (!mounted || session != DioClient.sessionKey) return;
+                  _removeDeletedConversation(c.touid);
+                  _reload();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('已删除会话')),
+                  );
+                },
+                child: ListTile(
+                  selected: isSelected,
+                  selectedTileColor: Theme.of(context)
+                      .colorScheme
+                      .primaryContainer
+                      .withAlpha(70),
+                  leading: _selectionMode
+                      ? Checkbox(
+                          value: _selected.contains(c.touid),
+                          onChanged: (_) => setState(() {
+                            _selected.contains(c.touid)
+                                ? _selected.remove(c.touid)
+                                : _selected.add(c.touid);
+                          }),
+                        )
+                      : Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            InkWell(
+                              borderRadius: BorderRadius.circular(22),
+                              onTap: c.touid > 0
+                                  ? () => Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                          builder: (_) =>
+                                              UserSpacePage(uid: c.touid),
+                                        ),
+                                      )
+                                  : null,
+                              child: UserAvatarWidget(
+                                reserveFrameSpace: true,
+                                uid: c.touid,
+                                author: c.username,
+                                size: 30,
+                                faceUrl: c.faceUrl,
+                              ),
+                            ),
+                            if (unread)
+                              Positioned(
+                                right: -2,
+                                top: -2,
+                                child: Container(
+                                  width: 10,
+                                  height: 10,
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.error,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.surface,
+                                      width: 1.5,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                  title: Row(
+                    children: [
+                      Flexible(
+                        child: Text.rich(
+                          TextSpan(
+                            style: TextStyle(
+                              fontWeight: unread
+                                  ? FontWeight.bold
+                                  : (isSelected
+                                      ? FontWeight.bold
+                                      : FontWeight.normal),
+                              color: isSelected
+                                  ? Theme.of(context).colorScheme.primary
+                                  : null,
+                            ),
+                            children: _highlight(
+                              c.username.isEmpty ? '用户${c.touid}' : c.username,
+                              _kw,
+                            ),
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (unread)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 6),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.error,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              '新',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.bold,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onError,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  subtitle: Row(
+                    children: [
+                      Expanded(
+                        child: Text.rich(
+                          TextSpan(
+                            children: _highlight(c.summary, _kw),
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (c.timeText.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 6),
+                          child: Text(
+                            _friendlyDate(c.timeText),
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.outline,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  trailing: c.touid > 0
+                      ? Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (_pinned.contains(c.touid))
+                              Padding(
+                                padding: const EdgeInsets.only(
+                                  right: 4,
+                                ),
+                                child: Icon(
+                                  Icons.push_pin,
+                                  size: 15,
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.primary,
+                                ),
+                              ),
+                            if (!isWide)
+                              const Icon(Icons.chevron_right, size: 18),
+                          ],
+                        )
+                      : null,
+                  onTap: () {
+                    if (_deletingTouids.contains(c.touid) || _batchDeleting) {
+                      return;
+                    }
+                    if (c.touid == 0) return;
+                    if (_selectionMode) {
+                      setState(() {
+                        _selected.contains(c.touid)
+                            ? _selected.remove(c.touid)
+                            : _selected.add(c.touid);
+                      });
+                      return;
+                    }
+                    _markRead(c.touid);
+                    if (isWide) {
+                      setState(() {
+                        _selectedTouid = c.touid;
+                        _selectedUsername = c.username;
+                      });
+                    } else {
+                      Navigator.of(context)
+                          .push(
+                            MaterialPageRoute(
+                              builder: (_) => PmDetailPage(
+                                touid: c.touid,
+                                toUsername: c.username,
+                              ),
+                            ),
+                          )
+                          .then((_) => _reload());
+                    }
+                  },
+                  onLongPress: () {
+                    if (c.touid == 0) return;
+                    _showConvMenu(c);
+                  },
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildBatchActionBar() {
+    return SafeArea(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surface,
+          border: Border(
+            top: BorderSide(
+              color: Theme.of(context).colorScheme.outlineVariant,
+              width: 0.5,
+            ),
+          ),
+        ),
+        child: Wrap(
+          spacing: 4,
+          runSpacing: 2,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            TextButton.icon(
+              key: const ValueKey('pm-select-all'),
+              icon: const Icon(Icons.select_all, size: 18),
+              label: const Text('全选'),
+              onPressed: _batchDeleting
+                  ? null
+                  : () => setState(() {
+                        _selected.isEmpty
+                            ? _selected.addAll(_allConvs.map((c) => c.touid))
+                            : _selected.clear();
+                      }),
+            ),
+            TextButton.icon(
+              icon: const Icon(Icons.push_pin_outlined, size: 18),
+              label: const Text('置顶'),
+              onPressed: _selected.isEmpty || _batchDeleting
+                  ? null
+                  : () async {
+                      final messenger = ScaffoldMessenger.of(context);
+                      final prefs = await SharedPreferences.getInstance();
+                      final list = prefs.getStringList('pm_pin') ?? [];
+                      for (final t in _selected) {
+                        if (!list.contains('$t')) list.add('$t');
+                      }
+                      await prefs.setStringList('pm_pin', list);
+                      if (mounted) {
+                        setState(() {
+                          _pinned.addAll(_selected);
+                          _selectionMode = false;
+                          _selected.clear();
+                        });
+                        messenger.showSnackBar(
+                          const SnackBar(content: Text('已置顶')),
+                        );
+                      }
+                    },
+            ),
+            TextButton.icon(
+              icon: const Icon(Icons.push_pin, size: 18),
+              label: const Text('取消置顶'),
+              onPressed: _selected.isEmpty || _batchDeleting
+                  ? null
+                  : () async {
+                      final messenger = ScaffoldMessenger.of(context);
+                      final prefs = await SharedPreferences.getInstance();
+                      final list = prefs.getStringList('pm_pin') ?? [];
+                      list.removeWhere(
+                        (x) => _selected.contains(int.tryParse(x) ?? -1),
+                      );
+                      await prefs.setStringList('pm_pin', list);
+                      if (mounted) {
+                        setState(() {
+                          _pinned.removeAll(_selected);
+                          _selectionMode = false;
+                          _selected.clear();
+                        });
+                        messenger.showSnackBar(
+                          const SnackBar(content: Text('已取消置顶')),
+                        );
+                      }
+                    },
+            ),
+            TextButton.icon(
+              icon: const Icon(Icons.done_all, size: 18),
+              label: Text('已读 (${_selected.length})'),
+              onPressed: _selected.isEmpty || _batchDeleting
+                  ? null
+                  : () async {
+                      final messenger = ScaffoldMessenger.of(context);
+                      final prefs = await SharedPreferences.getInstance();
+                      final list = prefs.getStringList('pm_read') ?? [];
+                      for (final t in _selected) {
+                        if (!list.contains('$t')) list.add('$t');
+                      }
+                      await prefs.setStringList('pm_read', list);
+                      final unreadList =
+                          prefs.getStringList('pm_unread_override') ?? [];
+                      unreadList.removeWhere(
+                          (t) => _selected.contains(int.tryParse(t)));
+                      await prefs.setStringList(
+                          'pm_unread_override', unreadList);
+                      if (mounted) {
+                        setState(() {
+                          _read.addAll(_selected);
+                          _unreadOverride.removeAll(_selected);
+                          _selectionMode = false;
+                          _selected.clear();
+                        });
+                        messenger.showSnackBar(
+                          const SnackBar(content: Text('已标记已读')),
+                        );
+                      }
+                    },
+            ),
+            TextButton.icon(
+              key: const ValueKey('pm-delete-selected'),
+              icon: _batchDeleting
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: AppLoadingIndicator(strokeWidth: 2))
+                  : const Icon(Icons.delete_outline, size: 18),
+              label: Text('删除 (${_selected.length})'),
+              onPressed: _selected.isEmpty || _batchDeleting
+                  ? null
+                  : () async {
+                      final session = DioClient.sessionKey;
+                      final toDelete = _selected.toList();
+                      final confirmed = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: const Text('批量删除'),
+                          content:
+                              Text('确认删除选中的 ${toDelete.length} 个会话？此操作不可撤销。'),
+                          actions: [
+                            TextButton(
+                                onPressed: () => Navigator.of(ctx).pop(false),
+                                child: const Text('取消')),
+                            FilledButton(
+                                key: const ValueKey(
+                                    'pm-confirm-delete-selected'),
+                                onPressed: () => Navigator.of(ctx).pop(true),
+                                child: const Text('删除')),
+                          ],
+                        ),
+                      );
+                      if (confirmed != true ||
+                          !mounted ||
+                          session != DioClient.sessionKey ||
+                          _batchDeleting) {
+                        return;
+                      }
+                      if (!await confirmWrite(context, '批量删除会话') ||
+                          !mounted ||
+                          session != DioClient.sessionKey) {
+                        return;
+                      }
+                      setState(() => _batchDeleting = true);
+                      var okCount = 0;
+                      try {
+                        for (final uid in toDelete) {
+                          if (!mounted || session != DioClient.sessionKey) {
+                            return;
+                          }
+                          if (await _deleteConversation(uid,
+                              notifyFailure: false)) {
+                            okCount++;
+                          }
+                        }
+                        if (!mounted || session != DioClient.sessionKey) return;
+                        setState(() {
+                          _selectionMode = _selected.isNotEmpty;
+                        });
+                        final failed = toDelete.length - okCount;
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                            content: Text(failed == 0
+                                ? '已删除 $okCount 个会话'
+                                : '已删除 $okCount 个，$failed 个删除失败并保留。')));
+                        _reload();
+                      } finally {
+                        if (mounted && session == DioClient.sessionKey) {
+                          setState(() => _batchDeleting = false);
+                        }
+                      }
+                    },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWideMasterDetail(
+      BuildContext context, BoxConstraints constraints) {
+    final theme = Theme.of(context);
+    final leftWidth =
+        math.min(380.0, math.max(300.0, constraints.maxWidth * 0.35));
+
+    return Scaffold(
+      drawer: const GlobalAppDrawer(),
+      drawerEdgeDragWidth: 50.0,
+      body: Row(
+        children: [
+          SizedBox(
+            width: leftWidth,
+            child: Scaffold(
+              appBar: AppBar(
+                leading: const GlobalNavLeading(),
+                leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
+                title: const Text('私信'),
+                actions: [
+                  if (!_selectionMode)
+                    IconButton(
+                      icon: const Icon(Icons.done_all, size: 20),
+                      tooltip: '全部已读',
+                      onPressed: _markAllRead,
+                    ),
+                  IconButton(
+                    key: const ValueKey('pm-toggle-management'),
+                    icon: Icon(_selectionMode
+                        ? Icons.close
+                        : Icons.checklist_outlined),
+                    tooltip: _selectionMode ? '退出管理' : '管理',
+                    onPressed: () => setState(() {
+                      _selectionMode = !_selectionMode;
+                      _selected.clear();
+                    }),
+                  ),
+                ],
+                bottom: PreferredSize(
+                  preferredSize: const Size.fromHeight(52),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                    child: _buildSearchField(),
+                  ),
+                ),
+              ),
+              body: Column(
+                children: [
+                  if (_kw.isEmpty && _searchHistory.isNotEmpty)
+                    _buildSearchHistoryChips(),
+                  Expanded(
+                    child: _buildConversationList(isWide: true),
+                  ),
+                ],
+              ),
+              bottomNavigationBar:
+                  _selectionMode ? _buildBatchActionBar() : null,
+            ),
+          ),
+          VerticalDivider(
+            width: 1,
+            thickness: 1,
+            color: theme.colorScheme.outlineVariant.withAlpha(80),
+          ),
+          Expanded(
+            child: _selectedTouid != null && _selectedTouid! > 0
+                ? PmDetailPage(
+                    key: ValueKey('pm_detail_$_selectedTouid'),
+                    touid: _selectedTouid!,
+                    toUsername: _selectedUsername,
+                    isEmbedded: true,
+                    onMessageSent: _reload,
+                  )
+                : _buildEmptyDetailPlaceholder(theme),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMobileSinglePane(BuildContext context) {
     return Scaffold(
       drawer: const GlobalAppDrawer(),
       drawerEdgeDragWidth: 50.0,
@@ -299,6 +1248,7 @@ class _PmInboxPageState extends State<PmInboxPage> {
               onPressed: _markAllRead,
             ),
           IconButton(
+            key: const ValueKey('pm-toggle-management'),
             icon: Icon(_selectionMode ? Icons.close : Icons.checklist_outlined),
             tooltip: _selectionMode ? '退出管理' : '管理',
             onPressed: () => setState(() {
@@ -309,550 +1259,45 @@ class _PmInboxPageState extends State<PmInboxPage> {
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(52),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-            child: TextField(
-              onChanged: (v) {
-                setState(() => _kw = v.trim());
-                if (v.trim().isNotEmpty) _saveSearchHistory(v.trim());
-              },
-              decoration: InputDecoration(
-                hintText: '搜索会话',
-                prefixIcon: const Icon(Icons.search, size: 20),
-                suffixIcon: _kw.isEmpty
-                    ? null
-                    : IconButton(
-                        icon: const Icon(Icons.clear, size: 18),
-                        onPressed: () => setState(() => _kw = ''),
-                      ),
-                isDense: true,
-                filled: true,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide.none,
-                ),
-                contentPadding: EdgeInsets.zero,
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 800),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                child: _buildSearchField(),
               ),
             ),
           ),
         ),
       ),
-      body: Column(
-        children: [
-          // 搜索历史（空关键词且有历史时）
-          if (_kw.isEmpty && _searchHistory.isNotEmpty)
-            SizedBox(
-              height: 40,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
-                children: [
-                  for (final h in _searchHistory)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 6),
-                      child: ActionChip(
-                        label: Text(h, style: const TextStyle(fontSize: 12)),
-                        visualDensity: VisualDensity.compact,
-                        onPressed: () => setState(() => _kw = h),
-                      ),
-                    ),
-                ],
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 800),
+          child: Column(
+            children: [
+              if (_kw.isEmpty && _searchHistory.isNotEmpty)
+                _buildSearchHistoryChips(),
+              Expanded(
+                child: _buildConversationList(isWide: false),
               ),
-            ),
-          Expanded(
-            child: FutureBuilder<List<PmConversation>>(
-              future: _future,
-              builder: (context, snap) {
-                if (snap.connectionState != ConnectionState.done) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (snap.hasError) {
-                  return Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text('加载失败：${snap.error}', textAlign: TextAlign.center),
-                        const SizedBox(height: 12),
-                        FilledButton(
-                          onPressed: _reload,
-                          child: const Text('重试'),
-                        ),
-                      ],
-                    ),
-                  );
-                }
-                final rawAll = snap.data!;
-                final all = rawAll.where((c) => !_deletedTouids.contains(c.touid)).toList();
-                _allConvs = all;
-                final filtered = _kw.isEmpty
-                    ? all
-                    : all
-                          .where(
-                            (c) =>
-                                c.username.contains(_kw) ||
-                                c.summary.contains(_kw),
-                          )
-                          .toList();
-                // 排序：置顶 > 未读 > 其余
-                final list = [
-                  ...filtered.where((c) => _pinned.contains(c.touid)),
-                  ...filtered
-                      .where(
-                        (c) =>
-                            !_pinned.contains(c.touid) &&
-                            ((c.isNew && !_read.contains(c.touid)) ||
-                                _unreadOverride.contains(c.touid)),
-                      ),
-                  ...filtered.where(
-                    (c) =>
-                        !_pinned.contains(c.touid) &&
-                        !((c.isNew && !_read.contains(c.touid)) ||
-                            _unreadOverride.contains(c.touid)),
-                  ),
-                ];
-                if (all.isEmpty) {
-                  return const EmptyView(
-                    icon: Icons.mail_outline,
-                    title: '暂无私信会话',
-                    subtitle: '收到私信后会显示在这里',
-                  );
-                }
-                if (list.isEmpty) {
-                  return const EmptyView(
-                    icon: Icons.search_off,
-                    title: '未找到匹配会话',
-                  );
-                }
-                return RefreshIndicator(
-                  onRefresh: () async => _reload(),
-                  color: Theme.of(context).colorScheme.primary,
-                  displacement: 40,
-                  edgeOffset: 8,
-                  child: ListView.separated(
-                    itemCount: list.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (context, i) {
-                      final c = list[i];
-                      final unread =
-                          (c.isNew && !_read.contains(c.touid)) ||
-                          _unreadOverride.contains(c.touid);
-                      return Dismissible(
-                        key: ValueKey('pm_${c.plid}_${c.touid}'),
-                        direction: DismissDirection.endToStart,
-                        background: Container(
-                          color: Theme.of(context).colorScheme.errorContainer,
-                          alignment: Alignment.centerRight,
-                          padding: const EdgeInsets.only(right: 20),
-                          child: Icon(
-                            Icons.delete_outline,
-                            color: Theme.of(context).colorScheme.error,
-                          ),
-                        ),
-                        confirmDismiss: (_) async {
-                          final confirmed = await confirmWrite(context, '删除会话');
-                          if (!confirmed || !context.mounted) return false;
-                          final targetUid = c.touid;
-                          setState(() {
-                            _deletedTouids.add(targetUid);
-                          });
-                          try {
-                            final ok = await KlpbbsApi.deletePm(targetUid);
-                            if (ok) {
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('已删除会话')),
-                                );
-                              }
-                              return true;
-                            }
-                          } catch (_) {}
-                          return false;
-                        },
-                        onDismissed: (_) {
-                          _reload();
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('会话已删除')),
-                          );
-                        },
-                        child: ListTile(
-                          leading: _selectionMode
-                              ? Checkbox(
-                                  value: _selected.contains(c.touid),
-                                  onChanged: (_) => setState(() {
-                                    _selected.contains(c.touid)
-                                        ? _selected.remove(c.touid)
-                                        : _selected.add(c.touid);
-                                  }),
-                                )
-                              : Stack(
-                                  clipBehavior: Clip.none,
-                                  children: [
-                                    InkWell(
-                                      borderRadius: BorderRadius.circular(22),
-                                      onTap: c.touid > 0
-                                          ? () => Navigator.of(context).push(
-                                              MaterialPageRoute(
-                                                builder: (_) =>
-                                                    UserSpacePage(uid: c.touid),
-                                              ),
-                                            )
-                                          : null,
-                                      child: UserAvatarWidget(
-                                        uid: c.touid,
-                                        author: c.username,
-                                        size: 44,
-                                        faceUrl: c.faceUrl,
-                                      ),
-                                    ),
-                                    if (unread)
-                                      Positioned(
-                                        right: -2,
-                                        top: -2,
-                                        child: Container(
-                                          width: 10,
-                                          height: 10,
-                                          decoration: BoxDecoration(
-                                            color: Theme.of(
-                                              context,
-                                            ).colorScheme.error,
-                                            shape: BoxShape.circle,
-                                            border: Border.all(
-                                              color: Theme.of(
-                                                context,
-                                              ).colorScheme.surface,
-                                              width: 1.5,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                          title: Row(
-                            children: [
-                              Flexible(
-                                child: Text.rich(
-                                  TextSpan(
-                                    style: TextStyle(
-                                      fontWeight: unread
-                                          ? FontWeight.bold
-                                          : FontWeight.normal,
-                                    ),
-                                    children: _highlight(
-                                      c.username.isEmpty
-                                          ? '用户${c.touid}'
-                                          : c.username,
-                                      _kw,
-                                    ),
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              if (unread)
-                                Padding(
-                                  padding: const EdgeInsets.only(left: 6),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 6,
-                                      vertical: 1,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.error,
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    child: Text(
-                                      '新',
-                                      style: TextStyle(
-                                        fontSize: 10.5,
-                                        fontWeight: FontWeight.bold,
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.onError,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                          subtitle: Row(
-                            children: [
-                              Expanded(
-                                child: Text.rich(
-                                  TextSpan(
-                                    children: _highlight(c.summary, _kw),
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              if (c.timeText.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.only(left: 6),
-                                  child: Text(
-                                    _friendlyDate(c.timeText),
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.outline,
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                          trailing: c.touid > 0
-                              ? Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    if (_pinned.contains(c.touid))
-                                      Padding(
-                                        padding: const EdgeInsets.only(
-                                          right: 4,
-                                        ),
-                                        child: Icon(
-                                          Icons.push_pin,
-                                          size: 15,
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.primary,
-                                        ),
-                                      ),
-                                    const Icon(Icons.chevron_right, size: 18),
-                                  ],
-                                )
-                              : null,
-                          onTap: () {
-                            if (c.touid == 0) return;
-                            if (_selectionMode) {
-                              setState(() {
-                                _selected.contains(c.touid)
-                                    ? _selected.remove(c.touid)
-                                    : _selected.add(c.touid);
-                              });
-                              return;
-                            }
-                            _markRead(c.touid);
-                            Navigator.of(context)
-                                .push(
-                                  MaterialPageRoute(
-                                    builder: (_) =>
-                                        PmDetailPage(
-                                          touid: c.touid,
-                                          toUsername: c.username,
-                                        ),
-                                  ),
-                                )
-                                .then((_) => _reload());
-                          },
-                          onLongPress: () {
-                            if (c.touid == 0) return;
-                            _showConvMenu(c);
-                          },
-                        ),
-                      );
-                    },
-                  ),
-                );
-              },
-            ),
+            ],
           ),
-        ],
+        ),
       ),
-      // 批量操作栏（选择模式）
-      bottomNavigationBar: _selectionMode
-          ? SafeArea(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surface,
-                  border: Border(
-                    top: BorderSide(
-                      color: Theme.of(context).colorScheme.outlineVariant,
-                      width: 0.5,
-                    ),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    TextButton.icon(
-                      icon: const Icon(Icons.select_all, size: 18),
-                      label: Text('全选'),
-                      onPressed: () => setState(() {
-                        _selected.isEmpty
-                            ? _selected.addAll(_allConvs.map((c) => c.touid))
-                            : _selected.clear();
-                      }),
-                    ),
-                    TextButton.icon(
-                      icon: const Icon(Icons.push_pin_outlined, size: 18),
-                      label: const Text('置顶'),
-                      onPressed: _selected.isEmpty
-                          ? null
-                          : () async {
-                              final messenger = ScaffoldMessenger.of(context);
-                              final prefs =
-                                  await SharedPreferences.getInstance();
-                              final list = prefs.getStringList('pm_pin') ?? [];
-                              for (final t in _selected) {
-                                if (!list.contains('$t')) list.add('$t');
-                              }
-                              await prefs.setStringList('pm_pin', list);
-                              if (mounted) {
-                                setState(() {
-                                  _pinned.addAll(_selected);
-                                  _selectionMode = false;
-                                  _selected.clear();
-                                });
-                                messenger.showSnackBar(
-                                  const SnackBar(content: Text('已置顶')),
-                                );
-                              }
-                            },
-                    ),
-                    TextButton.icon(
-                      icon: const Icon(Icons.push_pin, size: 18),
-                      label: const Text('取消置顶'),
-                      onPressed: _selected.isEmpty
-                          ? null
-                          : () async {
-                              final messenger = ScaffoldMessenger.of(context);
-                              final prefs =
-                                  await SharedPreferences.getInstance();
-                              final list = prefs.getStringList('pm_pin') ?? [];
-                              list.removeWhere(
-                                (x) =>
-                                    _selected.contains(int.tryParse(x) ?? -1),
-                              );
-                              await prefs.setStringList('pm_pin', list);
-                              if (mounted) {
-                                setState(() {
-                                  _pinned.removeAll(_selected);
-                                  _selectionMode = false;
-                                  _selected.clear();
-                                });
-                                messenger.showSnackBar(
-                                  const SnackBar(content: Text('已取消置顶')),
-                                );
-                              }
-                            },
-                    ),
-                    const Spacer(),
-                    TextButton.icon(
-                      icon: const Icon(Icons.done_all, size: 18),
-                      label: Text('已读 (${_selected.length})'),
-                      onPressed: _selected.isEmpty
-                          ? null
-                          : () async {
-                              final messenger = ScaffoldMessenger.of(context);
-                              final prefs =
-                                  await SharedPreferences.getInstance();
-                              final list = prefs.getStringList('pm_read') ?? [];
-                              for (final t in _selected) {
-                                if (!list.contains('$t')) list.add('$t');
-                              }
-                              await prefs.setStringList('pm_read', list);
-                              final unreadList = prefs.getStringList('pm_unread_override') ?? [];
-                              unreadList.removeWhere((t) => _selected.contains(int.tryParse(t)));
-                              await prefs.setStringList('pm_unread_override', unreadList);
-                              if (mounted) {
-                                setState(() {
-                                  _read.addAll(_selected);
-                                  _unreadOverride.removeAll(_selected);
-                                  _selectionMode = false;
-                                  _selected.clear();
-                                });
-                                messenger.showSnackBar(
-                                  const SnackBar(content: Text('已标记已读')),
-                                );
-                              }
-                            },
-                    ),
-                    const Spacer(),
-                    TextButton.icon(
-                      icon: const Icon(Icons.delete_outline, size: 18),
-                      label: Text('删除 (${_selected.length})'),
-                      onPressed: _selected.isEmpty
-                          ? null
-                          : () async {
-                              final confirmed = await showDialog<bool>(
-                                context: context,
-                                builder: (ctx) => AlertDialog(
-                                  title: const Text('批量删除'),
-                                  content: Text(
-                                    '确认删除选中的 ${_selected.length} 个会话？此操作不可撤销。',
-                                  ),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () =>
-                                          Navigator.of(ctx).pop(false),
-                                      child: const Text('取消'),
-                                    ),
-                                    FilledButton(
-                                      onPressed: () =>
-                                          Navigator.of(ctx).pop(true),
-                                      child: const Text('删除'),
-                                    ),
-                                  ],
-                                ),
-                              );
-                              if (confirmed != true || !context.mounted) return;
-                              // 删除进度提示
-                              final toDelete = _selected.toList();
-                              setState(() {
-                                _deletedTouids.addAll(toDelete);
-                                _selectionMode = false;
-                                _selected.clear();
-                              });
-                              final messenger = ScaffoldMessenger.of(context);
-                              messenger.showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    '删除中（0/${toDelete.length}）...',
-                                  ),
-                                ),
-                              );
-                              var okCount = 0;
-                              var i = 0;
-                              for (final t in toDelete) {
-                                final ok = await KlpbbsApi.deletePm(t);
-                                if (ok) okCount++;
-                                i++;
-                                messenger.showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      '删除中（$i/${toDelete.length}）...',
-                                    ),
-                                  ),
-                                );
-                              }
-                              if (!mounted) return;
-                              messenger.showSnackBar(
-                                SnackBar(
-                                  content: Row(
-                                    children: [
-                                      const Icon(
-                                        Icons.check_circle,
-                                        color: Colors.green,
-                                        size: 18,
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Text('已删除 $okCount 个会话'),
-                                    ],
-                                  ),
-                                ),
-                              );
-                              _reload();
-                            },
-                    ),
-                  ],
-                ),
-              ),
-            )
-          : null,
+      bottomNavigationBar: _selectionMode ? _buildBatchActionBar() : null,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isWide = constraints.maxWidth >= 720;
+        if (isWide) {
+          return _buildWideMasterDetail(context, constraints);
+        }
+        return _buildMobileSinglePane(context);
+      },
     );
   }
 }

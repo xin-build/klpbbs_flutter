@@ -19,48 +19,48 @@ class SiteStatsCard extends StatelessWidget {
 
     return RepaintBoundary(
       child: Container(
-      margin: margin,
-      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: colorScheme.outlineVariant.withAlpha(55),
-          width: 0.8,
+        margin: margin,
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
+        decoration: BoxDecoration(
+          color: colorScheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: colorScheme.outlineVariant.withAlpha(55),
+            width: 0.8,
+          ),
+        ),
+        child: IntrinsicHeight(
+          child: Row(
+            children: [
+              _buildStatCol(
+                context,
+                '今日',
+                stats.display('todayPosts'),
+                highlight: true,
+              ),
+              _buildVerticalDivider(colorScheme),
+              _buildStatCol(
+                context,
+                '昨日',
+                stats.display('yesterdayPosts'),
+              ),
+              _buildVerticalDivider(colorScheme),
+              _buildStatCol(
+                context,
+                '帖子',
+                stats.display('totalPosts'),
+              ),
+              _buildVerticalDivider(colorScheme),
+              _buildStatCol(
+                context,
+                '会员',
+                stats.display('totalMembers'),
+              ),
+            ],
+          ),
         ),
       ),
-      child: IntrinsicHeight(
-        child: Row(
-          children: [
-            _buildStatCol(
-              context,
-              '今日',
-              stats.todayPosts > 0 ? '${stats.todayPosts}' : '--',
-              highlight: true,
-            ),
-            _buildVerticalDivider(colorScheme),
-            _buildStatCol(
-              context,
-              '昨日',
-              stats.yesterdayPosts > 0 ? '${stats.yesterdayPosts}' : '--',
-            ),
-            _buildVerticalDivider(colorScheme),
-            _buildStatCol(
-              context,
-              '帖子',
-              stats.totalPosts > 0 ? '${stats.totalPosts}' : '--',
-            ),
-            _buildVerticalDivider(colorScheme),
-            _buildStatCol(
-              context,
-              '会员',
-              stats.totalMembers > 0 ? '${stats.totalMembers}' : '--',
-            ),
-          ],
-        ),
-      ),
-    ),
-  );
+    );
   }
 
   Widget _buildVerticalDivider(ColorScheme colorScheme) {
@@ -96,18 +96,24 @@ class SiteStatsCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 4),
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Text(
-              value,
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.bold,
-                color: highlight
-                    ? (theme.brightness == Brightness.dark
-                        ? const Color(0xFFFFB74D)
-                        : const Color(0xFFE65100))
-                    : colorScheme.onSurface,
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Tooltip(
+              message: '$label：$value',
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  value,
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: highlight
+                        ? (theme.brightness == Brightness.dark
+                            ? const Color(0xFFFFB74D)
+                            : const Color(0xFFE65100))
+                        : colorScheme.onSurface,
+                  ),
+                ),
               ),
             ),
           ),

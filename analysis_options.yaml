@@ -20,6 +20,7 @@ analyzer:
     - linux/**
     - reference_piliplus/**
     - klpbbs_app/**
+    - klpbbs_app（远古时期代码）/**
     - local-env/**
     - mock-server/**
     - tools/**

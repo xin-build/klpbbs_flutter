@@ -19,13 +19,16 @@ class PapaAiDashboardCard extends StatelessWidget {
     final isCompact = item.rowSpan <= 1;
     final isNarrow = item.colSpan <= 2;
     final customTitle = item.customParams['customTitle'] as String?;
-    final title = (customTitle != null && customTitle.isNotEmpty) ? customTitle : '帕帕 AI 智能助手';
+    final title = (customTitle != null && customTitle.isNotEmpty)
+        ? customTitle
+        : '帕帕 AI 智能助手';
 
     return RepaintBoundary(
       child: DashboardCardFrame(
         item: item,
         padding: const EdgeInsets.all(12),
-        onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PapaAiChatPage())),
+        onTap: () => Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => const PapaAiChatPage())),
         child: (isCompact || isNarrow)
             ? _buildCompact(context, title)
             : _buildExpanded(context, title),
@@ -47,7 +50,8 @@ class PapaAiDashboardCard extends StatelessWidget {
               colors: [accent, accent.withAlpha(200)],
             ),
           ),
-          child: const Icon(Icons.smart_toy_rounded, size: 18, color: Colors.white),
+          child: const Icon(Icons.smart_toy_rounded,
+              size: 18, color: Colors.white),
         ),
         const SizedBox(width: 8),
         Expanded(
@@ -59,10 +63,11 @@ class PapaAiDashboardCard extends StatelessWidget {
                 title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                style:
+                    const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
               ),
               Text(
-                'AI 算力充足 · 点击向我提问',
+                '与帕帕对话',
                 maxLines: 1,
                 style: TextStyle(fontSize: 10, color: colorScheme.outline),
               ),
@@ -75,7 +80,9 @@ class PapaAiDashboardCard extends StatelessWidget {
             color: accent.withAlpha(30),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: Text('对话 >', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: accent)),
+          child: Text('对话 >',
+              style: TextStyle(
+                  fontSize: 10.5, fontWeight: FontWeight.bold, color: accent)),
         ),
       ],
     );
@@ -109,7 +116,8 @@ class PapaAiDashboardCard extends StatelessWidget {
               ),
               child: Text(
                 '站内智能助手',
-                style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: accent),
+                style: TextStyle(
+                    fontSize: 10, fontWeight: FontWeight.bold, color: accent),
               ),
             ),
           ],
@@ -133,7 +141,8 @@ class PapaAiDashboardCard extends StatelessWidget {
                         '🤖 “你好！我是帕帕，可以帮你检索站内帖子与解答游戏问题”',
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 11, fontStyle: FontStyle.italic),
+                        style: TextStyle(
+                            fontSize: 11, fontStyle: FontStyle.italic),
                       ),
                       const SizedBox(height: 4),
                       Wrap(
@@ -150,9 +159,11 @@ class PapaAiDashboardCard extends StatelessWidget {
                 FilledButton.tonal(
                   style: FilledButton.styleFrom(
                     visualDensity: VisualDensity.compact,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
                   ),
-                  onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PapaAiChatPage())),
+                  onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const PapaAiChatPage())),
                   child: const Text('开始对话', style: TextStyle(fontSize: 11.5)),
                 ),
               ],

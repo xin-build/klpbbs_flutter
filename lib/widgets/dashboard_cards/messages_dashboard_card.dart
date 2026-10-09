@@ -17,14 +17,19 @@ class MessagesDashboardCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(
+      listenable: PushNotificationService.instance,
+      builder: (context, _) => _buildBody(context));
+
+  Widget _buildBody(BuildContext context) {
     final isCompact = item.rowSpan <= 1;
     final isNarrow = item.colSpan <= 2;
     final customTitle = item.customParams['customTitle'] as String?;
-    final title = (customTitle != null && customTitle.isNotEmpty) ? customTitle : '消息与通知';
+    final title =
+        (customTitle != null && customTitle.isNotEmpty) ? customTitle : '消息与通知';
 
-    final unreadPm = isPreview ? 2 : PushNotificationService.instance.unreadPm;
-    final unreadNotice = isPreview ? 5 : PushNotificationService.instance.unreadNotices;
+    final unreadPm = PushNotificationService.instance.unreadPm;
+    final unreadNotice = PushNotificationService.instance.unreadNotices;
 
     return RepaintBoundary(
       child: DashboardCardFrame(
@@ -37,12 +42,14 @@ class MessagesDashboardCard extends StatelessWidget {
     );
   }
 
-  Widget _buildCompact(BuildContext context, int unreadPm, int unreadNotice, String title) {
+  Widget _buildCompact(
+      BuildContext context, int unreadPm, int unreadNotice, String title) {
     final colorScheme = Theme.of(context).colorScheme;
     final totalUnread = unreadPm + unreadNotice;
 
     return InkWell(
-      onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NoticePage())),
+      onTap: () => Navigator.of(context)
+          .push(MaterialPageRoute(builder: (_) => const NoticePage())),
       borderRadius: BorderRadius.circular(8),
       child: Row(
         children: [
@@ -53,7 +60,8 @@ class MessagesDashboardCard extends StatelessWidget {
               shape: BoxShape.circle,
               color: Colors.blue.withAlpha(30),
             ),
-            child: const Icon(Icons.notifications_rounded, size: 18, color: Colors.blue),
+            child: const Icon(Icons.notifications_rounded,
+                size: 18, color: Colors.blue),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -65,10 +73,13 @@ class MessagesDashboardCard extends StatelessWidget {
                   title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                      fontSize: 12.5, fontWeight: FontWeight.bold),
                 ),
                 Text(
-                  totalUnread > 0 ? '$totalUnread 条未读动态' : '暂无新消息',
+                  PushNotificationService.instance.hasKnownCounts
+                      ? (totalUnread > 0 ? '$totalUnread 条未读动态' : '暂无新消息')
+                      : (totalUnread > 0 ? '至少 $totalUnread 条未读' : '未读数据待加载'),
                   maxLines: 1,
                   style: TextStyle(fontSize: 10, color: colorScheme.outline),
                 ),
@@ -84,7 +95,10 @@ class MessagesDashboardCard extends StatelessWidget {
               ),
               child: Text(
                 '$totalUnread',
-                style: const TextStyle(fontSize: 10.5, color: Colors.white, fontWeight: FontWeight.bold),
+                style: const TextStyle(
+                    fontSize: 10.5,
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold),
               ),
             ),
         ],
@@ -92,7 +106,8 @@ class MessagesDashboardCard extends StatelessWidget {
     );
   }
 
-  Widget _buildExpanded(BuildContext context, int unreadPm, int unreadNotice, String title) {
+  Widget _buildExpanded(
+      BuildContext context, int unreadPm, int unreadNotice, String title) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Column(
@@ -118,22 +133,34 @@ class MessagesDashboardCard extends StatelessWidget {
             children: [
               Expanded(
                 child: InkWell(
-                  onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PmInboxPage())),
+                  onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const PmInboxPage())),
                   borderRadius: BorderRadius.circular(8),
                   child: Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
                       color: Colors.blue.withAlpha(20),
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.blue.withAlpha(60), width: 0.8),
+                      border: Border.all(
+                          color: Colors.blue.withAlpha(60), width: 0.8),
                     ),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Icon(Icons.chat_bubble_outline_rounded, color: Colors.blue, size: 20),
+                        const Icon(Icons.chat_bubble_outline_rounded,
+                            color: Colors.blue, size: 20),
                         const SizedBox(height: 3),
-                        const Text('私信', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                        Text('$unreadPm 未读', style: TextStyle(fontSize: 10, color: unreadPm > 0 ? Colors.red : Colors.grey)),
+                        const Text('私信',
+                            style: TextStyle(
+                                fontSize: 11, fontWeight: FontWeight.bold)),
+                        Text(
+                            PushNotificationService.instance.hasKnownPm
+                                ? '$unreadPm 未读'
+                                : '尚未读取',
+                            style: TextStyle(
+                                fontSize: 10,
+                                color:
+                                    unreadPm > 0 ? Colors.red : Colors.grey)),
                       ],
                     ),
                   ),
@@ -142,22 +169,35 @@ class MessagesDashboardCard extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: InkWell(
-                  onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NoticePage())),
+                  onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const NoticePage())),
                   borderRadius: BorderRadius.circular(8),
                   child: Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
                       color: Colors.amber.withAlpha(20),
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.amber.withAlpha(60), width: 0.8),
+                      border: Border.all(
+                          color: Colors.amber.withAlpha(60), width: 0.8),
                     ),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Icon(Icons.notifications_active_outlined, color: Colors.amber, size: 20),
+                        const Icon(Icons.notifications_active_outlined,
+                            color: Colors.amber, size: 20),
                         const SizedBox(height: 3),
-                        const Text('提醒', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                        Text('$unreadNotice 新提醒', style: TextStyle(fontSize: 10, color: unreadNotice > 0 ? Colors.red : Colors.grey)),
+                        const Text('提醒',
+                            style: TextStyle(
+                                fontSize: 11, fontWeight: FontWeight.bold)),
+                        Text(
+                            PushNotificationService.instance.hasKnownNotices
+                                ? '$unreadNotice 新提醒'
+                                : '尚未读取',
+                            style: TextStyle(
+                                fontSize: 10,
+                                color: unreadNotice > 0
+                                    ? Colors.red
+                                    : Colors.grey)),
                       ],
                     ),
                   ),

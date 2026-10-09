@@ -1,8 +1,12 @@
+import '../widgets/app_motion.dart';
+import '../widgets/today_sign_star.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/dio_client.dart';
+import '../core/discuz_sign_response.dart';
+import '../core/discuz_sign_pagination.dart';
 import '../core/main_tab_controller.dart';
 import '../core/write_confirm.dart';
 import '../models/sign_entry.dart';
@@ -11,17 +15,21 @@ import '../widgets/empty_view.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
+import '../models/server_outage_info.dart';
+import '../widgets/server_outage_view.dart';
 import '../widgets/thread_card.dart';
 import '../widgets/responsive_layout.dart';
 import '../widgets/year_month_picker_dialog.dart';
 import 'credit_page.dart';
+import 'func_list_page.dart';
 import 'magic_page.dart';
 import 'settings_page.dart';
 import 'user_space_page.dart';
 
 /// 每日签到与排行榜（深度融合 App 现代 Material 3 设计系统，100% 对齐官方 k_misign 规则）
 class SignRankPage extends StatefulWidget {
-  const SignRankPage({super.key});
+  final String initialOperation;
+  const SignRankPage({super.key, this.initialOperation = 'today'});
 
   @override
   State<SignRankPage> createState() => _SignRankPageState();
@@ -42,6 +50,11 @@ class _SignRankPageState extends State<SignRankPage>
   int _currentTabIndex = 0;
   String _op = 'today';
   int _page = 1;
+  final _rankFutures = <String, Future<List<SignEntry>>>{};
+  final _rankEntries = <String, List<SignEntry>>{};
+  final _rankFetchedAt = <String, DateTime>{};
+  final _tabPages = <String, int>{};
+  int _rankGeneration = 0;
 
   // 实时头部数据
   SignHeaderInfo _headerInfo = const SignHeaderInfo();
@@ -55,249 +68,151 @@ class _SignRankPageState extends State<SignRankPage>
   int _calYear = 0;
   int _calMonth = 0;
 
-  // 官方 Discuz k_misign 签到等级对照表（https://klpbbs.com/k_misign-misc.html?operation=leval）
-  static const _officialLevels = [
-    ('LV.1 原木', 1, '1 天'),
-    ('LV.2 圆石', 3, '3 天'),
-    ('LV.3 煤炭', 7, '7 天'),
-    ('LV.4 铁锭', 15, '15 天'),
-    ('LV.5 金锭', 30, '30 天'),
-    ('LV.6 青金石', 60, '60 天'),
-    ('LV.7 绿宝石', 120, '120 天'),
-    ('LV.8 钻石', 240, '240 天'),
-    ('LV.9 下界合金锭', 365, '365 天'),
-    ('LV.10 黑曜石', 750, '750 天'),
-    ('LV.11 基岩', 1500, '1500 天'),
-  ];
-
-  // 官方前排额外 EP 经验奖励表（https://klpbbs.com/k_misign-misc.html?operation=rewardrule）
-  static const _topRankRewards = [
-    ('第 1 ~ 10 名', '+10 EP 经验'),
-    ('第 11 ~ 20 名', '+9 EP 经验'),
-    ('第 21 ~ 30 名', '+8 EP 经验'),
-    ('第 31 ~ 40 名', '+7 EP 经验'),
-    ('第 41 ~ 50 名', '+6 EP 经验'),
-    ('第 51 ~ 60 名', '+5 EP 经验'),
-    ('第 61 ~ 70 名', '+4 EP 经验'),
-    ('第 71 ~ 80 名', '+3 EP 经验'),
-    ('第 81 ~ 90 名', '+2 EP 经验'),
-    ('第 91 ~ 150 名', '+1 EP 经验'),
-  ];
+  int _headerGeneration = 0;
+  int _calendarGeneration = 0;
 
   /// 实时拉取头部统计与个人签到数据（严格与网页端实时同步）
   Future<void> _loadHeaderRealtime({bool forceRefresh = true}) async {
     if (!mounted) return;
+    final generation = ++_headerGeneration;
+    final session = DioClient.sessionKey;
+    final signWriteRevision = AutoSignService.instance.signWriteRevision;
     setState(() => _loadingHeader = true);
     try {
-      final info = await KlpbbsApi.getSignHeaderInfo(forceRefresh: forceRefresh);
-      int? uid = info.uid ?? _myUid;
-      String? username = info.username.isNotEmpty ? info.username : _myUsername;
-
-      if (uid == null || uid <= 0 || username == null || username.isEmpty) {
-        final cachedUid = await KlpbbsApi.getMyUid();
-        if (cachedUid != null && cachedUid > 0) {
-          uid = cachedUid;
-          final space = await KlpbbsApi.getUserSpace(cachedUid);
-          if (space != null && space.username.isNotEmpty) {
-            username = space.username;
-          }
-        }
+      final info =
+          await KlpbbsApi.getSignHeaderInfo(forceRefresh: forceRefresh);
+      final uid = DioClient.isLoggedIn ? await KlpbbsApi.getMyUid() : null;
+      if (!mounted ||
+          generation != _headerGeneration ||
+          session != DioClient.sessionKey) {
+        return;
       }
-
-      if (mounted) {
-        final serverNow = AutoSignService.instance.estimatedServerNow;
-        // 严格以服务端真实权威数据为最高准则，杜绝本地脏缓存反向篡改
-        final isSigned = info.isSignedToday;
-
-        // 统计人数保底：如果解析到的今日签到人数为 0，而当前已有排名（如第 50 名），则人数至少为该排名
-        int effectiveTodayCount = info.todaySignCount;
-        if (effectiveTodayCount <= 0 && info.mySignRank != null && info.mySignRank! > 0) {
-          effectiveTodayCount = info.mySignRank!;
-        }
-        if (effectiveTodayCount <= 0 && _headerInfo.todaySignCount > 0) {
-          effectiveTodayCount = _headerInfo.todaySignCount;
-        }
-
-        setState(() {
-          _myUid = uid;
-          _myUsername = username;
-          _headerInfo = info.copyWith(
-            uid: uid,
-            username: username,
-            isSignedToday: isSigned,
-            todaySignCount: effectiveTodayCount,
-          );
-          _loadingHeader = false;
-          if ((_calYear == 0 || _calYear == serverNow.year) &&
-              (_calMonth == 0 || _calMonth == serverNow.month)) {
-            if (isSigned) {
-              _signedDays.add(serverNow.day);
-            } else {
-              _signedDays.remove(serverNow.day);
-            }
+      if (signWriteRevision != AutoSignService.instance.signWriteRevision) {
+        setState(() => _loadingHeader = false);
+        return;
+      }
+      final now = AutoSignService.instance.estimatedServerNow;
+      final signed = info.hasPersonalState
+          ? info.isSignedToday
+          : AutoSignService.instance.isSignedToday();
+      setState(() {
+        _myUid = uid;
+        _myUsername = info.username.isNotEmpty
+            ? info.username
+            : KlpbbsApi.cachedSpace?.username;
+        _headerInfo = info.copyWith(
+            uid: uid, username: _myUsername, isSignedToday: signed);
+        _loadingHeader = false;
+        if (_calYear == now.year && _calMonth == now.month) {
+          if (signed) {
+            _signedDays.add(now.day);
+          } else if (info.hasPersonalState) {
+            _signedDays.remove(now.day);
           }
-        });
-        if (isSigned) {
-          await AutoSignService.instance.markSignedToday(
-            rank: info.mySignRank,
-            continuousDays: info.continuousDays,
-          );
-        } else {
-          await AutoSignService.instance.markUnsignedToday();
         }
+      });
+      if (signed) {
+        await AutoSignService.instance.markSignedToday(
+          rank: info.mySignRank,
+          continuousDays: info.hasContinuousDays ? info.continuousDays : null,
+          rewardIron: info.rewardIron.isEmpty ? null : info.rewardIron,
+          expectedSession: session,
+          expectedWriteRevision: signWriteRevision,
+        );
+      } else if (info.hasPersonalState) {
+        await AutoSignService.instance.markUnsignedToday(
+            expectedSession: session, expectedWriteRevision: signWriteRevision);
       }
     } catch (_) {
-      if (mounted) setState(() => _loadingHeader = false);
+      if (mounted &&
+          generation == _headerGeneration &&
+          session == DioClient.sessionKey) {
+        setState(() => _loadingHeader = false);
+      }
     }
   }
 
-  /// 排行榜数据加载（严格实时直连服务器获取；失败时降级本地缓存）
-  Future<List<SignEntry>> _loadRankList(String op, {int page = 1, bool forceRefresh = true}) async {
-    final prefs = await SharedPreferences.getInstance();
-    final key = 'sign_rank_${op}_$page';
-    try {
-      final list = await KlpbbsApi.getSignRank(op, page: page, forceRefresh: forceRefresh);
-      if (list.isNotEmpty) {
-        final json = list
-            .map(
-              (e) =>
-                  '${e.name}|${e.totalDays}|${e.monthDays}|${e.rewardText}|${e.timeText}|${e.uid}|${e.usergroup}|${e.totalReward}',
-            )
-            .toList();
-        await prefs.setStringList(key, json);
-
-        // 自愈同步：若当前头部统计人数为 0，且加载的是今日排行，可用今日排行首屏人数做权威保底
-        if ((_headerInfo.todaySignCount == 0 || _headerInfo.todaySignCount < list.length) &&
-            (op == 'today' || op.isEmpty)) {
-          if (mounted) {
-            setState(() {
-              _headerInfo = _headerInfo.copyWith(
-                todaySignCount: list.length > _headerInfo.todaySignCount ? list.length : _headerInfo.todaySignCount,
-              );
-            });
-          }
-        }
-        return list;
+  /// Retain confirmed data per tab/page, never display the previous page's rows
+  /// under a new page number. Failed futures can be retried immediately.
+  Future<List<SignEntry>> _loadRankList(String op,
+      {int page = 1, bool forceRefresh = false}) {
+    if (op == 'calendar') return Future.value(const <SignEntry>[]);
+    final key = '$op:$page';
+    final fetched = _rankFetchedAt[key];
+    if (!forceRefresh &&
+        _rankFutures.containsKey(key) &&
+        (fetched == null ||
+            DateTime.now().difference(fetched) < const Duration(minutes: 1))) {
+      return _rankFutures[key]!;
+    }
+    final session = DioClient.sessionKey, generation = _rankGeneration;
+    late final Future<List<SignEntry>> future;
+    future = KlpbbsApi.getSignRank(op, page: page, forceRefresh: forceRefresh)
+        .then((entries) {
+      if (mounted &&
+          session == DioClient.sessionKey &&
+          generation == _rankGeneration &&
+          identical(_rankFutures[key], future)) {
+        _rankEntries[key] = entries;
+        _rankFetchedAt[key] = DateTime.now();
       }
-    } catch (_) {}
-
-    final cached = prefs.getStringList(key) ?? const [];
-    return [
-      for (final line in cached)
-        if (line.contains('|'))
-          SignEntry(
-            name: line.split('|')[0],
-            totalDays: int.tryParse(line.split('|')[1]) ?? 0,
-            monthDays: int.tryParse(line.split('|')[2]) ?? 0,
-            rewardText: line.split('|')[3],
-            timeText: line.split('|')[4],
-            uid: int.tryParse(line.split('|').length > 5 ? line.split('|')[5] : '0') ?? 0,
-            usergroup: line.split('|').length > 6 ? line.split('|')[6] : '',
-            totalReward: line.split('|').length > 7 ? line.split('|')[7] : '',
-          ),
-    ];
+      return entries;
+    }).catchError((Object error, StackTrace stack) {
+      if (identical(_rankFutures[key], future)) _rankFutures.remove(key);
+      Error.throwWithStackTrace(error, stack);
+    });
+    future.ignore();
+    _rankFutures[key] = future;
+    return future;
   }
 
   /// 加载日历签到记录（以服务端官方日历数据为准）
   Future<void> _loadSignedDays({bool forceRefresh = false}) async {
-    final serverNow = AutoSignService.instance.estimatedServerNow;
-    final y = _calYear > 0 ? _calYear : serverNow.year;
-    final m = _calMonth > 0 ? _calMonth : serverNow.month;
+    final session = DioClient.sessionKey;
+    final generation = ++_calendarGeneration;
+    final now = AutoSignService.instance.estimatedServerNow;
+    final year = _calYear > 0 ? _calYear : now.year;
+    final month = _calMonth > 0 ? _calMonth : now.month;
+    final key = KlpbbsApi.signCalendarKey(year, month);
+    bool current() =>
+        mounted &&
+        session == DioClient.sessionKey &&
+        generation == _calendarGeneration &&
+        year == _calYear &&
+        month == _calMonth;
     try {
-      final serverSignedDays = await KlpbbsApi.getSignedDaysFromServerCalendar(
-        month: m,
-        year: y,
-        forceRefresh: forceRefresh,
-      );
-      if (mounted && y == _calYear && m == _calMonth) {
-        Set<int> daysToDisplay = Set<int>.from(serverSignedDays);
-        if (daysToDisplay.isEmpty) {
-          try {
-            final sp = await SharedPreferences.getInstance();
-            final monthKey = 'sign_dates_$y${m.toString().padLeft(2, '0')}';
-            final localDays = sp.getStringList(monthKey) ?? [];
-            if (localDays.isNotEmpty) {
-              daysToDisplay = localDays.map((d) => int.tryParse(d) ?? 0).where((d) => d > 0).toSet();
-            }
-          } catch (_) {}
-        }
-        if (!mounted || y != _calYear || m != _calMonth) return;
-        setState(() {
-          _signedDays = daysToDisplay;
-          if (y == serverNow.year && m == serverNow.month) {
-            final isSigned = _headerInfo.isSignedToday || AutoSignService.instance.isSignedToday();
-            if (isSigned) {
-              _signedDays.add(serverNow.day);
-              final streak = _headerInfo.continuousDays > 0
-                  ? _headerInfo.continuousDays
-                  : AutoSignService.instance.continuousDays;
-              if (streak > 1) {
-                for (int i = 1; i < streak; i++) {
-                  final streakDay = serverNow.day - i;
-                  if (streakDay >= 1) _signedDays.add(streakDay);
-                }
-              }
-            } else {
-              // 服务端确凿未签，剔除今日
-              _signedDays.remove(serverNow.day);
-            }
-          }
-          _datesLoaded = true;
-        });
-
-        // 自动反哺落库本地持久化，保证离线与快速切换零延迟
-        if (_signedDays.isNotEmpty) {
-          try {
-            final sp = await SharedPreferences.getInstance();
-            final monthKey = 'sign_dates_$y${m.toString().padLeft(2, '0')}';
-            await sp.setStringList(monthKey, _signedDays.map((d) => '$d').toList());
-          } catch (_) {}
-        }
-
-        if (y == serverNow.year && m == serverNow.month && (_headerInfo.isSignedToday || AutoSignService.instance.isSignedToday())) {
-          // 服务端权威确认今日已签，自愈同步 AutoSignService
-          AutoSignService.instance.markSignedToday(
-            rank: _headerInfo.mySignRank,
-            continuousDays: _headerInfo.continuousDays,
-            rewardIron: _headerInfo.rewardIron,
-            notify: AutoSignService.instance.notifyOnResult,
-          );
+      final days = await KlpbbsApi.getSignedDaysFromServerCalendar(
+          month: month, year: year, forceRefresh: forceRefresh);
+      if (!current()) return;
+      final confirmed = Set<int>.from(days);
+      if (year == now.year && month == now.month) {
+        if (_headerInfo.isSignedToday ||
+            AutoSignService.instance.isSignedToday()) {
+          confirmed.add(now.day);
+        } else if (_headerInfo.hasPersonalState) {
+          confirmed.remove(now.day);
         }
       }
+      setState(() {
+        _signedDays = confirmed;
+        _datesLoaded = true;
+      });
+      final prefs = await SharedPreferences.getInstance();
+      if (!current()) return;
+      await prefs.setStringList(
+          key, confirmed.map((day) => day.toString()).toList());
     } catch (_) {
-      if (mounted && y == _calYear && m == _calMonth) {
-        try {
-          final sp = await SharedPreferences.getInstance();
-          final monthKey = 'sign_dates_$y${m.toString().padLeft(2, '0')}';
-          final localDays = sp.getStringList(monthKey) ?? [];
-          final localSet = localDays.map((d) => int.tryParse(d) ?? 0).where((d) => d > 0).toSet();
-          if (y == serverNow.year && m == serverNow.month) {
-            final isSigned = _headerInfo.isSignedToday || AutoSignService.instance.isSignedToday();
-            if (isSigned) {
-              localSet.add(serverNow.day);
-              final streak = _headerInfo.continuousDays > 0
-                  ? _headerInfo.continuousDays
-                  : AutoSignService.instance.continuousDays;
-              if (streak > 1) {
-                for (int i = 1; i < streak; i++) {
-                  final streakDay = serverNow.day - i;
-                  if (streakDay >= 1) localSet.add(streakDay);
-                }
-              }
-            }
-          }
-          if (mounted && y == _calYear && m == _calMonth) {
-            setState(() {
-              _signedDays = localSet;
-              _datesLoaded = true;
-            });
-            return;
-          }
-        } catch (_) {}
-        if (mounted && y == _calYear && m == _calMonth) {
-          setState(() => _datesLoaded = true);
-        }
-      }
+      final prefs = await SharedPreferences.getInstance();
+      if (!current()) return;
+      final days = (prefs.getStringList(key) ?? const <String>[])
+          .map(int.tryParse)
+          .whereType<int>()
+          .where((day) => day > 0 && day <= 31)
+          .toSet();
+      setState(() {
+        _signedDays = days;
+        _datesLoaded = true;
+      });
     }
   }
 
@@ -324,11 +239,14 @@ class _SignRankPageState extends State<SignRankPage>
                 color: scheme.primaryContainer,
                 shape: BoxShape.circle,
               ),
-              child: Icon(Icons.check_circle_rounded, color: scheme.primary, size: 26),
+              child: Icon(Icons.check_circle_rounded,
+                  color: scheme.primary, size: 26),
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Text(message, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+              child: Text(message,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 18)),
             ),
           ],
         ),
@@ -348,13 +266,21 @@ class _SignRankPageState extends State<SignRankPage>
                 children: [
                   Row(
                     children: [
-                      const Icon(Icons.monetization_on_rounded, color: Colors.amber, size: 20),
+                      Icon(Icons.monetization_on_rounded,
+                          color: scheme.primary, size: 20),
                       const SizedBox(width: 10),
-                      Text('基础铁粒奖励', style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13.5)),
+                      Text('基础铁粒奖励',
+                          style: TextStyle(
+                              color: scheme.onSurfaceVariant, fontSize: 13.5)),
                       const Spacer(),
                       Text(
-                        (iron != null && iron.isNotEmpty) ? '+$iron 粒' : '5~15 粒 (随机)',
-                        style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.amber, fontSize: 16),
+                        (iron != null && iron.isNotEmpty)
+                            ? '+$iron 粒'
+                            : '网站未提供',
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: scheme.primary,
+                            fontSize: 16),
                       ),
                     ],
                   ),
@@ -362,11 +288,19 @@ class _SignRankPageState extends State<SignRankPage>
                     const Divider(height: 18),
                     Row(
                       children: [
-                        const Icon(Icons.bolt_rounded, color: Colors.orange, size: 20),
+                        Icon(Icons.bolt_rounded,
+                            color: scheme.primary, size: 20),
                         const SizedBox(width: 10),
-                        Text('前排 EP 经验奖励', style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13.5)),
+                        Text('前排 EP 经验奖励',
+                            style: TextStyle(
+                                color: scheme.onSurfaceVariant,
+                                fontSize: 13.5)),
                         const Spacer(),
-                        Text('+$exp EP', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange, fontSize: 16)),
+                        Text('+$exp EP',
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: scheme.primary,
+                                fontSize: 16)),
                       ],
                     ),
                   ],
@@ -374,11 +308,19 @@ class _SignRankPageState extends State<SignRankPage>
                     const Divider(height: 18),
                     Row(
                       children: [
-                        const Icon(Icons.emoji_events_rounded, color: Colors.blue, size: 20),
+                        Icon(Icons.emoji_events_rounded,
+                            color: scheme.primary, size: 20),
                         const SizedBox(width: 10),
-                        Text('今日签到排名', style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13.5)),
+                        Text('今日签到排名',
+                            style: TextStyle(
+                                color: scheme.onSurfaceVariant,
+                                fontSize: 13.5)),
                         const Spacer(),
-                        Text('第 $rank 名', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue, fontSize: 15)),
+                        Text('第 $rank 名',
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: scheme.primary,
+                                fontSize: 15)),
                       ],
                     ),
                   ],
@@ -386,11 +328,19 @@ class _SignRankPageState extends State<SignRankPage>
                     const Divider(height: 18),
                     Row(
                       children: [
-                        const Icon(Icons.local_fire_department_rounded, color: Colors.deepOrange, size: 20),
+                        Icon(Icons.local_fire_department_rounded,
+                            color: scheme.primary, size: 20),
                         const SizedBox(width: 10),
-                        Text('已连续签到', style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13.5)),
+                        Text('已连续签到',
+                            style: TextStyle(
+                                color: scheme.onSurfaceVariant,
+                                fontSize: 13.5)),
                         const Spacer(),
-                        Text('$days 天', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.deepOrange, fontSize: 15)),
+                        Text('$days 天',
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: scheme.primary,
+                                fontSize: 15)),
                       ],
                     ),
                   ],
@@ -411,235 +361,33 @@ class _SignRankPageState extends State<SignRankPage>
 
   /// 展示官方 Discuz k_misign 签到等级与奖励规则弹窗（真实对齐官网）
   void _showRewardRuleDialog() {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final isDark = theme.brightness == Brightness.dark;
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(
-                color: Colors.amber.withAlpha(30),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(Icons.workspace_premium_rounded, color: Colors.amber.shade700, size: 22),
-            ),
-            const SizedBox(width: 10),
-            const Text('签到规则与等级说明', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
-          ],
-        ),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
+    showDialog<void>(
+        context: context,
+        builder: (dialogContext) => SimpleDialog(
+              title: const Text('签到规则'),
               children: [
-                // 1. 基础奖励说明
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.amber.withAlpha(isDark ? 30 : 20),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.amber.withAlpha(80)),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.monetization_on_rounded, color: Colors.amber, size: 22),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text('基础签到奖励', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
-                            const SizedBox(height: 2),
-                            Text(
-                              '每日签到随机获得 5 ~ 15 粒铁粒',
-                              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 14),
-
-                // 2. 前排签到额外奖励表
-                Row(
-                  children: [
-                    const Icon(Icons.emoji_events_rounded, size: 16, color: Colors.amber),
-                    const SizedBox(width: 6),
-                    Text(
-                      '前排额外 EP 经验奖励',
-                      style: TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.bold,
-                        color: scheme.onSurface,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Container(
-                  decoration: BoxDecoration(
-                    color: isDark ? scheme.surfaceContainerHigh : scheme.surfaceContainerLowest,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: scheme.outlineVariant.withAlpha(60)),
-                  ),
-                  child: Table(
-                    columnWidths: const {
-                      0: FlexColumnWidth(1.2),
-                      1: FlexColumnWidth(1.0),
+                for (final rule in const [
+                  ('签到等级', 'k_misign-misc.html?operation=leval'),
+                  ('签到奖励规则', 'k_misign-misc.html?operation=rewardrule'),
+                ])
+                  SimpleDialogOption(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 24, vertical: 16),
+                    onPressed: () {
+                      Navigator.of(dialogContext).pop();
+                      Navigator.of(context).push(MaterialPageRoute(
+                          builder: (_) =>
+                              FuncListPage(title: rule.$1, path: rule.$2)));
                     },
-                    children: [
-                      TableRow(
-                        decoration: BoxDecoration(
-                          color: scheme.primaryContainer.withAlpha(90),
-                          borderRadius: const BorderRadius.vertical(top: Radius.circular(9)),
-                        ),
-                        children: const [
-                          Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                            child: Text('签到名次', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                          ),
-                          Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                            child: Text('额外奖励', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                          ),
-                        ],
-                      ),
-                      for (final (rankRange, reward) in _topRankRewards)
-                        TableRow(
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              child: Text(rankRange, style: TextStyle(fontSize: 12, color: scheme.onSurface)),
-                            ),
-                            Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              child: Text(reward, style: const TextStyle(fontSize: 12, color: Colors.orange, fontWeight: FontWeight.w600)),
-                            ),
-                          ],
-                        ),
-                    ],
+                    child: Row(children: [
+                      const Icon(Icons.info_outline),
+                      const SizedBox(width: 12),
+                      Expanded(child: Text(rule.$1)),
+                      const Icon(Icons.chevron_right),
+                    ]),
                   ),
-                ),
-                const SizedBox(height: 14),
-
-                // 3. 签到等级表
-                Row(
-                  children: [
-                    Icon(Icons.military_tech_rounded, size: 16, color: scheme.primary),
-                    const SizedBox(width: 6),
-                    Text(
-                      '签到等级称号门槛',
-                      style: TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.bold,
-                        color: scheme.onSurface,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Container(
-                  decoration: BoxDecoration(
-                    color: isDark ? scheme.surfaceContainerHigh : scheme.surfaceContainerLowest,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: scheme.outlineVariant.withAlpha(60)),
-                  ),
-                  child: Table(
-                    columnWidths: const {
-                      0: FlexColumnWidth(1.2),
-                      1: FlexColumnWidth(1.0),
-                    },
-                    children: [
-                      TableRow(
-                        decoration: BoxDecoration(
-                          color: scheme.primaryContainer.withAlpha(90),
-                          borderRadius: const BorderRadius.vertical(top: Radius.circular(9)),
-                        ),
-                        children: const [
-                          Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                            child: Text('等级称号', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                          ),
-                          Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                            child: Text('累计/连续天数', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                          ),
-                        ],
-                      ),
-                      for (final (level, _, daysText) in _officialLevels)
-                        TableRow(
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              child: Text(level, style: TextStyle(fontSize: 12, color: scheme.onSurface, fontWeight: FontWeight.w500)),
-                            ),
-                            Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              child: Text(daysText, style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
-                            ),
-                          ],
-                        ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 12),
-
-                // 4. 道具扩展说明
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: scheme.surfaceContainerHighest.withAlpha(80),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.card_giftcard_rounded, size: 18, color: scheme.primary),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          '道具说明：若因忘记签到导致连续签到中断，可在道具商城使用【补签卡】进行补签。',
-                          style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
               ],
-            ),
-          ),
-        ),
-        actions: [
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('我知道了'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 记录签到日期
-  Future<void> _recordSignDay() async {
-    final prefs = await SharedPreferences.getInstance();
-    final now = AutoSignService.instance.estimatedServerNow;
-    final todayStr = AutoSignService.instance.serverTodayStr;
-    final key = 'sign_dates_${now.year}${now.month.toString().padLeft(2, '0')}';
-    final list = prefs.getStringList(key) ?? [];
-    list.add('${now.day}');
-    await prefs.setStringList(key, list.toSet().toList());
-    await prefs.setString('auto_sign_last_success_date', todayStr);
+            ));
   }
 
   bool? _lastAutoSignState;
@@ -653,13 +401,42 @@ class _SignRankPageState extends State<SignRankPage>
     final now = AutoSignService.instance.estimatedServerNow;
     _calYear = now.year;
     _calMonth = now.month;
-    _tabController = TabController(length: _tabs.length, vsync: this)
+    final initial =
+        _tabs.indexWhere((tab) => tab.$1 == widget.initialOperation);
+    _currentTabIndex = initial < 0 ? 0 : initial;
+    _op = _tabs[_currentTabIndex].$1;
+    _tabController = TabController(
+        length: _tabs.length, initialIndex: _currentTabIndex, vsync: this)
       ..addListener(_onTabControllerTick);
-    _future = _loadRankList(_op, page: _page, forceRefresh: true);
-    _loadHeaderRealtime(forceRefresh: true);
+    _future = _loadRankList(_op, page: _page);
+    _headerInfo = KlpbbsApi.cachedSignHeaderInfo ?? const SignHeaderInfo();
+    _loadHeaderRealtime(forceRefresh: false);
     _loadSignedDays();
     _lastAutoSignState = AutoSignService.instance.isSignedToday();
     AutoSignService.instance.addListener(_onAutoSignChanged);
+    DioClient.sessionChanges.addListener(_onAccountChanged);
+  }
+
+  void _onAccountChanged() {
+    if (!mounted) return;
+    ++_headerGeneration;
+    ++_calendarGeneration;
+    setState(() {
+      _headerInfo = const SignHeaderInfo();
+      _myUid = null;
+      _myUsername = null;
+      _signedDays.clear();
+      _datesLoaded = false;
+      _isSigning = false;
+      _lastAutoSignState = null;
+      _page = 1;
+      _rankFutures.clear();
+      _rankEntries.clear();
+      _rankFetchedAt.clear();
+      _rankGeneration++;
+      _tabPages.clear();
+    });
+    _reload(forceRefresh: true);
   }
 
   void _onMainTabChanged() {
@@ -681,6 +458,7 @@ class _SignRankPageState extends State<SignRankPage>
     WidgetsBinding.instance.removeObserver(this);
     mainTabIndex.removeListener(_onMainTabChanged);
     AutoSignService.instance.removeListener(_onAutoSignChanged);
+    DioClient.sessionChanges.removeListener(_onAccountChanged);
     _tabController.removeListener(_onTabControllerTick);
     _tabController.dispose();
     super.dispose();
@@ -710,13 +488,15 @@ class _SignRankPageState extends State<SignRankPage>
       return;
     }
     _lastAutoSignState = isSigned;
-    final isCurrentMonth = _calYear == 0 || (_calYear == serverNow.year && _calMonth == serverNow.month);
+    final isCurrentMonth = _calYear == 0 ||
+        (_calYear == serverNow.year && _calMonth == serverNow.month);
     setState(() {
       if (!isSigned) {
         // 零点跨天或状态重置，立即翻转头部状态与排名，防止按钮锁死在已签到
         _headerInfo = _headerInfo.copyWith(
           isSignedToday: false,
           mySignRank: null,
+          clearMySignRank: true,
         );
         if (isCurrentMonth) {
           _signedDays.remove(serverNow.day);
@@ -742,29 +522,42 @@ class _SignRankPageState extends State<SignRankPage>
 
   void _switchTab(int index) {
     if (index < 0 || index >= _tabs.length) return;
+    if (index == _currentTabIndex) return;
+    _tabPages[_op] = _page;
     final op = _tabs[index].$1;
     setState(() {
       _currentTabIndex = index;
       _op = op;
-      _page = 1;
+      final remembered = _tabPages[op] ?? 1;
+      _page = op == 'calendar'
+          ? 1
+          : remembered.clamp(1, _totalRankPages(op) ?? remembered);
       if (_tabController.index != index) {
         _tabController.animateTo(index);
       }
       if (op != 'calendar') {
-        _future = _loadRankList(op, page: 1, forceRefresh: true);
+        _future = _loadRankList(op, page: _page);
       } else {
-        _loadSignedDays(forceRefresh: true);
+        if (!_datesLoaded) _loadSignedDays();
       }
     });
   }
 
   void _goPage(int page) {
-    if (page < 1) return;
+    if (page < 1 || _op == 'calendar') return;
+    final target = page.clamp(1, _totalRankPages(_op) ?? page);
     setState(() {
-      _page = page;
-      _future = _loadRankList(_op, page: page, forceRefresh: true);
+      _page = target;
+      _tabPages[_op] = target;
+      _future = _loadRankList(_op, page: target);
     });
   }
+
+  int? _totalRankPages(String op) =>
+      KlpbbsApi.signRankTotalPages(op) ??
+      (op == 'today' && _headerInfo.hasTodaySignCount
+          ? DiscuzSignPagination.pagesForCount(_headerInfo.todaySignCount)
+          : null);
 
   void _reload({bool forceRefresh = true}) {
     setState(() {
@@ -776,87 +569,69 @@ class _SignRankPageState extends State<SignRankPage>
     _loadSignedDays(forceRefresh: forceRefresh);
   }
 
-  bool get _isSignedToday => _headerInfo.isSignedToday;
-
-  int get _streakDays => _headerInfo.continuousDays > 0 ? _headerInfo.continuousDays : 0;
+  bool get _isSignedToday =>
+      _headerInfo.isSignedToday ||
+      AutoSignService.instance.isSignedToday() ||
+      (_calYear == AutoSignService.instance.estimatedServerNow.year &&
+          _calMonth == AutoSignService.instance.estimatedServerNow.month &&
+          _signedDays
+              .contains(AutoSignService.instance.estimatedServerNow.day));
 
   Future<void> _signIn() async {
     if (_isSigning || _isSignedToday) return;
+    final session = DioClient.sessionKey;
     final confirmed = await confirmWrite(context, '签到');
-    if (!confirmed) return;
-    if (!mounted) return;
+    if (!confirmed || !mounted || session != DioClient.sessionKey) return;
     setState(() => _isSigning = true);
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final res = await KlpbbsApi.signIn();
-      final isAlready = res.message.contains('已签到') ||
-          res.message.contains('签过到') ||
-          res.message.contains('今日已签') ||
-          res.message.contains('无需重复签到') ||
-          res.message.contains('k_misign:tdyq') ||
-          res.message.contains('k_misign:signed') ||
-          res.message.contains('已打卡');
-      bool isReallySigned = res.success || (res.rank != null && res.rank! > 0) || isAlready;
-      if (!isReallySigned) {
-        // 二次通过服务端权威页面状态核查
-        final header = await KlpbbsApi.getSignHeaderInfo(forceRefresh: true);
-        if (header.isSignedToday) isReallySigned = true;
+      final result = await KlpbbsApi.signIn();
+      if (!mounted || session != DioClient.sessionKey) return;
+      if (!result.confirmed) {
+        messenger.showSnackBar(SnackBar(content: Text(result.message)));
+        return;
       }
-      if (isReallySigned) {
-        await _recordSignDay();
-        await AutoSignService.instance.markSignedToday(
-          rank: res.rank ?? _headerInfo.mySignRank,
-          continuousDays: res.continuousDays ?? _headerInfo.continuousDays,
-          rewardIron: res.rewardIron ?? (_headerInfo.rewardIron.isNotEmpty ? _headerInfo.rewardIron : null),
-          rewardExp: res.rewardExp,
-          notify: true,
-        );
-        final serverNow = AutoSignService.instance.estimatedServerNow;
-        if (mounted) {
-          setState(() {
-            if ((_calYear == 0 || _calYear == serverNow.year) &&
-                (_calMonth == 0 || _calMonth == serverNow.month)) {
-              _signedDays.add(serverNow.day);
-            }
-            _headerInfo = _headerInfo.copyWith(
-              todaySignCount: _headerInfo.todaySignCount > 0 ? _headerInfo.todaySignCount + 1 : 1,
-              mySignRank: res.rank ?? _headerInfo.mySignRank,
-              isSignedToday: true,
-              continuousDays: res.continuousDays ?? (_headerInfo.continuousDays > 0 ? _headerInfo.continuousDays + 1 : 1),
-              rewardIron: res.rewardIron ?? _headerInfo.rewardIron,
-              totalDays: _headerInfo.totalDays > 0 ? _headerInfo.totalDays + 1 : 1,
-            );
-          });
+      await AutoSignService.instance.markSignedToday(
+          rank: result.rank,
+          continuousDays: result.continuousDays,
+          rewardIron: result.rewardIron,
+          rewardExp: result.rewardExp,
+          notify: result.success,
+          expectedSession: session);
+      if (!mounted || session != DioClient.sessionKey) return;
+      final now = AutoSignService.instance.estimatedServerNow;
+      setState(() {
+        if (_calYear == now.year && _calMonth == now.month) {
+          _signedDays.add(now.day);
         }
-        // 清空所有本地预加载缓存，确保立即与网页端 100% 实时同步
-        final prefs = await SharedPreferences.getInstance();
-        for (final t in _tabs) {
-          for (var p = 1; p <= 5; p++) {
-            await prefs.remove('sign_rank_${t.$1}_$p');
-          }
-        }
-        _showSignSuccessDialog(
-          message: isAlready
-              ? '今日已签到'
-              : res.message,
-          iron: (res.rewardIron != null && res.rewardIron!.isNotEmpty)
-              ? res.rewardIron
-              : (_headerInfo.rewardIron.isNotEmpty ? _headerInfo.rewardIron : null),
-          exp: res.rewardExp,
-          rank: res.rank ?? _headerInfo.mySignRank,
-          days: res.continuousDays ?? _headerInfo.continuousDays,
+        _headerInfo = _headerInfo.copyWith(
+          hasPersonalState: true,
+          hasContinuousDays:
+              result.continuousDays != null || _headerInfo.hasContinuousDays,
+          isSignedToday: true,
+          mySignRank: result.rank,
+          clearMySignRank: result.rank == null,
+          continuousDays: result.continuousDays,
+          rewardIron: result.rewardIron,
         );
-        _reload(forceRefresh: true);
-      } else {
-        messenger.showSnackBar(SnackBar(content: Text(res.message)));
+      });
+      _showSignSuccessDialog(
+          message: result.message,
+          iron: result.rewardIron,
+          exp: result.rewardExp,
+          rank: result.rank,
+          days: result.continuousDays);
+      _reload(forceRefresh: true);
+    } catch (error) {
+      if (mounted && session == DioClient.sessionKey) {
+        messenger.showSnackBar(SnackBar(content: Text('签到异常：$error')));
       }
-    } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('签到异常：$e')));
     } finally {
-      if (mounted) setState(() => _isSigning = false);
+      if (mounted && session == DioClient.sessionKey) {
+        setState(() => _isSigning = false);
+      }
     }
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -869,12 +644,15 @@ class _SignRankPageState extends State<SignRankPage>
       appBar: AppBar(
         automaticallyImplyLeading: !isDesktop,
         leading: (isDesktop && !canPop) ? null : const GlobalNavLeading(),
-        leadingWidth: (isDesktop && !canPop) ? null : GlobalNavLeading.preferredLeadingWidth(context),
-        title: const Text('每日签到', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        leadingWidth: (isDesktop && !canPop)
+            ? null
+            : GlobalNavLeading.preferredLeadingWidth(context),
+        title: const Text('每日签到',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
         bottom: _loadingHeader
             ? const PreferredSize(
                 preferredSize: Size.fromHeight(2),
-                child: LinearProgressIndicator(minHeight: 2),
+                child: AppLoadingBar(minHeight: 2),
               )
             : null,
         actions: [
@@ -919,10 +697,16 @@ class _SignRankPageState extends State<SignRankPage>
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 1000),
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    TodaySignStar(
+                        info: _headerInfo,
+                        loading: _loadingHeader,
+                        onRetry: () => _loadHeaderRealtime(forceRefresh: true)),
+                    const SizedBox(height: 12),
                     // 1. 顶部 Hero 聚合个人卡片
                     _buildModernHeroCard(),
                     const SizedBox(height: 16),
@@ -952,240 +736,336 @@ class _SignRankPageState extends State<SignRankPage>
     final isDark = theme.brightness == Brightness.dark;
     final isSigned = _isSignedToday;
 
-    final continuous = _headerInfo.continuousDays > 0 ? _headerInfo.continuousDays : _streakDays;
-    final total = _headerInfo.totalDays > 0 ? _headerInfo.totalDays : _signedDays.length;
+    final continuous = _headerInfo.hasContinuousDays
+        ? _headerInfo.continuousDays.toString()
+        : '—';
+    final total =
+        _headerInfo.hasTotalDays ? _headerInfo.totalDays.toString() : '—';
 
+    final accountName = _headerInfo.username.isNotEmpty
+        ? _headerInfo.username
+        : (_myUsername != null && _myUsername!.isNotEmpty
+            ? _myUsername!
+            : (DioClient.isLoggedIn ? '我的账号' : '未登录'));
+    final signButton = FilledButton.icon(
+      key: const ValueKey('sign-hero-button'),
+      onPressed: (_isSigning || _loadingHeader)
+          ? null
+          : (isSigned
+              ? () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        _headerInfo.mySignRank != null &&
+                                _headerInfo.mySignRank! > 0
+                            ? '今日已签到！您的签到排名为第 ${_headerInfo.mySignRank} 名'
+                            : '今日已完成签到，无需重复签到',
+                      ),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                }
+              : _signIn),
+      style: FilledButton.styleFrom(
+        minimumSize: const Size(0, 48),
+        backgroundColor: isSigned ? scheme.secondaryContainer : scheme.primary,
+        foregroundColor:
+            isSigned ? scheme.onSecondaryContainer : scheme.onPrimary,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      ),
+      icon: _isSigning
+          ? SizedBox(
+              width: 18,
+              height: 18,
+              child: AppLoadingIndicator(
+                strokeWidth: 2,
+                valueColor: AlwaysStoppedAnimation<Color>(scheme.onPrimary),
+              ),
+            )
+          : Icon(
+              isSigned ? Icons.check_circle_rounded : Icons.touch_app_rounded,
+              size: 18),
+      label: Text(
+        _isSigning ? '签到中...' : (isSigned ? '今日已签' : '立即签到'),
+        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+      ),
+    );
+
+    Widget buildAccountArea() => Row(
+          key: const ValueKey('sign-hero-account-area'),
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            UserAvatarWidget(
+              uid: _headerInfo.uid ?? _myUid,
+              author: accountName,
+              size: 46,
+              reserveFrameSpace: true,
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(accountName,
+                          key: const ValueKey('sign-hero-account-name'),
+                          softWrap: true,
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.bold)),
+                      if (_headerInfo.signLevel.isNotEmpty)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: scheme.primaryContainer,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(_headerInfo.signLevel,
+                              softWrap: true,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: scheme.onPrimaryContainer,
+                              )),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    isSigned &&
+                            _headerInfo.mySignRank != null &&
+                            _headerInfo.mySignRank! > 0
+                        ? '今日签到排名：第 ${_headerInfo.mySignRank} 名'
+                        : (isSigned ? '今日已完成签到' : '今日尚未签到，签到领铁粒与经验'),
+                    key: const ValueKey('sign-hero-state'),
+                    softWrap: true,
+                    style: TextStyle(
+                        fontSize: 12.5, color: scheme.onSurfaceVariant),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(18),
         side: BorderSide(color: scheme.outlineVariant.withAlpha(80)),
       ),
-      color: isDark ? scheme.surfaceContainerHigh : scheme.surfaceContainerLowest,
+      color:
+          isDark ? scheme.surfaceContainerHigh : scheme.surfaceContainerLowest,
       child: Padding(
         padding: const EdgeInsets.all(18),
         child: Column(
           children: [
-            // 顶部：用户信息 + 签到按钮
-            Row(
-              children: [
-                UserAvatarWidget(
-                  uid: _headerInfo.uid ?? _myUid,
-                  author: _headerInfo.username.isNotEmpty
-                      ? _headerInfo.username
-                      : (_myUsername != null && _myUsername!.isNotEmpty
-                          ? _myUsername!
-                          : '我的账号'),
-                  size: 46,
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+            // Preserve readable account width before placing a trailing action.
+            LayoutBuilder(
+              key: const ValueKey('sign-hero-header'),
+              builder: (context, constraints) {
+                final textScale =
+                    MediaQuery.textScalerOf(context).scale(16) / 16;
+                final stacked =
+                    constraints.maxWidth < 480 * textScale.clamp(1.0, 2.0);
+                if (stacked) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Row(
-                        children: [
-                          Flexible(
-                            child: Text(
-                              _headerInfo.username.isNotEmpty
-                                  ? _headerInfo.username
-                                  : (_myUsername != null && _myUsername!.isNotEmpty
-                                      ? _myUsername!
-                                      : '苦力怕论坛坛友'),
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: scheme.primaryContainer,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              _headerInfo.signLevel.isNotEmpty ? _headerInfo.signLevel : 'Lv.1',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                                color: scheme.onPrimaryContainer,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        isSigned && _headerInfo.mySignRank != null && _headerInfo.mySignRank! > 0
-                            ? '今日签到排名：第 ${_headerInfo.mySignRank} 名'
-                            : (isSigned ? '今日已完成签到' : '今日尚未签到，签到领铁粒与经验'),
-                        style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
-                      ),
+                      buildAccountArea(),
+                      const SizedBox(height: 14),
+                      signButton,
                     ],
-                  ),
-                ),
-                const SizedBox(width: 10),
-                // 签到大按钮
-                FilledButton.icon(
-                  onPressed: (_isSigning || _loadingHeader)
-                      ? null
-                      : (isSigned
-                          ? () {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    _headerInfo.mySignRank != null && _headerInfo.mySignRank! > 0
-                                        ? '🎉 今日已签到！您的签到排名为第 ${_headerInfo.mySignRank} 名'
-                                        : '🎉 今日已完成签到，无需重复签到',
-                                  ),
-                                  behavior: SnackBarBehavior.floating,
-                                ),
-                              );
-                            }
-                          : _signIn),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: isSigned ? scheme.secondaryContainer : scheme.primary,
-                    foregroundColor: isSigned ? scheme.onSecondaryContainer : scheme.onPrimary,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                  ),
-                  icon: _isSigning
-                      ? SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(scheme.onPrimary),
-                          ),
-                        )
-                      : Icon(isSigned ? Icons.check_circle_rounded : Icons.touch_app_rounded, size: 18),
-                  label: Text(
-                    _isSigning ? '签到中...' : (isSigned ? '今日已签' : '立即签到'),
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                  ),
-                ),
-              ],
+                  );
+                }
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Expanded(child: buildAccountArea()),
+                    const SizedBox(width: 16),
+                    signButton,
+                  ],
+                );
+              },
             ),
             const SizedBox(height: 16),
 
-            // 中间：4项核心数据现代化卡片
-            Row(
-              children: [
-                Expanded(
-                  child: _buildModernStatItem(
-                    icon: Icons.local_fire_department_rounded,
-                    iconColor: Colors.deepOrange,
-                    label: '连续签到',
-                    value: '$continuous',
-                    unit: '天',
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _buildModernStatItem(
-                    icon: Icons.military_tech_rounded,
-                    iconColor: Colors.blue,
-                    label: '签到等级',
-                    value: _headerInfo.signLevel.isNotEmpty ? _headerInfo.signLevel : 'Lv.1',
-                    unit: '',
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _buildModernStatItem(
-                    icon: Icons.monetization_on_rounded,
-                    iconColor: Colors.amber.shade700,
-                    label: '基础奖励',
-                    value: '5~15',
-                    unit: '粒',
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _buildModernStatItem(
-                    icon: Icons.event_available_rounded,
-                    iconColor: Colors.teal,
-                    label: '累计签到',
-                    value: '$total',
-                    unit: '天',
-                  ),
-                ),
-              ],
+            // Natural height and full text; narrow or large-text layouts use two columns.
+            LayoutBuilder(
+              key: const ValueKey('sign-hero-stats'),
+              builder: (context, constraints) {
+                final textScale =
+                    MediaQuery.textScalerOf(context).scale(16) / 16;
+                final columns = constraints.maxWidth < 220
+                    ? 1
+                    : (constraints.maxWidth >= 520 * textScale.clamp(1.0, 2.0)
+                        ? 4
+                        : 2);
+                final items = [
+                  _buildModernStatItem(
+                      key: const ValueKey('sign-hero-stat-continuous'),
+                      icon: Icons.local_fire_department_rounded,
+                      label: '连续签到',
+                      value: continuous,
+                      unit: '天'),
+                  _buildModernStatItem(
+                      key: const ValueKey('sign-hero-stat-level'),
+                      icon: Icons.military_tech_rounded,
+                      label: '签到等级',
+                      value: _headerInfo.signLevel.isNotEmpty
+                          ? _headerInfo.signLevel
+                          : '—',
+                      unit: ''),
+                  _buildModernStatItem(
+                      key: const ValueKey('sign-hero-stat-reward'),
+                      icon: Icons.monetization_on_rounded,
+                      label: '今日奖励',
+                      value: _headerInfo.rewardIron.isNotEmpty
+                          ? _headerInfo.rewardIron
+                          : '—',
+                      unit: '粒'),
+                  _buildModernStatItem(
+                      key: const ValueKey('sign-hero-stat-total'),
+                      icon: Icons.event_available_rounded,
+                      label: '累计签到',
+                      value: total,
+                      unit: '天'),
+                ];
+                return Column(children: [
+                  for (var row = 0; row < items.length ~/ columns; row++) ...[
+                    if (row > 0) const SizedBox(height: 10),
+                    IntrinsicHeight(
+                      child: Row(
+                        key: ValueKey('sign-hero-stat-row-$row'),
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (var column = 0; column < columns; column++) ...[
+                            if (column > 0) const SizedBox(width: 10),
+                            Expanded(child: items[row * columns + column]),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ]);
+              },
             ),
             const SizedBox(height: 14),
 
             // 底部：全站今日之星与规则入口
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: scheme.surfaceContainerHighest.withAlpha(70),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.people_alt_rounded, size: 15, color: Colors.blueAccent),
-                  const SizedBox(width: 5),
-                  Text('今日已签 ', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
-                  Text(
-                    '${_headerInfo.todaySignCount > 0 ? _headerInfo.todaySignCount : (_headerInfo.mySignRank != null && _headerInfo.mySignRank! > 0 ? _headerInfo.mySignRank! : "--")} 人',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: scheme.primary),
-                  ),
-                  if (_headerInfo.starUsername.isNotEmpty) ...[
-                    const SizedBox(width: 8),
-                    Text('·', style: TextStyle(color: scheme.outline)),
-                    const SizedBox(width: 8),
-                    const Icon(Icons.star_rounded, size: 15, color: Colors.amber),
-                    const SizedBox(width: 4),
-                    InkWell(
-                      onTap: () {
-                        if (_headerInfo.starUid != null && _headerInfo.starUid! > 0) {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(builder: (_) => UserSpacePage(uid: _headerInfo.starUid!)),
-                          );
-                        }
-                      },
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text('今日之星: ', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
-                          Text(
-                            _headerInfo.starUsername,
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                              color: scheme.primary,
-                            ),
-                          ),
-                        ],
-                      ),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final isCompact = constraints.maxWidth < 520;
+                if (isCompact) {
+                  return Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerHighest.withAlpha(70),
+                      borderRadius: BorderRadius.circular(10),
                     ),
-                  ],
-                  const Spacer(),
-                  if (_headerInfo.highestCount > 0) ...[
-                    Text(
-                      '历史最高: ${_headerInfo.highestCount}人',
-                      style: TextStyle(fontSize: 11.5, color: scheme.outline),
-                    ),
-                    const SizedBox(width: 8),
-                    Text('·', style: TextStyle(color: scheme.outline)),
-                    const SizedBox(width: 8),
-                  ],
-                  InkWell(
-                    onTap: _showRewardRuleDialog,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(Icons.help_outline_rounded, size: 14, color: scheme.primary),
-                        const SizedBox(width: 4),
-                        Text(
-                          '奖励规则',
-                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: scheme.primary),
+                        Row(
+                          children: [
+                            Icon(Icons.people_alt_rounded,
+                                size: 15, color: scheme.primary),
+                            const SizedBox(width: 5),
+                            Expanded(
+                              child: Text.rich(TextSpan(
+                                text: '今日已签 ',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: scheme.onSurfaceVariant),
+                                children: [
+                                  TextSpan(
+                                    text: _headerInfo.hasTodaySignCount
+                                        ? '${_headerInfo.todaySignCount} 人'
+                                        : '—',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: scheme.primary),
+                                  )
+                                ],
+                              )),
+                            ),
+                          ],
+                        ),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton.icon(
+                            onPressed: _showRewardRuleDialog,
+                            icon: const Icon(Icons.help_outline_rounded,
+                                size: 18),
+                            label: const Text('奖励规则'),
+                          ),
                         ),
                       ],
                     ),
+                  );
+                }
+                return Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerHighest.withAlpha(70),
+                    borderRadius: BorderRadius.circular(10),
                   ),
-                ],
-              ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.people_alt_rounded,
+                          size: 15, color: scheme.primary),
+                      const SizedBox(width: 5),
+                      Text('今日已签 ',
+                          style: TextStyle(
+                              fontSize: 12, color: scheme.onSurfaceVariant)),
+                      Text(
+                        _headerInfo.hasTodaySignCount
+                            ? '${_headerInfo.todaySignCount} 人'
+                            : '—',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: scheme.primary),
+                      ),
+                      const Spacer(),
+                      if (_headerInfo.highestCount > 0) ...[
+                        Text(
+                          '历史最高: ${_headerInfo.highestCount}人',
+                          style:
+                              TextStyle(fontSize: 11.5, color: scheme.outline),
+                        ),
+                        const SizedBox(width: 8),
+                        Text('·', style: TextStyle(color: scheme.outline)),
+                        const SizedBox(width: 8),
+                      ],
+                      InkWell(
+                        onTap: _showRewardRuleDialog,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.help_outline_rounded,
+                                size: 14, color: scheme.primary),
+                            const SizedBox(width: 4),
+                            Text(
+                              '奖励规则',
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: scheme.primary),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
             ),
           ],
         ),
@@ -1194,8 +1074,9 @@ class _SignRankPageState extends State<SignRankPage>
   }
 
   Widget _buildModernStatItem({
+    Key? key,
     required IconData icon,
-    required Color iconColor,
+    Color? iconColor,
     required String label,
     required String value,
     required String unit,
@@ -1203,42 +1084,45 @@ class _SignRankPageState extends State<SignRankPage>
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final isDark = theme.brightness == Brightness.dark;
+    final effectiveColor = iconColor ?? scheme.primary;
 
     return Container(
+      key: key,
       padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
       decoration: BoxDecoration(
-        color: isDark ? scheme.surfaceContainerHighest.withAlpha(80) : scheme.surfaceContainerLow,
+        color: isDark
+            ? scheme.surfaceContainerHighest.withAlpha(80)
+            : scheme.surfaceContainerLow,
         borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.outlineVariant.withAlpha(40)),
       ),
       child: Column(
         children: [
-          Icon(icon, size: 18, color: iconColor),
+          Icon(icon, size: 18, color: effectiveColor),
           const SizedBox(height: 4),
           Text(
             label,
+            textAlign: TextAlign.center,
+            softWrap: true,
             style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
           ),
           const SizedBox(height: 2),
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.baseline,
-              textBaseline: TextBaseline.alphabetic,
+          Text.rich(
+            TextSpan(
+              text: value,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
               children: [
-                Text(
-                  value,
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                ),
-                if (unit.isNotEmpty) ...[
-                  const SizedBox(width: 1),
-                  Text(
-                    unit,
-                    style: TextStyle(fontSize: 10, color: scheme.onSurfaceVariant),
-                  ),
-                ],
+                if (unit.isNotEmpty)
+                  TextSpan(
+                      text: unit,
+                      style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.normal,
+                          color: scheme.onSurfaceVariant)),
               ],
             ),
+            textAlign: TextAlign.center,
+            softWrap: true,
           ),
         ],
       ),
@@ -1263,19 +1147,28 @@ class _SignRankPageState extends State<SignRankPage>
                 avatar: Icon(
                   _tabs[i].$3,
                   size: 16,
-                  color: _currentTabIndex == i ? scheme.onPrimary : scheme.onSurfaceVariant,
+                  color: _currentTabIndex == i
+                      ? scheme.onPrimary
+                      : scheme.onSurfaceVariant,
                 ),
                 label: Text(_tabs[i].$2),
                 labelStyle: TextStyle(
-                  fontWeight: _currentTabIndex == i ? FontWeight.bold : FontWeight.normal,
+                  fontWeight: _currentTabIndex == i
+                      ? FontWeight.bold
+                      : FontWeight.normal,
                   fontSize: 13,
-                  color: _currentTabIndex == i ? scheme.onPrimary : scheme.onSurfaceVariant,
+                  color: _currentTabIndex == i
+                      ? scheme.onPrimary
+                      : scheme.onSurfaceVariant,
                 ),
                 selected: _currentTabIndex == i,
                 selectedColor: scheme.primary,
-                backgroundColor: isDark ? scheme.surfaceContainerHigh : scheme.surfaceContainerLow,
+                backgroundColor: isDark
+                    ? scheme.surfaceContainerHigh
+                    : scheme.surfaceContainerLow,
                 side: BorderSide.none,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
                 onSelected: (selected) {
                   if (selected) {
                     _switchTab(i);
@@ -1298,14 +1191,46 @@ class _SignRankPageState extends State<SignRankPage>
     return FutureBuilder<List<SignEntry>>(
       future: _future,
       builder: (context, snap) {
-        if (snap.connectionState != ConnectionState.done) {
-          return const Padding(
+        final pending = snap.connectionState != ConnectionState.done;
+        final entries = pending || snap.hasError
+            ? _rankEntries['$_op:$_page'] ?? const <SignEntry>[]
+            : snap.data ?? const <SignEntry>[];
+        final pagination = KlpbbsApi.signRankPagination(_op, _page);
+        Widget withControls(Widget child) => Column(children: [
+              child,
+              PaginationControl(
+                key: const ValueKey('sign-rank-pagination'),
+                page: _page,
+                totalPages: _totalRankPages(_op),
+                hasMore: !pending &&
+                    !snap.hasError &&
+                    (pagination?.nextPage != null || entries.length >= 10),
+                onPageChanged: _goPage,
+              ),
+              if (entries.isEmpty && _page > 1)
+                TextButton.icon(
+                    onPressed: () => _goPage(1),
+                    icon: const Icon(Icons.first_page_rounded),
+                    label: const Text('返回第一页')),
+            ]);
+        if (pending && entries.isEmpty) {
+          return withControls(const Padding(
             padding: EdgeInsets.all(50),
-            child: Center(child: CircularProgressIndicator()),
-          );
+            child: Center(child: AppLoadingIndicator()),
+          ));
         }
-        if (snap.hasError) {
-          return Padding(
+        if (snap.hasError && entries.isEmpty) {
+          final outage = ServerOutageInfo.tryParse(snap.error);
+          if (outage != null) {
+            return withControls(Padding(
+              padding: const EdgeInsets.all(24),
+              child: ServerOutageView(
+                outage: outage,
+                onRetry: () => _reload(forceRefresh: true),
+              ),
+            ));
+          }
+          return withControls(Padding(
             padding: const EdgeInsets.all(30),
             child: Center(
               child: Column(
@@ -1319,26 +1244,37 @@ class _SignRankPageState extends State<SignRankPage>
                 ],
               ),
             ),
-          );
+          ));
         }
-        final entries = snap.data ?? [];
         if (entries.isEmpty) {
-          return const EmptyView(
+          return withControls(const EmptyView(
             icon: Icons.leaderboard_outlined,
             title: '暂无更多排行数据',
-            subtitle: '下拉即可刷新或稍后重试',
-          );
+            subtitle: '可返回上一页，或下拉刷新',
+          ));
         }
 
-        return Card(
+        return withControls(Card(
           elevation: 0,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
             side: BorderSide(color: scheme.outlineVariant.withAlpha(60)),
           ),
-          color: isDark ? scheme.surfaceContainerHigh : scheme.surfaceContainerLowest,
+          color: isDark
+              ? scheme.surfaceContainerHigh
+              : scheme.surfaceContainerLowest,
           child: Column(
             children: [
+              if (pending) const LinearProgressIndicator(minHeight: 2),
+              if (snap.hasError)
+                Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+                    child: Row(children: [
+                      const Expanded(child: Text('刷新失败，保留上次加载的排行')),
+                      TextButton(
+                          onPressed: () => _reload(forceRefresh: true),
+                          child: const Text('重试')),
+                    ])),
               ListView.separated(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
@@ -1357,15 +1293,21 @@ class _SignRankPageState extends State<SignRankPage>
                     onTap: () {
                       if (e.uid > 0) {
                         Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => UserSpacePage(uid: e.uid)),
+                          MaterialPageRoute(
+                              builder: (_) => UserSpacePage(uid: e.uid)),
                         );
                       }
                     },
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 10),
                       child: Row(
                         children: [
-                          UserAvatarWidget(uid: e.uid, author: e.name, size: 40),
+                          UserAvatarWidget(
+                              uid: e.uid,
+                              author: e.name,
+                              size: 40,
+                              reserveFrameSpace: true),
                           const SizedBox(width: 12),
                           Expanded(
                             child: Column(
@@ -1377,16 +1319,20 @@ class _SignRankPageState extends State<SignRankPage>
                                       child: Text(
                                         e.name,
                                         overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                        style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14),
                                       ),
                                     ),
                                     if (e.displayLevel.isNotEmpty) ...[
                                       const SizedBox(width: 6),
                                       Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 6, vertical: 1.5),
                                         decoration: BoxDecoration(
                                           color: scheme.primary.withAlpha(20),
-                                          borderRadius: BorderRadius.circular(6),
+                                          borderRadius:
+                                              BorderRadius.circular(6),
                                         ),
                                         child: Text(
                                           e.displayLevel,
@@ -1404,10 +1350,19 @@ class _SignRankPageState extends State<SignRankPage>
                                 Wrap(
                                   spacing: 8,
                                   children: [
-                                    Text('总签到: ${e.totalDays}天', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
-                                    Text('月签到: ${e.monthDays}天', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+                                    Text('总签到: ${e.totalDays}天',
+                                        style: TextStyle(
+                                            fontSize: 12,
+                                            color: scheme.onSurfaceVariant)),
+                                    Text('月签到: ${e.monthDays}天',
+                                        style: TextStyle(
+                                            fontSize: 12,
+                                            color: scheme.onSurfaceVariant)),
                                     if (e.timeText.isNotEmpty)
-                                      Text(e.timeText.replaceAll('2026-', ''), style: TextStyle(fontSize: 11.5, color: scheme.outline)),
+                                      Text(e.timeText.replaceAll('2026-', ''),
+                                          style: TextStyle(
+                                              fontSize: 11.5,
+                                              color: scheme.outline)),
                                   ],
                                 ),
                               ],
@@ -1415,49 +1370,44 @@ class _SignRankPageState extends State<SignRankPage>
                           ),
                           if (isRewardOp && rewardDisplay.isNotEmpty)
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 5),
                               decoration: BoxDecoration(
-                                color: Colors.amber.withAlpha(25),
+                                color: scheme.surfaceContainerHighest
+                                    .withAlpha(140),
                                 borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: Colors.amber.withAlpha(80)),
+                                border: Border.all(
+                                    color: scheme.outlineVariant.withAlpha(50)),
                               ),
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  const Icon(Icons.monetization_on_rounded, size: 14, color: Colors.amber),
+                                  Icon(Icons.monetization_on_rounded,
+                                      size: 14, color: scheme.primary),
                                   const SizedBox(width: 4),
                                   Text(
                                     rewardDisplay,
                                     style: TextStyle(
                                       fontSize: 12.5,
                                       fontWeight: FontWeight.bold,
-                                      color: isDark ? Colors.amber.shade400 : Colors.amber.shade800,
+                                      color: scheme.primary,
                                     ),
                                   ),
                                 ],
                               ),
                             )
                           else
-                            Icon(Icons.chevron_right_rounded, size: 18, color: scheme.outline.withAlpha(150)),
+                            Icon(Icons.chevron_right_rounded,
+                                size: 18, color: scheme.outline.withAlpha(150)),
                         ],
                       ),
                     ),
                   );
                 },
               ),
-
-              // 分页控制器
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                child: PaginationControl(
-                  page: _page,
-                  hasMore: entries.length >= 10,
-                  onPageChanged: _goPage,
-                ),
-              ),
             ],
           ),
-        );
+        ));
       },
     );
   }
@@ -1466,7 +1416,8 @@ class _SignRankPageState extends State<SignRankPage>
   void _changeMonth(int delta) {
     final now = AutoSignService.instance.estimatedServerNow;
     if (delta > 0) {
-      if (_calYear > now.year || (_calYear == now.year && _calMonth >= now.month)) {
+      if (_calYear > now.year ||
+          (_calYear == now.year && _calMonth >= now.month)) {
         return; // 禁止翻到未来月份
       }
     }
@@ -1492,7 +1443,7 @@ class _SignRankPageState extends State<SignRankPage>
     if (!_datesLoaded) {
       return const Padding(
         padding: EdgeInsets.all(50),
-        child: Center(child: CircularProgressIndicator()),
+        child: Center(child: AppLoadingIndicator()),
       );
     }
     final theme = Theme.of(context);
@@ -1519,7 +1470,9 @@ class _SignRankPageState extends State<SignRankPage>
             borderRadius: BorderRadius.circular(18),
             side: BorderSide(color: scheme.outlineVariant.withAlpha(80)),
           ),
-          color: isDark ? scheme.surfaceContainerHigh : scheme.surfaceContainerLowest,
+          color: isDark
+              ? scheme.surfaceContainerHigh
+              : scheme.surfaceContainerLowest,
           child: Padding(
             padding: const EdgeInsets.all(18),
             child: Column(
@@ -1553,7 +1506,8 @@ class _SignRankPageState extends State<SignRankPage>
                         }
                       },
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
                         child: Column(
                           children: [
                             Row(
@@ -1561,7 +1515,9 @@ class _SignRankPageState extends State<SignRankPage>
                               children: [
                                 Text(
                                   '$_calYear 年 $_calMonth 月',
-                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 17),
                                 ),
                                 const SizedBox(width: 4),
                                 Icon(
@@ -1573,10 +1529,17 @@ class _SignRankPageState extends State<SignRankPage>
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              isCurrentMonth
-                                  ? '本月已出勤 ${_signedDays.length} 天 · 连续签到 $_streakDays 天'
-                                  : '该月已出勤 ${_signedDays.length} 天 · 点击快速切换',
-                              style: TextStyle(fontSize: 12, color: scheme.primary, fontWeight: FontWeight.w600),
+                              (_datesLoaded
+                                      ? '已确认 ${_signedDays.length} 天'
+                                      : '正在读取已确认记录') +
+                                  (isCurrentMonth &&
+                                          _headerInfo.hasContinuousDays
+                                      ? ' · 连续签到 ${_headerInfo.continuousDays} 天'
+                                      : ''),
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: scheme.primary,
+                                  fontWeight: FontWeight.w600),
                             ),
                           ],
                         ),
@@ -1584,7 +1547,8 @@ class _SignRankPageState extends State<SignRankPage>
                     ),
                     IconButton.filledTonal(
                       icon: const Icon(Icons.chevron_right_rounded),
-                      onPressed: isCurrentOrFutureMonth ? null : () => _changeMonth(1),
+                      onPressed:
+                          isCurrentOrFutureMonth ? null : () => _changeMonth(1),
                     ),
                   ],
                 ),
@@ -1594,7 +1558,7 @@ class _SignRankPageState extends State<SignRankPage>
                 Container(
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   decoration: BoxDecoration(
-                    color: scheme.primaryContainer.withAlpha(100),
+                    color: scheme.surfaceContainerHighest.withAlpha(120),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Row(
@@ -1605,9 +1569,9 @@ class _SignRankPageState extends State<SignRankPage>
                             child: Text(
                               w,
                               style: TextStyle(
-                                color: scheme.primary,
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
+                                color: scheme.onSurfaceVariant,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                           ),
@@ -1642,6 +1606,9 @@ class _SignRankPageState extends State<SignRankPage>
   }
 
   Widget _buildRetroSignBanner() {
+    if (_headerInfo.retroSignDays <= 0 && _headerInfo.retroSignBid == null) {
+      return const SizedBox.shrink();
+    }
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final isDark = theme.brightness == Brightness.dark;
@@ -1675,7 +1642,8 @@ class _SignRankPageState extends State<SignRankPage>
       ),
       child: Row(
         children: [
-          Icon(Icons.history_toggle_off_rounded, color: scheme.tertiary, size: 22),
+          Icon(Icons.history_toggle_off_rounded,
+              color: scheme.tertiary, size: 22),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -1707,7 +1675,8 @@ class _SignRankPageState extends State<SignRankPage>
               foregroundColor: scheme.onTertiary,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               visualDensity: VisualDensity.compact,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8)),
             ),
             onPressed: () => _handleRetroSign(bid),
             child: const Row(
@@ -1715,7 +1684,9 @@ class _SignRankPageState extends State<SignRankPage>
               children: [
                 Icon(Icons.auto_fix_high_rounded, size: 14),
                 SizedBox(width: 4),
-                Text('立即补签', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                Text('立即补签',
+                    style:
+                        TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
               ],
             ),
           ),
@@ -1731,11 +1702,12 @@ class _SignRankPageState extends State<SignRankPage>
       );
       return;
     }
-
+    final session = DioClient.sessionKey;
     int? targetBid = bid ?? _headerInfo.retroSignBid;
     if (targetBid == null) {
       try {
         final info = await KlpbbsApi.getSignHeaderInfo(forceRefresh: true);
+        if (!mounted || session != DioClient.sessionKey) return;
         targetBid = info.retroSignBid;
       } catch (_) {}
     }
@@ -1744,23 +1716,32 @@ class _SignRankPageState extends State<SignRankPage>
       if (!mounted) return;
       final buy = await showDialog<bool>(
         context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.shopping_bag_rounded, color: Colors.blue),
-              SizedBox(width: 8),
-              Text('获取补签卡'),
+        builder: (ctx) {
+          final dialogScheme = Theme.of(ctx).colorScheme;
+          return AlertDialog(
+            title: Row(
+              children: [
+                Icon(Icons.shopping_bag_rounded, color: dialogScheme.primary),
+                const SizedBox(width: 8),
+                const Text('获取补签卡'),
+              ],
+            ),
+            content: const Text(
+                '论坛签到页面暂未指定当前断签的补签批次 ID，或者您需要先在道具商城购买【补签卡】。是否前往道具商城？'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('取消')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('前往商城')),
             ],
-          ),
-          content: const Text('论坛签到页面暂未指定当前断签的补签批次 ID，或者您需要先在道具商城购买【补签卡】。是否前往道具商城？'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('前往商城')),
-          ],
-        ),
+          );
+        },
       );
-      if (buy == true && mounted) {
-        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const MagicPage()));
+      if (buy == true && mounted && session == DioClient.sessionKey) {
+        Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => const MagicPage()));
       }
       return;
     }
@@ -1768,36 +1749,46 @@ class _SignRankPageState extends State<SignRankPage>
     if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.auto_fix_high_rounded, color: Colors.teal),
-            SizedBox(width: 8),
-            Text('使用补签卡'),
+      builder: (ctx) {
+        final dialogScheme = Theme.of(ctx).colorScheme;
+        return AlertDialog(
+          title: Row(
+            children: [
+              Icon(Icons.auto_fix_high_rounded, color: dialogScheme.primary),
+              const SizedBox(width: 8),
+              const Text('使用补签卡'),
+            ],
+          ),
+          content: Text(
+            _headerInfo.retroSignTip.isNotEmpty
+                ? '${_headerInfo.retroSignTip}\n\n是否立即消耗 1 张补签卡进行补签？'
+                : '确定消耗 1 张补签卡，恢复最近的断签并续接连续签到天数吗？',
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('确认补签')),
           ],
-        ),
-        content: Text(
-          _headerInfo.retroSignTip.isNotEmpty
-              ? '${_headerInfo.retroSignTip}\n\n是否立即消耗 1 张补签卡进行补签？'
-              : '确定消耗 1 张补签卡，恢复最近的断签并续接连续签到天数吗？',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('确认补签')),
-        ],
-      ),
+        );
+      },
     );
 
-    if (confirmed != true || !mounted) return;
+    if (confirmed != true || !mounted || session != DioClient.sessionKey) {
+      return;
+    }
 
     final scaffold = ScaffoldMessenger.of(context);
     scaffold.showSnackBar(const SnackBar(content: Text('正在提交补签申请...')));
 
     final res = await KlpbbsApi.useRetroSignCard(bid: targetBid);
-    if (!mounted) return;
+    if (!mounted || session != DioClient.sessionKey) return;
 
     if (res.success) {
-      scaffold.showSnackBar(SnackBar(content: Text(res.message), backgroundColor: Colors.green));
+      scaffold.showSnackBar(
+          SnackBar(content: Text(res.message), backgroundColor: Colors.green));
       _reload(forceRefresh: true);
     } else {
       if (res.message.contains('商城') || res.message.contains('暂无')) {
@@ -1807,13 +1798,18 @@ class _SignRankPageState extends State<SignRankPage>
             title: const Text('背包暂无补签卡'),
             content: Text('${res.message}\n\n是否立即前往道具商城选购？'),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('前往购买')),
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('取消')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('前往购买')),
             ],
           ),
         );
-        if (goToShop == true && mounted) {
-          Navigator.of(context).push(MaterialPageRoute(builder: (_) => const MagicPage()));
+        if (goToShop == true && mounted && session == DioClient.sessionKey) {
+          Navigator.of(context)
+              .push(MaterialPageRoute(builder: (_) => const MagicPage()));
         }
       } else {
         scaffold.showSnackBar(SnackBar(content: Text(res.message)));
@@ -1827,8 +1823,12 @@ class _SignRankPageState extends State<SignRankPage>
     final isDark = theme.brightness == Brightness.dark;
 
     final signed = _signedDays.contains(day);
-    final isToday = _calYear == now.year && _calMonth == now.month && day == now.day;
-    final isPastMissed = _calYear == now.year && _calMonth == now.month && day < now.day && !signed;
+    final isToday =
+        _calYear == now.year && _calMonth == now.month && day == now.day;
+    final isPastMissed = _calYear == now.year &&
+        _calMonth == now.month &&
+        day < now.day &&
+        !signed;
 
     final cell = Center(
       child: AnimatedContainer(
@@ -1837,18 +1837,21 @@ class _SignRankPageState extends State<SignRankPage>
         height: 36,
         decoration: BoxDecoration(
           color: signed
-              ? scheme.primary
-              : (isToday ? scheme.primaryContainer.withAlpha(120) : (isPastMissed ? scheme.errorContainer.withAlpha(30) : Colors.transparent)),
+              ? (isToday
+                  ? scheme.primary
+                  : scheme.primaryContainer.withAlpha(isDark ? 160 : 200))
+              : (isToday
+                  ? scheme.surfaceContainerHighest.withAlpha(140)
+                  : Colors.transparent),
           borderRadius: BorderRadius.circular(10),
-          border: isToday && !signed
-              ? Border.all(color: scheme.primary, width: 1.5)
-              : (isPastMissed ? Border.all(color: scheme.error.withAlpha(60), width: 1) : null),
-          boxShadow: signed
+          border:
+              isToday ? Border.all(color: scheme.primary, width: 1.6) : null,
+          boxShadow: isToday && signed
               ? [
                   BoxShadow(
                     color: scheme.primary.withAlpha(60),
-                    blurRadius: 4,
-                    offset: const Offset(0, 2),
+                    blurRadius: 6,
+                    spreadRadius: 1,
                   ),
                 ]
               : null,
@@ -1861,14 +1864,17 @@ class _SignRankPageState extends State<SignRankPage>
               '$day',
               style: TextStyle(
                 fontSize: 13,
-                fontWeight: signed || isToday ? FontWeight.bold : FontWeight.normal,
+                fontWeight:
+                    signed || isToday ? FontWeight.bold : FontWeight.normal,
                 color: signed
-                    ? scheme.onPrimary
+                    ? (isToday ? scheme.onPrimary : scheme.onPrimaryContainer)
                     : (isToday
                         ? scheme.primary
                         : (isPastMissed
-                            ? scheme.error
-                            : (isDark ? scheme.onSurface : const Color(0xFF334155)))),
+                            ? scheme.outline.withAlpha(140)
+                            : (isDark
+                                ? scheme.onSurface
+                                : const Color(0xFF334155)))),
               ),
             ),
             if (signed)
@@ -1877,7 +1883,17 @@ class _SignRankPageState extends State<SignRankPage>
                 height: 4,
                 margin: const EdgeInsets.only(top: 1),
                 decoration: BoxDecoration(
-                  color: scheme.onPrimary,
+                  color: isToday ? scheme.onPrimary : scheme.primary,
+                  shape: BoxShape.circle,
+                ),
+              )
+            else if (isPastMissed)
+              Container(
+                width: 3.5,
+                height: 3.5,
+                margin: const EdgeInsets.only(top: 1),
+                decoration: BoxDecoration(
+                  color: scheme.tertiary.withAlpha(160),
                   shape: BoxShape.circle,
                 ),
               ),
@@ -1887,82 +1903,46 @@ class _SignRankPageState extends State<SignRankPage>
     );
 
     if (isPastMissed) {
-      return InkWell(
-        onTap: () => _handleRetroSign(_headerInfo.retroSignBid),
-        borderRadius: BorderRadius.circular(10),
-        child: cell,
+      return Tooltip(
+        message: '$day 日未在已确认记录中',
+        child: InkWell(
+          onTap: null,
+          borderRadius: BorderRadius.circular(10),
+          child: cell,
+        ),
       );
     }
 
     return cell;
   }
 
-  /// 签到等级进阶提示卡片（按官方总签到天数规则精准计算）
+  /// 当前站点实际提供的个人签到记录
   Widget _buildNextLevelProgressCard() {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final isDark = theme.brightness == Brightness.dark;
-
-    final total = _headerInfo.totalDays > 0 ? _headerInfo.totalDays : _signedDays.length;
-    final continuous = _headerInfo.continuousDays > 0 ? _headerInfo.continuousDays : _streakDays;
-
-    // 官方等级按累计签到总天数判定
-    (String, int, String)? nextLevel;
-    for (final r in _officialLevels) {
-      if (total < r.$2) {
-        nextLevel = (r.$1, r.$2, r.$3);
-        break;
-      }
-    }
-
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: scheme.outlineVariant.withAlpha(60)),
-      ),
-      color: isDark ? scheme.surfaceContainerHigh : scheme.surfaceContainerLowest,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.trending_up_rounded, color: scheme.primary, size: 20),
-                const SizedBox(width: 8),
-                const Text('签到等级进阶', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                const Spacer(),
-                if (_headerInfo.totalDays > 0)
-                  Text(
-                    '总签到 $total 天 · 连续 $continuous 天',
-                    style: TextStyle(fontSize: 12, color: scheme.primary, fontWeight: FontWeight.bold),
-                  )
-                else
-                  Text(
-                    '已打卡 $total 天',
-                    style: TextStyle(fontSize: 12, color: scheme.primary, fontWeight: FontWeight.bold),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            if (nextLevel != null) ...[
-              Text(
-                _headerInfo.totalDays > 0
-                    ? '当前等级【${_headerInfo.signLevel.isNotEmpty ? _headerInfo.signLevel : "Lv.1"}】（累计签到 $total 天），距离下一称号【${nextLevel.$1}】还需累计签到 ${nextLevel.$2 - total} 天（累计达到 ${nextLevel.$3} 即可晋升）。'
-                    : '签到等级根据累计总签到天数评定，累计达到 ${nextLevel.$3} 即可晋升为【${nextLevel.$1}】。',
-                style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant, height: 1.45),
-              ),
-            ] else ...[
-              Text(
-                '恭喜您！累计总签到已达 $total 天，已达到论坛最高签到等级【LV.11 基岩】（累计 1500 天以上）！',
-                style: const TextStyle(fontSize: 12.5, color: Colors.amber, fontWeight: FontWeight.w600, height: 1.45),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
+    final scheme = Theme.of(context).colorScheme;
+    return Card.outlined(
+        child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(Icons.military_tech_outlined, color: scheme.primary),
+          const SizedBox(width: 10),
+          Expanded(
+              child: Text(
+                  _headerInfo.signLevel.isEmpty
+                      ? '签到记录'
+                      : _headerInfo.signLevel,
+                  style: const TextStyle(fontWeight: FontWeight.w600))),
+          TextButton(
+              onPressed: _showRewardRuleDialog, child: const Text('等级与奖励规则')),
+        ]),
+        if (_headerInfo.hasPersonalStats)
+          Text(
+              '累计签到 ${_headerInfo.hasTotalDays ? _headerInfo.totalDays.toString() : '—'} 天 · 连续签到 ${_headerInfo.hasContinuousDays ? _headerInfo.continuousDays.toString() : '—'} 天',
+              style: TextStyle(color: scheme.onSurfaceVariant))
+        else
+          Text('查看已确认的月度记录，等级和奖励以网站规则为准',
+              style: TextStyle(color: scheme.onSurfaceVariant)),
+      ]),
+    ));
   }
 }
-

@@ -1,3 +1,4 @@
+import '../widgets/app_motion.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../api/comiis_parser.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
+import '../core/cache_manager.dart';
 import '../core/dio_client.dart';
 import '../core/preload_service.dart';
 import '../core/url_helper.dart';
@@ -33,7 +35,12 @@ import '../widgets/report_dialog.dart';
 import '../widgets/responsive_layout.dart';
 import '../widgets/skeleton_list.dart';
 import '../widgets/thread_card.dart';
+import '../widgets/user_avatar_widget.dart';
+import '../widgets/post_copy_sheet.dart';
+import '../core/post_copy_document.dart';
 import '../widgets/thread_layout_workbench.dart';
+import '../widgets/thread_access_view.dart';
+import '../core/discuz_thread_access.dart';
 import '../widgets/topic_admin_dialog.dart';
 import 'login_page.dart';
 import 'post_page.dart';
@@ -41,9 +48,35 @@ import 'search_page.dart';
 import 'thread_list_page.dart';
 import 'user_space_page.dart';
 
+final _digitRegex = RegExp(r'(\d+)');
+
 /// 帖子详情（楼层列表）
 ///
 /// 正文以纯文本 + 图片网格展示（扩展点：可替换为富文本/WebView 渲染）。
+String? _accountStateKey(String key) {
+  if (key == 'fav_tids') return KlpbbsApi.favoriteThreadsPrefsKey;
+  final uid = KlpbbsApi.currentCachedMyUid;
+  if (!DioClient.isLoggedIn || uid == null || uid <= 0) return null;
+  return '$key:${AppConfig.baseUrl}:$uid';
+}
+
+List<String> _savedAccountState(SharedPreferences prefs, String key) {
+  final scoped = _accountStateKey(key);
+  return scoped == null ? const [] : (prefs.getStringList(scoped) ?? const []);
+}
+
+bool _canSendLike(BuildContext context) {
+  if (DioClient.isLoggedIn) return true;
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+    content: const Text('请先登录论坛账号后再进行点赞'),
+    action: SnackBarAction(
+        label: '去登录',
+        onPressed: () => Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => const LoginPage()))),
+  ));
+  return false;
+}
+
 class ThreadDetailPage extends StatefulWidget {
   final int tid;
   final int? fid;
@@ -64,6 +97,21 @@ class ThreadDetailPage extends StatefulWidget {
     this.isForumSidebarVisible,
   });
 
+  static String formatFloorNumber(int n) =>
+      _ThreadDetailPageState.formatFloorNumber(n);
+  static List<String> computeDisplayFloorNumbers(
+    List<PostFloor> floors, {
+    required int page,
+    required bool isDescOrder,
+    int? totalReplies,
+  }) =>
+      _ThreadDetailPageState.computeDisplayFloorNumbers(
+        floors,
+        page: page,
+        isDescOrder: isDescOrder,
+        totalReplies: totalReplies,
+      );
+
   @override
   State<ThreadDetailPage> createState() => _ThreadDetailPageState();
 }
@@ -79,10 +127,16 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   String? _stamp;
   String? _stampUrl;
   bool _liked = false;
+  bool _likeBusy = false;
+  bool _favoriteBusy = false;
+  int _loadGeneration = 0;
+  final Set<int> _likingFloorPids = {};
   bool _favored = false;
   int? _favid;
   int? _myUid;
   int? _firstAuthorUid;
+  bool _isBountyThread = false;
+  bool _isBountySolved = false;
   int? _threadFid;
   late int _effectiveTid;
   int? _effectiveFid;
@@ -103,6 +157,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   List<String> _tags = const [];
   List<PostFloor> _floors = const [];
   final Map<int, GlobalKey> _floorItemKeys = {};
+  final Set<int> _likedFloorPids = {};
   int? _ordertype;
   bool _isDescOrder = false;
   int? _highlightedFloorIndex;
@@ -110,6 +165,34 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   int _totalPages = 1;
   ServerOutageInfo? _activeOutage;
   bool _viewCacheAnyway = false;
+  DiscuzThreadAccessException? _accessRestriction;
+
+  void _clearThreadContent() {
+    _title = '';
+    _floors = const [];
+    _firstAuthorUid = null;
+    _stamp = null;
+    _stampUrl = null;
+    _aiSummary = null;
+    _liked = false;
+    _favored = false;
+    _favid = null;
+    _likes = 0;
+    _favorites = 0;
+    _views = 0;
+    _replies = 0;
+    _tags = const [];
+    _totalPages = 1;
+    _isBountyThread = false;
+    _isBountySolved = false;
+    _likedFloorPids.clear();
+    _likingFloorPids.clear();
+    _showInThreadSearch = false;
+    _inThreadSearchCtrl.clear();
+    _inThreadSearchMatches = [];
+    _inThreadSearchCurrentIdx = 0;
+    _floorItemKeys.clear();
+  }
 
   @override
   void initState() {
@@ -118,28 +201,32 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     _effectiveFid = widget.fid;
     _showForumSidebar = AppConfig.threadLeftEnabled;
     AppConfig.instance.addListener(_onConfigChanged);
+    DioClient.sessionChanges.addListener(_onSessionChanged);
+    final session = DioClient.sessionKey;
     _loadAndInit();
-    KlpbbsApi.getMyUid()
-        .then((uid) {
-          if (mounted) setState(() => _myUid = uid);
-        })
-        .catchError((_) {});
-    KlpbbsApi.getMyRole(fid: widget.fid)
-        .then((role) {
-          if (mounted) {
-            final canMod = role.isAdmin || role.isSuperMod || role.isModerator;
-            if (canMod != _canModerate) {
-              setState(() => _canModerate = canMod);
-            }
-          }
-        })
-        .catchError((_) {});
+    KlpbbsApi.getMyUid().then((uid) {
+      if (mounted && session == DioClient.sessionKey) {
+        setState(() => _myUid = uid);
+      }
+    }).catchError((_) {});
+    KlpbbsApi.getMyRole(fid: widget.fid).then((role) {
+      if (mounted &&
+          session == DioClient.sessionKey &&
+          currentFid == widget.fid) {
+        final canMod = role.canModerateFid(widget.fid);
+        if (canMod != _canModerate) {
+          setState(() => _canModerate = canMod);
+        }
+      }
+    }).catchError((_) {});
     // AppBar 标题滚动折叠：滚动超过 120px 显示帖子标题；超过 280px 显示回到顶部（通过 ValueNotifier 通知，杜绝触发整个三栏页面重构）
     _scrollCtrl.addListener(() {
       final show = _scrollCtrl.offset > 120;
       if (show != _scrolledNotifier.value) _scrolledNotifier.value = show;
       final showTop = _scrollCtrl.offset > 280;
-      if (showTop != _showBackToTopNotifier.value) _showBackToTopNotifier.value = showTop;
+      if (showTop != _showBackToTopNotifier.value) {
+        _showBackToTopNotifier.value = showTop;
+      }
     });
   }
 
@@ -152,6 +239,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     setState(() {
       _effectiveTid = newTid;
       _page = 1;
+      _ordertype = null;
+      _accessRestriction = null;
+      _clearThreadContent();
+      _firstAuthorUid = null;
+      _floorItemKeys.clear();
+      _highlightedFloorIndex = null;
+      _pendingTargetFloor = null;
       _floors = const [];
       _title = '';
       _stamp = null;
@@ -172,10 +266,37 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     }
   }
 
+  void _onSessionChanged() {
+    if (!mounted) return;
+    final session = DioClient.sessionKey;
+    setState(() {
+      _myUid = null;
+      _accessRestriction = null;
+      _clearThreadContent();
+      _canModerate = false;
+      _liked = false;
+      _favored = false;
+      _favid = null;
+      _likeBusy = false;
+      _favoriteBusy = false;
+      _likedFloorPids.clear();
+      _likingFloorPids.clear();
+    });
+    _loadAndInit(forceRefresh: true);
+    KlpbbsApi.getMyUid().then((uid) {
+      if (mounted && session == DioClient.sessionKey) {
+        setState(() => _myUid = uid);
+      }
+    }).catchError((_) {});
+  }
+
   void _loadAndInit({bool forceRefresh = false}) {
+    final generation = ++_loadGeneration;
+    final session = DioClient.sessionKey;
     setState(() {
       _viewCacheAnyway = false;
       _activeOutage = null;
+      _floorItemKeys.clear();
       _future = KlpbbsApi.getThread(
         _effectiveTid,
         page: _page,
@@ -183,18 +304,52 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
         forceRefresh: forceRefresh,
       ).then((r) async {
         final prefs = await SharedPreferences.getInstance();
-        if (mounted) {
+        if (mounted &&
+            generation == _loadGeneration &&
+            session == DioClient.sessionKey) {
           setState(() {
             _activeOutage = null;
+            _accessRestriction = null;
             _applyThreadData(r, prefs);
           });
+          if (_pendingTargetFloor != null) {
+            final target = _pendingTargetFloor!;
+            _pendingTargetFloor = null;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted && generation == _loadGeneration) {
+                  _scrollToFloorNumberInCurrentPage(target);
+                }
+              });
+            });
+          }
         }
         return r;
+      }).catchError((Object error, StackTrace stack) {
+        if (error is DiscuzThreadAccessException &&
+            mounted &&
+            generation == _loadGeneration &&
+            session == DioClient.sessionKey) {
+          setState(() {
+            _clearThreadContent();
+            _accessRestriction = error;
+          });
+          BiliVideoPlayer.stopAll();
+          NetEaseMusicPlayer.stopAll();
+          GeneralAudioPlayer.stopAll();
+          GeneralVideoPlayer.stopAll();
+        }
+        Error.throwWithStackTrace(error, stack);
       });
+      // A cached/fast response may fail before FutureBuilder's next frame.
+      // Attach immediately; the builder still receives the original error.
+      _future.ignore();
     });
   }
 
   void _applyThreadData(dynamic r, SharedPreferences prefs) {
+    final generation = _loadGeneration;
+    final session = DioClient.sessionKey;
     _title = r.title;
     // 记录主题作者（楼主）的 uid：优先使用页面解析出的权威 authorUid
     if (r.authorUid != null && (r.authorUid as int) > 0) {
@@ -205,8 +360,24 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
         (f) => f.floorNumber == '楼主' || f.isThreadAuthor,
         orElse: () => floorsList.first,
       );
-      if (_firstAuthorUid == null || louzhuFloor.floorNumber == '楼主' || louzhuFloor.isThreadAuthor) {
+      if (_firstAuthorUid == null ||
+          louzhuFloor.floorNumber == '楼主' ||
+          louzhuFloor.isThreadAuthor) {
         _firstAuthorUid = louzhuFloor.uid;
+      }
+
+      final firstFloor = floorsList.first;
+      if (firstFloor.bountyPrice != null &&
+          firstFloor.bountyPrice!.isNotEmpty) {
+        _isBountyThread = true;
+        _isBountySolved = firstFloor.isBountySolved;
+      } else {
+        final hasBest = floorsList.any((f) => f.isBestAnswer);
+        final hasSolved = floorsList.any((f) => f.isBountySolved);
+        if (hasBest || hasSolved) {
+          _isBountyThread = true;
+          _isBountySolved = true;
+        }
       }
     }
 
@@ -218,16 +389,18 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       _threadFid = r.fid;
       _effectiveFid ??= r.fid;
       KlpbbsApi.getMyRole(fid: r.fid).then((role) {
-        if (mounted) {
-          final canMod = role.isAdmin || role.isSuperMod || role.isModerator;
+        if (mounted &&
+            generation == _loadGeneration &&
+            session == DioClient.sessionKey) {
+          final canMod = role.canModerateFid(r.fid);
           if (canMod != _canModerate) setState(() => _canModerate = canMod);
         }
       }).catchError((_) {});
     }
 
-    final likedList = prefs.getStringList('liked_tids') ?? const [];
+    final likedList = _savedAccountState(prefs, 'liked_tids');
     final isLocalLiked = likedList.contains('$_effectiveTid');
-    final isServerLiked = (r.isLiked == true) || (r.floors.isNotEmpty && r.floors.first.isLiked && _page == 1);
+    final isServerLiked = r.isLiked == true;
     if (_page == 1) {
       if (DioClient.isLoggedIn) {
         _liked = isServerLiked;
@@ -235,12 +408,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
           _saveState('liked_tids', '$_effectiveTid', isServerLiked);
         }
       } else {
-        _liked = isLocalLiked;
+        _liked = false;
       }
       _likes = r.likes;
     }
 
-    final favList = prefs.getStringList('fav_tids') ?? const [];
+    final favList = _savedAccountState(prefs, 'fav_tids');
     final isLocalFav = favList.contains('$_effectiveTid');
 
     if (DioClient.isLoggedIn) {
@@ -266,7 +439,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
 
       // 无论首屏是否推测出状态，均发起权威端点异步兜底核验，确保 100% 与网页端实际收藏状态保持绝对同步
       KlpbbsApi.checkThreadFavorited(_effectiveTid).then((serverFav) {
-        if (mounted && _favored != serverFav) {
+        if (serverFav != null &&
+            mounted &&
+            generation == _loadGeneration &&
+            session == DioClient.sessionKey &&
+            _favored != serverFav) {
           setState(() {
             _favored = serverFav;
             _favid = serverFav ? KlpbbsApi.getCachedFavid(_effectiveTid) : null;
@@ -288,6 +465,20 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       _tags = r.tags;
     }
     _floors = r.floors;
+    final likedPidsList =
+        _savedAccountState(prefs, 'liked_pids_$_effectiveTid');
+    _likedFloorPids.clear();
+    for (final s in likedPidsList) {
+      final p = int.tryParse(s);
+      if (p != null) _likedFloorPids.add(p);
+    }
+    if (r.floors != null) {
+      for (final f in (r.floors as List<PostFloor>)) {
+        if (f.isLiked && f.pid != null && f.pid! > 0) {
+          _likedFloorPids.add(f.pid!);
+        }
+      }
+    }
     if (_page == 1 || _stamp == null) {
       _stamp = r.stamp;
       _stampUrl = r.stampUrl;
@@ -298,16 +489,18 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     if (_ordertype != null) {
       // 若用户明确指定了 ordertype（1 = 倒序，2 = 正序），必须以明确参数为准
       _isDescOrder = (_ordertype == 1);
-    } else {
-      // 默认加载下，由服务端解析判断当前主题默认是正序还是倒序，并同步锁定 ordertype
+    } else if (_page == 1) {
+      // 仅在第 1 页初始化时，由服务端解析判断当前主题默认是正序还是倒序，后续翻页严禁被推断误翻转
       _isDescOrder = r.isDescOrder;
-      _ordertype = _isDescOrder ? 1 : 2;
+      // 关键：默认保持 _ordertype = null，沿用服务端天然排序，切勿强行设为 1 或 2 触发服务端 SQL 缺陷！
+      _ordertype = null;
     }
   }
 
   @override
   void dispose() {
     AppConfig.instance.removeListener(_onConfigChanged);
+    DioClient.sessionChanges.removeListener(_onSessionChanged);
     // 退出帖子页时停止 B站/网易云/通用音频与视频内嵌播放器（若由外层管理生命周期则不盲目停止）
     if (widget.stopPlayersOnDispose) {
       BiliVideoPlayer.stopAll();
@@ -351,6 +544,165 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
         behavior: SnackBarBehavior.floating,
       ),
     );
+  }
+
+  Future<void> _onToggleFloorLiked(int? pid) async {
+    if (pid == null ||
+        pid <= 0 ||
+        _likingFloorPids.contains(pid) ||
+        !_canSendLike(context)) {
+      return;
+    }
+    final session = DioClient.sessionKey;
+    final tid = _effectiveTid;
+    final nextLiked = !_likedFloorPids.contains(pid);
+    setState(() => _likingFloorPids.add(pid));
+    try {
+      final result = await KlpbbsApi.likeFloor(tid, pid, support: nextLiked);
+      if (!mounted || session != DioClient.sessionKey || tid != _effectiveTid) {
+        return;
+      }
+      if (result.success) {
+        setState(() {
+          if (result.isLiked) {
+            _likedFloorPids.add(pid);
+          } else {
+            _likedFloorPids.remove(pid);
+          }
+        });
+        await _saveState('liked_pids_$tid', '$pid', result.isLiked);
+        if (mounted &&
+            session == DioClient.sessionKey &&
+            tid == _effectiveTid) {
+          _loadAndInit(forceRefresh: true);
+        }
+      }
+      if (mounted && session == DioClient.sessionKey) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(result.message)));
+      }
+    } catch (error) {
+      if (mounted && session == DioClient.sessionKey) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('点赞操作失败：$error')));
+      }
+    } finally {
+      if (mounted && session == DioClient.sessionKey) {
+        setState(() => _likingFloorPids.remove(pid));
+      }
+    }
+  }
+
+  static String formatFloorNumber(int n) {
+    if (n == 1) return '楼主';
+    if (n == 2) return '2 楼 (沙发)';
+    if (n == 3) return '3 楼 (板凳)';
+    if (n == 4) return '4 楼 (地板)';
+    return '$n 楼';
+  }
+
+  static int? _extractFloorDigit(String s, {bool isReply = false}) {
+    if (s.isEmpty) return null;
+    if (s == '楼主' || s.contains('楼主')) {
+      return isReply ? 2 : 1;
+    }
+    final m = RegExp(r'(\d+)').firstMatch(s);
+    if (m != null) {
+      final val = int.tryParse(m.group(1)!);
+      if (val != null) {
+        if (isReply && val == 1) return 2;
+        return val;
+      }
+    }
+    if (s.contains('沙发')) return 2;
+    if (s.contains('板凳')) return 3;
+    if (s.contains('地板')) return 4;
+    return null;
+  }
+
+  static int? _parseFloorNumberFromLabel(String label) {
+    final s = label.trim();
+    if (s.isEmpty) return null;
+    if (s == '楼主' || s.contains('楼主')) return 1;
+    final m = RegExp(r'^(\d+)').firstMatch(s);
+    if (m != null) return int.tryParse(m.group(1)!);
+    final anyDigit = RegExp(r'(\d+)').firstMatch(s);
+    if (anyDigit != null) return int.tryParse(anyDigit.group(1)!);
+    if (s.contains('沙发')) return 2;
+    if (s.contains('板凳')) return 3;
+    if (s.contains('地板')) return 4;
+    return null;
+  }
+
+  static List<String> computeDisplayFloorNumbers(
+    List<PostFloor> floors, {
+    required int page,
+    required bool isDescOrder,
+    int? totalReplies,
+  }) {
+    if (floors.isEmpty) return const [];
+    final result = List<String>.filled(floors.length, '');
+
+    int startIndex = 0;
+    if (page == 1) {
+      result[0] = '楼主';
+      startIndex = 1;
+    }
+
+    if (startIndex >= floors.length) return result;
+
+    if (!isDescOrder) {
+      // ===== 正序排列 (Ascending) =====
+      // 第 1 页：包含 1 楼主 + 最多 10 楼回帖（即 2 楼 ~ 11 楼）
+      // 第 P 页 (P >= 2)：前 P-1 页累计包含了 1 + (P-1)*10 楼，因此第 P 页基线必须从 1 + (P-1)*10 开始！
+      int currentFloorNum = (page == 1) ? 1 : (1 + (page - 1) * 10);
+      for (int i = startIndex; i < floors.length; i++) {
+        final f = floors[i];
+        final rawNum = _extractFloorDigit(f.floorNumber, isReply: true);
+
+        if (page == 1 && i == 1) {
+          currentFloorNum = 2;
+        } else if (rawNum != null && rawNum > currentFloorNum) {
+          currentFloorNum = rawNum;
+        } else {
+          currentFloorNum++;
+        }
+        result[i] = formatFloorNumber(currentFloorNum);
+      }
+    } else {
+      // ===== 倒序排列 (Descending) =====
+      final baseNums = List<int>.filled(floors.length, 0);
+      final total =
+          (totalReplies != null && totalReplies > 0) ? (totalReplies + 1) : 16;
+
+      for (int i = startIndex; i < floors.length; i++) {
+        final f = floors[i];
+        final rawNum = _extractFloorDigit(f.floorNumber, isReply: true);
+        if (rawNum != null && rawNum >= 2) {
+          baseNums[i] = rawNum;
+        } else {
+          final offset =
+              page == 1 ? (i > 0 ? i - 1 : 0) : 9 + (page - 2) * 10 + i;
+          baseNums[i] = (total - offset).clamp(2, total);
+        }
+      }
+
+      // 关键：倒向反向校准（Backward pass）！
+      if (floors.length - 1 >= startIndex) {
+        if (baseNums.last < 2) baseNums.last = 2;
+        for (int i = floors.length - 2; i >= startIndex; i--) {
+          if (baseNums[i] <= baseNums[i + 1]) {
+            baseNums[i] = baseNums[i + 1] + 1;
+          }
+        }
+      }
+
+      for (int i = startIndex; i < floors.length; i++) {
+        result[i] = formatFloorNumber(baseNums[i]);
+      }
+    }
+
+    return result;
   }
 
   /// 回帖分割与排序栏（模拟 Discuz comiis_pltit）
@@ -420,7 +772,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(
-                    _isDescOrder ? Icons.arrow_downward_rounded : Icons.arrow_upward_rounded,
+                    _isDescOrder
+                        ? Icons.arrow_downward_rounded
+                        : Icons.arrow_upward_rounded,
                     size: 14,
                     color: colorScheme.primary,
                   ),
@@ -454,6 +808,18 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     if (oldWidget.tid != widget.tid) {
       _effectiveTid = widget.tid;
       _page = 1;
+      _ordertype = null;
+      _firstAuthorUid = null;
+      _floorItemKeys.clear();
+      _highlightedFloorIndex = null;
+      _pendingTargetFloor = null;
+      _floors = const [];
+      _title = '';
+      _stamp = null;
+      _stampUrl = null;
+      _aiSummary = null;
+      _favored = false;
+      _liked = false;
       _reload();
     }
     if (oldWidget.fid != widget.fid && widget.fid != null) {
@@ -675,206 +1041,116 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     );
   }
 
-  /// 保存本地状态
+  /// 只保存当前账号已获服务器确认的状态。
   Future<void> _saveState(String key, String tid, bool add) async {
+    final scoped = _accountStateKey(key);
+    final session = DioClient.sessionKey;
+    if (scoped == null) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final list = prefs.getStringList(key) ?? <String>[];
-      if (add && !list.contains(tid)) {
-        list.add(tid);
-        await prefs.setStringList(key, list);
-      } else if (!add) {
+      if (session != DioClient.sessionKey) return;
+      final list = (prefs.getStringList(scoped) ?? <String>[]).toList();
+      if (add) {
+        if (!list.contains(tid)) list.add(tid);
+      } else {
         list.remove(tid);
-        await prefs.setStringList(key, list);
       }
+      await prefs.setStringList(scoped, list);
     } catch (_) {}
   }
 
   Future<void> _onLike() async {
-    if (!DioClient.isLoggedIn) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('请先登录论坛账号后再进行点赞'),
-          action: SnackBarAction(
-            label: '去登录',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const LoginPage()),
-            ),
-          ),
-        ),
-      );
-      return;
-    }
-
-    HapticFeedback.lightImpact();
+    if (_likeBusy || !_canSendLike(context)) return;
+    final session = DioClient.sessionKey;
+    final tid = _effectiveTid;
     final nextLiked = !_liked;
-    setState(() {
-      _liked = nextLiked;
-      _likes += nextLiked ? 1 : (_likes > 0 ? -1 : 0);
-      if (_floors.isNotEmpty) {
-        final f = _floors.first;
-        _floors = [
-          f.copyWith(
-            isLiked: nextLiked,
-            likes: nextLiked ? (f.likes + 1) : (f.likes > 0 ? f.likes - 1 : 0),
-          ),
-          ..._floors.sublist(1),
-        ];
-      }
-    });
-    _saveState('liked_tids', '${widget.tid}', nextLiked);
-
+    HapticFeedback.lightImpact();
+    setState(() => _likeBusy = true);
     try {
-      final firstPid = _floors.isNotEmpty ? _floors.first.pid : null;
-      final res = await KlpbbsApi.recommendThread(
-        widget.tid,
-        support: nextLiked,
-        pid: firstPid,
-      );
-      if (mounted) {
-        if (res.isLiked != _liked) {
-          setState(() {
-            _liked = res.isLiked;
-          });
-          _saveState('liked_tids', '${widget.tid}', res.isLiked);
-        }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              res.message.isNotEmpty
-                  ? res.message
-                  : (res.isLiked ? '点赞成功 +1' : '已取消点赞'),
-            ),
-            duration: const Duration(seconds: 2),
-          ),
-        );
-        // 操作后拉取网页最新数据，与网页状态绝对同步
-        _loadAndInit(forceRefresh: true);
+      final result = await KlpbbsApi.recommendThread(tid, support: nextLiked);
+      if (!mounted || session != DioClient.sessionKey || tid != _effectiveTid) {
+        return;
       }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(nextLiked ? '点赞已记录' : '已取消点赞'),
-            duration: const Duration(seconds: 1),
-          ),
-        );
-        _loadAndInit(forceRefresh: true);
+      if (result.success) {
+        setState(() => _liked = result.isLiked);
+        await _saveState('liked_tids', '$tid', result.isLiked);
+        if (mounted &&
+            session == DioClient.sessionKey &&
+            tid == _effectiveTid) {
+          _loadAndInit(forceRefresh: true);
+        }
+      }
+      if (mounted && session == DioClient.sessionKey) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(result.message)));
+      }
+    } catch (error) {
+      if (mounted && session == DioClient.sessionKey) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('点赞操作失败：$error')));
+      }
+    } finally {
+      if (mounted && session == DioClient.sessionKey) {
+        setState(() => _likeBusy = false);
       }
     }
   }
 
-  Future<void> _onFavorite({bool openDialog = false}) async {
-    if (!DioClient.isLoggedIn) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('请先登录论坛账号后再进行收藏'),
-          action: SnackBarAction(
-            label: '去登录',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const LoginPage()),
-            ),
-          ),
-        ),
-      );
-      return;
-    }
-
-    if (openDialog) {
-      final author = _floors.isNotEmpty ? _floors.first.author : '';
-      final res = await FavoriteDialog.show(
-        context,
-        tid: _effectiveTid,
-        title: _title,
-        author: author,
-        isFavorited: _favored,
-        favid: _favid,
-        onFavoritedChanged: (fav) {
-          setState(() {
-            _favored = fav;
-            _favorites += fav ? 1 : (_favorites > 0 ? -1 : 0);
-            if (fav) {
-              _favid = KlpbbsApi.getCachedFavid(_effectiveTid) ?? _favid;
-            } else {
-              _favid = null;
-            }
-          });
-          _saveState('fav_tids', '$_effectiveTid', fav);
-        },
-      );
-      if (res != null) {
-        setState(() {
-          _favored = res;
-          _favorites += res ? 1 : (_favorites > 0 ? -1 : 0);
-          if (res) {
-            _favid = KlpbbsApi.getCachedFavid(_effectiveTid) ?? _favid;
-          } else {
-            _favid = null;
-          }
-        });
-        _saveState('fav_tids', '$_effectiveTid', res);
-      }
-      return;
-    }
-
-    HapticFeedback.lightImpact();
-    final nextFav = !_favored;
+  void _setFavoriteState(bool favored) {
     setState(() {
-      _favored = nextFav;
-      _favorites += nextFav ? 1 : (_favorites > 0 ? -1 : 0);
+      if (_favored != favored) {
+        _favorites += favored ? 1 : (_favorites > 0 ? -1 : 0);
+      }
+      _favored = favored;
+      _favid = favored ? KlpbbsApi.getCachedFavid(_effectiveTid) : null;
     });
-    _saveState('fav_tids', '$_effectiveTid', nextFav);
+    _saveState('fav_tids', '$_effectiveTid', favored);
+  }
 
+  Future<void> _onFavorite({bool openDialog = false}) async {
+    if (_favoriteBusy) return;
+    if (!DioClient.isLoggedIn) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text('请先登录论坛账号后再进行收藏'),
+        action: SnackBarAction(
+            label: '去登录',
+            onPressed: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => const LoginPage()))),
+      ));
+      return;
+    }
+    final session = DioClient.sessionKey;
+    final tid = _effectiveTid;
+    bool current() =>
+        mounted && session == DioClient.sessionKey && tid == _effectiveTid;
+    final messenger = ScaffoldMessenger.of(context);
+    if (openDialog) {
+      final result = await FavoriteDialog.show(context,
+          tid: tid,
+          title: _title,
+          author: _floors.isNotEmpty ? _floors.first.author : '',
+          isFavorited: _favored,
+          favid: _favid, onFavoritedChanged: (value) {
+        if (current()) _setFavoriteState(value);
+      });
+      if (result != null && current()) _setFavoriteState(result);
+      return;
+    }
+    final nextFavored = !_favored;
+    setState(() => _favoriteBusy = true);
     try {
-      if (nextFav) {
-        final res = await KlpbbsApi.favoriteThread(_effectiveTid);
-        if (mounted) {
-          setState(() {
-            _favid = KlpbbsApi.getCachedFavid(_effectiveTid) ?? _favid;
-          });
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(res.message.isNotEmpty ? res.message : '已收藏'),
-              duration: const Duration(seconds: 2),
-            ),
-          );
-        }
-      } else {
-        final res = await KlpbbsApi.unfavoriteThread(_effectiveTid, favid: _favid);
-        if (mounted) {
-          setState(() {
-            _favid = null;
-          });
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(res.message.isNotEmpty ? res.message : '已取消收藏'),
-              duration: const Duration(seconds: 2),
-            ),
-          );
-        }
+      final result = nextFavored
+          ? await KlpbbsApi.favoriteThread(tid)
+          : await KlpbbsApi.unfavoriteThread(tid, favid: _favid);
+      if (!current()) return;
+      if (result.success) _setFavoriteState(nextFavored);
+      messenger.showSnackBar(SnackBar(content: Text(result.message)));
+    } catch (error) {
+      if (current()) {
+        messenger.showSnackBar(SnackBar(content: Text('收藏操作失败：$error')));
       }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _favored = !nextFav;
-          _favorites += !nextFav ? 1 : (_favorites > 0 ? -1 : 0);
-        });
-        _saveState('fav_tids', '$_effectiveTid', !nextFav);
-        final outage = ServerOutageInfo.tryParse(e);
-        if (outage != null) {
-          ServerOutageView.showAsDialog(
-            context,
-            outage: outage,
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('收藏操作失败：$e'),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
-      }
+    } finally {
+      if (current()) setState(() => _favoriteBusy = false);
     }
   }
 
@@ -901,11 +1177,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                 padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
                 child: Row(
                   children: [
-                    const Icon(Icons.thumb_up, size: 20, color: Color(0xFF1976D2)),
+                    const Icon(Icons.thumb_up,
+                        size: 20, color: Color(0xFF1976D2)),
                     const SizedBox(width: 8),
                     Text(
                       '点赞与评分用户详情 (${rewards.isNotEmpty ? rewards.length : _likes})',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 16),
                     ),
                     const Spacer(),
                     IconButton(
@@ -922,7 +1200,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.thumb_up_alt_outlined, size: 48, color: Colors.grey),
+                            const Icon(Icons.thumb_up_alt_outlined,
+                                size: 48, color: Colors.grey),
                             const SizedBox(height: 8),
                             Text(
                               _likes > 0 ? '已有 $_likes 人为此帖点赞推荐' : '暂无点赞或评分记录',
@@ -942,12 +1221,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                             leading: UserAvatarWidget(
                               uid: r.uid ?? 0,
                               author: r.user,
-                              size: 40,
-                              faceUrl: UserAvatarWidget.sanitizeFaceUrl(r.avatar),
+                              size: 32,
+                              avatarUrl: r.avatar,
+                              reserveFrameSpace: true,
                             ),
                             title: Text(
                               r.user,
-                              style: const TextStyle(fontWeight: FontWeight.bold),
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.bold),
                             ),
                             subtitle: Text(
                               r.reason.isNotEmpty ? r.reason : '为楼主送上支持！',
@@ -956,7 +1237,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                               style: const TextStyle(fontSize: 12),
                             ),
                             trailing: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 3),
                               decoration: BoxDecoration(
                                 color: Colors.orange.withAlpha(30),
                                 borderRadius: BorderRadius.circular(10),
@@ -974,7 +1256,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                               Navigator.of(ctx).pop();
                               if (r.uid != null && r.uid! > 0) {
                                 Navigator.of(context).push(
-                                  MaterialPageRoute(builder: (_) => UserSpacePage(uid: r.uid!)),
+                                  MaterialPageRoute(
+                                      builder: (_) =>
+                                          UserSpacePage(uid: r.uid!)),
                                 );
                               }
                             },
@@ -1006,36 +1290,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   }
 
   void _goPage(int page) {
-    setState(() {
-      _viewCacheAnyway = false;
-      _activeOutage = null;
-      _floorItemKeys.clear();
-      _page = page;
-      _future = KlpbbsApi.getThread(
-        _effectiveTid,
-        page: page,
-        ordertype: _ordertype ?? (_isDescOrder ? 1 : 2),
-      ).then((r) async {
-        final prefs = await SharedPreferences.getInstance();
-        if (mounted) {
-          setState(() {
-            _activeOutage = null;
-            _applyThreadData(r, prefs);
-          });
-          if (_pendingTargetFloor != null) {
-            final floorToFind = _pendingTargetFloor!;
-            _pendingTargetFloor = null;
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              _scrollToFloorNumberInCurrentPage(floorToFind);
-            });
-          }
-        }
-        return r;
-      });
-    });
+    final willScrollToPending = _pendingTargetFloor != null;
+    _page = page;
+    _loadAndInit();
     // 分页后若无待跳转楼层则回到顶部
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_pendingTargetFloor == null && _scrollCtrl.hasClients) {
+      if (!willScrollToPending &&
+          _pendingTargetFloor == null &&
+          _scrollCtrl.hasClients) {
         _scrollCtrl.jumpTo(0);
       }
     });
@@ -1107,7 +1369,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
             MaterialPageRoute(
               builder: (_) => ThreadListPage(
                 fid: currentFid!,
-                title: _forumName ?? ComiisParser.getForumNameByFid(currentFid) ?? '版块列表',
+                title: _forumName ??
+                    ComiisParser.getForumNameByFid(currentFid) ??
+                    '版块列表',
               ),
             ),
           );
@@ -1196,7 +1460,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
           final snap = await _future;
           final targetFid = _threadFid ?? snap.fid ?? 2;
           if (_canModerate) {
-            final reason = reasonCtrl.text.trim().isEmpty ? '违规内容' : reasonCtrl.text.trim();
+            final reason = reasonCtrl.text.trim().isEmpty
+                ? '违规内容'
+                : reasonCtrl.text.trim();
             final res = await KlpbbsApi.moderateDeleteThread(
               fid: targetFid,
               tid: widget.tid,
@@ -1205,11 +1471,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
             ok = res.success;
             failMsg = res.message;
           } else {
-            final targetPid = snap.floors.isNotEmpty ? (snap.floors.first.pid ?? 1) : 1;
+            final targetPid =
+                snap.floors.isNotEmpty ? (snap.floors.first.pid ?? 1) : 1;
             ok = await KlpbbsApi.deletePost(targetFid, widget.tid, targetPid);
           }
           messenger.showSnackBar(
-            SnackBar(content: Text(ok ? '已删除主题' : (failMsg ?? '删除失败（可能无权限或已被处理）'))),
+            SnackBar(
+                content: Text(ok ? '已删除主题' : (failMsg ?? '删除失败（可能无权限或已被处理）'))),
           );
           if (ok && mounted) navigator.pop(true);
         } catch (e) {
@@ -1243,22 +1511,32 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
         if (_aiSummary == null) {
           try {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('正在获取 AI 总结...'), duration: Duration(seconds: 1)),
+              const SnackBar(
+                  content: Text('正在获取 AI 总结...'),
+                  duration: Duration(seconds: 1)),
             );
-            final res = await KlpbbsApi.fetchAiSummary(widget.tid, forceRefresh: true);
+            final res =
+                await KlpbbsApi.fetchAiSummary(widget.tid, forceRefresh: true);
             if (res != null && mounted) {
               setState(() => _aiSummary = res);
-              _scrollCtrl.animateTo(0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+              _scrollCtrl.animateTo(0,
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeOut);
             } else if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('该帖子暂无 AI 总结数据')),
               );
             }
           } catch (e) {
-            if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('获取 AI 总结异常: $e')));
+            if (mounted) {
+              ScaffoldMessenger.of(context)
+                  .showSnackBar(SnackBar(content: Text('获取 AI 总结异常: $e')));
+            }
           }
         } else {
-          _scrollCtrl.animateTo(0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+          _scrollCtrl.animateTo(0,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut);
         }
         break;
       case 'toggle_order':
@@ -1280,8 +1558,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   Widget build(BuildContext context) {
     final isDesktop = ResponsiveBreakpoints.isDesktop(context);
     final theme = Theme.of(context);
+    final hasThreadContent = _accessRestriction == null && _floors.isNotEmpty;
     final hasSidebarToggle = widget.onToggleForumSidebar != null ||
-        (widget.canShowForumSidebar && isDesktop && currentFid != null && currentFid! > 0);
+        (widget.canShowForumSidebar &&
+            isDesktop &&
+            currentFid != null &&
+            currentFid! > 0);
     final isSidebarOpen = widget.onToggleForumSidebar != null
         ? (widget.isForumSidebarVisible ?? true)
         : _showForumSidebar;
@@ -1313,20 +1595,25 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
             },
           ),
           actions: [
-            IconButton(
-              icon: Icon(
-                _isDescOrder ? Icons.arrow_downward_rounded : Icons.arrow_upward_rounded,
-                size: 20,
+            if (hasThreadContent)
+              IconButton(
+                icon: Icon(
+                  _isDescOrder
+                      ? Icons.arrow_downward_rounded
+                      : Icons.arrow_upward_rounded,
+                  size: 20,
+                ),
+                tooltip: _isDescOrder
+                    ? '当前为倒序浏览（最新在前），点击切换为正序'
+                    : '当前为正序浏览（最早在前），点击切换为倒序',
+                onPressed: _toggleOrder,
               ),
-              tooltip: _isDescOrder
-                  ? '当前为倒序浏览（最新在前），点击切换为正序'
-                  : '当前为正序浏览（最早在前），点击切换为倒序',
-              onPressed: _toggleOrder,
-            ),
             if (hasSidebarToggle)
               IconButton(
                 icon: Icon(
-                  isSidebarOpen ? Icons.view_sidebar_rounded : Icons.view_sidebar_outlined,
+                  isSidebarOpen
+                      ? Icons.view_sidebar_rounded
+                      : Icons.view_sidebar_outlined,
                   size: 20,
                   color: isSidebarOpen ? theme.colorScheme.primary : null,
                 ),
@@ -1342,25 +1629,28 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                   }
                 },
               ),
-            IconButton(
-              icon: Icon(
-                _showInThreadSearch ? Icons.search_off_rounded : Icons.search_rounded,
-                size: 20,
-                color: _showInThreadSearch ? theme.colorScheme.primary : null,
+            if (hasThreadContent)
+              IconButton(
+                icon: Icon(
+                  _showInThreadSearch
+                      ? Icons.search_off_rounded
+                      : Icons.search_rounded,
+                  size: 20,
+                  color: _showInThreadSearch ? theme.colorScheme.primary : null,
+                ),
+                tooltip: _showInThreadSearch ? '关闭楼层搜索' : '搜索本帖楼层',
+                onPressed: () {
+                  setState(() {
+                    _showInThreadSearch = !_showInThreadSearch;
+                    if (!_showInThreadSearch) {
+                      _inThreadSearchCtrl.clear();
+                      _inThreadSearchMatches = [];
+                      _inThreadSearchCurrentIdx = 0;
+                    }
+                  });
+                },
               ),
-              tooltip: _showInThreadSearch ? '关闭楼层搜索' : '搜索本帖楼层',
-              onPressed: () {
-                setState(() {
-                  _showInThreadSearch = !_showInThreadSearch;
-                  if (!_showInThreadSearch) {
-                    _inThreadSearchCtrl.clear();
-                    _inThreadSearchMatches = [];
-                    _inThreadSearchCurrentIdx = 0;
-                  }
-                });
-              },
-            ),
-            if (isDesktop)
+            if (isDesktop && hasThreadContent)
               IconButton(
                 icon: const Icon(Icons.tune_rounded),
                 tooltip: '工作台排版微调 (自由画布)',
@@ -1371,10 +1661,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                       builder: (ctx) => VisualGridCanvas(
                         initialLayout: AppConfig.threadDashboardLayout,
                         pageCategory: 'thread',
-                        onSave: (saved) {
-                          AppConfig.setThreadDashboardLayout(saved);
+                        onSave: (_) {
+                          if (mounted) setState(() {});
                         },
-                        onExit: () {},
+                        onExit: () => Navigator.of(ctx).pop(),
                       ),
                     ),
                   );
@@ -1385,127 +1675,138 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
               tooltip: '刷新帖子 (F5)',
               onPressed: _reload,
             ),
-            PopupMenuButton<String>(
-              tooltip: '更多选项',
-              onSelected: (v) => _onMenuAction(v),
-              itemBuilder: (_) => [
-                PopupMenuItem(
-                  value: 'toggle_search',
-                  child: Row(
-                    children: [
-                      Icon(
-                        _showInThreadSearch ? Icons.search_off_rounded : Icons.search_rounded,
-                        size: 18,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(_showInThreadSearch ? '关闭楼层搜索' : '搜索本帖楼层'),
-                    ],
-                  ),
-                ),
-                if (hasSidebarToggle)
+            if (hasThreadContent)
+              PopupMenuButton<String>(
+                tooltip: '更多选项',
+                onSelected: (v) => _onMenuAction(v),
+                itemBuilder: (_) => [
                   PopupMenuItem(
-                    value: 'toggle_forum_sidebar',
+                    value: 'toggle_search',
                     child: Row(
                       children: [
                         Icon(
-                          isSidebarOpen ? Icons.view_sidebar_rounded : Icons.view_sidebar_outlined,
+                          _showInThreadSearch
+                              ? Icons.search_off_rounded
+                              : Icons.search_rounded,
                           size: 18,
                         ),
                         const SizedBox(width: 8),
-                        Text(isSidebarOpen ? '收起版块列表' : '展开版块列表'),
+                        Text(_showInThreadSearch ? '关闭楼层搜索' : '搜索本帖楼层'),
                       ],
                     ),
                   ),
-                PopupMenuItem(
-                  value: 'toggle_order',
-                  child: Row(
-                    children: [
-                      Icon(
-                        _isDescOrder ? Icons.arrow_downward_rounded : Icons.arrow_upward_rounded,
-                        size: 18,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(_isDescOrder ? '切换为正序浏览 (最早在前)' : '切换为倒序浏览 (最新在前)'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'ai_summary',
-                  child: Row(
-                    children: [
-                      Icon(Icons.auto_awesome_rounded, size: 18),
-                      SizedBox(width: 8),
-                      Text('AI 智能总结'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'copy_link',
-                  child: Row(
-                    children: [
-                      Icon(Icons.link_rounded, size: 18),
-                      SizedBox(width: 8),
-                      Text('复制链接'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'open_browser',
-                  child: Row(
-                    children: [
-                      Icon(Icons.open_in_browser_rounded, size: 18),
-                      SizedBox(width: 8),
-                      Text('浏览器打开'),
-                    ],
-                  ),
-                ),
-                if (_canModerate)
-                  const PopupMenuItem(
-                    value: 'topic_admin',
-                    child: Row(
-                      children: [
-                        Icon(Icons.admin_panel_settings_outlined, size: 18),
-                        SizedBox(width: 8),
-                        Text('管理此主题 (TopicAdmin)'),
-                      ],
-                    ),
-                  ),
-                if (_canEditPost) ...[
-                  const PopupMenuItem(
-                    value: 'edit',
-                    child: Row(
-                      children: [
-                        Icon(Icons.edit_outlined, size: 18),
-                        SizedBox(width: 8),
-                        Text('编辑帖子'),
-                      ],
-                    ),
-                  ),
-                  if ((_firstAuthorUid != null && _myUid == _firstAuthorUid) || _canModerate)
-                    const PopupMenuItem(
-                      value: 'delete',
+                  if (hasSidebarToggle)
+                    PopupMenuItem(
+                      value: 'toggle_forum_sidebar',
                       child: Row(
                         children: [
-                          Icon(Icons.delete_outline, size: 18),
+                          Icon(
+                            isSidebarOpen
+                                ? Icons.view_sidebar_rounded
+                                : Icons.view_sidebar_outlined,
+                            size: 18,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(isSidebarOpen ? '收起版块列表' : '展开版块列表'),
+                        ],
+                      ),
+                    ),
+                  PopupMenuItem(
+                    value: 'toggle_order',
+                    child: Row(
+                      children: [
+                        Icon(
+                          _isDescOrder
+                              ? Icons.arrow_downward_rounded
+                              : Icons.arrow_upward_rounded,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                            _isDescOrder ? '切换为正序浏览 (最早在前)' : '切换为倒序浏览 (最新在前)'),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'ai_summary',
+                    child: Row(
+                      children: [
+                        Icon(Icons.auto_awesome_rounded, size: 18),
+                        SizedBox(width: 8),
+                        Text('AI 智能总结'),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'copy_link',
+                    child: Row(
+                      children: [
+                        Icon(Icons.link_rounded, size: 18),
+                        SizedBox(width: 8),
+                        Text('复制链接'),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'open_browser',
+                    child: Row(
+                      children: [
+                        Icon(Icons.open_in_browser_rounded, size: 18),
+                        SizedBox(width: 8),
+                        Text('浏览器打开'),
+                      ],
+                    ),
+                  ),
+                  if (_canModerate)
+                    const PopupMenuItem(
+                      value: 'topic_admin',
+                      child: Row(
+                        children: [
+                          Icon(Icons.admin_panel_settings_outlined, size: 18),
                           SizedBox(width: 8),
-                          Text('删除帖子'),
+                          Text('管理此主题 (TopicAdmin)'),
+                        ],
+                      ),
+                    ),
+                  if (_canEditPost) ...[
+                    const PopupMenuItem(
+                      value: 'edit',
+                      child: Row(
+                        children: [
+                          Icon(Icons.edit_outlined, size: 18),
+                          SizedBox(width: 8),
+                          Text('编辑帖子'),
+                        ],
+                      ),
+                    ),
+                    if ((_firstAuthorUid != null &&
+                            _myUid == _firstAuthorUid) ||
+                        _canModerate)
+                      const PopupMenuItem(
+                        value: 'delete',
+                        child: Row(
+                          children: [
+                            Icon(Icons.delete_outline, size: 18),
+                            SizedBox(width: 8),
+                            Text('删除帖子'),
+                          ],
+                        ),
+                      ),
+                  ],
+                  if (!_canModerate &&
+                      (_firstAuthorUid == null || _myUid != _firstAuthorUid))
+                    const PopupMenuItem(
+                      value: 'report',
+                      child: Row(
+                        children: [
+                          Icon(Icons.report_problem_outlined, size: 18),
+                          SizedBox(width: 8),
+                          Text('举报'),
                         ],
                       ),
                     ),
                 ],
-                if (!_canModerate && (_firstAuthorUid == null || _myUid != _firstAuthorUid))
-                  const PopupMenuItem(
-                    value: 'report',
-                    child: Row(
-                      children: [
-                        Icon(Icons.report_problem_outlined, size: 18),
-                        SizedBox(width: 8),
-                        Text('举报'),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
+              ),
           ],
         ),
         body: Builder(
@@ -1517,12 +1818,47 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                   return const ThreadDetailSkeleton();
                 }
                 if (snap.hasError) {
+                  if (snap.error
+                      case final DiscuzThreadAccessException access) {
+                    final returnFid = access.returnFid ?? currentFid;
+                    return ThreadAccessView(
+                      access: access,
+                      onRetry: _reload,
+                      onBackToForum: returnFid != null && returnFid > 0
+                          ? () => Navigator.of(context).pushReplacement(
+                                MaterialPageRoute(
+                                  builder: (_) => ThreadListPage(
+                                    fid: returnFid,
+                                    title: ComiisParser.getForumNameByFid(
+                                            returnFid) ??
+                                        _forumName ??
+                                        '论坛板块',
+                                  ),
+                                ),
+                              )
+                          : null,
+                      onLogin:
+                          access.kind == DiscuzThreadAccessKind.loginRequired &&
+                                  !DioClient.isLoggedIn
+                              ? () async {
+                                  await Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                          builder: (_) => const LoginPage()));
+                                  if (mounted) _reload();
+                                }
+                              : null,
+                    );
+                  }
                   final errStr = snap.error.toString();
                   final outage = ServerOutageInfo.tryParse(snap.error);
                   if (outage != null && !_viewCacheAnyway) {
-                    final otKey = _ordertype != null && _ordertype! > 0 ? '_ot$_ordertype' : '';
-                    final cacheKey = 'thread_detail_${_effectiveTid}_$_page$otKey';
-                    final cached = PreloadService.instance.get<ThreadDetailParsed>(cacheKey);
+                    final otKey = _ordertype != null && _ordertype! > 0
+                        ? '_ot$_ordertype'
+                        : '';
+                    final cacheKey =
+                        'thread_detail_${_effectiveTid}_$_page$otKey';
+                    final cached = PreloadService.instance
+                        .get<ThreadDetailParsed>(cacheKey);
                     return ServerOutageView(
                       outage: outage,
                       onRetry: _reload,
@@ -1537,7 +1873,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                           : null,
                       onGoHome: () {
                         if (Navigator.of(context).canPop()) {
-                          Navigator.of(context).popUntil((route) => route.isFirst);
+                          Navigator.of(context)
+                              .popUntil((route) => route.isFirst);
                         }
                       },
                     );
@@ -1557,7 +1894,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                             Container(
                               padding: const EdgeInsets.all(16),
                               decoration: BoxDecoration(
-                                color: Theme.of(context).colorScheme.errorContainer.withAlpha(60),
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .errorContainer
+                                    .withAlpha(60),
                                 shape: BoxShape.circle,
                               ),
                               child: Icon(
@@ -1569,7 +1909,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                             const SizedBox(height: 16),
                             Text(
                               '帖子不存在或已被删除',
-                              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleMedium
+                                  ?.copyWith(
                                     fontWeight: FontWeight.bold,
                                   ),
                             ),
@@ -1588,8 +1931,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                               children: [
                                 if (Navigator.of(context).canPop()) ...[
                                   OutlinedButton.icon(
-                                    onPressed: () => Navigator.of(context).maybePop(),
-                                    icon: const Icon(Icons.arrow_back, size: 16),
+                                    onPressed: () =>
+                                        Navigator.of(context).maybePop(),
+                                    icon:
+                                        const Icon(Icons.arrow_back, size: 16),
                                     label: const Text('返回上一页'),
                                   ),
                                   const SizedBox(width: 12),
@@ -1612,7 +1957,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.error_outline_rounded, size: 48, color: Theme.of(context).colorScheme.error),
+                          Icon(Icons.error_outline_rounded,
+                              size: 48,
+                              color: Theme.of(context).colorScheme.error),
                           const SizedBox(height: 12),
                           Text('加载失败：$errStr', textAlign: TextAlign.center),
                           const SizedBox(height: 16),
@@ -1656,131 +2003,204 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                       ),
                     if (_showInThreadSearch) _buildInThreadSearchBar(floors),
                     Expanded(
-                      child: RepaintBoundary(
-                        child: RefreshIndicator(
-                          onRefresh: () async => _reload(),
-                          child: ThreadLayoutWorkbench(
-                    tid: _effectiveTid,
-                    fid: data?.fid,
-                    forumName: data?.forumName,
-                    floors: floors,
-                    scrollController: _scrollCtrl,
-                    bottomBar: _buildBottomActions(floors),
-                    floatingActionButton: _buildBackTopFab(),
-                    currentPage: _page,
-                    totalPages: data?.totalPages ?? _totalPages,
-                    totalReplies: data?.replies ?? _replies,
-                    isDescOrder: data?.isDescOrder ?? _isDescOrder,
-                    onJumpToFloor: (idx) => _jumpToFloorIndex(idx),
-                    onNavigateToFloor: (targetFloor) => _navigateToFloorNumber(targetFloor),
-                    onSelectThread: (tid) {
-                      Navigator.of(context).pushReplacement(
-                        MaterialPageRoute(
-                          builder: (_) => ThreadDetailPage(
-                            tid: tid,
-                            fid: data?.fid,
-                          ),
-                        ),
-                      );
-                    },
-                    onOpenRatingFilter: () {
-                      final firstFloor = floors.isNotEmpty ? floors.first : null;
-                      final pid = firstFloor?.pid ?? 0;
-                      RatingFilterHall.show(
-                        context,
-                        tid: widget.tid,
-                        pid: pid,
-                        fallbackRewards: firstFloor?.rewards.map((r) => FloorReward(
-                          username: r.user,
-                          uid: r.uid,
-                          amount: r.amount,
-                          reason: r.reason,
-                        )).toList() ?? const [],
-                      );
-                    },
-                    child: CustomScrollView(
-                      cacheExtent: 350.0,
-                      controller: _scrollCtrl,
-                      physics: const AlwaysScrollableScrollPhysics(),
-                      slivers: [
-                        if (title.isNotEmpty)
-                          SliverToBoxAdapter(
-                            child: _buildThreadHeaderWidget(title, data, floors, context),
-                          ),
-                        SliverList(
-                          delegate: SliverChildBuilderDelegate(
-                            (context, i) {
-                              final isThreadAuthor = floors[i].isThreadAuthor ||
-                                  (_firstAuthorUid != null && floors[i].uid == _firstAuthorUid);
-                              final isFirstFloor = _page == 1 &&
-                                  i == 0 &&
-                                  (floors[i].floorNumber == '楼主' ||
-                                      (_firstAuthorUid != null
-                                          ? (isThreadAuthor && !floors[i].floorNumber.contains(RegExp(r'\d+')))
-                                          : !floors[i].floorNumber.contains(RegExp(r'\d+'))));
-                              return Column(
-                                mainAxisSize: MainAxisSize.min,
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  if (_page == 1 && i == 0 && (_aiSummary != null || data?.aiSummary != null))
-                                    AiSummaryCard(
-                                      tid: _effectiveTid,
-                                      initialData: _aiSummary ?? data?.aiSummary,
-                                      onRefresh: () {
-                                        if (mounted) setState(() {});
+                      child: RefreshIndicator(
+                        onRefresh: () async => _reload(),
+                        child: ThreadLayoutWorkbench(
+                          tid: _effectiveTid,
+                          fid: data?.fid,
+                          forumName: data?.forumName,
+                          floors: floors,
+                          scrollController: _scrollCtrl,
+                          bottomBar: _buildBottomActions(floors),
+                          floatingActionButton: _buildBackTopFab(),
+                          currentPage: _page,
+                          totalPages: data?.totalPages ?? _totalPages,
+                          totalReplies: data?.replies ?? _replies,
+                          isDescOrder: _isDescOrder,
+                          onJumpToFloor: (idx) => _jumpToFloorIndex(idx),
+                          onNavigateToFloor: (targetFloor) =>
+                              _navigateToFloorNumber(targetFloor),
+                          onSelectThread: (tid) {
+                            Navigator.of(context).pushReplacement(
+                              MaterialPageRoute(
+                                builder: (_) => ThreadDetailPage(
+                                  tid: tid,
+                                  fid: data?.fid,
+                                ),
+                              ),
+                            );
+                          },
+                          onOpenRatingFilter: () {
+                            final firstFloor =
+                                floors.isNotEmpty ? floors.first : null;
+                            final pid = firstFloor?.pid ?? 0;
+                            RatingFilterHall.show(
+                              context,
+                              tid: widget.tid,
+                              pid: pid,
+                              fallbackRewards: firstFloor?.rewards
+                                      .map((r) => FloorReward(
+                                            username: r.user,
+                                            uid: r.uid,
+                                            amount: r.amount,
+                                            reason: r.reason,
+                                          ))
+                                      .toList() ??
+                                  const [],
+                            );
+                          },
+                          child: Builder(
+                            builder: (context) {
+                              final displayFloorLabels =
+                                  computeDisplayFloorNumbers(
+                                floors,
+                                page: _page,
+                                isDescOrder: _isDescOrder,
+                                totalReplies: data?.replies ?? _replies,
+                              );
+                              return CustomScrollView(
+                                cacheExtent: 400.0,
+                                controller: _scrollCtrl,
+                                physics: const AlwaysScrollableScrollPhysics(),
+                                slivers: [
+                                  if (title.isNotEmpty)
+                                    SliverToBoxAdapter(
+                                      child: _buildThreadHeaderWidget(
+                                          title, data, floors, context),
+                                    ),
+                                  SliverList(
+                                    delegate: SliverChildBuilderDelegate(
+                                      (context, i) {
+                                        final isThreadAuthor =
+                                            floors[i].isThreadAuthor ||
+                                                (_firstAuthorUid != null &&
+                                                    floors[i].uid ==
+                                                        _firstAuthorUid);
+                                        final isFirstFloor = _page == 1 &&
+                                            i == 0 &&
+                                            (floors[i].floorNumber == '楼主' ||
+                                                (_firstAuthorUid != null
+                                                    ? (isThreadAuthor &&
+                                                        !floors[i]
+                                                            .floorNumber
+                                                            .contains(
+                                                                _digitRegex))
+                                                    : !floors[i]
+                                                        .floorNumber
+                                                        .contains(
+                                                            _digitRegex)));
+                                        final displayFloor =
+                                            displayFloorLabels.length > i
+                                                ? displayFloorLabels[i]
+                                                : null;
+                                        final floorPid = floors[i].pid;
+                                        final isFloorLiked = floorPid != null &&
+                                            _likedFloorPids.contains(floorPid);
+                                        return Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.stretch,
+                                          children: [
+                                            if (_page == 1 &&
+                                                i == 0 &&
+                                                (_aiSummary != null ||
+                                                    data?.aiSummary != null))
+                                              AiSummaryCard(
+                                                tid: _effectiveTid,
+                                                initialData: _aiSummary ??
+                                                    data?.aiSummary,
+                                                onRefresh: () {
+                                                  if (mounted) setState(() {});
+                                                },
+                                              ),
+                                            if ((_page == 1 && i == 1) ||
+                                                (_page > 1 && i == 0))
+                                              _buildRepliesDivider(context,
+                                                  repliesCount: data?.replies ??
+                                                      _replies),
+                                            _FloorView(
+                                              key: _floorItemKeys.putIfAbsent(
+                                                  i, () => GlobalKey()),
+                                              floor: floors[i],
+                                              index: i,
+                                              page: _page,
+                                              tid: _effectiveTid,
+                                              fid: data?.fid,
+                                              threadTitle:
+                                                  (data?.title ?? _title)
+                                                          .isNotEmpty
+                                                      ? (data?.title ?? _title)
+                                                      : null,
+                                              displayFloorNumber: displayFloor,
+                                              isFirstFloor: isFirstFloor,
+                                              isThreadAuthor: isThreadAuthor,
+                                              isDescOrder: _isDescOrder,
+                                              totalReplies:
+                                                  data?.replies ?? _replies,
+                                              isHighlighted:
+                                                  _highlightedFloorIndex == i,
+                                              stamp: isFirstFloor
+                                                  ? (data?.stamp ?? _stamp)
+                                                  : null,
+                                              stampUrl: isFirstFloor
+                                                  ? (data?.stampUrl ??
+                                                      _stampUrl)
+                                                  : null,
+                                              isLiked: isFirstFloor
+                                                  ? _liked
+                                                  : isFloorLiked,
+                                              likesCount: isFirstFloor
+                                                  ? _likes
+                                                  : floors[i].likes,
+                                              likeBusy: isFirstFloor
+                                                  ? _likeBusy
+                                                  : _likingFloorPids
+                                                      .contains(floorPid),
+                                              onLikeToggle: isFirstFloor
+                                                  ? _onLike
+                                                  : () => _onToggleFloorLiked(
+                                                      floorPid),
+                                              onReload: _reload,
+                                              myUid: _myUid,
+                                              canModerate: _canModerate,
+                                            ),
+                                            if (_page == 1 &&
+                                                i == 0 &&
+                                                _tags.isNotEmpty)
+                                              Padding(
+                                                padding:
+                                                    const EdgeInsets.fromLTRB(
+                                                        14, 6, 14, 6),
+                                                child: _buildTagsWrap(),
+                                              ),
+                                          ],
+                                        );
                                       },
+                                      childCount: floors.length,
+                                      addRepaintBoundaries: false,
                                     ),
-                                  if ((_page == 1 && i == 1) || (_page > 1 && i == 0))
-                                    _buildRepliesDivider(context, repliesCount: data?.replies ?? _replies),
-                                  _FloorView(
-                                    key: _floorItemKeys.putIfAbsent(i, () => GlobalKey()),
-                                    floor: floors[i],
-                                    index: i,
-                                    page: _page,
-                                    tid: _effectiveTid,
-                                    fid: data?.fid,
-                                    threadTitle: (data?.title ?? _title).isNotEmpty ? (data?.title ?? _title) : null,
-                                    isFirstFloor: isFirstFloor,
-                                    isThreadAuthor: isThreadAuthor,
-                                    isDescOrder: data?.isDescOrder ?? _isDescOrder,
-                                    totalReplies: data?.replies ?? _replies,
-                                    isHighlighted: _highlightedFloorIndex == i,
-                                    stamp: isFirstFloor ? (data?.stamp ?? _stamp) : null,
-                                    stampUrl: isFirstFloor ? (data?.stampUrl ?? _stampUrl) : null,
-                                    isLiked: isFirstFloor ? _liked : null,
-                                    likesCount: isFirstFloor ? _likes : null,
-                                    onLikeToggle: isFirstFloor ? _onLike : null,
-                                    onReload: _reload,
-                                    myUid: _myUid,
-                                    canModerate: _canModerate,
                                   ),
-                                  if (_page == 1 && i == 0 && _tags.isNotEmpty)
-                                    Padding(
-                                      padding: const EdgeInsets.fromLTRB(14, 6, 14, 6),
-                                      child: _buildTagsWrap(),
-                                    ),
+                                  SliverToBoxAdapter(
+                                    child:
+                                        _buildThreadFooterWidget(data, context),
+                                  ),
                                 ],
                               );
                             },
-                            childCount: floors.length,
-                            addRepaintBoundaries: false,
                           ),
                         ),
-                        SliverToBoxAdapter(
-                          child: _buildThreadFooterWidget(data, context),
-                        ),
-                      ],
+                      ),
                     ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          );
-        },
-      );
+                  ],
+                );
+              },
+            );
 
-            if (widget.canShowForumSidebar && isDesktop && _showForumSidebar && currentFid != null && currentFid! > 0) {
+            if (widget.canShowForumSidebar &&
+                isDesktop &&
+                _showForumSidebar &&
+                currentFid != null &&
+                currentFid! > 0) {
               return Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -1789,7 +2209,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                     child: RepaintBoundary(
                       child: ThreadListPage(
                         fid: currentFid!,
-                        title: _forumName ?? ComiisParser.getForumNameByFid(currentFid) ?? '版块列表',
+                        title: _forumName ??
+                            ComiisParser.getForumNameByFid(currentFid) ??
+                            '版块列表',
                         isSidebar: true,
                         activeTid: _effectiveTid,
                         onThreadSelected: _onSidebarSelectThread,
@@ -1804,15 +2226,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                   ),
                   _buildForumSidebarSplitter(),
                   Expanded(
-                    child: RepaintBoundary(
-                      child: mainDetailContent,
-                    ),
+                    child: mainDetailContent,
                   ),
                 ],
               );
             }
 
-            return RepaintBoundary(child: mainDetailContent);
+            return mainDetailContent;
           },
         ),
       ),
@@ -1842,15 +2262,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
             visualDensity: VisualDensity.compact,
             padding: const EdgeInsets.symmetric(horizontal: 4),
             labelPadding: EdgeInsets.zero,
-            backgroundColor: Theme.of(context)
-                .colorScheme
-                .primaryContainer
-                .withAlpha(45),
+            backgroundColor:
+                Theme.of(context).colorScheme.primaryContainer.withAlpha(45),
             side: BorderSide(
-              color: Theme.of(context)
-                  .colorScheme
-                  .primary
-                  .withAlpha(70),
+              color: Theme.of(context).colorScheme.primary.withAlpha(70),
               width: 0.6,
             ),
             label: Text(
@@ -1874,7 +2289,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     );
   }
 
-  Widget _buildThreadHeaderWidget(String title, ThreadDetailParsed? data, List<PostFloor> floors, BuildContext context) {
+  Widget _buildThreadHeaderWidget(String title, ThreadDetailParsed? data,
+      List<PostFloor> floors, BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
@@ -1897,20 +2313,26 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                       Icon(
                         Icons.home_outlined,
                         size: 14,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(200),
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurfaceVariant
+                            .withAlpha(200),
                       ),
                       Text(
                         '论坛',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                               fontSize: 12,
                               fontWeight: FontWeight.w500,
                             ),
                       ),
-                      for (final bc in (data?.breadcrumbs ?? [
-                        if ((data?.forumName ?? '').isNotEmpty)
-                          data!.forumName,
-                      ])) ...[
+                      for (final bc in (data?.breadcrumbs ??
+                          [
+                            if ((data?.forumName ?? '').isNotEmpty)
+                              data!.forumName,
+                          ])) ...[
                         Icon(
                           Icons.chevron_right,
                           size: 14,
@@ -1932,15 +2354,23 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                           },
                           borderRadius: BorderRadius.circular(4),
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
                             decoration: BoxDecoration(
-                              color: Theme.of(context).colorScheme.primaryContainer.withAlpha(40),
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .primaryContainer
+                                  .withAlpha(40),
                               borderRadius: BorderRadius.circular(4),
                             ),
                             child: Text(
                               bc,
-                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                    color: Theme.of(context).colorScheme.primary,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color:
+                                        Theme.of(context).colorScheme.primary,
                                     fontWeight: FontWeight.w600,
                                     fontSize: 12,
                                   ),
@@ -1971,15 +2401,23 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                           _buildStampBadge(currentStamp),
                         if (typeName != null && typeName.isNotEmpty)
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 3),
                             decoration: BoxDecoration(
-                              color: Theme.of(context).colorScheme.primaryContainer.withAlpha(120),
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .primaryContainer
+                                  .withAlpha(120),
                               borderRadius: BorderRadius.circular(6),
                             ),
                             child: Text(
                               typeName,
-                              style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                                    color: Theme.of(context).colorScheme.primary,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelMedium
+                                  ?.copyWith(
+                                    color:
+                                        Theme.of(context).colorScheme.primary,
                                     fontWeight: FontWeight.bold,
                                   ),
                             ),
@@ -2013,13 +2451,19 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                       Icon(
                         Icons.schedule,
                         size: 13,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(190),
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurfaceVariant
+                            .withAlpha(190),
                       ),
                       const SizedBox(width: 4),
                       Text(
                         '发布 ${data!.publishDate}',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(200),
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant
+                                  .withAlpha(200),
                               fontSize: 11.5,
                             ),
                       ),
@@ -2029,7 +2473,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                   Text(
                     '最近回复 ${data!.lastReplyDate}',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(200),
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant
+                              .withAlpha(200),
                           fontSize: 11.5,
                         ),
                   ),
@@ -2041,13 +2488,19 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                   Icon(
                     Icons.visibility_outlined,
                     size: 13,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(190),
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurfaceVariant
+                        .withAlpha(190),
                   ),
                   const SizedBox(width: 4),
                   Text(
                     '${(_views > 0 ? _views : (data?.views ?? 0))} 浏览 · ${(_replies > 0 ? _replies : (data?.replies ?? (floors.length > 1 ? floors.length - 1 : 0)))} 回复 · ${(_likes > 0 ? _likes : (data?.likes ?? 0))} 点赞',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(200),
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant
+                              .withAlpha(200),
                           fontSize: 11.5,
                         ),
                   ),
@@ -2091,7 +2544,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     );
   }
 
-  Widget _buildThreadFooterWidget(ThreadDetailParsed? data, BuildContext context) {
+  Widget _buildThreadFooterWidget(
+      ThreadDetailParsed? data, BuildContext context) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2107,7 +2561,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                 style: TextStyle(fontSize: 13),
               ),
               onPressed: () async {
-                final url = '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=${widget.tid}';
+                final url =
+                    '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=${widget.tid}';
                 await Clipboard.setData(ClipboardData(text: url));
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -2148,14 +2603,21 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                       borderRadius: BorderRadius.circular(14),
                       onTap: () => _jumpPage(data.totalPages),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 5),
                         decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.primaryContainer.withAlpha(70),
+                          color: Theme.of(context)
+                              .colorScheme
+                              .primaryContainer
+                              .withAlpha(70),
                           borderRadius: BorderRadius.circular(14),
                         ),
                         child: Text(
                           '$_page / ${data.totalPages} · 点此跳页',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodyMedium
+                              ?.copyWith(
                                 fontWeight: FontWeight.w600,
                                 color: Theme.of(context).colorScheme.primary,
                               ),
@@ -2165,12 +2627,16 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                     IconButton(
                       icon: const Icon(Icons.last_page),
                       tooltip: '末页',
-                      onPressed: _page < data.totalPages ? () => _goPage(data.totalPages) : null,
+                      onPressed: _page < data.totalPages
+                          ? () => _goPage(data.totalPages)
+                          : null,
                     ),
                   ],
                   IconButton(
                     icon: const Icon(Icons.chevron_right),
-                    onPressed: _page < data.totalPages ? () => _goPage(_page + 1) : null,
+                    onPressed: _page < data.totalPages
+                        ? () => _goPage(_page + 1)
+                        : null,
                   ),
                 ],
               ),
@@ -2204,11 +2670,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
           children: [
             Expanded(
               child: GestureDetector(
-                onLongPress: () => _showLikedUsersDialog(currentFloors.isNotEmpty ? currentFloors : _floors),
+                onLongPress: () => _showLikedUsersDialog(
+                    currentFloors.isNotEmpty ? currentFloors : _floors),
                 child: _BottomAction(
-                  icon: _liked
-                      ? Icons.thumb_up
-                      : Icons.thumb_up_outlined,
+                  icon: _liked ? Icons.thumb_up : Icons.thumb_up_outlined,
                   label: _likes > 0 ? '$_likes 赞' : '点赞',
                   highlighted: _liked,
                   onTap: _onLike,
@@ -2234,9 +2699,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                 onTap: () {
                   final url =
                       '${AppConfig.baseUrl}thread-${widget.tid}-1-1.html';
-                  final shareText = _title.isNotEmpty
-                      ? '$_title $url'
-                      : url;
+                  final shareText = _title.isNotEmpty ? '$_title $url' : url;
                   Clipboard.setData(ClipboardData(text: shareText));
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('标题+链接已复制')),
@@ -2282,7 +2745,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                     icon: const Icon(Icons.arrow_upward_rounded, size: 20),
                     label: const Text(
                       '回到顶部',
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                      style:
+                          TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
                     ),
                   )
                 : FloatingActionButton.small(
@@ -2330,11 +2794,24 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       return;
     }
     if (_floors.isNotEmpty && idx >= _floors.length - 1) {
-      _scrollCtrl.animateTo(
+      _scrollCtrl
+          .animateTo(
         _scrollCtrl.position.maxScrollExtent,
         duration: const Duration(milliseconds: 350),
         curve: Curves.easeOutCubic,
-      );
+      )
+          .then((_) {
+        if (mounted &&
+            _scrollCtrl.hasClients &&
+            _scrollCtrl.position.pixels <
+                _scrollCtrl.position.maxScrollExtent) {
+          _scrollCtrl.animateTo(
+            _scrollCtrl.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+          );
+        }
+      });
       return;
     }
 
@@ -2348,16 +2825,17 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
         alignment: 0.05,
       );
     } else {
-      // 离屏虚拟化区域平滑过渡定位
-      final total = _floors.isNotEmpty ? _floors.length : 1;
-      final progress = (idx / total).clamp(0.0, 1.0);
-      final estimatedOffset = (_scrollCtrl.position.maxScrollExtent * progress)
+      // 离屏虚拟化区域平滑过渡定位：基于楼层高度精确估算
+      final baseTop = _page == 1 ? 550.0 : 150.0;
+      final estimatedOffset = (baseTop + idx * 240.0)
           .clamp(0.0, _scrollCtrl.position.maxScrollExtent);
-      _scrollCtrl.animateTo(
+      _scrollCtrl
+          .animateTo(
         estimatedOffset,
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeOutCubic,
-      ).then((_) {
+      )
+          .then((_) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           final lateCtx = _floorItemKeys[idx]?.currentContext;
           if (lateCtx != null) {
@@ -2376,6 +2854,16 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   void _scrollToFloorNumberInCurrentPage(int targetFloor) {
     if (!mounted || _floors.isEmpty) return;
 
+    if (targetFloor == -1) {
+      if (_isDescOrder) {
+        final idx = (_page == 1 && _floors.length > 1) ? 1 : 0;
+        _jumpToFloorIndex(idx);
+      } else {
+        _jumpToFloorIndex((_floors.length - 1).clamp(0, _floors.length - 1));
+      }
+      return;
+    }
+
     int? targetIndex;
 
     // 1. 楼主特殊直达（第 1 页 index 0）
@@ -2383,7 +2871,26 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       targetIndex = 0;
     }
 
-    // 2. 真实楼层文字与编号优先比对（优先绝对精准定位，避免删除楼层导致推导偏差）
+    // 2. 匹配实际在界面上呈现的权威楼层号标签
+    final displayFloorLabels = computeDisplayFloorNumbers(
+      _floors,
+      page: _page,
+      isDescOrder: _isDescOrder,
+      totalReplies: _replies,
+    );
+
+    if (targetIndex == null) {
+      for (int i = 0; i < displayFloorLabels.length; i++) {
+        final label = displayFloorLabels[i];
+        final num = _parseFloorNumberFromLabel(label);
+        if (num == targetFloor) {
+          targetIndex = i;
+          break;
+        }
+      }
+    }
+
+    // 3. 原始楼层文字与编号比对兜底
     if (targetIndex == null) {
       for (int i = 0; i < _floors.length; i++) {
         final f = _floors[i];
@@ -2392,7 +2899,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
           targetIndex = i;
           break;
         }
-        if (targetFloor == 1 && (f.floorNumber == '楼主' || f.isThreadAuthor || (_page == 1 && i == 0))) {
+        if (targetFloor == 1 &&
+            (f.floorNumber == '楼主' ||
+                f.isThreadAuthor ||
+                (_page == 1 && i == 0))) {
           targetIndex = i;
           break;
         }
@@ -2411,11 +2921,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
       }
     }
 
-    // 3. 数学推导兜底（当服务端未能解析出单楼层明确标号时）
+    // 4. 数学推导兜底（当服务端未能解析出单楼层明确标号时）
     if (targetIndex == null) {
       if (!_isDescOrder) {
-        // 正序：每页10楼
-        final expectedIdx = (targetFloor - 1) % 10;
+        // 正序：第 1 页 1..10 楼（index 0..9）；第 2 页 11..20 楼（index 0..9）
+        final expectedIdx =
+            _page == 1 ? (targetFloor - 1) : (targetFloor - 11) % 10;
         if (expectedIdx >= 0 && expectedIdx < _floors.length) {
           targetIndex = expectedIdx;
         }
@@ -2446,30 +2957,75 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
   }
 
   void _navigateToFloorNumber(int targetFloor) {
-    if (targetFloor <= 0) return;
+    if (targetFloor <= 0 && targetFloor != -1) return;
+
+    // 最新回帖 (-1) 特殊快捷跳转
+    if (targetFloor == -1) {
+      if (_isDescOrder) {
+        if (_page == 1) {
+          final idx = _floors.length > 1 ? 1 : 0;
+          _jumpToFloorIndex(idx);
+        } else {
+          _pendingTargetFloor = -1;
+          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('正在前往第 1 页定位最新回帖...'),
+              duration: Duration(seconds: 1),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+          _goPage(1);
+        }
+      } else {
+        final lastPage = _totalPages > 0 ? _totalPages : 1;
+        if (_page == lastPage) {
+          _jumpToFloorIndex((_floors.length - 1).clamp(0, _floors.length - 1));
+        } else {
+          _pendingTargetFloor = -1;
+          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('正在前往第 $lastPage 页定位最新回帖...'),
+              duration: const Duration(seconds: 1),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+          _goPage(lastPage);
+        }
+      }
+      return;
+    }
+
+    // 楼主 (1#) 特殊快捷跳转：楼主只在第 1 页
+    if (targetFloor == 1) {
+      if (_page == 1) {
+        _scrollToFloorNumberInCurrentPage(1);
+      } else {
+        _pendingTargetFloor = 1;
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('正在前往第 1 页定位楼主...'),
+            duration: Duration(seconds: 1),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        _goPage(1);
+      }
+      return;
+    }
 
     // 0. 优先在当前页全面检索：若该楼层已在当前页列表中，直接平滑定位，杜绝无谓跳页与打架！
     if (_floors.isNotEmpty) {
-      if (targetFloor == 1 && _page == 1) {
-        _scrollToFloorNumberInCurrentPage(1);
-        return;
-      }
-      for (int i = 0; i < _floors.length; i++) {
-        final f = _floors[i];
-        final fn = f.floorNumber.replaceAll(RegExp(r'[^\d]'), '');
-        if (fn.isNotEmpty && int.tryParse(fn) == targetFloor) {
-          _scrollToFloorNumberInCurrentPage(targetFloor);
-          return;
-        }
-        if (targetFloor == 2 && f.floorNumber.contains('沙发')) {
-          _scrollToFloorNumberInCurrentPage(targetFloor);
-          return;
-        }
-        if (targetFloor == 3 && f.floorNumber.contains('板凳')) {
-          _scrollToFloorNumberInCurrentPage(targetFloor);
-          return;
-        }
-        if (targetFloor == 4 && f.floorNumber.contains('地板')) {
+      final currentLabels = computeDisplayFloorNumbers(
+        _floors,
+        page: _page,
+        isDescOrder: _isDescOrder,
+        totalReplies: _replies,
+      );
+      for (int i = 0; i < currentLabels.length; i++) {
+        if (_parseFloorNumberFromLabel(currentLabels[i]) == targetFloor) {
           _scrollToFloorNumberInCurrentPage(targetFloor);
           return;
         }
@@ -2482,19 +3038,15 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
 
     int targetPage = 1;
     if (!_isDescOrder) {
-      // 正序：每页10楼，Page = ((targetFloor - 1) ~/ 10) + 1
-      targetPage = ((targetFloor - 1) ~/ 10) + 1;
+      // 正序：1..10 楼在第 1 页；11..20 楼在第 2 页...
+      targetPage = targetFloor <= 10 ? 1 : 2 + ((targetFloor - 11) ~/ 10);
     } else {
       // 倒序：1楼永远在第1页；最新回复从第1页 index 1 往下排
-      if (targetFloor == 1) {
+      final k = totalFloors - targetFloor;
+      if (k < 9) {
         targetPage = 1;
       } else {
-        final k = totalFloors - targetFloor;
-        if (k < 9) {
-          targetPage = 1;
-        } else {
-          targetPage = 2 + ((k - 9) ~/ 10);
-        }
+        targetPage = 2 + ((k - 9) ~/ 10);
       }
     }
 
@@ -2591,7 +3143,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                   : '无匹配',
               style: TextStyle(
                 fontSize: 12,
-                color: totalMatches > 0 ? colorScheme.primary : colorScheme.error,
+                color:
+                    totalMatches > 0 ? colorScheme.primary : colorScheme.error,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -2610,7 +3163,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                           _inThreadSearchCurrentIdx--;
                         }
                       });
-                      _jumpToFloorIndex(_inThreadSearchMatches[_inThreadSearchCurrentIdx - 1]);
+                      _jumpToFloorIndex(_inThreadSearchMatches[
+                          _inThreadSearchCurrentIdx - 1]);
                     }
                   : null,
             ),
@@ -2628,7 +3182,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
                           _inThreadSearchCurrentIdx++;
                         }
                       });
-                      _jumpToFloorIndex(_inThreadSearchMatches[_inThreadSearchCurrentIdx - 1]);
+                      _jumpToFloorIndex(_inThreadSearchMatches[
+                          _inThreadSearchCurrentIdx - 1]);
                     }
                   : null,
             ),
@@ -2680,7 +3235,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
         },
         onHorizontalDragUpdate: (details) {
           final delta = details.delta.dx;
-          final newWidth = (AppConfig.threadForumSidebarWidth + delta).clamp(240.0, 720.0);
+          final newWidth =
+              (AppConfig.threadForumSidebarWidth + delta).clamp(240.0, 720.0);
           setState(() {
             AppConfig.setThreadForumSidebarWidth(newWidth);
           });
@@ -2710,6 +3266,7 @@ class _FloorView extends StatefulWidget {
   final int page;
   final int tid;
   final int? fid;
+  final String? displayFloorNumber;
   final bool isFirstFloor;
   final bool isThreadAuthor;
   final bool isDescOrder;
@@ -2721,6 +3278,7 @@ class _FloorView extends StatefulWidget {
   final bool? isLiked;
   final int? likesCount;
   final VoidCallback? onLikeToggle;
+  final bool likeBusy;
   final VoidCallback? onReload;
   final int? myUid;
   final bool canModerate;
@@ -2732,6 +3290,7 @@ class _FloorView extends StatefulWidget {
     this.page = 1,
     required this.tid,
     this.fid,
+    this.displayFloorNumber,
     this.threadTitle,
     this.isFirstFloor = false,
     this.isThreadAuthor = false,
@@ -2743,6 +3302,7 @@ class _FloorView extends StatefulWidget {
     this.isLiked,
     this.likesCount,
     this.onLikeToggle,
+    this.likeBusy = false,
     this.onReload,
     this.myUid,
     this.canModerate = false,
@@ -2758,6 +3318,7 @@ class _FloorViewState extends State<_FloorView> {
   int get tid => widget.tid;
   int? get fid => widget.fid;
   late bool _isLiked;
+  bool _likeBusy = false;
   late int _likesCount;
 
   bool get _canEdit {
@@ -2773,7 +3334,10 @@ class _FloorViewState extends State<_FloorView> {
 
   bool get _isSelf {
     final myUid = widget.myUid;
-    return myUid != null && myUid > 0 && floor.uid != null && floor.uid == myUid;
+    return myUid != null &&
+        myUid > 0 &&
+        floor.uid != null &&
+        floor.uid == myUid;
   }
 
   bool get _canReport {
@@ -2791,11 +3355,93 @@ class _FloorViewState extends State<_FloorView> {
           floor.floorNumber == '1#') {
         return true;
       }
-      if (widget.isThreadAuthor && !floor.floorNumber.contains(RegExp(r'\d+'))) {
+      if (widget.isThreadAuthor && !floor.floorNumber.contains(_digitRegex)) {
         return true;
       }
     }
     return false;
+  }
+
+  bool get _canSetBestAnswer {
+    final myUid = widget.myUid;
+    if (myUid == null || myUid <= 0) return false;
+    final detailState =
+        context.findAncestorStateOfType<_ThreadDetailPageState>();
+    final isBounty = detailState?._isBountyThread ?? false;
+    final isSolved = detailState?._isBountySolved ?? false;
+    if (!isBounty || isSolved) return false;
+
+    final firstAuthorUid = detailState?._firstAuthorUid;
+    final isAuthor = (firstAuthorUid != null && firstAuthorUid == myUid);
+    if (!isAuthor && !widget.canModerate) return false;
+
+    if (widget.isFirstFloor || _isFirstFloorOverall) return false;
+    if (floor.uid != null &&
+        firstAuthorUid != null &&
+        floor.uid == firstAuthorUid) {
+      return false;
+    }
+    if (floor.pid == null || floor.pid! <= 0) return false;
+    if (floor.isBestAnswer) return false;
+    return true;
+  }
+
+  Future<void> _onSetBestAnswer(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.workspace_premium_rounded, color: Color(0xFFFF9800)),
+            SizedBox(width: 8),
+            Text('采纳最佳答案'),
+          ],
+        ),
+        content: Text(
+          '确定要将 ${floor.author} 的回答采纳为最佳答案吗？\n\n'
+          '采纳后系统将自动把悬赏铁粒结算给该答主，且悬赏帖将自动结贴，此操作不可撤销。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFFF9800),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            icon: const Icon(Icons.check, size: 16),
+            label: const Text('确认采纳'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted || confirmed != true) return;
+    try {
+      final pid = floor.pid!;
+      final ok = await KlpbbsApi.setBestAnswer(widget.tid, pid);
+      if (ok) {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('已成功将该回答设为最佳答案并结贴！'),
+            backgroundColor: Color(0xFF2E7D32),
+          ),
+        );
+        widget.onReload?.call();
+      } else {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('设置最佳答案失败，请稍后再试')),
+        );
+      }
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('设置最佳答案异常: $e')),
+      );
+    }
   }
 
   Future<void> _onEditFloor(BuildContext context) async {
@@ -2827,6 +3473,12 @@ class _FloorViewState extends State<_FloorView> {
   }
 
   String get _displayFloorNumber {
+    // 0. 若外部传递了严格全局计算推导的楼层号（彻底消灭顺序错乱/Discuz倒序模板伪标记/重复沙发），坚决优先采用
+    if (widget.displayFloorNumber != null &&
+        widget.displayFloorNumber!.isNotEmpty) {
+      return widget.displayFloorNumber!;
+    }
+
     // 1. 如果是第1页第1楼，坚决锁定为楼主
     if (widget.isFirstFloor) {
       return '楼主';
@@ -2834,10 +3486,16 @@ class _FloorViewState extends State<_FloorView> {
 
     // 2. 优先从服务端解析出的真实楼层编号呈现（Discuz 真实权威标识，杜绝虚假计算楼层）
     final fn = floor.floorNumber.trim();
-    if (fn.isNotEmpty && fn != '楼主') {
-      final numM = RegExp(r'(\d+)').firstMatch(fn);
+    if (fn.isNotEmpty) {
+      if (fn == '楼主') {
+        // 非首楼的「楼主」一律是 Discuz 倒序计数归 1 产生的模板伪标号，真实为沙发！
+        return '2 楼 (沙发)';
+      }
+      final numM = _digitRegex.firstMatch(fn);
       if (numM != null) {
-        final n = int.tryParse(numM.group(1)!);
+        final rawNum =
+            numM.groupCount >= 1 ? (numM.group(1) ?? numM[0]) : numM[0];
+        final n = rawNum != null ? int.tryParse(rawNum) : null;
         if (n != null) {
           if (n == 2) return '2 楼 (沙发)';
           if (n == 3) return '3 楼 (板凳)';
@@ -2855,27 +3513,27 @@ class _FloorViewState extends State<_FloorView> {
     // 3. 楼层编号缺失时的容错保底推导（绝不将任何回复错误标记为「楼主」）
     if (widget.isDescOrder) {
       final total = widget.totalReplies ?? 0;
-      if (total > 0) {
-        final offset = widget.page == 1
-            ? (index > 0 ? index - 1 : 0)
-            : 9 + (widget.page - 2) * 10 + index;
-        final descFloor = (total + 1) - offset;
-        if (descFloor == 2) return '2 楼 (沙发)';
-        if (descFloor == 3) return '3 楼 (板凳)';
-        if (descFloor == 4) return '4 楼 (地板)';
-        if (descFloor > 1) return '$descFloor 楼';
-      }
-      return '回帖';
+      final totalFloors = total > 0 ? total + 1 : 16;
+      final offset = widget.page == 1
+          ? (index > 0 ? index - 1 : 0)
+          : 9 + (widget.page - 2) * 10 + index;
+      final descFloor = totalFloors - offset;
+      if (descFloor == 2) return '2 楼 (沙发)';
+      if (descFloor == 3) return '3 楼 (板凳)';
+      if (descFloor == 4) return '4 楼 (地板)';
+      if (descFloor > 1) return '$descFloor 楼';
+      return '2 楼 (沙发)';
     } else {
       if (widget.page == 1) {
-        final floorNum = widget.isFirstFloor ? 1 : (index + 1);
+        final floorNum = index + 1;
         if (floorNum == 2) return '2 楼 (沙发)';
         if (floorNum == 3) return '3 楼 (板凳)';
         if (floorNum == 4) return '4 楼 (地板)';
         if (floorNum > 1) return '$floorNum 楼';
-        return '回帖';
+        return '2 楼 (沙发)';
       } else {
-        final globalFloor = (widget.page - 1) * 10 + index + 1;
+        // 第 2 页及之后：第 1 页有 10 楼（1 楼主 + 9 回复），第 2 页 index 0 为 11 楼
+        final globalFloor = 10 + (widget.page - 2) * 10 + index + 1;
         return '$globalFloor 楼';
       }
     }
@@ -2884,12 +3542,9 @@ class _FloorViewState extends State<_FloorView> {
   @override
   void initState() {
     super.initState();
-    if (widget.isLiked != null) {
-      _isLiked = widget.isLiked!;
-      _likesCount = widget.likesCount ?? floor.likes;
-    } else {
-      _isLiked = floor.isLiked;
-      _likesCount = floor.likes;
+    _isLiked = widget.isLiked ?? floor.isLiked;
+    _likesCount = widget.likesCount ?? floor.likes;
+    if (widget.isLiked == null) {
       _loadFloorLikedState();
     }
   }
@@ -2900,12 +3555,9 @@ class _FloorViewState extends State<_FloorView> {
     if (oldWidget.floor.pid != widget.floor.pid ||
         oldWidget.floor.floorNumber != widget.floor.floorNumber ||
         oldWidget.isDescOrder != widget.isDescOrder) {
-      if (widget.isLiked != null) {
-        _isLiked = widget.isLiked!;
-        _likesCount = widget.likesCount ?? floor.likes;
-      } else {
-        _isLiked = floor.isLiked;
-        _likesCount = floor.likes;
+      _isLiked = widget.isLiked ?? floor.isLiked;
+      _likesCount = widget.likesCount ?? floor.likes;
+      if (widget.isLiked == null) {
         _loadFloorLikedState();
       }
     } else {
@@ -2920,13 +3572,17 @@ class _FloorViewState extends State<_FloorView> {
 
   Future<void> _loadFloorLikedState() async {
     if (floor.pid == null || floor.pid! <= 0) return;
+    final key = _accountStateKey(
+        widget.isFirstFloor ? 'liked_tids' : 'liked_pids_$tid');
+    final value = widget.isFirstFloor ? '$tid' : '${floor.pid}';
+    final session = DioClient.sessionKey;
+    if (key == null) return;
     try {
       final sp = await SharedPreferences.getInstance();
-      final list = sp.getStringList('liked_pids_$tid') ?? const [];
-      if (list.contains('${floor.pid}') && mounted) {
+      final list = sp.getStringList(key) ?? const [];
+      if (list.contains(value) && mounted && session == DioClient.sessionKey) {
         setState(() {
           _isLiked = true;
-          if (_likesCount == 0) _likesCount = 1;
         });
       }
     } catch (_) {}
@@ -2934,77 +3590,55 @@ class _FloorViewState extends State<_FloorView> {
 
   Future<void> _saveFloorLikedState(bool liked) async {
     if (floor.pid == null || floor.pid! <= 0) return;
+    final key = _accountStateKey(
+        widget.isFirstFloor ? 'liked_tids' : 'liked_pids_$tid');
+    final value = widget.isFirstFloor ? '$tid' : '${floor.pid}';
+    final session = DioClient.sessionKey;
+    if (key == null) return;
     try {
       final sp = await SharedPreferences.getInstance();
-      final key = 'liked_pids_$tid';
+      if (session != DioClient.sessionKey) return;
       final list = (sp.getStringList(key) ?? <String>[]).toList();
       if (liked) {
-        if (!list.contains('${floor.pid}')) list.add('${floor.pid}');
+        if (!list.contains(value)) list.add(value);
       } else {
-        list.remove('${floor.pid}');
+        list.remove(value);
       }
       await sp.setStringList(key, list);
     } catch (_) {}
   }
 
   Future<void> _toggleFloorLike() async {
+    if (_likeBusy || widget.likeBusy || !_canSendLike(context)) return;
     if (widget.onLikeToggle != null) {
       widget.onLikeToggle!();
       return;
     }
-    if (!DioClient.isLoggedIn) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('请先登录论坛账号后再进行点赞'),
-          action: SnackBarAction(
-            label: '去登录',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const LoginPage()),
-            ),
-          ),
-        ),
-      );
-      return;
-    }
+    final session = DioClient.sessionKey;
     final nextLiked = !_isLiked;
-    setState(() {
-      _isLiked = nextLiked;
-      _likesCount += nextLiked ? 1 : (_likesCount > 0 ? -1 : 0);
-    });
-    _saveFloorLikedState(nextLiked);
-    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _likeBusy = true);
     try {
-      final res = await KlpbbsApi.likeFloor(
-        tid,
-        floor.pid ?? 0,
-        isFirstFloor: widget.isFirstFloor,
-        support: nextLiked,
-      );
-      if (mounted) {
-        if (res.isLiked != _isLiked) {
-          setState(() {
-            _isLiked = res.isLiked;
-          });
-          _saveFloorLikedState(res.isLiked);
-        }
+      final result = await KlpbbsApi.likeFloor(tid, floor.pid ?? 0,
+          isFirstFloor: widget.isFirstFloor, support: nextLiked);
+      if (!mounted || session != DioClient.sessionKey) return;
+      if (result.success) {
+        setState(() => _isLiked = result.isLiked);
+        await _saveFloorLikedState(result.isLiked);
+        widget.onReload?.call();
       }
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(
-            res.message.isNotEmpty
-                ? res.message
-                : (res.isLiked ? '点赞成功 +1' : '已取消点赞'),
-          ),
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    } catch (e) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(nextLiked ? '点赞已记录' : '已取消点赞'),
-          duration: const Duration(seconds: 1),
-        ),
-      );
+      if (mounted && session == DioClient.sessionKey) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(result.message)));
+      }
+    } catch (error) {
+      if (mounted && session == DioClient.sessionKey) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('点赞操作失败：$error')));
+      }
+    } finally {
+      if (mounted && session == DioClient.sessionKey) {
+        setState(() => _likeBusy = false);
+      }
     }
   }
 
@@ -3102,60 +3736,51 @@ class _FloorViewState extends State<_FloorView> {
     return btn;
   }
 
-  Widget _buildIconAction({
-    required IconData icon,
-    required String tooltip,
-    required VoidCallback onTap,
-    Color? color,
-    double size = 16,
-  }) {
-    final theme = Theme.of(context);
-    final fg = color ?? theme.colorScheme.onSurfaceVariant.withAlpha(200);
-    return Tooltip(
-      message: tooltip,
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(6),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(6),
-          child: SizedBox(
-            width: 28,
-            height: 28,
-            child: Center(
-              child: Icon(icon, size: size, color: fg),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _buildActionRow(BuildContext context, ThemeData theme) {
     final effectiveLiked = widget.isLiked ?? _isLiked;
     final effectiveCount = widget.likesCount ?? _likesCount;
+    final commentCount = floor.replyFloorCount > floor.replyFloors.length
+        ? floor.replyFloorCount
+        : floor.replyFloors.length;
+    final likeText = effectiveCount > 0
+        ? (effectiveLiked ? '已赞 $effectiveCount' : '赞 $effectiveCount')
+        : (effectiveLiked ? '已赞' : '赞');
+
+    PopupMenuItem<VoidCallback> action(
+            IconData icon, String label, VoidCallback onTap) =>
+        PopupMenuItem<VoidCallback>(
+          value: onTap,
+          child: Row(children: [
+            Icon(icon, size: 20),
+            const SizedBox(width: 12),
+            Flexible(child: Text(label)),
+          ]),
+        );
+    PopupMenuItem<VoidCallback> category(String label) =>
+        PopupMenuItem<VoidCallback>(
+          enabled: false,
+          height: 32,
+          child: Text(label, style: theme.textTheme.labelMedium),
+        );
 
     return Padding(
       padding: const EdgeInsets.only(top: 8),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final isVeryCompact = constraints.maxWidth < 340;
-          final isCompact = constraints.maxWidth < 600;
-
-          // 赞按钮文字
-          final likeText = effectiveCount > 0
-              ? (effectiveLiked ? '已赞 $effectiveCount' : '赞 $effectiveCount')
-              : (effectiveLiked ? '已赞' : '赞');
-
-          // 左侧常用主要功能（图文并茂）：赞、回复、楼中楼(若有子评论)
-          final leftWidgets = <Widget>[
-            // 赞
+      child: Row(children: [
+        Expanded(
+          child: Wrap(spacing: 4, runSpacing: 4, children: [
             _buildTextAction(
-              icon: Icon(
-                effectiveLiked ? Icons.thumb_up_rounded : Icons.thumb_up_outlined,
-                size: 15,
-                color: effectiveLiked ? theme.colorScheme.primary : null,
-              ),
+              icon: widget.likeBusy || _likeBusy
+                  ? const SizedBox(
+                      width: 15,
+                      height: 15,
+                      child: AppLoadingIndicator(strokeWidth: 2))
+                  : Icon(
+                      effectiveLiked
+                          ? Icons.thumb_up_rounded
+                          : Icons.thumb_up_outlined,
+                      size: 15,
+                      color: effectiveLiked ? theme.colorScheme.primary : null,
+                    ),
               label: likeText,
               onTap: _toggleFloorLike,
               color: effectiveLiked ? theme.colorScheme.primary : null,
@@ -3164,129 +3789,70 @@ class _FloorViewState extends State<_FloorView> {
                   : null,
               tooltip: effectiveLiked ? '取消点赞' : '点赞此楼层',
             ),
-            const SizedBox(width: 4),
-            // 回复
             _buildTextAction(
-              icon: const Icon(Icons.chat_bubble_outline_rounded, size: 14.5),
+              icon: const Icon(Icons.chat_bubble_outline_rounded, size: 15),
               label: '回复',
               onTap: () => _openReply(context, quote: false),
               tooltip: '回复此楼层',
             ),
-            // 楼中楼（若存在子楼层评论时展示数字）
-            if (!_isFirstFloorOverall && floor.replyFloors.isNotEmpty) ...[
-              const SizedBox(width: 4),
+            if (!_isFirstFloorOverall && commentCount > 0)
               _buildTextAction(
-                icon: const Icon(Icons.forum_outlined, size: 14),
-                label: isCompact
-                    ? '${floor.replyFloors.length}'
-                    : '楼中楼(${floor.replyFloors.length})',
-                onTap: () => _onReplyFloorWrite(),
+                icon: const Icon(Icons.forum_outlined, size: 15),
+                label: '楼中楼 $commentCount',
+                onTap: _onReplyFloorWrite,
                 color: theme.colorScheme.primary,
                 backgroundColor: theme.colorScheme.primary.withAlpha(15),
-                tooltip: '查看/回复楼中楼(${floor.replyFloors.length})',
+                tooltip: '查看或添加楼中楼回复',
               ),
-            ],
-          ];
-
-          // 右侧次要功能（纯图标）与常用举报（图文/紧凑图标）
-          final rightWidgets = <Widget>[
-            // 发起楼中楼（无子楼层评论且非首楼时展示紧凑图标）
-            if (!_isFirstFloorOverall && floor.replyFloors.isEmpty)
-              _buildIconAction(
-                icon: Icons.forum_outlined,
-                tooltip: '发起楼中楼',
-                onTap: () => _onReplyFloorWrite(),
-              ),
-            // 编辑（如果是自己的楼层或楼主）
-            if (_canEdit)
-              _buildIconAction(
-                icon: Icons.edit_outlined,
-                tooltip: widget.isFirstFloor ? '编辑帖子' : '编辑回复',
-                onTap: () => _onEditFloor(context),
-              ),
-            // 打赏评分（纯图标）
-            _buildIconAction(
-              icon: Icons.card_giftcard_rounded,
-              tooltip: '打赏评分',
-              onTap: () => _onRewardFloor(context),
-            ),
-            // 引用（纯图标，仅非一楼展示，一楼为主题楼主）
+          ]),
+        ),
+        const SizedBox(width: 8),
+        PopupMenuButton<VoidCallback>(
+          tooltip: '更多楼层操作',
+          icon: const Icon(Icons.more_horiz),
+          onSelected: (onTap) => onTap(),
+          itemBuilder: (_) => [
+            category('互动'),
             if (!_isFirstFloorOverall)
-              _buildIconAction(
-                icon: Icons.format_quote_rounded,
-                tooltip: '引用回复',
-                onTap: () => _openReply(context, quote: true),
-              ),
-            // 分享（纯图标）
-            _buildIconAction(
-              icon: Icons.share_outlined,
-              tooltip: '分享链接',
-              onTap: () {
-                final pid = floor.pid;
-                final url = (pid != null && pid > 0)
-                    ? '${AppConfig.baseUrl}forum.php?mod=redirect&goto=findpost&pid=$pid'
-                    : '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid';
-                Clipboard.setData(ClipboardData(text: url));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('楼层链接已复制：$url'),
-                    duration: const Duration(seconds: 2),
-                  ),
-                );
-              },
-            ),
-            // 道具（若有可用道具）
+              action(Icons.forum_outlined, '楼中楼回复', _onReplyFloorWrite),
+            if (!_isFirstFloorOverall)
+              action(Icons.format_quote_rounded, '引用回复',
+                  () => _openReply(context, quote: true)),
+            action(Icons.card_giftcard_outlined, '打赏与评分',
+                () => _onRewardFloor(context)),
             if (floor.magicItems.isNotEmpty)
-              _buildIconAction(
-                icon: Icons.auto_fix_high_rounded,
-                tooltip: '使用道具',
-                onTap: () => _onMagicFloor(context),
-              ),
-            // 举报（常用功能：完整图文显示；极窄屏幕自适应折叠为图标）
+              action(Icons.auto_fix_high_outlined, '使用道具',
+                  () => _onMagicFloor(context)),
+            const PopupMenuDivider(),
+            category('内容与链接'),
+            if (_canEdit)
+              action(Icons.edit_outlined, widget.isFirstFloor ? '编辑帖子' : '编辑回复',
+                  () => _onEditFloor(context)),
+            action(Icons.link_outlined, '复制楼层链接', () {
+              final pid = floor.pid;
+              final url = pid != null && pid > 0
+                  ? '${AppConfig.baseUrl}forum.php?mod=redirect&goto=findpost&pid=$pid'
+                  : '${AppConfig.baseUrl}forum.php?mod=viewthread&tid=$tid';
+              Clipboard.setData(ClipboardData(text: url));
+              ScaffoldMessenger.of(context)
+                  .showSnackBar(const SnackBar(content: Text('楼层链接已复制')));
+            }),
             if (_canReport)
-              _buildTextAction(
-                icon: const Icon(Icons.flag_outlined, size: 14),
-                label: '举报',
-                showLabel: !isVeryCompact,
-                onTap: () => _onReportFloor(context),
-                color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
-                tooltip: '举报违规楼层',
-              ),
-            // 管理此楼（管理员/版主专用）
-            if (widget.canModerate)
-              _buildIconAction(
-                icon: Icons.shield_outlined,
-                tooltip: '管理本楼',
-                onTap: () => _onManageFloor(context),
-              ),
-          ];
-
-          return Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              // 左侧主交互组
-              Flexible(
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: leftWidgets,
-                ),
-              ),
-              const SizedBox(width: 4),
-              // 右侧辅助工具组（保持单行紧凑美观）
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (int i = 0; i < rightWidgets.length; i++) ...[
-                    if (i > 0) const SizedBox(width: 2),
-                    rightWidgets[i],
-                  ],
-                ],
-              ),
+              action(
+                  Icons.flag_outlined, '举报违规楼层', () => _onReportFloor(context)),
+            if (_canSetBestAnswer || widget.canModerate) ...[
+              const PopupMenuDivider(),
+              category('管理'),
+              if (_canSetBestAnswer)
+                action(Icons.workspace_premium_outlined, '采纳为最佳答案',
+                    () => _onSetBestAnswer(context)),
+              if (widget.canModerate)
+                action(Icons.shield_outlined, '管理本楼',
+                    () => _onManageFloor(context)),
             ],
-          );
-        },
-      ),
+          ],
+        ),
+      ]),
     );
   }
 
@@ -3296,30 +3862,48 @@ class _FloorViewState extends State<_FloorView> {
     final isDesktop = MediaQuery.of(context).size.width >= 800;
 
     final isHighlighted = widget.isHighlighted;
+    final isBest = floor.isBestAnswer;
     final cardDecoration = BoxDecoration(
       color: widget.isFirstFloor
-          ? theme.colorScheme.primaryContainer.withAlpha(isHighlighted ? 60 : 35)
-          : isHighlighted
-              ? theme.colorScheme.primaryContainer.withAlpha(45)
-              : (theme.brightness == Brightness.dark
-                  ? theme.colorScheme.surfaceContainerLow
-                  : theme.colorScheme.surface),
+          ? theme.colorScheme.primaryContainer
+              .withAlpha(isHighlighted ? 60 : 35)
+          : isBest
+              ? (theme.brightness == Brightness.dark
+                  ? const Color(0xFF142E1F)
+                  : const Color(0xFFF1F8E9))
+              : isHighlighted
+                  ? theme.colorScheme.primaryContainer.withAlpha(45)
+                  : (theme.brightness == Brightness.dark
+                      ? theme.colorScheme.surfaceContainerLow
+                      : theme.colorScheme.surface),
       borderRadius: BorderRadius.circular(12),
       border: Border.all(
-        color: isHighlighted
-            ? theme.colorScheme.primary
-            : theme.colorScheme.outlineVariant.withAlpha(60),
-        width: isHighlighted ? 2.0 : 0.6,
+        color: isBest
+            ? (theme.brightness == Brightness.dark
+                ? const Color(0xFF2E7D32)
+                : const Color(0xFF81C784))
+            : isHighlighted
+                ? theme.colorScheme.primary
+                : theme.colorScheme.outlineVariant.withAlpha(60),
+        width: (isBest || isHighlighted) ? 1.8 : 0.6,
       ),
-      boxShadow: isHighlighted
+      boxShadow: isBest
           ? [
               BoxShadow(
-                color: theme.colorScheme.primary.withAlpha(120),
-                blurRadius: 12,
-                spreadRadius: 2,
+                color: const Color(0xFF2E7D32).withAlpha(50),
+                blurRadius: 10,
+                spreadRadius: 1,
               ),
             ]
-          : null,
+          : isHighlighted
+              ? [
+                  BoxShadow(
+                    color: theme.colorScheme.primary.withAlpha(120),
+                    blurRadius: 12,
+                    spreadRadius: 2,
+                  ),
+                ]
+              : null,
     );
 
     return GestureDetector(
@@ -3334,7 +3918,7 @@ class _FloorViewState extends State<_FloorView> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 楼层头部（左侧头像+名称+头衔勋章，右侧发布时间/IP与楼层序号右对齐）
+            // 楼层头部（左侧头像，右侧双行信息：首行作者+等级+楼层标号，次行勋章+发布时间/IP）
             Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
@@ -3349,139 +3933,142 @@ class _FloorViewState extends State<_FloorView> {
                   child: UserAvatarWidget(
                     uid: floor.uid,
                     author: floor.author,
-                    size: 34,
+                    size: 36,
+                    reserveFrameSpace: true,
                     faceUrl: floor.faceUrl.isNotEmpty ? floor.faceUrl : null,
                     isOnline: floor.isOnline,
                     showOnlineBadge: true,
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 10),
                 Expanded(
-                  child: Row(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Flexible(
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(4),
-                          onTap: floor.uid != null
-                              ? () => _openUserSpace(context, floor.uid!)
-                              : null,
-                          child: Text(
-                            floor.author,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              fontWeight: FontWeight.bold,
-                              color: theme.colorScheme.primary,
-                            ),
-                          ),
-                        ),
-                      ),
-                      if (widget.isThreadAuthor && !widget.isFirstFloor) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 1.5,
-                          ),
-                          decoration: BoxDecoration(
-                            gradient: const LinearGradient(
-                              colors: [Color(0xFFFF9800), Color(0xFFFF5722)],
-                            ),
-                            borderRadius: BorderRadius.circular(4),
-                            boxShadow: [
-                              BoxShadow(
-                                color: const Color(0xFFFF9800).withAlpha(80),
-                                blurRadius: 4,
-                                offset: const Offset(0, 1),
+                      // 第 1 行：作者名 + 楼主标识 + 会员等级
+                      Row(
+                        children: [
+                          Flexible(
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(4),
+                              onTap: floor.uid != null
+                                  ? () => _openUserSpace(context, floor.uid!)
+                                  : null,
+                              child: Text(
+                                floor.author,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                  color: theme.colorScheme.primary,
+                                ),
                               ),
+                            ),
+                          ),
+                          if (widget.isThreadAuthor &&
+                              !widget.isFirstFloor) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 1.5,
+                              ),
+                              decoration: BoxDecoration(
+                                gradient: const LinearGradient(
+                                  colors: [
+                                    Color(0xFFFF9800),
+                                    Color(0xFFFF5722)
+                                  ],
+                                ),
+                                borderRadius: BorderRadius.circular(4),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color:
+                                        const Color(0xFFFF9800).withAlpha(80),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 1),
+                                  ),
+                                ],
+                              ),
+                              child: const Text(
+                                '楼主',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ),
+                          ],
+                          if (floor.levelText.isNotEmpty) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 1,
+                              ),
+                              decoration: BoxDecoration(
+                                color: _badgeColor(floor.levelColor, theme),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                floor.levelText,
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: floor.levelColor.isNotEmpty
+                                      ? Colors.white
+                                      : theme.colorScheme.primary,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                      // 勋章列表（横向滚动）
+                      if (floor.medals.isNotEmpty) ...[
+                        const SizedBox(height: 3),
+                        SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          physics: const NeverScrollableScrollPhysics(),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              for (final md in floor.medals)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 3),
+                                  child: CachedNetworkImage(
+                                    imageUrl: md,
+                                    cacheKey:
+                                        KlpbbsCacheManager.normalizeCacheKey(
+                                            md),
+                                    cacheManager: KlpbbsCacheManager.instance,
+                                    httpHeaders: AppConfig.imageHeaders,
+                                    height: 15,
+                                    memCacheHeight: 45,
+                                    fit: BoxFit.contain,
+                                    errorWidget: (_, __, ___) =>
+                                        const SizedBox.shrink(),
+                                  ),
+                                ),
                             ],
                           ),
-                          child: const Text(
-                            '楼主',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 0.5,
-                            ),
-                          ),
                         ),
-                      ],
-                      if (floor.levelText.isNotEmpty) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 1,
-                          ),
-                          decoration: BoxDecoration(
-                            color: _badgeColor(floor.levelColor, theme),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            floor.levelText,
-                            style: theme.textTheme.labelSmall?.copyWith(
-                              color: floor.levelColor.isNotEmpty
-                                  ? Colors.white
-                                  : theme.colorScheme.primary,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
-                      if (floor.medals.isNotEmpty) ...[
-                        const SizedBox(width: 4),
-                        for (final md in floor.medals)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 2),
-                            child: CachedNetworkImage(
-                              imageUrl: md,
-                              httpHeaders: AppConfig.imageHeaders,
-                              height: 16,
-                              memCacheHeight: 48,
-                              fit: BoxFit.contain,
-                              errorWidget: (_, __, ___) =>
-                                  const SizedBox.shrink(),
-                            ),
-                          ),
                       ],
                     ],
                   ),
                 ),
                 const SizedBox(width: 8),
-                // 右侧时间与楼层序号右对齐
+                // 右侧信息组：楼层序号/状态 与 时间/IP 严格右对齐
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Row(
                       mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (floor.timeText.isNotEmpty)
-                          Text(
-                            _friendlyTime(floor.timeText),
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant.withAlpha(200),
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        if (floor.ipText.isNotEmpty) ...[
-                          const SizedBox(width: 4),
-                          Text(
-                            floor.ipText,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant.withAlpha(160),
-                              fontSize: 11,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                    const SizedBox(height: 3),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
                         if (floor.isWarned) ...[
                           Tooltip(
@@ -3540,7 +4127,8 @@ class _FloorViewState extends State<_FloorView> {
                             borderRadius: BorderRadius.circular(6),
                             border: widget.isFirstFloor
                                 ? Border.all(
-                                    color: const Color(0xFFFF9800).withAlpha(120),
+                                    color:
+                                        const Color(0xFFFF9800).withAlpha(120),
                                     width: 0.8,
                                   )
                                 : null,
@@ -3549,7 +4137,9 @@ class _FloorViewState extends State<_FloorView> {
                             _displayFloorNumber,
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: widget.isFirstFloor
-                                  ? (theme.brightness == Brightness.dark ? const Color(0xFFFFB74D) : const Color(0xFFE65100))
+                                  ? (theme.brightness == Brightness.dark
+                                      ? const Color(0xFFFFB74D)
+                                      : const Color(0xFFE65100))
                                   : theme.colorScheme.primary,
                               fontWeight: FontWeight.w600,
                               fontSize: 11,
@@ -3559,7 +4149,10 @@ class _FloorViewState extends State<_FloorView> {
                         if (floor.isBestAnswer) ...[
                           const SizedBox(width: 6),
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
                             decoration: BoxDecoration(
                               color: Colors.green.shade700,
                               borderRadius: BorderRadius.circular(6),
@@ -3567,7 +4160,8 @@ class _FloorViewState extends State<_FloorView> {
                             child: const Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.verified, size: 12, color: Colors.white),
+                                Icon(Icons.verified,
+                                    size: 12, color: Colors.white),
                                 SizedBox(width: 2),
                                 Text(
                                   '最佳答案',
@@ -3583,20 +4177,58 @@ class _FloorViewState extends State<_FloorView> {
                         ],
                       ],
                     ),
+                    const SizedBox(height: 3),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 3,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        if (floor.timeText.isNotEmpty)
+                          Text(
+                            _friendlyTime(floor.timeText),
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant
+                                  .withAlpha(200),
+                              fontSize: 11,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        if (floor.sourceLabel.isNotEmpty)
+                          Text(
+                            floor.sourceLabel,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontSize: 11,
+                            ),
+                          ),
+                        if (floor.ipText.isNotEmpty)
+                          Text(
+                            'IP: ${floor.ipText}',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant
+                                  .withAlpha(160),
+                              fontSize: 10.5,
+                            ),
+                          ),
+                      ],
+                    ),
                   ],
                 ),
               ],
             ),
             const SizedBox(height: 8),
             // 悬赏贴专区头部
-            if (widget.isFirstFloor && floor.bountyPrice != null)
+            if (widget.isFirstFloor &&
+                (floor.bountyPrice != null || floor.isBountySolved))
               _buildBountyHeader(theme, floor),
             // 正文
             DiscuzPostRenderer(
               floor: floor,
               tid: tid,
               onQuickReply: () => _openReply(context, quote: false),
-              onQuoteReply: _isFirstFloorOverall ? null : () => _openReply(context, quote: true),
+              onQuoteReply: _isFirstFloorOverall
+                  ? null
+                  : () => _openReply(context, quote: true),
               onPollVoted: widget.onReload,
             ),
             // 评分/打赏记录
@@ -3607,7 +4239,8 @@ class _FloorViewState extends State<_FloorView> {
               ListenableBuilder(
                 listenable: AppConfig.instance,
                 builder: (context, _) {
-                  if (AppConfig.showFloorSignature && floor.signature.isNotEmpty) {
+                  if (AppConfig.showFloorSignature &&
+                      floor.signature.isNotEmpty) {
                     return _buildSignature(theme);
                   }
                   return const SizedBox.shrink();
@@ -3639,7 +4272,8 @@ class _FloorViewState extends State<_FloorView> {
               ListenableBuilder(
                 listenable: AppConfig.instance,
                 builder: (context, _) {
-                  if (AppConfig.showFloorSignature && floor.signature.isNotEmpty) {
+                  if (AppConfig.showFloorSignature &&
+                      floor.signature.isNotEmpty) {
                     return _buildSignature(theme);
                   }
                   return const SizedBox.shrink();
@@ -3684,7 +4318,8 @@ class _FloorViewState extends State<_FloorView> {
                 },
                 borderRadius: BorderRadius.circular(16),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
                     color: const Color(0xFF5AB75C),
                     borderRadius: BorderRadius.circular(16),
@@ -3699,7 +4334,8 @@ class _FloorViewState extends State<_FloorView> {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.thumb_up_rounded, size: 14, color: Colors.white),
+                      const Icon(Icons.thumb_up_rounded,
+                          size: 14, color: Colors.white),
                       const SizedBox(width: 5),
                       Text(
                         _isLiked ? '已点赞' : '点赞这个帖子',
@@ -3726,85 +4362,64 @@ class _FloorViewState extends State<_FloorView> {
           if (likedUsers.isNotEmpty || likeCount > 0) ...[
             const SizedBox(height: 10),
             Row(
-            children: [
-              if (likedUsers.isNotEmpty)
-                Expanded(
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: likedUsers.map((u) {
-                        return GestureDetector(
-                          onTap: () {
-                            if (u.uid != null && u.uid! > 0) {
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) => UserSpacePage(uid: u.uid!),
-                                ),
-                              );
-                            }
-                          },
-                          child: Container(
-                            margin: const EdgeInsets.only(right: 6),
-                            width: 28,
-                            height: 28,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: theme.colorScheme.surface,
-                                width: 1.5,
-                              ),
-                              boxShadow: const [
-                                BoxShadow(
-                                  color: Colors.black12,
-                                  blurRadius: 2,
-                                ),
-                              ],
-                            ),
-                            child: ClipOval(
-                              child: CachedNetworkImage(
-                                imageUrl: u.avatarUrl.isNotEmpty
-                                    ? u.avatarUrl
-                                    : AppConfig.avatarUrl(u.uid ?? 0),
-                                fit: BoxFit.cover,
-                                memCacheWidth: 64,
-                                memCacheHeight: 64,
-                                errorWidget: (_, __, ___) => const Icon(
-                                  Icons.person,
-                                  size: 16,
-                                  color: Colors.grey,
-                                ),
+              children: [
+                if (likedUsers.isNotEmpty)
+                  Expanded(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: likedUsers.map((u) {
+                          return GestureDetector(
+                            onTap: () {
+                              if (u.uid != null && u.uid! > 0) {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => UserSpacePage(uid: u.uid!),
+                                  ),
+                                );
+                              }
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.only(
+                                  right: 6, top: 4, bottom: 4),
+                              child: UserAvatarWidget(
+                                uid: u.uid,
+                                author: u.username,
+                                avatarUrl: u.avatarUrl,
+                                size: 28,
+                                reserveFrameSpace: true,
                               ),
                             ),
-                          ),
-                        );
-                      }).toList(),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  )
+                else
+                  const Spacer(),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '$likeCount赞',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
-                )
-              else
-                const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(10),
                 ),
-                child: Text(
-                  '$likeCount赞',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            ],
-          ),
+              ],
+            ),
+          ],
         ],
-      ],
-    ),
-  );
-}
+      ),
+    );
+  }
 
   Widget _buildBountyHeader(ThemeData theme, PostFloor floor) {
     final isSolved = floor.isBountySolved;
@@ -3822,10 +4437,13 @@ class _FloorViewState extends State<_FloorView> {
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: isSolved ? Colors.green.withAlpha(20) : Colors.amber.withAlpha(25),
+        color:
+            isSolved ? Colors.green.withAlpha(20) : Colors.amber.withAlpha(25),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
-          color: isSolved ? Colors.green.withAlpha(90) : Colors.amber.withAlpha(120),
+          color: isSolved
+              ? Colors.green.withAlpha(90)
+              : Colors.amber.withAlpha(120),
           width: 1,
         ),
       ),
@@ -3842,7 +4460,9 @@ class _FloorViewState extends State<_FloorView> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '悬赏问答主题 [$price]',
+                  isSolved
+                      ? (price.isNotEmpty ? '悬赏问答 (已解决 $price)' : '悬赏问答 (已解决)')
+                      : (price.isNotEmpty ? '悬赏问答主题 [$price]' : '悬赏问答主题'),
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 14,
@@ -3868,7 +4488,10 @@ class _FloorViewState extends State<_FloorView> {
             ),
             child: Text(
               isSolved ? '已解决' : '进行中',
-              style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold),
             ),
           ),
         ],
@@ -3876,11 +4499,20 @@ class _FloorViewState extends State<_FloorView> {
     );
   }
 
+  static final RegExp _friendlyTimeRegex = RegExp(
+    r'(\d{4})-(\d{1,2})-(\d{1,2})\s*(\d{1,2}):(\d{1,2})?',
+  );
+  static final Map<String, String> _friendlyTimeCache = {};
+
   String _friendlyTime(String raw) {
-    final m = RegExp(
-      r'(\d{4})-(\d{1,2})-(\d{1,2})\s*(\d{1,2}):(\d{1,2})?',
-    ).firstMatch(raw);
-    if (m == null) return raw;
+    final cached = _friendlyTimeCache[raw];
+    if (cached != null) return cached;
+
+    final m = _friendlyTimeRegex.firstMatch(raw);
+    if (m == null) {
+      _friendlyTimeCache[raw] = raw;
+      return raw;
+    }
     final now = DateTime.now();
     final y = int.tryParse(m.group(1) ?? '') ?? now.year;
     final mo = int.tryParse(m.group(2) ?? '') ?? 1;
@@ -3888,30 +4520,49 @@ class _FloorViewState extends State<_FloorView> {
     final h = int.tryParse(m.group(4) ?? '') ?? 0;
     final mi = int.tryParse(m.group(5) ?? '') ?? 0;
     final postTime = DateTime(y, mo, d, h, mi);
-    final hm = '${h.toString().padLeft(2, '0')}:${mi.toString().padLeft(2, '0')}';
+    final hm =
+        '${h.toString().padLeft(2, '0')}:${mi.toString().padLeft(2, '0')}';
     final today = DateTime(now.year, now.month, now.day);
     final that = DateTime(y, mo, d);
     final diff = today.difference(that).inDays;
 
+    String res;
     // 1. 若时间在未来（如论坛使用提升卡、置顶延期、定时发布或微小时钟偏差），绝不能显示负数「-X 天前」
     if (diff < 0 || postTime.isAfter(now)) {
       final futureDiffSec = postTime.difference(now).inSeconds;
-      if (futureDiffSec < 300) return '刚刚';
-      if (y == now.year) return '$mo月$d日 $hm';
-      return '$y-${mo.toString().padLeft(2, '0')}-${d.toString().padLeft(2, '0')} $hm';
+      if (futureDiffSec < 300) {
+        res = '刚刚';
+      } else if (y == now.year) {
+        res = '$mo月$d日 $hm';
+      } else {
+        res =
+            '$y-${mo.toString().padLeft(2, '0')}-${d.toString().padLeft(2, '0')} $hm';
+      }
+    } else if (diff == 0) {
+      final diffMin = now.difference(postTime).inMinutes;
+      if (diffMin < 1) {
+        res = '刚刚';
+      } else if (diffMin < 60) {
+        res = '$diffMin 分钟前';
+      } else {
+        res = '今天 $hm';
+      }
+    } else if (diff == 1) {
+      res = '昨天 $hm';
+    } else if (diff >= 2 && diff < 7) {
+      res = '$diff 天前';
+    } else if (y == now.year) {
+      res = '$mo月$d日 $hm';
+    } else {
+      res =
+          '$y-${mo.toString().padLeft(2, '0')}-${d.toString().padLeft(2, '0')}';
     }
 
-    // 2. 正常历史时间
-    if (diff == 0) {
-      final diffMin = now.difference(postTime).inMinutes;
-      if (diffMin < 1) return '刚刚';
-      if (diffMin < 60) return '$diffMin 分钟前';
-      return '今天 $hm';
+    if (_friendlyTimeCache.length > 500) {
+      _friendlyTimeCache.clear();
     }
-    if (diff == 1) return '昨天 $hm';
-    if (diff >= 2 && diff < 7) return '$diff 天前';
-    if (y == now.year) return '$mo月$d日 $hm';
-    return '$y-${mo.toString().padLeft(2, '0')}-${d.toString().padLeft(2, '0')}';
+    _friendlyTimeCache[raw] = res;
+    return res;
   }
 
   // 楼层长按菜单（复制/分享/举报）
@@ -3934,7 +4585,8 @@ class _FloorViewState extends State<_FloorView> {
               ListTile(
                 leading: const Icon(Icons.edit_outlined),
                 title: Text(widget.isFirstFloor ? '编辑帖子' : '编辑回复'),
-                subtitle: Text(widget.isFirstFloor ? '修改本帖标题与正文内容' : '修改该楼层回复内容'),
+                subtitle:
+                    Text(widget.isFirstFloor ? '修改本帖标题与正文内容' : '修改该楼中楼回复内容'),
                 onTap: () {
                   Navigator.of(ctx).pop();
                   _onEditFloor(context);
@@ -3945,8 +4597,8 @@ class _FloorViewState extends State<_FloorView> {
             if (!_isFirstFloorOverall) ...[
               ListTile(
                 leading: const Icon(Icons.forum_outlined),
-                title: const Text('楼中楼回复'),
-                subtitle: const Text('引用该楼层进行楼中楼回复'),
+                title: const Text('楼中楼'),
+                subtitle: const Text('对此楼层发表楼中楼回复'),
                 onTap: () {
                   Navigator.of(ctx).pop();
                   _openReply(context, quote: true);
@@ -3968,35 +4620,12 @@ class _FloorViewState extends State<_FloorView> {
             ListTile(
               leading: const Icon(Icons.select_all),
               title: const Text('选择复制正文'),
-              subtitle: const Text('长按后自由选择帖子内信息复制（含隐藏内容）'),
+              subtitle: const Text('自由选字或按段组合，保留段落与链接地址'),
               onTap: () {
                 Navigator.of(ctx).pop();
-                final plain = floor.contentHtml
-                    .replaceAll(RegExp(r'<[^>]+>'), ' ')
-                    .replaceAll(RegExp(r'\s+'), ' ')
-                    .trim();
-                showDialog<void>(
-                  context: context,
-                  builder: (dlg) => AlertDialog(
-                    title: Text('楼层 ${index + 1} · ${floor.author}'),
-                    content: SizedBox(
-                      width: 560,
-                      height: 360,
-                      child: SingleChildScrollView(
-                        child: SelectableText(
-                          plain.isEmpty ? '(该楼层无文字内容)' : plain,
-                          style: const TextStyle(fontSize: 13, height: 1.5),
-                        ),
-                      ),
-                    ),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.of(dlg).pop(),
-                        child: const Text('关闭'),
-                      ),
-                    ],
-                  ),
-                );
+                showPostCopySheet(context,
+                    html: floor.contentHtml,
+                    title: '楼层 ${index + 1} · ${floor.author}');
               },
             ),
             const Divider(height: 1),
@@ -4005,10 +4634,8 @@ class _FloorViewState extends State<_FloorView> {
               title: const Text('复制正文'),
               onTap: () {
                 Navigator.of(ctx).pop();
-                final plain = floor.contentHtml
-                    .replaceAll(RegExp(r'<[^>]+>'), ' ')
-                    .replaceAll(RegExp(r'\s+'), ' ')
-                    .trim();
+                final plain =
+                    PostCopyDocument.fromHtml(floor.contentHtml).plainText;
                 if (plain.isEmpty) return;
                 Clipboard.setData(ClipboardData(text: plain));
                 ScaffoldMessenger.of(
@@ -4125,7 +4752,7 @@ class _FloorViewState extends State<_FloorView> {
     if (!DioClient.isLoggedIn) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('请先登录论坛账号后再进行楼中楼回复'),
+          content: const Text('请先登录论坛账号后再进行回复'),
           action: SnackBarAction(
             label: '去登录',
             onPressed: () => Navigator.of(context).push(
@@ -4144,7 +4771,8 @@ class _FloorViewState extends State<_FloorView> {
         bool submitting = false;
         bool showEmojiPanel = false;
         int activeSmileyCatIndex = 0;
-        List<SmileyCategory> smileyCats = ComiisParser.parseSmilies(ComiisParser.kDefaultSmiliesJs);
+        List<SmileyCategory> smileyCats =
+            ComiisParser.parseSmilies(ComiisParser.kDefaultSmiliesJs);
 
         // 异步尝试拉取论坛最新全量表情集
         KlpbbsApi.getSmilies().then((cats) {
@@ -4162,24 +4790,31 @@ class _FloorViewState extends State<_FloorView> {
                 final newText = text.replaceRange(sel.start, sel.end, code);
                 ctrl.value = TextEditingValue(
                   text: newText,
-                  selection: TextSelection.collapsed(offset: sel.start + code.length),
+                  selection:
+                      TextSelection.collapsed(offset: sel.start + code.length),
                 );
               } else {
                 ctrl.text = '$text$code';
-                ctrl.selection = TextSelection.collapsed(offset: ctrl.text.length);
+                ctrl.selection =
+                    TextSelection.collapsed(offset: ctrl.text.length);
               }
             }
 
             return AlertDialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14)),
               title: Row(
                 children: [
-                  Icon(Icons.reply_rounded, color: Theme.of(context).colorScheme.primary),
+                  Icon(Icons.reply_rounded,
+                      color: Theme.of(context).colorScheme.primary),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      hasAuthor ? '回复 @$initialAuthor' : '回复 $_displayFloorNumber (楼中楼)',
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      hasAuthor
+                          ? '回复 @$initialAuthor'
+                          : '回复 $_displayFloorNumber',
+                      style: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.bold),
                     ),
                   ),
                 ],
@@ -4193,15 +4828,21 @@ class _FloorViewState extends State<_FloorView> {
                     if (hasAuthor)
                       Container(
                         margin: const EdgeInsets.only(bottom: 8),
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
                         decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.primaryContainer.withAlpha(90),
+                          color: Theme.of(context)
+                              .colorScheme
+                              .primaryContainer
+                              .withAlpha(90),
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.reply, size: 14, color: Theme.of(context).colorScheme.primary),
+                            Icon(Icons.reply,
+                                size: 14,
+                                color: Theme.of(context).colorScheme.primary),
                             const SizedBox(width: 4),
                             Text(
                               '回复 @$initialAuthor',
@@ -4222,7 +4863,7 @@ class _FloorViewState extends State<_FloorView> {
                       decoration: InputDecoration(
                         hintText: hasAuthor
                             ? '写下你想对 @$initialAuthor 说的话...'
-                            : '写下你的楼中楼内容...',
+                            : '写下你的回复内容...',
                         border: const OutlineInputBorder(),
                         isDense: true,
                       ),
@@ -4234,9 +4875,13 @@ class _FloorViewState extends State<_FloorView> {
                         IconButton(
                           tooltip: showEmojiPanel ? '收起表情面板' : '展开完整表情库',
                           icon: Icon(
-                            showEmojiPanel ? Icons.keyboard_alt_outlined : Icons.sentiment_satisfied_alt_outlined,
+                            showEmojiPanel
+                                ? Icons.keyboard_alt_outlined
+                                : Icons.sentiment_satisfied_alt_outlined,
                             size: 20,
-                            color: showEmojiPanel ? Theme.of(context).colorScheme.primary : null,
+                            color: showEmojiPanel
+                                ? Theme.of(context).colorScheme.primary
+                                : null,
                           ),
                           visualDensity: VisualDensity.compact,
                           onPressed: () {
@@ -4265,10 +4910,13 @@ class _FloorViewState extends State<_FloorView> {
                                   Padding(
                                     padding: const EdgeInsets.only(right: 6),
                                     child: ActionChip(
-                                      label: Text(emoji.$1, style: const TextStyle(fontSize: 11)),
+                                      label: Text(emoji.$1,
+                                          style: const TextStyle(fontSize: 11)),
                                       visualDensity: VisualDensity.compact,
                                       padding: EdgeInsets.zero,
-                                      onPressed: submitting ? null : () => insertCode(emoji.$2),
+                                      onPressed: submitting
+                                          ? null
+                                          : () => insertCode(emoji.$2),
                                     ),
                                   ),
                               ],
@@ -4297,7 +4945,8 @@ class _FloorViewState extends State<_FloorView> {
                                   visualDensity: VisualDensity.compact,
                                   onSelected: (sel) {
                                     if (sel) {
-                                      setDialogState(() => activeSmileyCatIndex = cIdx);
+                                      setDialogState(
+                                          () => activeSmileyCatIndex = cIdx);
                                     }
                                   },
                                 ),
@@ -4310,21 +4959,28 @@ class _FloorViewState extends State<_FloorView> {
                       SizedBox(
                         height: 140,
                         child: GridView.builder(
-                          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                          gridDelegate:
+                              const SliverGridDelegateWithMaxCrossAxisExtent(
                             maxCrossAxisExtent: 44,
                             mainAxisSpacing: 4,
                             crossAxisSpacing: 4,
                             childAspectRatio: 1,
                           ),
-                          itemCount: smileyCats[activeSmileyCatIndex].smileys.length,
+                          itemCount:
+                              smileyCats[activeSmileyCatIndex].smileys.length,
                           itemBuilder: (context, sIdx) {
-                            final smiley = smileyCats[activeSmileyCatIndex].smileys[sIdx];
+                            final smiley =
+                                smileyCats[activeSmileyCatIndex].smileys[sIdx];
                             return InkWell(
                               borderRadius: BorderRadius.circular(4),
                               onTap: () => insertCode(smiley.code),
                               child: Center(
                                 child: CachedNetworkImage(
                                   imageUrl: smiley.imageUrl,
+                                  cacheKey:
+                                      KlpbbsCacheManager.normalizeCacheKey(
+                                          smiley.imageUrl),
+                                  cacheManager: KlpbbsCacheManager.instance,
                                   httpHeaders: AppConfig.imageHeaders,
                                   width: 28,
                                   height: 28,
@@ -4355,11 +5011,13 @@ class _FloorViewState extends State<_FloorView> {
                       : () async {
                           final rawMsg = ctrl.text.trim();
                           if (rawMsg.isEmpty) return;
-                          final msg = hasAuthor && !rawMsg.startsWith('回复 @') && !rawMsg.startsWith('回复@')
+                          final msg = hasAuthor &&
+                                  !rawMsg.startsWith('回复 @') &&
+                                  !rawMsg.startsWith('回复@')
                               ? '回复 @$initialAuthor : $rawMsg'
                               : rawMsg;
                           final messenger = ScaffoldMessenger.of(context);
-                          final confirmed = await confirmWrite(context, '回复楼中楼');
+                          final confirmed = await confirmWrite(context, '发布回复');
                           if (!confirmed) return;
                           setDialogState(() => submitting = true);
                           try {
@@ -4373,7 +5031,7 @@ class _FloorViewState extends State<_FloorView> {
                             messenger.showSnackBar(
                               SnackBar(
                                 content: Text(
-                                  ok ? '已成功发布楼中楼回复' : '回复失败（请先登录论坛账号）',
+                                  ok ? '已成功发布回复' : '回复失败（请先登录论坛账号）',
                                 ),
                               ),
                             );
@@ -4381,12 +5039,19 @@ class _FloorViewState extends State<_FloorView> {
                               widget.onReload?.call();
                             }
                           } catch (e) {
-                            if (dialogCtx.mounted) setDialogState(() => submitting = false);
-                            messenger.showSnackBar(SnackBar(content: Text('回复异常：$e')));
+                            if (dialogCtx.mounted) {
+                              setDialogState(() => submitting = false);
+                            }
+                            messenger.showSnackBar(
+                                SnackBar(content: Text('回复异常：$e')));
                           }
                         },
                   icon: submitting
-                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: AppLoadingIndicator(
+                              strokeWidth: 2, color: Colors.white))
                       : const Icon(Icons.send, size: 16),
                   label: Text(submitting ? '发送中...' : '发送'),
                 ),
@@ -4423,19 +5088,21 @@ class _FloorViewState extends State<_FloorView> {
       builder: (ctx) {
         final scheme = Theme.of(context).colorScheme;
         return Dialog(
+          clipBehavior: Clip.antiAlias,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
           ),
           child: StatefulBuilder(
-            builder: (ctx, setLocal) => Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+            builder: (ctx, setLocal) => ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // 渐变头部
+                  // 渐变全宽头部（对齐边缘，无外层 Padding 凹陷错位）
                   Container(
-                    padding: const EdgeInsets.fromLTRB(0, 18, 0, 14),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 18, vertical: 16),
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
                         begin: Alignment.topLeft,
@@ -4444,9 +5111,6 @@ class _FloorViewState extends State<_FloorView> {
                           scheme.primaryContainer,
                           scheme.secondaryContainer,
                         ],
-                      ),
-                      borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(16),
                       ),
                     ),
                     child: Row(
@@ -4465,133 +5129,149 @@ class _FloorViewState extends State<_FloorView> {
                           ),
                         ),
                         const SizedBox(width: 12),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '打赏 @${floor.author}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '写贴不容易，打赏一下楼主吧',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: scheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // 内容操作区域
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // 金额快捷选择
+                        Text(
+                          '选择金额',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
                           children: [
-                            Text(
-                              '打赏 @${floor.author}',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
+                            for (final a in amounts)
+                              ChoiceChip(
+                                label: Text('$a 铁粒'),
+                                selected: selected == a,
+                                onSelected: (_) {
+                                  setLocal(() {
+                                    selected = a;
+                                    amountCtrl.text = '$a';
+                                  });
+                                },
+                                visualDensity: VisualDensity.compact,
+                              ),
+                            // 自定义金额
+                            SizedBox(
+                              width: 76,
+                              height: 32,
+                              child: TextField(
+                                controller: amountCtrl,
+                                keyboardType: TextInputType.number,
+                                onChanged: (v) => setLocal(() => selected = 0),
+                                decoration: InputDecoration(
+                                  hintText: '自定义',
+                                  isDense: true,
+                                  filled: true,
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 8,
+                                  ),
+                                ),
+                                style: const TextStyle(fontSize: 13),
                               ),
                             ),
-                            const SizedBox(height: 2),
-                            Text(
-                              '写贴不容易，打赏一下楼主吧',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: scheme.onSurfaceVariant,
-                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        // 理由
+                        TextField(
+                          controller: reasonCtrl,
+                          maxLines: 2,
+                          decoration: const InputDecoration(
+                            hintText: '打赏理由（可选）',
+                            isDense: true,
+                            filled: true,
+                            border: OutlineInputBorder(
+                              borderRadius:
+                                  BorderRadius.all(Radius.circular(8)),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            TextButton(
+                              onPressed: () => Navigator.of(ctx).pop(),
+                              child: const Text('取消'),
+                            ),
+                            const Spacer(),
+                            FilledButton.icon(
+                              onPressed: () async {
+                                final amount =
+                                    int.tryParse(amountCtrl.text.trim()) ?? 0;
+                                if (amount <= 0) return;
+                                Navigator.of(ctx).pop();
+                                final messenger = ScaffoldMessenger.of(context);
+                                try {
+                                  final res = await KlpbbsApi.ratePost(
+                                    tid,
+                                    floor.pid ?? 0,
+                                    amount,
+                                    reason: reasonCtrl.text.trim(),
+                                  );
+                                  messenger.showSnackBar(
+                                    SnackBar(
+                                      content: Text(res.message),
+                                    ),
+                                  );
+                                } catch (e) {
+                                  messenger.showSnackBar(
+                                    SnackBar(content: Text('打赏异常：$e')),
+                                  );
+                                }
+                              },
+                              icon: const Icon(Icons.card_giftcard, size: 18),
+                              label: const Text('打赏'),
                             ),
                           ],
                         ),
                       ],
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  // 金额快捷选择
-                  Text(
-                    '选择金额',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (final a in amounts)
-                        ChoiceChip(
-                          label: Text('$a 铁粒'),
-                          selected: selected == a,
-                          onSelected: (_) {
-                            setLocal(() {
-                              selected = a;
-                              amountCtrl.text = '$a';
-                            });
-                          },
-                          visualDensity: VisualDensity.compact,
-                        ),
-                      // 自定义金额
-                      SizedBox(
-                        width: 76,
-                        height: 32,
-                        child: TextField(
-                          controller: amountCtrl,
-                          keyboardType: TextInputType.number,
-                          onChanged: (v) => setLocal(() => selected = 0),
-                          decoration: InputDecoration(
-                            hintText: '自定义',
-                            isDense: true,
-                            filled: true,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                              borderSide: BorderSide.none,
-                            ),
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 8,
-                            ),
-                          ),
-                          style: const TextStyle(fontSize: 13),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 14),
-                  // 理由
-                  TextField(
-                    controller: reasonCtrl,
-                    maxLines: 2,
-                    decoration: const InputDecoration(
-                      hintText: '打赏理由（可选）',
-                      isDense: true,
-                      filled: true,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.all(Radius.circular(8)),
-                        borderSide: BorderSide.none,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      TextButton(
-                        onPressed: () => Navigator.of(ctx).pop(),
-                        child: const Text('取消'),
-                      ),
-                      const Spacer(),
-                      FilledButton.icon(
-                        onPressed: () async {
-                          final amount =
-                              int.tryParse(amountCtrl.text.trim()) ?? 0;
-                          if (amount <= 0) return;
-                          Navigator.of(ctx).pop();
-                          final messenger = ScaffoldMessenger.of(context);
-                          try {
-                            final res = await KlpbbsApi.ratePost(
-                              tid,
-                              floor.pid ?? 0,
-                              amount,
-                              reason: reasonCtrl.text.trim(),
-                            );
-                            messenger.showSnackBar(
-                              SnackBar(
-                                content: Text(res.message),
-                              ),
-                            );
-                          } catch (e) {
-                            messenger.showSnackBar(
-                              SnackBar(content: Text('打赏异常：$e')),
-                            );
-                          }
-                        },
-                        icon: const Icon(Icons.card_giftcard, size: 18),
-                        label: const Text('打赏'),
-                      ),
-                    ],
                   ),
                 ],
               ),
@@ -4625,7 +5305,8 @@ class _FloorViewState extends State<_FloorView> {
     // 提取纯文本摘要（剥离已有 quote 引用块和 HTML 标签，避免多层嵌套）
     final cleanContent = floor.contentHtml
         .replaceAll(RegExp(r'<div class="quote">.*?</div>', dotAll: true), '')
-        .replaceAll(RegExp(r'<blockquote.*?>.*?</blockquote>', dotAll: true), '')
+        .replaceAll(
+            RegExp(r'<blockquote.*?>.*?</blockquote>', dotAll: true), '')
         .replaceAll(RegExp(r'<[^>]+>'), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
@@ -4688,7 +5369,8 @@ class _FloorViewState extends State<_FloorView> {
               quoteTimeText: floor.timeText,
               quoteContent: snippet,
               replyToFloorText: '回复 $_displayFloorNumber (${floor.author})',
-              initialMessage: null, // 完美对齐 Discuz 网页版：输入框保持清空，绝不在编辑区插入“回复xxx : ”
+              initialMessage:
+                  null, // 完美对齐 Discuz 网页版：输入框保持清空，绝不在编辑区插入“回复xxx : ”
             ),
           ),
         );
@@ -4705,18 +5387,13 @@ class _FloorViewState extends State<_FloorView> {
       context: context,
       builder: (_) => Dialog(
         backgroundColor: Colors.transparent,
-        child: CachedNetworkImage(
-          imageUrl: 'https://user.klpbbs.com/avatar.php?uid=$uid&size=middle',
-          placeholder: (_, __) => const SizedBox(
-            width: 120,
-            height: 120,
-            child: Center(child: CircularProgressIndicator()),
-          ),
-          errorWidget: (_, __, ___) => const SizedBox(
-            width: 120,
-            height: 120,
-            child: Icon(Icons.person, size: 60),
-          ),
+        child: UserAvatarWidget(
+          uid: uid,
+          faceUrl: uid == floor.uid
+              ? UserAvatarWidget.optionalFrame(floor.faceUrl)
+              : null,
+          reserveFrameSpace: true,
+          size: 140,
         ),
       ),
     );
@@ -4761,6 +5438,9 @@ class _FloorViewState extends State<_FloorView> {
                   leading: m.img.isNotEmpty
                       ? CachedNetworkImage(
                           imageUrl: m.img,
+                          cacheKey: KlpbbsCacheManager.normalizeCacheKey(m.img),
+                          cacheManager: KlpbbsCacheManager.instance,
+                          httpHeaders: AppConfig.imageHeadersFor(m.img),
                           width: 24,
                           height: 24,
                           fit: BoxFit.contain,
@@ -4850,7 +5530,13 @@ class _ReplyFloorSection extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerLow.withAlpha(90),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: const BorderRadius.horizontal(right: Radius.circular(8)),
+        border: Border(
+          left: BorderSide(
+            color: theme.colorScheme.primary.withAlpha(120),
+            width: 2.5,
+          ),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -4946,7 +5632,8 @@ class _ReplyFloorItem extends StatelessWidget {
               title: const Text('复制评论文字'),
               onTap: () {
                 Navigator.pop(ctx);
-                final plainText = comment.contentHtml.replaceAll(RegExp(r'<[^>]*>'), '');
+                final plainText =
+                    comment.contentHtml.replaceAll(RegExp(r'<[^>]*>'), '');
                 Clipboard.setData(ClipboardData(text: plainText));
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('已复制评论到剪贴板')),
@@ -5016,6 +5703,7 @@ class _ReplyFloorItem extends StatelessWidget {
                 uid: comment.uid,
                 author: comment.author,
                 size: 22,
+                reserveFrameSpace: true,
                 faceUrl: comment.faceUrl.isNotEmpty ? comment.faceUrl : null,
                 isOnline: comment.isOnline,
                 showOnlineBadge: true,
@@ -5033,7 +5721,8 @@ class _ReplyFloorItem extends StatelessWidget {
                           onTap: comment.uid != null && comment.uid! > 0
                               ? () => Navigator.of(context).push(
                                     MaterialPageRoute(
-                                      builder: (_) => UserSpacePage(uid: comment.uid!),
+                                      builder: (_) =>
+                                          UserSpacePage(uid: comment.uid!),
                                     ),
                                   )
                               : null,
@@ -5047,20 +5736,11 @@ class _ReplyFloorItem extends StatelessWidget {
                           ),
                         ),
                       ),
-                      if (comment.location.isNotEmpty) ...[
-                        const SizedBox(width: 6),
-                        Text(
-                          comment.location,
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: theme.colorScheme.outline.withAlpha(160),
-                            fontSize: 10,
-                          ),
-                        ),
-                      ],
                       if (comment.isWarned) ...[
                         const SizedBox(width: 6),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 1),
                           decoration: BoxDecoration(
                             color: const Color(0xFFFF9800).withAlpha(20),
                             borderRadius: BorderRadius.circular(3),
@@ -5070,43 +5750,42 @@ class _ReplyFloorItem extends StatelessWidget {
                             ),
                           ),
                           child: Text(
-                            comment.warningText.isNotEmpty ? comment.warningText : '受到警告',
+                            comment.warningText.isNotEmpty
+                                ? comment.warningText
+                                : '受到警告',
                             style: TextStyle(
                               fontSize: 9,
                               fontWeight: FontWeight.bold,
                               color: theme.brightness == Brightness.dark
-                                    ? const Color(0xFFFFB74D)
-                                    : const Color(0xFFE65100),
+                                  ? const Color(0xFFFFB74D)
+                                  : const Color(0xFFE65100),
                             ),
                           ),
                         ),
                       ],
                       const Spacer(),
-                      if (comment.timeText.isNotEmpty)
-                        Text(
-                          comment.timeText,
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: theme.colorScheme.outline.withAlpha(160),
-                            fontSize: 10,
-                          ),
-                        ),
                       const SizedBox(width: 6),
                       // 举报按钮
                       InkWell(
                         onTap: () => onReport?.call(comment),
                         borderRadius: BorderRadius.circular(4),
                         child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 1),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.flag_outlined, size: 12, color: colorScheme.onSurfaceVariant.withAlpha(180)),
+                              Icon(Icons.flag_outlined,
+                                  size: 12,
+                                  color: colorScheme.onSurfaceVariant
+                                      .withAlpha(180)),
                               const SizedBox(width: 2),
                               Text(
                                 '举报',
                                 style: TextStyle(
                                   fontSize: 11,
-                                  color: colorScheme.onSurfaceVariant.withAlpha(200),
+                                  color: colorScheme.onSurfaceVariant
+                                      .withAlpha(200),
                                 ),
                               ),
                             ],
@@ -5116,14 +5795,17 @@ class _ReplyFloorItem extends StatelessWidget {
                       const SizedBox(width: 4),
                       // 回复按钮
                       InkWell(
-                        onTap: () => onReply?.call(comment.author, comment.msgid),
+                        onTap: () =>
+                            onReply?.call(comment.author, comment.msgid),
                         borderRadius: BorderRadius.circular(4),
                         child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 1),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.reply_rounded, size: 12, color: colorScheme.primary),
+                              Icon(Icons.reply_rounded,
+                                  size: 12, color: colorScheme.primary),
                               const SizedBox(width: 2),
                               Text(
                                 '回复',
@@ -5139,6 +5821,28 @@ class _ReplyFloorItem extends StatelessWidget {
                       ),
                     ],
                   ),
+                  if (comment.timeText.isNotEmpty ||
+                      comment.sourceLabel.isNotEmpty ||
+                      comment.location.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 3, bottom: 4),
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 3,
+                        children: [
+                          for (final text in [
+                            comment.timeText,
+                            comment.sourceLabel,
+                            comment.location
+                          ])
+                            if (text.isNotEmpty)
+                              Text(text,
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                      color: colorScheme.onSurfaceVariant,
+                                      fontSize: 10)),
+                        ],
+                      ),
+                    ),
                   const SizedBox(height: 2),
                   InlineHtmlText(
                     html: comment.contentHtml,
@@ -5157,7 +5861,7 @@ class _ReplyFloorItem extends StatelessWidget {
   }
 }
 
-/// Discuz 点评（postcomment / 楼中楼点评）
+/// Discuz 点评（postcomment / 楼中楼点评，树状引线排版）
 class _CommentsSection extends StatelessWidget {
   final List<({String author, String content})> comments;
   final void Function(String author)? onReply;
@@ -5166,24 +5870,54 @@ class _CommentsSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.only(top: 8),
       padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerLow.withAlpha(90),
-        borderRadius: BorderRadius.circular(8),
+        color: colorScheme.surfaceContainerLow.withAlpha(90),
+        borderRadius: const BorderRadius.horizontal(right: Radius.circular(8)),
+        border: Border(
+          left: BorderSide(
+            color: Colors.amber.shade700.withAlpha(120),
+            width: 2.5,
+          ),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
+              Icon(
+                Icons.rate_review_outlined,
+                size: 13,
+                color: Colors.amber.shade800,
+              ),
+              const SizedBox(width: 5),
               Text(
                 '点评',
                 style: theme.textTheme.bodySmall?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: theme.colorScheme.outline,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.amber.shade800,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade700.withAlpha(30),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  '${comments.length}',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.amber.shade800,
+                  ),
                 ),
               ),
               const Spacer(),
@@ -5192,36 +5926,52 @@ class _CommentsSection extends StatelessWidget {
                   '点击单条可回复',
                   style: theme.textTheme.labelSmall?.copyWith(
                     fontSize: 10,
-                    color: theme.colorScheme.outline.withAlpha(140),
+                    color: colorScheme.outline.withAlpha(140),
                   ),
                 ),
             ],
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           for (final c in comments)
             InkWell(
               onTap: onReply != null && c.author.isNotEmpty
                   ? () => onReply!(c.author)
                   : null,
-              borderRadius: BorderRadius.circular(4),
+              borderRadius: BorderRadius.circular(6),
               child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 2),
-                child: Text.rich(
-                  TextSpan(
-                    children: [
-                      TextSpan(
-                        text: c.author.isNotEmpty ? '${c.author}：' : '',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.primary,
-                          fontWeight: FontWeight.w600,
+                padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    UserAvatarWidget(
+                      author: c.author,
+                      size: 18,
+                      reserveFrameSpace: true,
+                    ),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text.rich(
+                        TextSpan(
+                          children: [
+                            TextSpan(
+                              text: c.author.isNotEmpty ? '${c.author}：' : '',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: colorScheme.primary,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            TextSpan(
+                              text: c.content,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                fontSize: 13,
+                                height: 1.35,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                      TextSpan(
-                        text: c.content,
-                        style: theme.textTheme.bodySmall?.copyWith(fontSize: 13),
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -5250,12 +6000,14 @@ class _RewardSectionState extends State<_RewardSection> {
       context,
       tid: widget.tid,
       pid: pid,
-      fallbackRewards: floor.rewards.map((r) => FloorReward(
-        username: r.user,
-        uid: r.uid,
-        amount: r.amount,
-        reason: r.reason,
-      )).toList(),
+      fallbackRewards: floor.rewards
+          .map((r) => FloorReward(
+                username: r.user,
+                uid: r.uid,
+                amount: r.amount,
+                reason: r.reason,
+              ))
+          .toList(),
     );
   }
 
@@ -5270,8 +6022,8 @@ class _RewardSectionState extends State<_RewardSection> {
       borderRadius: BorderRadius.circular(8),
       onTap: r.uid != null
           ? () => Navigator.of(ctx).push(
-              MaterialPageRoute(builder: (_) => UserSpacePage(uid: r.uid!)),
-            )
+                MaterialPageRoute(builder: (_) => UserSpacePage(uid: r.uid!)),
+              )
           : null,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
@@ -5282,8 +6034,8 @@ class _RewardSectionState extends State<_RewardSection> {
               uid: r.uid,
               author: r.user,
               size: 32,
-              // 不打赏头像图，避免与 UserAvatarWidget 内部 uid 头像重叠
-              faceUrl: null,
+              avatarUrl: r.avatar,
+              reserveFrameSpace: true,
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -5341,8 +6093,12 @@ class _RewardSectionState extends State<_RewardSection> {
                   r.amount,
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: negative
-                        ? (theme.brightness == Brightness.dark ? Colors.red.shade300 : Colors.red.shade600)
-                        : (theme.brightness == Brightness.dark ? Colors.orange.shade300 : Colors.orange.shade800),
+                        ? (theme.brightness == Brightness.dark
+                            ? Colors.red.shade300
+                            : Colors.red.shade600)
+                        : (theme.brightness == Brightness.dark
+                            ? Colors.orange.shade300
+                            : Colors.orange.shade800),
                     fontWeight: FontWeight.bold,
                     fontSize: 11,
                   ),
@@ -5386,10 +6142,16 @@ class _RewardSectionState extends State<_RewardSection> {
                 child: Text(
                   floor.rewardCount.isNotEmpty
                       ? '已有 ${floor.rewardCount} 人打赏'
-                      : (floor.floorNumber == '楼主' || floor.floorNumber == '1#' || floor.floorNumber.isEmpty ? '打赏 / 评分' : '楼层评分'),
+                      : (floor.floorNumber == '楼主' ||
+                              floor.floorNumber == '1#' ||
+                              floor.floorNumber.isEmpty
+                          ? '打赏 / 评分'
+                          : '楼层评分'),
                   style: theme.textTheme.bodySmall?.copyWith(
                     fontWeight: FontWeight.w700,
-                    color: isDark ? Colors.orange.shade300 : Colors.orange.shade900,
+                    color: isDark
+                        ? Colors.orange.shade300
+                        : Colors.orange.shade900,
                   ),
                 ),
               ),
@@ -5409,7 +6171,8 @@ class _RewardSectionState extends State<_RewardSection> {
                 floor.rewardCount.isNotEmpty
                     ? '查看全部 ${floor.rewardCount} 条评分/打赏记录'
                     : '查看全部评分',
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                style:
+                    const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
               ),
             ),
           ),
@@ -5450,7 +6213,8 @@ class _BottomAction extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final color = highlighted ? (activeColor ?? scheme.primary) : scheme.outline;
+    final color =
+        highlighted ? (activeColor ?? scheme.primary) : scheme.outline;
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: onTap,

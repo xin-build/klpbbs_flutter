@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -16,13 +17,16 @@ class AndroidSpringCurve extends Curve {
   });
 
   /// 灵动果冻高回弹（约 6.8% 过冲回弹，用于卡片入场、FAB 弹射与按压释放）
-  static const AndroidSpringCurve bouncy = AndroidSpringCurve(damping: 0.65, stiffness: 12.0);
+  static const AndroidSpringCurve bouncy =
+      AndroidSpringCurve(damping: 0.65, stiffness: 12.0);
 
   /// 典雅轻柔微回弹（约 3.2% 微过冲，用于细腻展开与桌面微动效）
-  static const AndroidSpringCurve gentle = AndroidSpringCurve(damping: 0.76, stiffness: 14.0);
+  static const AndroidSpringCurve gentle =
+      AndroidSpringCurve(damping: 0.76, stiffness: 14.0);
 
   /// 敏捷跟手回弹（约 4.5% 过冲，用于折叠箭头、开关与快速微交互）
-  static const AndroidSpringCurve snappy = AndroidSpringCurve(damping: 0.70, stiffness: 16.0);
+  static const AndroidSpringCurve snappy =
+      AndroidSpringCurve(damping: 0.70, stiffness: 16.0);
 
   @override
   double transformInternal(double t) {
@@ -31,7 +35,8 @@ class AndroidSpringCurve extends Curve {
     final beta = damping * stiffness;
     final omegaD = stiffness * math.sqrt(1.0 - damping * damping);
     final decay = math.exp(-beta * t);
-    return 1.0 - decay * (math.cos(omegaD * t) + (beta / omegaD) * math.sin(omegaD * t));
+    return 1.0 -
+        decay * (math.cos(omegaD * t) + (beta / omegaD) * math.sin(omegaD * t));
   }
 }
 
@@ -49,9 +54,9 @@ class PressScaleEffect extends StatefulWidget {
   const PressScaleEffect({
     super.key,
     required this.child,
-    this.scaleDown = 0.955,
+    this.scaleDown = 0.98,
     this.pressDuration = const Duration(milliseconds: 90),
-    this.releaseDuration = const Duration(milliseconds: 240),
+    this.releaseDuration = const Duration(milliseconds: 180),
     this.onTap,
     this.onLongPress,
     this.enableHaptic = false,
@@ -88,13 +93,19 @@ class _PressScaleEffectState extends State<PressScaleEffect> {
 
   @override
   Widget build(BuildContext context) {
-    final scale = _isPressed ? widget.scaleDown : 1.0;
+    final reduced = !AppMotion.enabled(context);
+    final scale = _isPressed && !reduced ? widget.scaleDown : 1.0;
 
     Widget content = RepaintBoundary(
       child: AnimatedScale(
         scale: scale,
-        duration: _isPressed ? widget.pressDuration : widget.releaseDuration,
-        curve: _isPressed ? Curves.easeOutQuad : Curves.easeOutBack,
+        duration: reduced
+            ? Duration.zero
+            : AppMotion.duration(
+                context,
+                (_isPressed ? widget.pressDuration : widget.releaseDuration)
+                    .inMilliseconds),
+        curve: _isPressed ? Curves.easeOutQuad : Curves.easeOutCubic,
         child: widget.child,
       ),
     );
@@ -153,17 +164,17 @@ class _BouncingIconState extends State<BouncingIcon>
     );
     _scaleAnimation = TweenSequence<double>([
       TweenSequenceItem(
-        tween: Tween<double>(begin: 1.0, end: 0.72)
+        tween: Tween<double>(begin: 1.0, end: 0.9)
             .chain(CurveTween(curve: Curves.easeInQuad)),
         weight: 30,
       ),
       TweenSequenceItem(
-        tween: Tween<double>(begin: 0.72, end: 1.28)
+        tween: Tween<double>(begin: 0.9, end: 1.08)
             .chain(CurveTween(curve: Curves.easeOutBack)),
         weight: 45,
       ),
       TweenSequenceItem(
-        tween: Tween<double>(begin: 1.28, end: 1.0)
+        tween: Tween<double>(begin: 1.08, end: 1.0)
             .chain(CurveTween(curve: Curves.easeInOutQuad)),
         weight: 25,
       ),
@@ -171,10 +182,20 @@ class _BouncingIconState extends State<BouncingIcon>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!AppMotion.enabled(context)) _controller.value = 1.0;
+  }
+
+  @override
   void didUpdateWidget(covariant BouncingIcon oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.isTriggered != widget.isTriggered) {
-      _controller.forward(from: 0.0);
+      if (!AppMotion.enabled(context)) {
+        _controller.value = 1;
+      } else {
+        _controller.forward(from: 0.0);
+      }
     }
   }
 
@@ -189,8 +210,11 @@ class _BouncingIconState extends State<BouncingIcon>
     final iconWidget = ScaleTransition(
       scale: _scaleAnimation,
       child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 200),
-        transitionBuilder: (child, anim) => ScaleTransition(scale: anim, child: child),
+        duration: !AppMotion.enabled(context)
+            ? Duration.zero
+            : const Duration(milliseconds: 160),
+        transitionBuilder: (child, anim) =>
+            ScaleTransition(scale: anim, child: child),
         child: KeyedSubtree(
           key: ValueKey(widget.isTriggered),
           child: widget.isTriggered ? widget.activeIcon : widget.inactiveIcon,
@@ -205,7 +229,8 @@ class _BouncingIconState extends State<BouncingIcon>
         tooltip: widget.tooltip,
         visualDensity: VisualDensity.compact,
         padding: EdgeInsets.zero,
-        constraints: BoxConstraints(minWidth: widget.size + 8, minHeight: widget.size + 8),
+        constraints: BoxConstraints(
+            minWidth: widget.size + 8, minHeight: widget.size + 8),
         onPressed: () {
           HapticFeedback.lightImpact();
           widget.onTap?.call();
@@ -237,12 +262,14 @@ class AnimatedCollapseSection extends StatefulWidget {
     required this.child,
     this.duration = const Duration(milliseconds: 360),
     this.reverseDuration = const Duration(milliseconds: 240),
-    this.expandCurve = const Cubic(0.08, 0.85, 0.18, 1.0), // Android Emphasized Decelerate
+    this.expandCurve =
+        const Cubic(0.08, 0.85, 0.18, 1.0), // Android Emphasized Decelerate
     this.collapseCurve = Curves.easeInOutCubic,
   });
 
   @override
-  State<AnimatedCollapseSection> createState() => _AnimatedCollapseSectionState();
+  State<AnimatedCollapseSection> createState() =>
+      _AnimatedCollapseSectionState();
 }
 
 class _AnimatedCollapseSectionState extends State<AnimatedCollapseSection>
@@ -283,19 +310,37 @@ class _AnimatedCollapseSectionState extends State<AnimatedCollapseSection>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _controller.duration =
+        AppMotion.duration(context, widget.duration.inMilliseconds);
+    _controller.reverseDuration =
+        AppMotion.duration(context, widget.reverseDuration.inMilliseconds);
+    if (!AppMotion.enabled(context)) {
+      _controller.value = widget.isCollapsed ? 0.0 : 1.0;
+    }
+  }
+
+  @override
   void didUpdateWidget(covariant AnimatedCollapseSection oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.duration != widget.duration) {
-      _controller.duration = widget.duration;
+      _controller.duration =
+          AppMotion.duration(context, widget.duration.inMilliseconds);
     }
     if (oldWidget.reverseDuration != widget.reverseDuration) {
-      _controller.reverseDuration = widget.reverseDuration;
+      _controller.reverseDuration =
+          AppMotion.duration(context, widget.reverseDuration.inMilliseconds);
     }
     if (oldWidget.expandCurve != widget.expandCurve ||
         oldWidget.collapseCurve != widget.collapseCurve) {
       _initAnimations();
     }
     if (oldWidget.isCollapsed != widget.isCollapsed) {
+      if (!AppMotion.enabled(context)) {
+        _controller.value = widget.isCollapsed ? 0 : 1;
+        return;
+      }
       if (widget.isCollapsed) {
         _controller.reverse();
       } else {
@@ -350,12 +395,14 @@ class AccordionControllerScope extends InheritedWidget {
   });
 
   static AccordionControllerScope? of(BuildContext context) {
-    return context.dependOnInheritedWidgetOfExactType<AccordionControllerScope>();
+    return context
+        .dependOnInheritedWidgetOfExactType<AccordionControllerScope>();
   }
 
   @override
   bool updateShouldNotify(covariant AccordionControllerScope oldWidget) {
-    return animation != oldWidget.animation || isCollapsed != oldWidget.isCollapsed;
+    return animation != oldWidget.animation ||
+        isCollapsed != oldWidget.isCollapsed;
   }
 }
 
@@ -455,7 +502,8 @@ class _FluidAccordionSectionState extends State<FluidAccordionSection>
   void _initAnimations() {
     _heightAnimation = CurvedAnimation(
       parent: _controller,
-      curve: const Cubic(0.08, 0.85, 0.18, 1.0), // Material 3 Emphasized Decelerate 流体曲线
+      curve: const Cubic(
+          0.08, 0.85, 0.18, 1.0), // Material 3 Emphasized Decelerate 流体曲线
       reverseCurve: Curves.easeInOutCubic,
     );
     _fadeAnimation = CurvedAnimation(
@@ -466,15 +514,33 @@ class _FluidAccordionSectionState extends State<FluidAccordionSection>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _controller.duration =
+        AppMotion.duration(context, widget.duration.inMilliseconds);
+    _controller.reverseDuration =
+        AppMotion.duration(context, widget.reverseDuration.inMilliseconds);
+    if (!AppMotion.enabled(context)) {
+      _controller.value = widget.isCollapsed ? 0.0 : 1.0;
+    }
+  }
+
+  @override
   void didUpdateWidget(covariant FluidAccordionSection oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.duration != widget.duration) {
-      _controller.duration = widget.duration;
+      _controller.duration =
+          AppMotion.duration(context, widget.duration.inMilliseconds);
     }
     if (oldWidget.reverseDuration != widget.reverseDuration) {
-      _controller.reverseDuration = widget.reverseDuration;
+      _controller.reverseDuration =
+          AppMotion.duration(context, widget.reverseDuration.inMilliseconds);
     }
     if (oldWidget.isCollapsed != widget.isCollapsed) {
+      if (!AppMotion.enabled(context)) {
+        _controller.value = widget.isCollapsed ? 0 : 1;
+        return;
+      }
       if (widget.isCollapsed) {
         _controller.reverse();
       } else {
@@ -538,12 +604,13 @@ class AnimatedExpandArrow extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnimatedRotation(
       turns: isCollapsed ? 0.0 : 0.5,
-      duration: duration,
+      duration: !AppMotion.enabled(context) ? Duration.zero : duration,
       curve: curve,
       child: Icon(
         Icons.keyboard_arrow_down_rounded,
         size: size,
-        color: color ?? Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(160),
+        color: color ??
+            Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(160),
       ),
     );
   }
@@ -677,14 +744,14 @@ class ScrollDirectionAwareFab extends StatefulWidget {
   });
 
   @override
-  State<ScrollDirectionAwareFab> createState() => _ScrollDirectionAwareFabState();
+  State<ScrollDirectionAwareFab> createState() =>
+      _ScrollDirectionAwareFabState();
 }
 
 class _ScrollDirectionAwareFabState extends State<ScrollDirectionAwareFab>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
   late Animation<double> _scaleAnimation;
-  late Animation<Offset> _slideAnimation;
 
   @override
   void initState() {
@@ -699,15 +766,14 @@ class _ScrollDirectionAwareFabState extends State<ScrollDirectionAwareFab>
       curve: widget.forwardCurve,
       reverseCurve: widget.reverseCurve,
     );
-    _slideAnimation = Tween<Offset>(
-      begin: const Offset(0, 0.45),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(
+    _fadeAnimation = CurvedAnimation(
       parent: _controller,
       curve: widget.forwardCurve,
       reverseCurve: widget.reverseCurve,
-    ));
+    );
   }
+
+  late Animation<double> _fadeAnimation;
 
   @override
   void didUpdateWidget(covariant ScrollDirectionAwareFab oldWidget) {
@@ -734,8 +800,8 @@ class _ScrollDirectionAwareFabState extends State<ScrollDirectionAwareFab>
       child: widget.child,
       builder: (context, child) {
         if (_controller.value == 0.0) return const SizedBox.shrink();
-        return SlideTransition(
-          position: _slideAnimation,
+        return FadeTransition(
+          opacity: _fadeAnimation,
           child: ScaleTransition(
             scale: _scaleAnimation,
             child: child,
@@ -760,7 +826,8 @@ class HoverScaleElevationEffect extends StatefulWidget {
   });
 
   @override
-  State<HoverScaleElevationEffect> createState() => _HoverScaleElevationEffectState();
+  State<HoverScaleElevationEffect> createState() =>
+      _HoverScaleElevationEffectState();
 }
 
 class _HoverScaleElevationEffectState extends State<HoverScaleElevationEffect> {
@@ -807,7 +874,7 @@ class _HoverScaleElevationEffectState extends State<HoverScaleElevationEffect> {
 
 /// 协调式双动效浮动操作组（Coordinated Action FAB Group）
 /// 专为彻底解决业务主操作（如“发帖”）与视口工具操作（如“回到顶部”）在同一角落的空间拓扑竞态与层叠冲突而生。
-/// 
+///
 /// 架构设计与物理动力学优势：
 /// 1. 根治双层 Scaffold 冲突：消除外层外壳（AdaptiveScaffold）与内层页面（HomePage）各自渲染 FAB 导致的同像素重叠；
 /// 2. 空间拓扑垂直层叠（Material 3 Speed Dial 范式）：
@@ -828,6 +895,9 @@ class CoordinatedActionFabGroup extends StatefulWidget {
   final String primaryLabel;
   final String? primaryTooltip;
   final VoidCallback onPrimaryAction;
+
+  /// 手机阅读时可收成图标；桌面仍保留主操作文字。
+  final bool extendPrimary;
   final String heroTagPrefix;
   final String backToTopTooltip;
   final double spacing;
@@ -840,13 +910,15 @@ class CoordinatedActionFabGroup extends StatefulWidget {
     required this.primaryLabel,
     this.primaryTooltip,
     required this.onPrimaryAction,
+    this.extendPrimary = true,
     this.heroTagPrefix = 'coordinated_fab',
     this.backToTopTooltip = '回到顶部 (Home / PgUp)',
     this.spacing = 10.0,
   });
 
   @override
-  State<CoordinatedActionFabGroup> createState() => _CoordinatedActionFabGroupState();
+  State<CoordinatedActionFabGroup> createState() =>
+      _CoordinatedActionFabGroupState();
 }
 
 class _CoordinatedActionFabGroupState extends State<CoordinatedActionFabGroup>
@@ -854,7 +926,6 @@ class _CoordinatedActionFabGroupState extends State<CoordinatedActionFabGroup>
   late AnimationController _controller;
   late Animation<double> _expandAnimation;
   late Animation<double> _scaleAnimation;
-  late Animation<Offset> _slideAnimation;
   late Animation<double> _fadeAnimation;
 
   @override
@@ -880,25 +951,29 @@ class _CoordinatedActionFabGroupState extends State<CoordinatedActionFabGroup>
       curve: AndroidSpringCurve.bouncy,
       reverseCurve: Curves.easeInCubic,
     );
-    _slideAnimation = Tween<Offset>(
-      begin: const Offset(0, 0.40),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(
-      parent: _controller,
-      curve: AndroidSpringCurve.bouncy,
-      reverseCurve: Curves.easeInCubic,
-    ));
     _fadeAnimation = CurvedAnimation(
       parent: _controller,
-      curve: const Interval(0.0, 0.45, curve: Curves.easeOut),
-      reverseCurve: const Interval(0.0, 0.60, curve: Curves.easeIn),
+      curve: Curves.easeOut,
+      reverseCurve: Curves.easeIn,
     );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!AppMotion.enabled(context)) {
+      _controller.value = widget.showBackToTop ? 1.0 : 0.0;
+    }
   }
 
   @override
   void didUpdateWidget(covariant CoordinatedActionFabGroup oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.showBackToTop != widget.showBackToTop) {
+      if (!AppMotion.enabled(context)) {
+        _controller.value = widget.showBackToTop ? 1 : 0;
+        return;
+      }
       if (widget.showBackToTop) {
         _controller.forward();
       } else {
@@ -916,27 +991,30 @@ class _CoordinatedActionFabGroupState extends State<CoordinatedActionFabGroup>
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isLight = theme.brightness == Brightness.light;
     final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+    final extended = isDesktop || widget.extendPrimary;
+    final primaryKey = ValueKey('${widget.heroTagPrefix}_primary_action');
+    final primaryTooltip = widget.primaryTooltip ?? widget.primaryLabel;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.end,
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        // 1. 次级操作：回到顶部（自发帖主按钮上方垂直平滑展开并回弹浮现）
+        // 1. 次级操作：回到顶部（微胶囊 StadiumBorder 造型，与下方发帖胶囊保持统一几何语言）
         AnimatedBuilder(
           animation: _controller,
           builder: (context, child) {
             if (_controller.value == 0.0) {
               return const SizedBox.shrink();
             }
-            return SizeTransition(
-              sizeFactor: _expandAnimation,
-              axis: Axis.vertical,
-              axisAlignment: 1.0,
-              child: FadeTransition(
-                opacity: _fadeAnimation,
-                child: SlideTransition(
-                  position: _slideAnimation,
+            return UnconstrainedBox(
+              child: SizeTransition(
+                sizeFactor: _expandAnimation,
+                axis: Axis.vertical,
+                axisAlignment: 1.0,
+                child: FadeTransition(
+                  opacity: _fadeAnimation,
                   child: ScaleTransition(
                     scale: _scaleAnimation,
                     alignment: Alignment.bottomCenter,
@@ -952,40 +1030,78 @@ class _CoordinatedActionFabGroupState extends State<CoordinatedActionFabGroup>
           child: PressScaleEffect(
             scaleDown: 0.93,
             enableHaptic: true,
-            child: FloatingActionButton.small(
-              heroTag: '${widget.heroTagPrefix}_back_to_top',
-              tooltip: widget.backToTopTooltip,
-              elevation: 3,
-              backgroundColor: theme.colorScheme.surfaceContainerHighest,
-              foregroundColor: theme.colorScheme.primary,
-              onPressed: widget.onBackToTop,
-              child: const Icon(Icons.arrow_upward_rounded, size: 20),
+            child: Tooltip(
+              message: widget.backToTopTooltip,
+              child: Hero(
+                tag: '${widget.heroTagPrefix}_back_to_top',
+                child: Material(
+                  color: theme.colorScheme.surfaceContainerHigh,
+                  elevation: 3,
+                  shadowColor: Colors.black.withOpacity(0.25),
+                  shape: StadiumBorder(
+                    side: BorderSide(
+                      color: theme.colorScheme.outlineVariant
+                          .withAlpha(isLight ? 60 : 40),
+                      width: 0.8,
+                    ),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    customBorder: const StadiumBorder(),
+                    onTap: widget.onBackToTop,
+                    child: SizedBox(
+                      width: isDesktop ? 54.0 : 48.0,
+                      height: isDesktop ? 35.0 : 33.0,
+                      child: Center(
+                        child: Icon(
+                          Icons.arrow_upward_rounded,
+                          size: isDesktop ? 20.0 : 19.0,
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
         ),
 
-        // 2. 主业务操作：发帖（基准锚点，位置绝对稳定，无抖动无位移）
-        PressScaleEffect(
-          scaleDown: 0.96,
-          enableHaptic: true,
-          child: FloatingActionButton.extended(
-            heroTag: '${widget.heroTagPrefix}_primary',
-            tooltip: widget.primaryTooltip ?? widget.primaryLabel,
-            elevation: 4,
-            onPressed: widget.onPrimaryAction,
-            icon: Icon(widget.primaryIcon, size: isDesktop ? 20 : 19),
-            label: Text(
-              widget.primaryLabel,
-              style: TextStyle(
-                fontSize: isDesktop ? 13.5 : 12.5,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+        // 2. 主操作保持可点击，仅在手机阅读时减少文字占用。
+        AppAnimatedSize(
+          duration: AppMotion.duration(context, 180),
+          alignment: Alignment.bottomRight,
+          clipBehavior: Clip.none,
+          child: PressScaleEffect(
+            scaleDown: 0.96,
+            enableHaptic: true,
+            child: extended
+                ? FloatingActionButton.extended(
+                    key: primaryKey,
+                    heroTag: '${widget.heroTagPrefix}_primary',
+                    tooltip: primaryTooltip,
+                    elevation: 4,
+                    onPressed: widget.onPrimaryAction,
+                    icon: Icon(widget.primaryIcon, size: isDesktop ? 20 : 19),
+                    label: Text(
+                      widget.primaryLabel,
+                      style: TextStyle(
+                        fontSize: isDesktop ? 13.5 : 12.5,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  )
+                : FloatingActionButton(
+                    key: primaryKey,
+                    heroTag: '${widget.heroTagPrefix}_primary',
+                    tooltip: primaryTooltip,
+                    elevation: 4,
+                    onPressed: widget.onPrimaryAction,
+                    child: Icon(widget.primaryIcon, size: 24),
+                  ),
           ),
         ),
       ],
     );
   }
 }
-
-

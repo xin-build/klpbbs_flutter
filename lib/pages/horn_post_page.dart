@@ -1,11 +1,14 @@
+import '../widgets/app_motion.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
+import '../core/cache_manager.dart';
 import '../core/write_confirm.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
+import 'func_list_page.dart';
 
 /// 小喇叭发布页（ahome_horn:add）
 ///
@@ -118,100 +121,117 @@ class _HornPostPageState extends State<HornPostPage> {
                   ? const SizedBox(
                       width: 16,
                       height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      child: AppLoadingIndicator(strokeWidth: 2),
                     )
                   : const Text('发布'),
             ),
           ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          if (_loadingInfo) const LinearProgressIndicator(minHeight: 2),
-          // 消息内容
-          TextField(
-            controller: _messageCtrl,
-            maxLines: 4,
-            maxLength: 240,
-            decoration: InputDecoration(
-              labelText: '消息内容',
-              hintText: '说点什么吧（最多 240 字）',
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          // 内置表情
-          Text('内置表情', style: theme.textTheme.titleSmall),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              for (var n = 0; n < _hornSmileCount; n++)
-                InkWell(
-                  onTap: () => _insertSmile(n),
-                  borderRadius: BorderRadius.circular(6),
-                  child: Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.surfaceContainerHighest
-                          .withAlpha(70),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: CachedNetworkImage(
-                      imageUrl: _hornSmileUrl(n),
-                      width: 22,
-                      height: 22,
-                      fit: BoxFit.contain,
-                      errorWidget: (_, __, ___) =>
-                          Text('[s:$n]', style: const TextStyle(fontSize: 9)),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          // 文本颜色
-          Text('文本颜色', style: theme.textTheme.titleSmall),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final c in _colors)
-                GestureDetector(
-                  onTap: () => setState(() => _color = c),
-                  child: Container(
-                    width: 28,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      color: _parseColor(c),
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: _color == c
-                            ? theme.colorScheme.primary
-                            : theme.colorScheme.outlineVariant,
-                        width: _color == c ? 2.5 : 1,
+      body: Center(
+          child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 800),
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  if (_loadingInfo) const AppLoadingBar(minHeight: 2),
+                  // 消息内容
+                  TextField(
+                    controller: _messageCtrl,
+                    maxLines: 4,
+                    maxLength: 240,
+                    decoration: InputDecoration(
+                      labelText: '消息内容',
+                      hintText: '说点什么吧（最多 240 字）',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
                       ),
                     ),
                   ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          // 土豪霸屏
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('土豪霸屏（额外 1000 铁粒/天）'),
-            subtitle: const Text('炫酷刷屏一天', style: TextStyle(fontSize: 12)),
-            value: _boss,
-            onChanged: (v) => setState(() => _boss = v),
-          ),
-        ],
-      ),
+                  const SizedBox(height: 12),
+                  // 内置表情
+                  Text('内置表情', style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (var n = 0; n < _hornSmileCount; n++)
+                        InkWell(
+                          onTap: () => _insertSmile(n),
+                          borderRadius: BorderRadius.circular(6),
+                          child: Container(
+                            padding: const EdgeInsets.all(4),
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.surfaceContainerHighest
+                                  .withAlpha(70),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: CachedNetworkImage(
+                              imageUrl: _hornSmileUrl(n),
+                              cacheKey: KlpbbsCacheManager.normalizeCacheKey(
+                                  _hornSmileUrl(n)),
+                              cacheManager: KlpbbsCacheManager.instance,
+                              width: 22,
+                              height: 22,
+                              fit: BoxFit.contain,
+                              errorWidget: (_, __, ___) => Text('[s:$n]',
+                                  style: const TextStyle(fontSize: 9)),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  // 文本颜色
+                  Text('文本颜色', style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final c in _colors)
+                        GestureDetector(
+                          onTap: () => setState(() => _color = c),
+                          child: Container(
+                            width: 28,
+                            height: 28,
+                            decoration: BoxDecoration(
+                              color: _parseColor(c),
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: _color == c
+                                    ? theme.colorScheme.primary
+                                    : theme.colorScheme.outlineVariant,
+                                width: _color == c ? 2.5 : 1,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  // 土豪霸屏
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('土豪霸屏'),
+                    subtitle: const Text('费用和时长以当前网页表单为准',
+                        style: TextStyle(fontSize: 12)),
+                    value: _boss,
+                    onChanged: (v) => setState(() => _boss = v),
+                  ),
+                  TextButton.icon(
+                    onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                            builder: (_) => const FuncListPage(
+                                title: '小喇叭完整表单',
+                                path:
+                                    'plugin.php?id=ahome_horn:add&fid=&tid=0'))),
+                    icon: const Icon(Icons.open_in_browser_rounded, size: 18),
+                    label: const Text('查看当前费用与完整表单'),
+                  ),
+                ],
+              ))),
     );
   }
 

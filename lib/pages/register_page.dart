@@ -1,3 +1,4 @@
+import '../widgets/app_motion.dart';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -223,7 +224,7 @@ class _RegisterPageState extends State<RegisterPage> {
                               child: SizedBox(
                                 width: 18,
                                 height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: AppLoadingIndicator(strokeWidth: 2),
                               ),
                             ),
                           ),
@@ -269,7 +270,7 @@ class _RegisterPageState extends State<RegisterPage> {
                     ? const SizedBox(
                         width: 20,
                         height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                        child: AppLoadingIndicator(strokeWidth: 2),
                       )
                     : const Text('注册'),
               ),

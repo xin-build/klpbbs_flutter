@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'app_motion.dart';
 
 /// 带平滑渐变淡入动画与按需惰性挂载的 IndexedStack，完整保留所有子页面状态（滚动位置、输入内容、缓存数据）
 class FadeIndexedStack extends StatefulWidget {
@@ -52,7 +53,25 @@ class _FadeIndexedStackState extends State<FadeIndexedStack>
       setState(() {
         _currentIndex = widget.index;
       });
-      _controller.forward(from: 0.0);
+      if (!AppMotion.enabled(context, MotionScope.navigation)) {
+        _controller.value = 1;
+      } else {
+        _controller.duration = AppMotion.duration(
+            context, widget.duration.inMilliseconds,
+            scope: MotionScope.navigation);
+        _controller.forward(from: 0.0);
+      }
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _controller.duration = AppMotion.duration(
+        context, widget.duration.inMilliseconds,
+        scope: MotionScope.navigation);
+    if (!AppMotion.enabled(context, MotionScope.navigation)) {
+      _controller.value = 1;
     }
   }
 
@@ -64,18 +83,22 @@ class _FadeIndexedStackState extends State<FadeIndexedStack>
 
   @override
   Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: _animation,
-      child: IndexedStack(
-        index: _currentIndex.clamp(0, widget.children.isEmpty ? 0 : widget.children.length - 1),
-        children: List.generate(widget.children.length, (i) {
-          if (!widget.lazy || _activatedIndices.contains(i)) {
-            return widget.children[i];
-          }
-          return const SizedBox.shrink();
-        }),
-      ),
-    );
+    return SlideTransition(
+        position: _animation
+            .drive(Tween(begin: const Offset(0, .008), end: Offset.zero)),
+        child: FadeTransition(
+          opacity: _animation,
+          child: IndexedStack(
+            index: _currentIndex.clamp(
+                0, widget.children.isEmpty ? 0 : widget.children.length - 1),
+            children: List.generate(widget.children.length, (i) {
+              if (!widget.lazy || _activatedIndices.contains(i)) {
+                return TickerMode(
+                    enabled: i == _currentIndex, child: widget.children[i]);
+              }
+              return const SizedBox.shrink();
+            }),
+          ),
+        ));
   }
 }
-

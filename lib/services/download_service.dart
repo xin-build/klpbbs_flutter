@@ -447,7 +447,7 @@ class _ActiveDownloader {
         'Referer': 'https://klpbbs.com/forum.php',
         'Accept': '*/*',
       };
-      final cookieHeader = DioClient.allCookiesHeader;
+      final cookieHeader = DioClient.cookiesForUrl(targetUrl);
       if (cookieHeader.isNotEmpty && isKlpbbsUrl) {
         headers['Cookie'] = cookieHeader;
       }

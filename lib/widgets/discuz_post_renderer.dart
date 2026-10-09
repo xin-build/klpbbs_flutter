@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -9,6 +10,7 @@ import 'package:url_launcher/url_launcher.dart' as url_launcher;
 import '../api/comiis_parser.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
+import '../core/cache_manager.dart';
 import '../core/dio_client.dart';
 import '../core/url_helper.dart';
 import '../models/post_block.dart';
@@ -69,8 +71,9 @@ class DiscuzPostRenderer extends StatelessWidget {
     r'line-height\s*:\s*(\d+)px',
     caseSensitive: false,
   );
-  static final _nonNumericRegex = RegExp(r'[^0-9.]');
   static final _spoilerBlocksCache = Expando<List<PostBlock>>();
+  static final Map<String, html_dom.DocumentFragment> _fragmentCache = {};
+  static const int _maxFragmentCacheSize = 256;
 
   @override
   Widget build(BuildContext context) {
@@ -79,21 +82,39 @@ class DiscuzPostRenderer extends StatelessWidget {
 
     if (blocks.isEmpty) {
       // 兜底退化为旧式 HTML spans 解析
-      return Column(
+      return SelectionArea(
+          child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (floor.lastEdited != null && floor.lastEdited!.isNotEmpty)
             _buildLastEditedNotice(theme, floor.lastEdited!),
-          SelectableText.rich(
-            TextSpan(
-              children: _htmlToSpans(floor.contentHtml, theme, context: context),
+          _DiscuzTextBlockWidget(
+            spansBuilder:
+                (revealedSpoilers, onToggleSpoiler, createRecognizer) {
+              var h = floor.contentHtml;
+              if (h.contains('[') && h.contains(']')) {
+                h = ComiisParser.bbcodeToHtml(h, escapeHtml: false);
+              }
+              return _htmlToSpans(
+                h,
+                theme,
+                context: context,
+                revealedSpoilers: revealedSpoilers,
+                onToggleSpoiler: onToggleSpoiler,
+                createRecognizer: createRecognizer,
+              );
+            },
+            baseStyle: theme.textTheme.bodyMedium?.copyWith(
+              height: 1.55,
+              fontSize: 14.5,
             ),
           ),
         ],
-      );
+      ));
     }
 
-    return Column(
+    return SelectionArea(
+        child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (floor.lastEdited != null && floor.lastEdited!.isNotEmpty)
@@ -104,7 +125,7 @@ class DiscuzPostRenderer extends StatelessWidget {
             child: _buildBlock(context, theme, blocks[i]),
           ),
       ],
-    );
+    ));
   }
 
   Widget _buildLastEditedNotice(ThemeData theme, String text) {
@@ -172,15 +193,13 @@ class DiscuzPostRenderer extends StatelessWidget {
           contentHtml,
           align: align,
         ),
-      FlyBlock(:final html, :final align) =>
-        _buildFlyBlock(
+      FlyBlock(:final html, :final align) => _buildFlyBlock(
           context,
           theme,
           html,
           align: align,
         ),
-      CodeBlock(:final code, :final language, :final align) =>
-        _buildCodeBlock(
+      CodeBlock(:final code, :final language, :final align) => _buildCodeBlock(
           context,
           theme,
           code,
@@ -188,12 +207,11 @@ class DiscuzPostRenderer extends StatelessWidget {
           align: align,
         ),
       SpoilerBlock block => _buildSpoilerBlock(
-        context,
-        theme,
-        block,
-      ),
-      TableBlock(:final headers, :final rows, :final align) =>
-        _buildTableBlock(
+          context,
+          theme,
+          block,
+        ),
+      TableBlock(:final headers, :final rows, :final align) => _buildTableBlock(
           context,
           theme,
           headers,
@@ -217,12 +235,12 @@ class DiscuzPostRenderer extends StatelessWidget {
           align: align,
         ),
       AudioBlock(:final src, :final title, :final align) => _buildAudioBlock(
-        context,
-        theme,
-        src,
-        title,
-        align: align,
-      ),
+          context,
+          theme,
+          src,
+          title,
+          align: align,
+        ),
       AttachmentBlock(
         :final name,
         :final url,
@@ -250,7 +268,12 @@ class DiscuzPostRenderer extends StatelessWidget {
       ReplyRewardBlock() => _buildReplyRewardBlock(context, theme, block),
       DebateBlock() => _buildDebateBlock(context, theme, block),
       AuditStatusBlock() => _buildAuditStatusBlock(context, theme, block),
-      NetdiskBlock(:final panName, :final url, :final extractCode, :final align) =>
+      NetdiskBlock(
+        :final panName,
+        :final url,
+        :final extractCode,
+        :final align
+      ) =>
         _buildNetdiskBlock(
           context,
           theme,
@@ -266,13 +289,13 @@ class DiscuzPostRenderer extends StatelessWidget {
         _buildReviewStatusBlock(context, theme, status, reviewId),
       CardContainerBlock() => _buildCardContainerBlock(context, theme, block),
       DividerBlock() => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Divider(
-          height: 1,
-          thickness: 0.8,
-          color: theme.colorScheme.outlineVariant.withAlpha(80),
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Divider(
+            height: 1,
+            thickness: 0.8,
+            color: theme.colorScheme.outlineVariant.withAlpha(80),
+          ),
         ),
-      ),
     };
   }
 
@@ -283,12 +306,14 @@ class DiscuzPostRenderer extends StatelessWidget {
     CardContainerBlock block,
   ) {
     final bgColor = block.bgColor != null && block.bgColor!.isNotEmpty
-        ? _parseColor(block.bgColor!, brightness: theme.brightness, isBackground: true)
+        ? _parseColor(block.bgColor!,
+            brightness: theme.brightness, isBackground: true)
         : null;
 
     Color borderColor;
     if (block.borderColor != null && block.borderColor!.isNotEmpty) {
-      borderColor = _parseColor(block.borderColor!, brightness: theme.brightness, isBackground: false);
+      borderColor = _parseColor(block.borderColor!,
+          brightness: theme.brightness, isBackground: false);
     } else if (bgColor != null) {
       borderColor = bgColor.withAlpha(200);
     } else {
@@ -323,7 +348,8 @@ class DiscuzPostRenderer extends StatelessWidget {
     for (int i = 0; i < block.children.length; i++) {
       childWidgets.add(
         Padding(
-          padding: EdgeInsets.only(bottom: i < block.children.length - 1 ? 6.0 : 0.0),
+          padding: EdgeInsets.only(
+              bottom: i < block.children.length - 1 ? 6.0 : 0.0),
           child: _buildBlock(context, cardTheme, block.children[i]),
         ),
       );
@@ -349,7 +375,9 @@ class DiscuzPostRenderer extends StatelessWidget {
         ],
       ),
       child: Column(
-        crossAxisAlignment: block.align == 'center' ? CrossAxisAlignment.center : CrossAxisAlignment.start,
+        crossAxisAlignment: block.align == 'center'
+            ? CrossAxisAlignment.center
+            : CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: childWidgets,
       ),
@@ -377,7 +405,8 @@ class DiscuzPostRenderer extends StatelessWidget {
     String? iconType,
   ) {
     final isDark = theme.brightness == Brightness.dark;
-    final isBanned = iconType == 'banned' || reason.contains('禁止') || reason.contains('删除');
+    final isBanned =
+        iconType == 'banned' || reason.contains('禁止') || reason.contains('删除');
     final isReview = iconType == 'review' || reason.contains('审核');
     final isLocked = iconType == 'locked' || reason.contains('锁定');
 
@@ -389,9 +418,8 @@ class DiscuzPostRenderer extends StatelessWidget {
                 ? (isDark ? const Color(0xFF90CAF9) : const Color(0xFF1976D2))
                 : (isDark ? const Color(0xFFFFB74D) : const Color(0xFFE65100));
 
-    final Color bgColor = isDark
-        ? primaryColor.withAlpha(25)
-        : primaryColor.withAlpha(15);
+    final Color bgColor =
+        isDark ? primaryColor.withAlpha(25) : primaryColor.withAlpha(15);
 
     final Color borderColor = primaryColor.withAlpha(80);
 
@@ -441,21 +469,24 @@ class DiscuzPostRenderer extends StatelessWidget {
   ) {
     final colorScheme = theme.colorScheme;
     final isDark = theme.brightness == Brightness.dark;
-    final blueColor = isDark ? const Color(0xFF64B5F6) : const Color(0xFF1E88E5);
+    final blueColor =
+        isDark ? const Color(0xFF64B5F6) : const Color(0xFF1E88E5);
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 6),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: isDark
-            ? colorScheme.surfaceContainerLow
-            : const Color(0xFFF8F9FA),
+        color:
+            isDark ? colorScheme.surfaceContainerLow : const Color(0xFFF8F9FA),
         borderRadius: BorderRadius.circular(8),
         border: Border(
           left: BorderSide(color: blueColor, width: 4),
-          top: BorderSide(color: colorScheme.outlineVariant.withAlpha(40), width: 0.5),
-          right: BorderSide(color: colorScheme.outlineVariant.withAlpha(40), width: 0.5),
-          bottom: BorderSide(color: colorScheme.outlineVariant.withAlpha(40), width: 0.5),
+          top: BorderSide(
+              color: colorScheme.outlineVariant.withAlpha(40), width: 0.5),
+          right: BorderSide(
+              color: colorScheme.outlineVariant.withAlpha(40), width: 0.5),
+          bottom: BorderSide(
+              color: colorScheme.outlineVariant.withAlpha(40), width: 0.5),
         ),
       ),
       child: Row(
@@ -501,9 +532,132 @@ class DiscuzPostRenderer extends StatelessWidget {
     );
   }
 
-  // 0. 悬赏问答专属卡片（完全还原网页版：黄底金边、悬赏金额、我来回答按钮与金币袋，完美适配深浅主题）
-  Widget _buildBountyBlock(BuildContext context, ThemeData theme, BountyBlock bounty) {
+  // 0. 悬赏问答专属卡片（完全还原网页版：进行中黄底金边+我来回答；已结贴翡翠绿底+最佳答案状态，完美适配深浅主题）
+  Widget _buildBountyBlock(
+      BuildContext context, ThemeData theme, BountyBlock bounty) {
     final isDark = theme.brightness == Brightness.dark;
+    final isSolved = bounty.isSolved;
+
+    if (isSolved) {
+      final greenBg =
+          isDark ? const Color(0xFF142E1F) : const Color(0xFFE8F5E9);
+      final greenBorder =
+          isDark ? const Color(0xFF2E7D32) : const Color(0xFFA5D6A7);
+      final greenPrimary =
+          isDark ? const Color(0xFF81C784) : const Color(0xFF2E7D32);
+
+      return Container(
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: greenBg,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: greenBorder, width: 1),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.verified_rounded,
+                          color: greenPrimary, size: 20),
+                      const SizedBox(width: 6),
+                      Text(
+                        '悬赏已解决',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                          color: isDark
+                              ? const Color(0xFFA5D6A7)
+                              : const Color(0xFF1B5E20),
+                        ),
+                      ),
+                      if (bounty.price > 0) ...[
+                        const SizedBox(width: 6),
+                        Text(
+                          '${bounty.price}',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w900,
+                            color: greenPrimary,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          bounty.unit,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: isDark
+                                ? const Color(0xFF81C784)
+                                : const Color(0xFF2E7D32),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: greenPrimary,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text(
+                          '已结贴',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          bounty.message ?? '本悬赏已圆满结贴，最佳答案已产生并获得奖励。',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isDark ? Colors.white70 : Colors.grey[800],
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Container(
+              width: 46,
+              height: 46,
+              decoration: BoxDecoration(
+                color: greenPrimary,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: greenPrimary.withAlpha(60),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              alignment: Alignment.center,
+              child: const Icon(Icons.task_alt_rounded,
+                  color: Colors.white, size: 24),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
       padding: const EdgeInsets.all(14),
@@ -524,14 +678,17 @@ class DiscuzPostRenderer extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    const Icon(Icons.monetization_on_rounded, color: Color(0xFFFFA000), size: 20),
+                    const Icon(Icons.monetization_on_rounded,
+                        color: Color(0xFFFFA000), size: 20),
                     const SizedBox(width: 6),
                     Text(
                       '悬赏',
                       style: TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.bold,
-                        color: isDark ? const Color(0xFFFFE082) : Colors.brown[800],
+                        color: isDark
+                            ? const Color(0xFFFFE082)
+                            : Colors.brown[800],
                       ),
                     ),
                     const SizedBox(width: 4),
@@ -548,7 +705,9 @@ class DiscuzPostRenderer extends StatelessWidget {
                       bounty.unit,
                       style: TextStyle(
                         fontSize: 13,
-                        color: isDark ? const Color(0xFFFFD54F) : Colors.brown[600],
+                        color: isDark
+                            ? const Color(0xFFFFD54F)
+                            : Colors.brown[600],
                       ),
                     ),
                   ],
@@ -560,13 +719,17 @@ class DiscuzPostRenderer extends StatelessWidget {
                       style: FilledButton.styleFrom(
                         backgroundColor: const Color(0xFFFF9800),
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 6),
                         minimumSize: Size.zero,
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(6)),
                       ),
                       onPressed: onQuickReply,
-                      child: const Text('我来回答', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                      child: const Text('我来回答',
+                          style: TextStyle(
+                              fontSize: 13, fontWeight: FontWeight.bold)),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
@@ -600,7 +763,8 @@ class DiscuzPostRenderer extends StatelessWidget {
               ],
             ),
             alignment: Alignment.center,
-            child: const Icon(Icons.card_giftcard_rounded, color: Colors.white, size: 24),
+            child: const Icon(Icons.card_giftcard_rounded,
+                color: Colors.white, size: 24),
           ),
         ],
       ),
@@ -608,12 +772,14 @@ class DiscuzPostRenderer extends StatelessWidget {
   }
 
   // 0. 投票帖专属卡片（支持单选/多选交互、倒计时、选项列表、投票提交、投票数与占比进度条）
-  Widget _buildPollBlock(BuildContext context, ThemeData theme, PollBlock poll) {
+  Widget _buildPollBlock(
+      BuildContext context, ThemeData theme, PollBlock poll) {
     return _InteractivePollCard(poll: poll, tid: tid, onPollVoted: onPollVoted);
   }
 
   // 0. 回帖奖励专属卡片（红包/金币袋视觉，深浅主题自适应）
-  Widget _buildReplyRewardBlock(BuildContext context, ThemeData theme, ReplyRewardBlock rwd) {
+  Widget _buildReplyRewardBlock(
+      BuildContext context, ThemeData theme, ReplyRewardBlock rwd) {
     final isDark = theme.brightness == Brightness.dark;
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
@@ -634,14 +800,19 @@ class DiscuzPostRenderer extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    const Icon(Icons.redeem_rounded, color: Color(0xFFF57C00), size: 18),
+                    const Icon(Icons.redeem_rounded,
+                        color: Color(0xFFF57C00), size: 18),
                     const SizedBox(width: 6),
                     Text(
-                      rwd.totalReward > 0 ? '总共奖励 ${rwd.totalReward} ${rwd.unit}' : '回帖奖励',
+                      rwd.totalReward > 0
+                          ? '总共奖励 ${rwd.totalReward} ${rwd.unit}'
+                          : '回帖奖励',
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.bold,
-                        color: isDark ? const Color(0xFFFFB74D) : const Color(0xFFE65100),
+                        color: isDark
+                            ? const Color(0xFFFFB74D)
+                            : const Color(0xFFE65100),
                       ),
                     ),
                   ],
@@ -669,7 +840,8 @@ class DiscuzPostRenderer extends StatelessWidget {
               shape: BoxShape.circle,
             ),
             alignment: Alignment.center,
-            child: const Icon(Icons.card_giftcard, color: Colors.white, size: 22),
+            child:
+                const Icon(Icons.card_giftcard, color: Colors.white, size: 22),
           ),
         ],
       ),
@@ -677,7 +849,8 @@ class DiscuzPostRenderer extends StatelessWidget {
   }
 
   // 0. 辩论帖卡片
-  Widget _buildDebateBlock(BuildContext context, ThemeData theme, DebateBlock debate) {
+  Widget _buildDebateBlock(
+      BuildContext context, ThemeData theme, DebateBlock debate) {
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
       padding: const EdgeInsets.all(12),
@@ -698,9 +871,12 @@ class DiscuzPostRenderer extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('正方观点', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
+                  const Text('正方观点',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold, color: Colors.blue)),
                   const SizedBox(height: 4),
-                  Text(debate.affirmpoint, style: const TextStyle(fontSize: 12)),
+                  Text(debate.affirmpoint,
+                      style: const TextStyle(fontSize: 12)),
                 ],
               ),
             ),
@@ -716,7 +892,9 @@ class DiscuzPostRenderer extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('反方观点', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+                  const Text('反方观点',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold, color: Colors.red)),
                   const SizedBox(height: 4),
                   Text(debate.negatpoint, style: const TextStyle(fontSize: 12)),
                 ],
@@ -728,26 +906,10 @@ class DiscuzPostRenderer extends StatelessWidget {
     );
   }
 
-  // 0. 审核通过状态条
-  Widget _buildAuditStatusBlock(BuildContext context, ThemeData theme, AuditStatusBlock audit) {
-    final displayText = audit.rawText?.isNotEmpty == true
-        ? audit.rawText!
-        : '本主题由 ${audit.auditor} 于 ${audit.timeText} ${audit.action}';
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withAlpha(50),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Text(
-        displayText,
-        style: TextStyle(
-          fontSize: 12,
-          color: theme.colorScheme.outline,
-        ),
-      ),
-    );
+  // 0. 审核通过状态条（系统操作记录，不作为正文内容渲染）
+  Widget _buildAuditStatusBlock(
+      BuildContext context, ThemeData theme, AuditStatusBlock audit) {
+    return const SizedBox.shrink();
   }
 
   // 1. 纯文本与富文本段落
@@ -768,23 +930,28 @@ class DiscuzPostRenderer extends StatelessWidget {
       textAlign = TextAlign.left;
     }
 
-    return SizedBox(
-      width: double.infinity,
-      child: Text.rich(
-        TextSpan(
-          children: _htmlToSpans(
-            html,
-            theme,
-            context: context,
-            defaultAlign: textAlign,
-          ),
-          style: theme.textTheme.bodyMedium?.copyWith(
-            height: 1.55,
-            fontSize: 14.5,
-          ),
-        ),
-        textAlign: textAlign ?? TextAlign.start,
+    var effectiveHtml = html;
+    if (effectiveHtml.contains('[') && effectiveHtml.contains(']')) {
+      effectiveHtml =
+          ComiisParser.bbcodeToHtml(effectiveHtml, escapeHtml: false);
+    }
+
+    return _DiscuzTextBlockWidget(
+      spansBuilder: (revealedSpoilers, onToggleSpoiler, createRecognizer) =>
+          _htmlToSpans(
+        effectiveHtml,
+        theme,
+        context: context,
+        defaultAlign: textAlign,
+        revealedSpoilers: revealedSpoilers,
+        onToggleSpoiler: onToggleSpoiler,
+        createRecognizer: createRecognizer,
       ),
+      baseStyle: theme.textTheme.bodyMedium?.copyWith(
+        height: 1.55,
+        fontSize: 14.5,
+      ),
+      textAlign: textAlign,
     );
   }
 
@@ -831,12 +998,15 @@ class DiscuzPostRenderer extends StatelessWidget {
       final emojiWidget = Padding(
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: CachedNetworkImage(
+          cacheManager: KlpbbsCacheManager.instance,
+          cacheKey: KlpbbsCacheManager.normalizeCacheKey(_absolute(src)),
           imageUrl: _absolute(src),
           httpHeaders: AppConfig.imageHeaders,
           width: size,
           height: size,
           fit: BoxFit.contain,
-          errorWidget: (_, __, ___) => const SizedBox(width: size, height: size),
+          errorWidget: (_, __, ___) =>
+              const SizedBox(width: size, height: size),
         ),
       );
       if (align == 'center') {
@@ -848,6 +1018,16 @@ class DiscuzPostRenderer extends StatelessWidget {
     }
 
     final imageUrl = _absolute(src);
+    if (ComiisParser.isDividerImage(imageUrl, alt: alt)) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Divider(
+          height: 1,
+          thickness: 1,
+          color: theme.colorScheme.outlineVariant.withAlpha(80),
+        ),
+      );
+    }
     final isCentered = align == 'center';
     final isRight = align == 'right';
 
@@ -859,72 +1039,75 @@ class DiscuzPostRenderer extends StatelessWidget {
           onTap: () => _openLightbox(context, imageUrl),
           onSecondaryTapDown: (details) =>
               _showImageContextMenu(context, details.globalPosition, imageUrl),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: isCentered
-                ? CrossAxisAlignment.center
-                : (isRight
-                    ? CrossAxisAlignment.end
-                    : CrossAxisAlignment.start),
-            children: [
-              ConstrainedBox(
-                constraints: const BoxConstraints(
-                  maxHeight: 700,
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: RetryImage(
-                    imageUrl: imageUrl,
-                    fit: BoxFit.contain,
-                    placeholder: (_, __) => const PulsePlaceholder(
-                      width: 280,
-                      height: 180,
-                      radius: BorderRadius.all(Radius.circular(8)),
-                    ),
-                    errorWidget: (_, __, ___) => Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.surfaceContainerHighest
-                            .withAlpha(80),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: theme.colorScheme.outlineVariant.withAlpha(60),
-                        ),
+          child: RepaintBoundary(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: isCentered
+                  ? CrossAxisAlignment.center
+                  : (isRight
+                      ? CrossAxisAlignment.end
+                      : CrossAxisAlignment.start),
+              children: [
+                ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxHeight: 700,
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: RetryImage(
+                      imageUrl: imageUrl,
+                      fit: BoxFit.contain,
+                      placeholder: (_, __) => const PulsePlaceholder(
+                        width: 280,
+                        height: 180,
+                        radius: BorderRadius.all(Radius.circular(8)),
                       ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.broken_image_outlined,
-                            size: 20,
-                            color: theme.colorScheme.outline,
+                      errorWidget: (_, __, ___) => Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.surfaceContainerHighest
+                              .withAlpha(80),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color:
+                                theme.colorScheme.outlineVariant.withAlpha(60),
                           ),
-                          const SizedBox(width: 8),
-                          Text(
-                            '图片加载失败（点击重试或查看原图）',
-                            style: TextStyle(
-                              fontSize: 12,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.broken_image_outlined,
+                              size: 20,
                               color: theme.colorScheme.outline,
                             ),
-                          ),
-                        ],
+                            const SizedBox(width: 8),
+                            Text(
+                              '图片加载失败（点击重试或查看原图）',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: theme.colorScheme.outline,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
                 ),
-              ),
-              if (caption != null && caption.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text(
-                  caption,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: theme.colorScheme.outline,
-                    fontStyle: FontStyle.italic,
+                if (caption != null && caption.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    caption,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: theme.colorScheme.outline,
+                      fontStyle: FontStyle.italic,
+                    ),
                   ),
-                ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -948,7 +1131,7 @@ class DiscuzPostRenderer extends StatelessWidget {
   }) {
     String quoteTitle;
     final trimmedAuthor = author.trim();
-    if (trimmedAuthor.isEmpty) {
+    if (trimmedAuthor.isEmpty || trimmedAuthor == '引用') {
       quoteTitle = '引用：';
     } else if (trimmedAuthor.contains('发表于') || trimmedAuthor.contains('说道')) {
       quoteTitle = trimmedAuthor;
@@ -1242,7 +1425,8 @@ class DiscuzPostRenderer extends StatelessWidget {
                 ),
                 const Spacer(),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
                     color: colorScheme.primary.withAlpha(30),
                     borderRadius: BorderRadius.circular(4),
@@ -1288,8 +1472,7 @@ class DiscuzPostRenderer extends StatelessWidget {
   ) {
     final colorScheme = theme.colorScheme;
     final hasUrl = field.url != null && field.url!.isNotEmpty;
-    final isDownloadOrSource =
-        field.label.contains('下载') ||
+    final isDownloadOrSource = field.label.contains('下载') ||
         field.label.contains('原帖') ||
         field.label.contains('地址') ||
         field.label.contains('链接');
@@ -1410,7 +1593,8 @@ class DiscuzPostRenderer extends StatelessWidget {
   ) {
     final title = block.title;
     final contentHtml = block.contentHtml;
-    final subBlocks = _spoilerBlocksCache[block] ??= ComiisParser.parseStructuredBlocksFromHtml(contentHtml);
+    final subBlocks = _spoilerBlocksCache[block] ??=
+        ComiisParser.parseStructuredBlocksFromHtml(contentHtml);
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 6),
@@ -1424,13 +1608,14 @@ class DiscuzPostRenderer extends StatelessWidget {
       child: Theme(
         data: theme.copyWith(dividerColor: Colors.transparent),
         child: ExpansionTile(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           collapsedShape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(10),
           ),
           backgroundColor: theme.colorScheme.surfaceContainerLow.withAlpha(50),
-          collapsedBackgroundColor: theme.colorScheme.surfaceContainerLow
-              .withAlpha(25),
+          collapsedBackgroundColor:
+              theme.colorScheme.surfaceContainerLow.withAlpha(25),
           tilePadding: const EdgeInsets.symmetric(horizontal: 12),
           leading: Icon(
             Icons.visibility_outlined,
@@ -1459,20 +1644,20 @@ class DiscuzPostRenderer extends StatelessWidget {
                           ),
                       ],
                     )
-                  : SizedBox(
-                      width: double.infinity,
-                      child: Text.rich(
-                        TextSpan(
-                          children: _htmlToSpans(
-                            contentHtml,
-                            theme,
-                            context: context,
-                          ),
-                        ),
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          height: 1.55,
-                          fontSize: 14.0,
-                        ),
+                  : _DiscuzTextBlockWidget(
+                      spansBuilder: (revealedSpoilers, onToggleSpoiler,
+                              createRecognizer) =>
+                          _htmlToSpans(
+                        contentHtml,
+                        theme,
+                        context: context,
+                        revealedSpoilers: revealedSpoilers,
+                        onToggleSpoiler: onToggleSpoiler,
+                        createRecognizer: createRecognizer,
+                      ),
+                      baseStyle: theme.textTheme.bodyMedium?.copyWith(
+                        height: 1.55,
+                        fontSize: 14.0,
                       ),
                     ),
             ),
@@ -1597,7 +1782,9 @@ class DiscuzPostRenderer extends StatelessWidget {
     String? align,
   }) {
     // 优先探测是否有 BV 号或解构包装
-    final bvidFromSrc = RegExp(r'(BV[a-zA-Z0-9]{10})', caseSensitive: false).firstMatch(src)?.group(1);
+    final bvidFromSrc = RegExp(r'(BV[a-zA-Z0-9]{10})', caseSensitive: false)
+        .firstMatch(src)
+        ?.group(1);
     final actualBvid = (bvid != null && bvid.isNotEmpty) ? bvid : bvidFromSrc;
     final effectiveIsBili = isBilibili || actualBvid != null;
 
@@ -1605,8 +1792,8 @@ class DiscuzPostRenderer extends StatelessWidget {
     final title = effectiveIsBili
         ? (actualBvid != null ? '哔哩哔哩视频 ($actualBvid)' : '哔哩哔哩视频')
         : isNetEase
-        ? '网易云音乐'
-        : '内嵌视频播放';
+            ? '网易云音乐'
+            : '内嵌视频播放';
 
     Widget videoWidget;
     if (effectiveIsBili && actualBvid != null) {
@@ -1844,9 +2031,8 @@ class DiscuzPostRenderer extends StatelessWidget {
           FilledButton.icon(
             style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
             onPressed: () {
-              final clipText = extractCode.isNotEmpty
-                  ? '$url 提取码: $extractCode'
-                  : url;
+              final clipText =
+                  extractCode.isNotEmpty ? '$url 提取码: $extractCode' : url;
               Clipboard.setData(ClipboardData(text: clipText));
               ScaffoldMessenger.of(
                 context,
@@ -1909,7 +2095,11 @@ class DiscuzPostRenderer extends StatelessWidget {
 
   // 弹出全屏图片画廊（支持流畅双指缩放、双击放大、手势不冲突且保持原比例）
   void _openLightbox(BuildContext context, String imageUrl) {
-    final images = floor.images.isNotEmpty ? floor.images : [imageUrl];
+    if (ComiisParser.isDividerImage(imageUrl)) return;
+    final rawImages = floor.images.isNotEmpty ? floor.images : [imageUrl];
+    final images =
+        rawImages.where((u) => !ComiisParser.isDividerImage(u)).toList();
+    if (images.isEmpty) return;
     final initIndex = images.indexOf(imageUrl).clamp(0, images.length - 1);
 
     showDialog(
@@ -1986,7 +2176,8 @@ class DiscuzPostRenderer extends StatelessWidget {
 
   // 内部 HTML TextSpan 解析
   /// 打开链接：站内帖子/版块/用户空间走应用内跳转，外部链接走系统浏览器
-  void _openLink(BuildContext? context, String link, {bool forceExternal = false}) {
+  void _openLink(BuildContext? context, String link,
+      {bool forceExternal = false}) {
     UrlHelper.openLink(context, link, forceExternal: forceExternal);
   }
 
@@ -1996,14 +2187,27 @@ class DiscuzPostRenderer extends StatelessWidget {
     BuildContext? context,
     TextAlign? defaultAlign,
     int listDepth = 0,
+    Set<int> revealedSpoilers = const {},
+    void Function(int id)? onToggleSpoiler,
+    TapGestureRecognizer Function(VoidCallback onTap)? createRecognizer,
   }) {
     if (html.isEmpty) return const [];
 
-    final doc = html_parser.parseFragment(html);
+    html_dom.DocumentFragment? cached = _fragmentCache[html];
+    if (cached == null) {
+      if (_fragmentCache.length >= _maxFragmentCacheSize) {
+        _fragmentCache.clear();
+      }
+      cached = html_parser.parseFragment(html);
+      _fragmentCache[html] = cached;
+    }
+    final doc = cached.clone(true);
     final baseStyle = theme.textTheme.bodyMedium?.copyWith(
       height: 1.55,
       fontSize: 14.5,
     );
+
+    int spoilerCounter = 0;
 
     List<InlineSpan> walk(
       dynamic node,
@@ -2011,6 +2215,8 @@ class DiscuzPostRenderer extends StatelessWidget {
       bool insideLink = false,
       String? linkHref,
       int currentDepth = 0,
+      bool insideSpoiler = false,
+      int? spoilerId,
     }) {
       final spans = <InlineSpan>[];
       final nodes = node is List ? node : (node.nodes ?? const []);
@@ -2018,13 +2224,60 @@ class DiscuzPostRenderer extends StatelessWidget {
         if (n is html_dom.Text) {
           final text = _cleanContentText(n.text);
           if (text.isNotEmpty) {
+            // 剧透黑幕文本节点
+            if (insideSpoiler && spoilerId != null) {
+              final isRevealed = revealedSpoilers.contains(spoilerId);
+              final isDark = theme.brightness == Brightness.dark;
+              final maskColor =
+                  isDark ? const Color(0xFF383A40) : const Color(0xFF1E293B);
+              final revealBg = isDark
+                  ? theme.colorScheme.surfaceContainerHighest
+                  : theme.colorScheme.primary.withAlpha(25);
+              final revealColor = theme.colorScheme.onSurface;
+
+              final spoilerStyle = (parent ?? baseStyle)?.copyWith(
+                backgroundColor: isRevealed ? revealBg : maskColor,
+                color: isRevealed ? revealColor : maskColor,
+              );
+
+              TapGestureRecognizer? recognizer;
+              if (onToggleSpoiler != null) {
+                if (createRecognizer != null) {
+                  recognizer =
+                      createRecognizer(() => onToggleSpoiler(spoilerId));
+                } else {
+                  recognizer = TapGestureRecognizer()
+                    ..onTap = () => onToggleSpoiler(spoilerId);
+                }
+              }
+
+              spans.add(
+                TextSpan(
+                  text: text,
+                  style: spoilerStyle,
+                  mouseCursor: SystemMouseCursors.click,
+                  recognizer: recognizer,
+                ),
+              );
+              continue;
+            }
+
             if (insideLink && linkHref != null && linkHref.isNotEmpty) {
+              TapGestureRecognizer? recognizer;
+              if (context != null) {
+                if (createRecognizer != null) {
+                  recognizer =
+                      createRecognizer(() => _openLink(context, linkHref));
+                } else {
+                  recognizer = TapGestureRecognizer()
+                    ..onTap = () => _openLink(context, linkHref);
+                }
+              }
               spans.add(
                 TextSpan(
                   text: text,
                   style: parent,
-                  recognizer: TapGestureRecognizer()
-                    ..onTap = () => _openLink(context, linkHref),
+                  recognizer: recognizer,
                 ),
               );
             } else {
@@ -2045,12 +2298,21 @@ class DiscuzPostRenderer extends StatelessWidget {
                     color: theme.colorScheme.primary,
                     decoration: TextDecoration.underline,
                   );
+                  TapGestureRecognizer? recognizer;
+                  if (context != null) {
+                    if (createRecognizer != null) {
+                      recognizer = createRecognizer(
+                          () => _openLink(context, matchedUrl));
+                    } else {
+                      recognizer = TapGestureRecognizer()
+                        ..onTap = () => _openLink(context, matchedUrl);
+                    }
+                  }
                   spans.add(
                     TextSpan(
                       text: matchedUrl,
                       style: linkStyle,
-                      recognizer: TapGestureRecognizer()
-                        ..onTap = () => _openLink(context, matchedUrl),
+                      recognizer: recognizer,
                     ),
                   );
                   lastEnd = m.end;
@@ -2069,8 +2331,96 @@ class DiscuzPostRenderer extends StatelessWidget {
             }
           }
         } else if (n is html_dom.Element) {
+          if (n.classes.contains('tip') ||
+              n.classes.contains('aimg_tip') ||
+              n.id.endsWith('_menu') ||
+              n.attributes['style']?.contains('display: none') == true ||
+              n.attributes['style']?.contains('display:none') == true) {
+            continue;
+          }
           final tag = n.localName ?? '';
           TextStyle? style = parent;
+
+          final styleAttr = n.attributes['style'] ?? '';
+          final colorAttr = n.attributes['color'];
+
+          // 剧透黑幕 (Heimu / Spoiler / Scratch-off) 检测逻辑：
+          // 1. 显式 class: heimu / spoiler / mask
+          // 2. 黑色或深色背景色 (background-color: black / #000 等)，且文字颜色也是黑色或未指定 (Discuz 网页默认黑字)
+          // 3. 显式前景色与背景色相同或几乎相同 (如白底白字、黑底黑字)
+          bool nodeIsSpoiler = insideSpoiler;
+          int? currentSpoilerId = spoilerId;
+
+          if (!insideSpoiler) {
+            final isExplicitSpoiler = n.classes.contains('heimu') ||
+                n.classes.contains('spoiler') ||
+                n.classes.contains('mask');
+
+            final bgM = _bgRegex.firstMatch(styleAttr);
+            final rawBg = bgM?.group(1)?.trim();
+            final colorM = _colorRegex.firstMatch(styleAttr);
+            final rawFg = colorAttr ?? colorM?.group(1)?.trim();
+
+            final isDarkBg = rawBg != null && _isDarkColorString(rawBg);
+
+            if (isExplicitSpoiler) {
+              nodeIsSpoiler = true;
+            } else if (rawBg != null &&
+                rawFg != null &&
+                _areColorsSimilar(rawBg, rawFg)) {
+              nodeIsSpoiler = true;
+            } else if (isDarkBg) {
+              if (rawFg != null) {
+                if (_isDarkColorString(rawFg)) {
+                  nodeIsSpoiler = true;
+                }
+              } else {
+                // 检查子标签是否包含显式黑字/深色字（如 <font style="background-color:black"><font color="black">）
+                final childFontWithColor =
+                    n.querySelector('font[color], [style*="color"]');
+                if (childFontWithColor != null) {
+                  final childFg = childFontWithColor.attributes['color'] ??
+                      _colorRegex
+                          .firstMatch(
+                              childFontWithColor.attributes['style'] ?? '')
+                          ?.group(1)
+                          ?.trim();
+                  if (childFg != null && _isDarkColorString(childFg)) {
+                    nodeIsSpoiler = true;
+                  }
+                } else {
+                  nodeIsSpoiler = true;
+                }
+              }
+            } else if (parent?.backgroundColor != null &&
+                _isDarkColor(parent!.backgroundColor!)) {
+              if (rawFg != null && _isDarkColorString(rawFg)) {
+                nodeIsSpoiler = true;
+              }
+            } else if (parent?.color != null &&
+                _isDarkColor(parent!.color!) &&
+                isDarkBg) {
+              nodeIsSpoiler = true;
+            } else if (rawFg != null && _isDarkColorString(rawFg)) {
+              // 检查子标签是否包含暗色背景（如 <font color="black"><span style="background-color:black">）
+              final childWithDarkBg = n.querySelector(
+                  '[style*="background"], [style*="background-color"]');
+              if (childWithDarkBg != null) {
+                final cBg = _bgRegex
+                    .firstMatch(childWithDarkBg.attributes['style'] ?? '')
+                    ?.group(1)
+                    ?.trim();
+                if (cBg != null && _isDarkColorString(cBg)) {
+                  nodeIsSpoiler = true;
+                }
+              }
+            }
+
+            if (nodeIsSpoiler) {
+              currentSpoilerId = spoilerCounter++;
+            }
+          }
+
           switch (tag) {
             case 'b':
             case 'strong':
@@ -2108,17 +2458,21 @@ class DiscuzPostRenderer extends StatelessWidget {
             case 'code':
               style = (style ?? baseStyle)?.copyWith(
                 fontFamily: 'monospace',
-                backgroundColor: theme.colorScheme.surfaceContainerHighest.withAlpha(120),
+                backgroundColor:
+                    theme.colorScheme.surfaceContainerHighest.withAlpha(120),
               );
             case 'font':
               final color = n.attributes['color'];
               if (color != null && color.isNotEmpty) {
-                style = (style ?? baseStyle)?.copyWith(
-                  color: _parseColor(
-                    color,
-                    brightness: theme.brightness,
-                  ),
-                );
+                if (!nodeIsSpoiler) {
+                  style = (style ?? baseStyle)?.copyWith(
+                    color: _parseColor(
+                      color,
+                      brightness: theme.brightness,
+                      currentBackground: style?.backgroundColor,
+                    ),
+                  );
+                }
               }
               final size = n.attributes['size'];
               if (size != null) {
@@ -2148,12 +2502,13 @@ class DiscuzPostRenderer extends StatelessWidget {
           }
 
           // 通用 CSS 行内 style 属性解析（background-color, color, font-size, font-weight 等）
-          final styleAttr = n.attributes['style'] ?? '';
           if (styleAttr.isNotEmpty) {
             final bgM = _bgRegex.firstMatch(styleAttr);
             if (bgM != null) {
               final bgStr = bgM.group(1)!.trim();
-              if (bgStr.isNotEmpty && bgStr != 'none' && bgStr != 'transparent') {
+              if (bgStr.isNotEmpty &&
+                  bgStr != 'none' &&
+                  bgStr != 'transparent') {
                 final bgColor = _parseColor(
                   bgStr,
                   brightness: theme.brightness,
@@ -2167,11 +2522,12 @@ class DiscuzPostRenderer extends StatelessWidget {
             final colorM = _colorRegex.firstMatch(styleAttr);
             if (colorM != null) {
               final colorStr = colorM.group(1)!.trim();
-              if (colorStr.isNotEmpty) {
+              if (colorStr.isNotEmpty && !nodeIsSpoiler) {
                 style = (style ?? baseStyle)?.copyWith(
                   color: _parseColor(
                     colorStr,
                     brightness: theme.brightness,
+                    currentBackground: style?.backgroundColor,
                   ),
                 );
               }
@@ -2180,7 +2536,7 @@ class DiscuzPostRenderer extends StatelessWidget {
             if (sizeM != null) {
               final sizeStr = sizeM.group(1)!.trim();
               final numVal = double.tryParse(
-                sizeStr.replaceAll(_nonNumericRegex, ''),
+                sizeStr.replaceAll(RegExp(r'[^0-9.]'), ''),
               );
               if (numVal != null) {
                 style = (style ?? baseStyle)?.copyWith(fontSize: numVal);
@@ -2218,7 +2574,8 @@ class DiscuzPostRenderer extends StatelessWidget {
               n.classes.contains('attach_nopermission') ||
               (tag == 'dl' && n.classes.contains('tattl'))) {
             final parsedBlocks = ComiisParser.parseStructuredBlocks(n);
-            final attachBlock = parsedBlocks.whereType<AttachmentBlock>().firstOrNull;
+            final attachBlock =
+                parsedBlocks.whereType<AttachmentBlock>().firstOrNull;
             if (attachBlock != null) {
               spans.add(
                 WidgetSpan(
@@ -2253,16 +2610,27 @@ class DiscuzPostRenderer extends StatelessWidget {
                 }
               }
             }
-            final hasTh = directTrs.any((tr) => tr.children.any((c) => c.localName == 'th'));
+            final hasTh = directTrs
+                .any((tr) => tr.children.any((c) => c.localName == 'th'));
             int maxDirectCols = 0;
             for (final tr in directTrs) {
-              final cols = tr.children.where((c) => c.localName == 'td' || c.localName == 'th').length;
+              final cols = tr.children
+                  .where((c) => c.localName == 'td' || c.localName == 'th')
+                  .length;
               if (cols > maxDirectCols) maxDirectCols = cols;
             }
             final isLayoutTable = !hasTh && maxDirectCols <= 1;
             // 布局表格（无 th 且每行最多 1 个 td）：扁平化展开子节点
             if (isLayoutTable) {
-              spans.addAll(walk(n, style ?? baseStyle, insideLink: insideLink, linkHref: linkHref));
+              spans.addAll(walk(
+                n,
+                style ?? baseStyle,
+                insideLink: insideLink,
+                linkHref: linkHref,
+                currentDepth: currentDepth,
+                insideSpoiler: nodeIsSpoiler,
+                spoilerId: currentSpoilerId,
+              ));
               continue;
             }
             spans.add(
@@ -2326,15 +2694,27 @@ class DiscuzPostRenderer extends StatelessWidget {
                   margin: const EdgeInsets.symmetric(vertical: 4),
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
                   decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest.withAlpha(50),
-                    borderRadius: const BorderRadius.horizontal(right: Radius.circular(6)),
+                    color:
+                        theme.colorScheme.surfaceContainerHighest.withAlpha(50),
+                    borderRadius: const BorderRadius.horizontal(
+                        right: Radius.circular(6)),
                     border: Border(
-                      left: BorderSide(color: theme.colorScheme.primary.withAlpha(160), width: 3),
+                      left: BorderSide(
+                          color: theme.colorScheme.primary.withAlpha(160),
+                          width: 3),
                     ),
                   ),
                   child: Text.rich(
                     TextSpan(
-                      children: walk(n, style ?? baseStyle, insideLink: insideLink, linkHref: linkHref),
+                      children: walk(
+                        n,
+                        style ?? baseStyle,
+                        insideLink: insideLink,
+                        linkHref: linkHref,
+                        currentDepth: currentDepth,
+                        insideSpoiler: nodeIsSpoiler,
+                        spoilerId: currentSpoilerId,
+                      ),
                       style: (style ?? baseStyle)?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
@@ -2365,10 +2745,13 @@ class DiscuzPostRenderer extends StatelessWidget {
               insideLink: insideLink,
               linkHref: linkHref,
               currentDepth: currentDepth,
+              insideSpoiler: nodeIsSpoiler,
+              spoilerId: currentSpoilerId,
             );
             if (indentM != null) {
               final em = int.tryParse(indentM.group(1)!) ?? 2;
-              childSpans.insert(0, TextSpan(text: '\u3000' * em, style: pStyle));
+              childSpans.insert(
+                  0, TextSpan(text: '\u3000' * em, style: pStyle));
             }
             if (pAlign != null) {
               spans.add(
@@ -2404,7 +2787,15 @@ class DiscuzPostRenderer extends StatelessWidget {
                   width: double.infinity,
                   child: Text.rich(
                     TextSpan(
-                      children: walk(n, style ?? baseStyle, insideLink: insideLink, linkHref: linkHref),
+                      children: walk(
+                        n,
+                        style ?? baseStyle,
+                        insideLink: insideLink,
+                        linkHref: linkHref,
+                        currentDepth: currentDepth,
+                        insideSpoiler: nodeIsSpoiler,
+                        spoilerId: currentSpoilerId,
+                      ),
                       style: style ?? baseStyle,
                     ),
                     textAlign: align,
@@ -2448,10 +2839,19 @@ class DiscuzPostRenderer extends StatelessWidget {
                 linkStyle,
                 insideLink: true,
                 linkHref: link,
+                currentDepth: currentDepth,
+                insideSpoiler: nodeIsSpoiler,
+                spoilerId: currentSpoilerId,
               );
               spans.addAll(childSpans);
             } else {
-              spans.addAll(walk(n, style ?? baseStyle));
+              spans.addAll(walk(
+                n,
+                style ?? baseStyle,
+                currentDepth: currentDepth,
+                insideSpoiler: nodeIsSpoiler,
+                spoilerId: currentSpoilerId,
+              ));
             }
           } else if (tag == 'img') {
             var rawSrc = n.attributes['comiis_loadimages'] ?? '';
@@ -2475,22 +2875,61 @@ class DiscuzPostRenderer extends StatelessWidget {
               if (isFileTypeIcon) {
                 continue;
               }
-              final isEmoji =
-                  src.contains('static/image/smiley/') ||
-                  n.attributes.containsKey('smilieid');
-              if (isEmoji) {
-                const size = 20.0;
+              final rawW = double.tryParse(n.attributes['width'] ?? '');
+              final rawH = double.tryParse(n.attributes['height'] ?? '');
+              final isDivider = ComiisParser.isDividerImage(
+                src,
+                width: rawW?.toInt(),
+                height: rawH?.toInt(),
+                alt: n.attributes['alt'],
+                title: n.attributes['title'],
+                style: n.attributes['style'],
+              );
+              if (isDivider) {
                 spans.add(
                   WidgetSpan(
                     alignment: PlaceholderAlignment.middle,
-                    child: CachedNetworkImage(
-                      imageUrl: src,
-                      httpHeaders: AppConfig.imageHeaders,
-                      width: size,
-                      height: size,
-                      fit: BoxFit.contain,
-                      errorWidget: (_, __, ___) =>
-                          const SizedBox(width: size, height: size),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Divider(
+                        height: 1,
+                        thickness: 1,
+                        color: theme.colorScheme.outlineVariant.withAlpha(80),
+                      ),
+                    ),
+                  ),
+                );
+                continue;
+              }
+              final isEmoji = src.contains('static/image/smiley/') ||
+                  src.contains('post/smile') ||
+                  n.attributes.containsKey('smilieid');
+              final isSmallIcon = (rawW != null && rawW > 0 && rawW <= 36) ||
+                  (rawH != null && rawH > 0 && rawH <= 36) ||
+                  n.classes.contains('vm') ||
+                  src.contains('/common/') ||
+                  src.contains('template/');
+              if (isEmoji || isSmallIcon) {
+                final iconWidth =
+                    (rawW != null && rawW > 0 && rawW <= 36) ? rawW : 20.0;
+                final iconHeight =
+                    (rawH != null && rawH > 0 && rawH <= 36) ? rawH : 20.0;
+                spans.add(
+                  WidgetSpan(
+                    alignment: PlaceholderAlignment.middle,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2),
+                      child: CachedNetworkImage(
+                        cacheManager: KlpbbsCacheManager.instance,
+                        cacheKey: KlpbbsCacheManager.normalizeCacheKey(src),
+                        imageUrl: src,
+                        httpHeaders: AppConfig.imageHeaders,
+                        width: iconWidth,
+                        height: iconHeight,
+                        fit: BoxFit.contain,
+                        errorWidget: (_, __, ___) =>
+                            SizedBox(width: iconWidth, height: iconHeight),
+                      ),
                     ),
                   ),
                 );
@@ -2511,11 +2950,15 @@ class DiscuzPostRenderer extends StatelessWidget {
                             child: ClipRRect(
                               borderRadius: BorderRadius.circular(6),
                               child: CachedNetworkImage(
+                                cacheManager: KlpbbsCacheManager.instance,
+                                cacheKey:
+                                    KlpbbsCacheManager.normalizeCacheKey(src),
                                 imageUrl: src,
                                 httpHeaders: AppConfig.imageHeaders,
                                 fit: BoxFit.contain,
-                                errorWidget: (_, __, ___) =>
-                                    const Icon(Icons.broken_image_rounded, size: 28),
+                                errorWidget: (_, __, ___) => const Icon(
+                                    Icons.broken_image_rounded,
+                                    size: 28),
                               ),
                             ),
                           ),
@@ -2559,6 +3002,8 @@ class DiscuzPostRenderer extends StatelessWidget {
               insideLink: insideLink,
               linkHref: linkHref,
               currentDepth: currentDepth,
+              insideSpoiler: nodeIsSpoiler,
+              spoilerId: currentSpoilerId,
             ));
             if (isBlock && spans.isNotEmpty && !_spansEndWithNewline(spans)) {
               spans.add(const TextSpan(text: '\n'));
@@ -2581,10 +3026,48 @@ class DiscuzPostRenderer extends StatelessWidget {
     return false;
   }
 
-  Color _parseColor(
+  static bool _isDarkColor(Color c) {
+    return c.computeLuminance() < 0.08;
+  }
+
+  static bool _isDarkColorString(String str) {
+    final clean =
+        str.trim().toLowerCase().replaceAll(RegExp(r'''['";\s]'''), '');
+    if (clean.isEmpty) return false;
+    if (clean == 'black' ||
+        clean == '#000' ||
+        clean == '#000000' ||
+        clean == 'rgb(0,0,0)' ||
+        clean == 'rgba(0,0,0,1)') {
+      return true;
+    }
+    final c =
+        _parseColor(clean, brightness: Brightness.light, isBackground: true);
+    return c.computeLuminance() < 0.08;
+  }
+
+  static bool _areColorsSimilar(String c1Str, String c2Str) {
+    final clean1 =
+        c1Str.trim().toLowerCase().replaceAll(RegExp(r'''['";\s]'''), '');
+    final clean2 =
+        c2Str.trim().toLowerCase().replaceAll(RegExp(r'''['";\s]'''), '');
+    if (clean1 == clean2) return true;
+    final c1 =
+        _parseColor(clean1, brightness: Brightness.light, isBackground: true);
+    final c2 =
+        _parseColor(clean2, brightness: Brightness.light, isBackground: true);
+    if (c1.value == c2.value) return true;
+    if (_isDarkColor(c1) && _isDarkColor(c2)) return true;
+    return (c1.red - c2.red).abs() < 18 &&
+        (c1.green - c2.green).abs() < 18 &&
+        (c1.blue - c2.blue).abs() < 18;
+  }
+
+  static Color _parseColor(
     String colorStr, {
     Brightness? brightness,
     bool isBackground = false,
+    Color? currentBackground,
   }) {
     var clean = colorStr.trim().toLowerCase();
     // 移除单双引号、分号与首尾空白 (例如 [color='deepskyblue'] 或 style="color: red;")
@@ -2601,7 +3084,10 @@ class DiscuzPostRenderer extends StatelessWidget {
     } else if (RegExp(r'^[0-9a-f]{8}$').hasMatch(hexCandidate)) {
       baseColor = Color(int.parse(hexCandidate, radix: 16));
     } else if (clean.startsWith('rgb(') || clean.startsWith('rgba(')) {
-      final nums = RegExp(r'\d+').allMatches(clean).map((m) => int.tryParse(m.group(0) ?? '') ?? 0).toList();
+      final nums = RegExp(r'\d+')
+          .allMatches(clean)
+          .map((m) => int.tryParse(m.group(0) ?? '') ?? 0)
+          .toList();
       if (nums.length >= 3) {
         baseColor = Color.fromARGB(255, nums[0], nums[1], nums[2]);
       } else {
@@ -2657,6 +3143,24 @@ class DiscuzPostRenderer extends StatelessWidget {
     }
 
     if (!isBackground && brightness != null) {
+      // 若当前文字处于高亮明亮背景（如黄色、纯白底色）上，在深色模式下切勿将黑色转为银白，保证可读性
+      if (currentBackground != null &&
+          currentBackground.computeLuminance() > 0.45) {
+        if (baseColor.computeLuminance() < 0.25) {
+          return const Color(0xFF1E293B);
+        }
+      }
+      // 若当前文字处于暗色背景上（黑幕或深色遮罩），且文字也是暗色，严禁在深色模式下反色为白字！
+      if (currentBackground != null &&
+          currentBackground.computeLuminance() < 0.25) {
+        if (baseColor.computeLuminance() < 0.25) {
+          return const Color(0xFF000000); // 保持黑色，维持黑幕遮盖防剧透
+        }
+        if (baseColor.computeLuminance() > 0.7) {
+          return const Color(0xFFF8FAFC);
+        }
+      }
+
       final hsl = HSLColor.fromColor(baseColor);
       if (brightness == Brightness.dark) {
         // 深色模式下：如果纯黑或极暗灰（无彩度），调整为银白色
@@ -2794,7 +3298,8 @@ class DiscuzPostRenderer extends StatelessWidget {
     int itemIndex = 0;
     for (final node in listEl.nodes) {
       if (node is html_dom.Element && node.localName == 'li') {
-        final prefix = _getDiscuzListPrefix(isOl, typeAttr, startVal + itemIndex, depth);
+        final prefix =
+            _getDiscuzListPrefix(isOl, typeAttr, startVal + itemIndex, depth);
         itemIndex++;
 
         childrenWidgets.add(
@@ -2807,7 +3312,8 @@ class DiscuzPostRenderer extends StatelessWidget {
             depth: depth,
           ),
         );
-      } else if (node is html_dom.Element && (node.localName == 'ul' || node.localName == 'ol')) {
+      } else if (node is html_dom.Element &&
+          (node.localName == 'ul' || node.localName == 'ol')) {
         childrenWidgets.add(
           _buildDiscuzList(
             node,
@@ -2858,7 +3364,8 @@ class DiscuzPostRenderer extends StatelessWidget {
     final nestedLists = <html_dom.Element>[];
 
     for (final child in liEl.nodes) {
-      if (child is html_dom.Element && (child.localName == 'ul' || child.localName == 'ol')) {
+      if (child is html_dom.Element &&
+          (child.localName == 'ul' || child.localName == 'ol')) {
         nestedLists.add(child);
       } else {
         directContentNodes.add(child);
@@ -3021,7 +3528,8 @@ class DiscuzPostRenderer extends StatelessWidget {
     final rows = <TableRow>[];
     for (final r in rawRows) {
       while (r.length < maxCols) {
-        r.add(const Padding(padding: EdgeInsets.all(8), child: SizedBox.shrink()));
+        r.add(const Padding(
+            padding: EdgeInsets.all(8), child: SizedBox.shrink()));
       }
       rows.add(TableRow(children: r));
     }
@@ -3102,6 +3610,107 @@ class DiscuzPostRenderer extends StatelessWidget {
   }
 }
 
+/// 富文本段落渲染组件（支持行内剧透黑幕点击解封/遮罩与手势识别器内存安全管控）
+class _DiscuzTextBlockWidget extends StatefulWidget {
+  final List<InlineSpan> Function(
+    Set<int> revealedSpoilers,
+    void Function(int id) onToggleSpoiler,
+    TapGestureRecognizer Function(VoidCallback onTap) createRecognizer,
+  ) spansBuilder;
+  final TextStyle? baseStyle;
+  final TextAlign? textAlign;
+
+  const _DiscuzTextBlockWidget({
+    required this.spansBuilder,
+    this.baseStyle,
+    this.textAlign,
+  });
+
+  @override
+  State<_DiscuzTextBlockWidget> createState() => _DiscuzTextBlockWidgetState();
+}
+
+class _DiscuzTextBlockWidgetState extends State<_DiscuzTextBlockWidget> {
+  final Set<int> _revealedSpoilers = <int>{};
+  final List<TapGestureRecognizer> _recognizers = [];
+  List<InlineSpan>? _cachedSpans;
+  Set<int> _cachedSpoilersSnapshot = {};
+  _DiscuzTextBlockWidget? _lastWidget;
+
+  void _disposeRecognizers() {
+    for (final r in _recognizers) {
+      r.dispose();
+    }
+    _recognizers.clear();
+  }
+
+  void _toggleSpoiler(int id) {
+    if (!mounted) return;
+    setState(() {
+      if (_revealedSpoilers.contains(id)) {
+        _revealedSpoilers.remove(id);
+      } else {
+        _revealedSpoilers.add(id);
+      }
+      _cachedSpans = null;
+    });
+  }
+
+  TapGestureRecognizer _registerRecognizer(VoidCallback onTap) {
+    final r = TapGestureRecognizer()..onTap = onTap;
+    _recognizers.add(r);
+    return r;
+  }
+
+  @override
+  void didUpdateWidget(covariant _DiscuzTextBlockWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.baseStyle != widget.baseStyle ||
+        oldWidget.textAlign != widget.textAlign ||
+        oldWidget.spansBuilder != widget.spansBuilder) {
+      _cachedSpans = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _disposeRecognizers();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool canReuse = _cachedSpans != null &&
+        _lastWidget?.baseStyle == widget.baseStyle &&
+        _lastWidget?.textAlign == widget.textAlign &&
+        _lastWidget?.spansBuilder == widget.spansBuilder &&
+        _cachedSpoilersSnapshot.length == _revealedSpoilers.length &&
+        _cachedSpoilersSnapshot.containsAll(_revealedSpoilers);
+
+    if (!canReuse) {
+      _disposeRecognizers();
+      _cachedSpans = widget.spansBuilder(
+        _revealedSpoilers,
+        _toggleSpoiler,
+        _registerRecognizer,
+      );
+      _cachedSpoilersSnapshot = Set<int>.from(_revealedSpoilers);
+      _lastWidget = widget;
+    }
+
+    return SizedBox(
+      width: double.infinity,
+      child: Text.rich(
+        TextSpan(
+          children: _cachedSpans!,
+          style: widget.baseStyle,
+        ),
+        textAlign: widget.textAlign ?? TextAlign.start,
+      ),
+    );
+  }
+}
+
 /// 附件下载与进度卡片组件
 class _AttachmentCardWidget extends StatefulWidget {
   final String name;
@@ -3150,9 +3759,8 @@ class _AttachmentCardWidgetState extends State<_AttachmentCardWidget> {
   }
 
   String _fileBadgeText(String name) {
-    final ext = name.contains('.')
-        ? name.split('.').last.toUpperCase()
-        : 'FILE';
+    final ext =
+        name.contains('.') ? name.split('.').last.toUpperCase() : 'FILE';
     return ext.length > 6 ? ext.substring(0, 6) : ext;
   }
 
@@ -3191,13 +3799,17 @@ class _AttachmentCardWidgetState extends State<_AttachmentCardWidget> {
           ),
           child: widget.iconUrl != null && widget.iconUrl!.isNotEmpty
               ? CachedNetworkImage(
+                  cacheManager: KlpbbsCacheManager.instance,
+                  cacheKey: KlpbbsCacheManager.normalizeCacheKey(
+                      _absolute(widget.iconUrl!)),
                   imageUrl: _absolute(widget.iconUrl!),
                   httpHeaders: AppConfig.imageHeaders,
                   width: 26,
                   height: 26,
                   fit: BoxFit.contain,
                   placeholder: (_, __) => _fileBadge(widget.name, badgeColor),
-                  errorWidget: (_, __, ___) => _fileBadge(widget.name, badgeColor),
+                  errorWidget: (_, __, ___) =>
+                      _fileBadge(widget.name, badgeColor),
                 )
               : _fileBadge(widget.name, badgeColor),
         );
@@ -3276,9 +3888,11 @@ class _AttachmentCardWidgetState extends State<_AttachmentCardWidget> {
                           spacing: 6,
                           runSpacing: 4,
                           children: [
-                            if (widget.sizeText != null && widget.sizeText!.isNotEmpty)
+                            if (widget.sizeText != null &&
+                                widget.sizeText!.isNotEmpty)
                               meta(Icons.sd_storage_outlined, widget.sizeText!),
-                            if (widget.uploadTime != null && widget.uploadTime!.isNotEmpty)
+                            if (widget.uploadTime != null &&
+                                widget.uploadTime!.isNotEmpty)
                               meta(Icons.schedule_rounded, widget.uploadTime!),
                             if (widget.downloadCount != null)
                               meta(
@@ -3286,7 +3900,8 @@ class _AttachmentCardWidgetState extends State<_AttachmentCardWidget> {
                                 "${widget.downloadCount} 次",
                                 color: colorScheme.primary,
                               ),
-                            if (widget.priceText != null && widget.priceText!.isNotEmpty)
+                            if (widget.priceText != null &&
+                                widget.priceText!.isNotEmpty)
                               meta(
                                 Icons.paid_rounded,
                                 widget.priceText!,
@@ -3309,8 +3924,10 @@ class _AttachmentCardWidgetState extends State<_AttachmentCardWidget> {
                 const SizedBox(height: 10),
                 ClipRRect(
                   borderRadius: BorderRadius.circular(4),
-                  child: LinearProgressIndicator(
-                    value: (task != null && task.totalBytes > 0) ? task.progress : null,
+                  child: AppLoadingBar(
+                    value: (task != null && task.totalBytes > 0)
+                        ? task.progress
+                        : null,
                     minHeight: 5,
                     backgroundColor: colorScheme.surfaceContainerHighest,
                   ),
@@ -3320,7 +3937,8 @@ class _AttachmentCardWidgetState extends State<_AttachmentCardWidget> {
                   children: [
                     Text(
                       task?.sizeText ?? '',
-                      style: TextStyle(fontSize: 11, color: colorScheme.outline),
+                      style:
+                          TextStyle(fontSize: 11, color: colorScheme.outline),
                     ),
                     const Spacer(),
                     if (isDownloading && task != null && task.speed > 0)
@@ -3341,41 +3959,51 @@ class _AttachmentCardWidgetState extends State<_AttachmentCardWidget> {
                 children: [
                   if (isCompleted && task != null) ...[
                     FilledButton.tonalIcon(
-                      style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
+                      style: FilledButton.styleFrom(
+                          visualDensity: VisualDensity.compact),
                       onPressed: () => DownloadManager.openFile(task.savePath),
                       icon: const Icon(Icons.open_in_new_rounded, size: 15),
                       label: const Text('打开文件'),
                     ),
                     const SizedBox(width: 6),
                     OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
-                      onPressed: () => DownloadManager.openFolder(task.savePath),
+                      style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact),
+                      onPressed: () =>
+                          DownloadManager.openFolder(task.savePath),
                       icon: const Icon(Icons.folder_open_rounded, size: 15),
                       label: const Text('打开目录'),
                     ),
                   ] else if (isDownloading && task != null) ...[
                     OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
-                      onPressed: () => DownloadManager.instance.pauseDownload(task.id),
+                      style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact),
+                      onPressed: () =>
+                          DownloadManager.instance.pauseDownload(task.id),
                       icon: const Icon(Icons.pause_rounded, size: 15),
                       label: const Text('暂停'),
                     ),
                     const SizedBox(width: 6),
                     TextButton(
-                      style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
-                      onPressed: () => DownloadManager.instance.cancelDownload(task.id),
+                      style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact),
+                      onPressed: () =>
+                          DownloadManager.instance.cancelDownload(task.id),
                       child: const Text('取消'),
                     ),
                   ] else if ((isPaused || isFailed) && task != null) ...[
                     FilledButton.tonalIcon(
-                      style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
-                      onPressed: () => DownloadManager.instance.resumeDownload(task.id),
+                      style: FilledButton.styleFrom(
+                          visualDensity: VisualDensity.compact),
+                      onPressed: () =>
+                          DownloadManager.instance.resumeDownload(task.id),
                       icon: const Icon(Icons.play_arrow_rounded, size: 15),
                       label: const Text('继续下载'),
                     ),
                   ] else ...[
                     FilledButton.tonalIcon(
-                      style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
+                      style: FilledButton.styleFrom(
+                          visualDensity: VisualDensity.compact),
                       onPressed: () {
                         KlpbbsDownloadDialog.show(
                           context,
@@ -3393,16 +4021,20 @@ class _AttachmentCardWidgetState extends State<_AttachmentCardWidget> {
                     tooltip: '在浏览器中打开跳转下载页',
                     visualDensity: VisualDensity.compact,
                     style: IconButton.styleFrom(
-                      backgroundColor: colorScheme.surfaceContainerHighest.withAlpha(80),
+                      backgroundColor:
+                          colorScheme.surfaceContainerHighest.withAlpha(80),
                     ),
                     onPressed: () async {
                       var targetUrl = widget.url.trim();
-                      if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
-                        targetUrl = '${AppConfig.baseUrl}/$targetUrl'.replaceAll(RegExp(r'(?<!:)/+'), '/');
+                      if (!targetUrl.startsWith('http://') &&
+                          !targetUrl.startsWith('https://')) {
+                        targetUrl = '${AppConfig.baseUrl}/$targetUrl'
+                            .replaceAll(RegExp(r'(?<!:)/+'), '/');
                       }
                       final uri = Uri.tryParse(targetUrl);
                       if (uri != null) {
-                        await url_launcher.launchUrl(uri, mode: url_launcher.LaunchMode.externalApplication);
+                        await url_launcher.launchUrl(uri,
+                            mode: url_launcher.LaunchMode.externalApplication);
                       }
                     },
                     icon: const Icon(Icons.open_in_browser_rounded, size: 16),
@@ -3412,7 +4044,8 @@ class _AttachmentCardWidgetState extends State<_AttachmentCardWidget> {
                     tooltip: '复制下载直链',
                     visualDensity: VisualDensity.compact,
                     style: IconButton.styleFrom(
-                      backgroundColor: colorScheme.surfaceContainerHighest.withAlpha(80),
+                      backgroundColor:
+                          colorScheme.surfaceContainerHighest.withAlpha(80),
                     ),
                     onPressed: () {
                       Clipboard.setData(ClipboardData(text: widget.url));
@@ -3527,7 +4160,8 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
         if (_selectedIds.contains(optId)) {
           _selectedIds.remove(optId);
         } else {
-          if (widget.poll.maxChoices <= 1 || _selectedIds.length < widget.poll.maxChoices) {
+          if (widget.poll.maxChoices <= 1 ||
+              _selectedIds.length < widget.poll.maxChoices) {
             _selectedIds.add(optId);
           }
         }
@@ -3607,7 +4241,10 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final poll = widget.poll;
-    final showResults = _isVoted || poll.isClosed || !poll.canVote || _options.any((o) => o.votes > 0 || o.percent > 0);
+    final showResults = _isVoted ||
+        poll.isClosed ||
+        !poll.canVote ||
+        _options.any((o) => o.votes > 0 || o.percent > 0);
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 10),
@@ -3644,7 +4281,8 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
                     shape: BoxShape.circle,
                   ),
                   alignment: Alignment.center,
-                  child: const Icon(Icons.bar_chart_rounded, color: Colors.white, size: 22),
+                  child: const Icon(Icons.bar_chart_rounded,
+                      color: Colors.white, size: 22),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -3671,7 +4309,8 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
                 ),
                 if (poll.expireText != null && poll.expireText!.isNotEmpty)
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
                       color: colorScheme.surfaceContainerHighest.withAlpha(120),
                       borderRadius: BorderRadius.circular(12),
@@ -3708,7 +4347,8 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
               if (showResults) {
                 // 结果展示模式：标题 + 彩色进度条 + 百分比 (票数)
                 return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -3729,10 +4369,12 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
                               borderRadius: BorderRadius.circular(4),
                               child: Container(
                                 height: 9,
-                                color: colorScheme.surfaceContainerHighest.withAlpha(120),
+                                color: colorScheme.surfaceContainerHighest
+                                    .withAlpha(120),
                                 alignment: Alignment.centerLeft,
                                 child: FractionallySizedBox(
-                                  widthFactor: (opt.percent / 100).clamp(0.0, 1.0),
+                                  widthFactor:
+                                      (opt.percent / 100).clamp(0.0, 1.0),
                                   child: Container(
                                     decoration: BoxDecoration(
                                       color: barColor,
@@ -3763,15 +4405,22 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
               return InkWell(
                 onTap: () => _toggleOption(optId),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                   child: Row(
                     children: [
                       Icon(
                         poll.isMultiple
-                            ? (isSelected ? Icons.check_box : Icons.check_box_outline_blank)
-                            : (isSelected ? Icons.radio_button_checked : Icons.radio_button_off),
+                            ? (isSelected
+                                ? Icons.check_box
+                                : Icons.check_box_outline_blank)
+                            : (isSelected
+                                ? Icons.radio_button_checked
+                                : Icons.radio_button_off),
                         size: 20,
-                        color: isSelected ? const Color(0xFFFF9800) : colorScheme.outline,
+                        color: isSelected
+                            ? const Color(0xFFFF9800)
+                            : colorScheme.outline,
                       ),
                       const SizedBox(width: 10),
                       Expanded(
@@ -3779,7 +4428,9 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
                           cleanLabel,
                           style: TextStyle(
                             fontSize: 14,
-                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                            fontWeight: isSelected
+                                ? FontWeight.bold
+                                : FontWeight.normal,
                           ),
                         ),
                       ),
@@ -3797,22 +4448,34 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
                 final isDark = Theme.of(ctx).brightness == Brightness.dark;
                 return Container(
                   margin: const EdgeInsets.fromLTRB(14, 6, 14, 14),
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   decoration: BoxDecoration(
-                    color: isDark ? const Color(0xFF2E2612) : const Color(0xFFFFFBE6),
+                    color: isDark
+                        ? const Color(0xFF2E2612)
+                        : const Color(0xFFFFFBE6),
                     borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: isDark ? const Color(0xFF6B4D16) : const Color(0xFFFFE58F)),
+                    border: Border.all(
+                        color: isDark
+                            ? const Color(0xFF6B4D16)
+                            : const Color(0xFFFFE58F)),
                   ),
                   child: Row(
                     children: [
-                      Icon(Icons.lightbulb_outline, size: 16, color: isDark ? const Color(0xFFFFA940) : const Color(0xFFFA8C16)),
+                      Icon(Icons.lightbulb_outline,
+                          size: 16,
+                          color: isDark
+                              ? const Color(0xFFFFA940)
+                              : const Color(0xFFFA8C16)),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           poll.tipText!,
                           style: TextStyle(
                             fontSize: 12.5,
-                            color: isDark ? const Color(0xFFFFD591) : const Color(0xFFD46B08),
+                            color: isDark
+                                ? const Color(0xFFFFD591)
+                                : const Color(0xFFD46B08),
                           ),
                         ),
                       ),
@@ -3832,7 +4495,8 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
                       ? const SizedBox(
                           width: 16,
                           height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          child: AppLoadingIndicator(
+                              strokeWidth: 2, color: Colors.white),
                         )
                       : const Icon(Icons.how_to_vote_outlined, size: 16),
                   label: Text(_submitting ? '提交中...' : '提交投票'),
@@ -3840,7 +4504,8 @@ class _InteractivePollCardState extends State<_InteractivePollCard> {
                     backgroundColor: const Color(0xFFFF9800),
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
                   ),
                 ),
               ),
@@ -3913,100 +4578,103 @@ class _DiscuzFlyWidgetState extends State<_DiscuzFlyWidget>
       child: Container(
         width: double.infinity,
         margin: const EdgeInsets.symmetric(vertical: 6),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.primaryContainer.withAlpha(25),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: theme.colorScheme.primary.withAlpha(60),
-          width: 1,
+        decoration: BoxDecoration(
+          color: theme.colorScheme.primaryContainer.withAlpha(25),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: theme.colorScheme.primary.withAlpha(60),
+            width: 1,
+          ),
         ),
-      ),
-      child: MouseRegion(
-        onEnter: (_) => _pause(),
-        onExit: (_) => _resume(),
-        child: GestureDetector(
-          onTapDown: (_) => _pause(),
-          onTapUp: (_) => _resume(),
-          onTapCancel: () => _resume(),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.flight_takeoff_rounded,
-                  size: 16,
-                  color: theme.colorScheme.primary,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final containerWidth = constraints.maxWidth;
-                      final textPainter = TextPainter(
-                        text: TextSpan(
-                          children: spans,
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        textDirection: TextDirection.ltr,
-                        maxLines: 1,
-                      )..layout();
-                      final textWidth = textPainter.width;
-                      final totalDistance = containerWidth + textWidth;
-
-                      return ClipRect(
-                        child: AnimatedBuilder(
-                          animation: _controller,
-                          builder: (context, child) {
-                            final dx = containerWidth - _controller.value * totalDistance;
-                            return Transform.translate(
-                              offset: Offset(dx, 0),
-                              child: child,
-                            );
-                          },
-                          child: Text.rich(
-                            TextSpan(
-                              children: spans,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            maxLines: 1,
-                            softWrap: false,
-                            overflow: TextOverflow.visible,
-                          ),
-                        ),
-                      );
-                    },
+        child: MouseRegion(
+          onEnter: (_) => _pause(),
+          onExit: (_) => _resume(),
+          child: GestureDetector(
+            onTapDown: (_) => _pause(),
+            onTapUp: (_) => _resume(),
+            onTapCancel: () => _resume(),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.flight_takeoff_rounded,
+                    size: 16,
+                    color: theme.colorScheme.primary,
                   ),
-                ),
-                if (_isPaused) ...[
-                  const SizedBox(width: 6),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.surfaceContainerHighest.withAlpha(120),
-                      borderRadius: BorderRadius.circular(4),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final containerWidth = constraints.maxWidth;
+                        final textPainter = TextPainter(
+                          text: TextSpan(
+                            children: spans,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          textDirection: TextDirection.ltr,
+                          maxLines: 1,
+                        )..layout();
+                        final textWidth = textPainter.width;
+                        final totalDistance = containerWidth + textWidth;
+
+                        return ClipRect(
+                          child: AnimatedBuilder(
+                            animation: _controller,
+                            builder: (context, child) {
+                              final dx = containerWidth -
+                                  _controller.value * totalDistance;
+                              return Transform.translate(
+                                offset: Offset(dx, 0),
+                                child: child,
+                              );
+                            },
+                            child: Text.rich(
+                              TextSpan(
+                                children: spans,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              maxLines: 1,
+                              softWrap: false,
+                              overflow: TextOverflow.visible,
+                            ),
+                          ),
+                        );
+                      },
                     ),
-                    child: Text(
-                      '已暂停',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  if (_isPaused) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest
+                            .withAlpha(120),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        '已暂停',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
                       ),
                     ),
-                  ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ),
       ),
-    ),
-  );
+    );
   }
 }
 
@@ -4233,6 +4901,9 @@ class _SmoothGalleryViewerState extends State<_SmoothGalleryViewer> {
                     boundaryMargin: const EdgeInsets.all(1000),
                     clipBehavior: Clip.none,
                     child: CachedNetworkImage(
+                      cacheManager: KlpbbsCacheManager.instance,
+                      cacheKey: KlpbbsCacheManager.normalizeCacheKey(
+                          widget.images[i]),
                       imageUrl: widget.images[i],
                       httpHeaders: AppConfig.imageHeaders,
                       fit: BoxFit.contain,
@@ -4240,7 +4911,7 @@ class _SmoothGalleryViewerState extends State<_SmoothGalleryViewer> {
                         child: SizedBox(
                           width: 32,
                           height: 32,
-                          child: CircularProgressIndicator(
+                          child: AppLoadingIndicator(
                             strokeWidth: 2,
                             color: Colors.white70,
                           ),
@@ -4249,9 +4920,12 @@ class _SmoothGalleryViewerState extends State<_SmoothGalleryViewer> {
                       errorWidget: (_, __, ___) => const Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.broken_image_outlined, size: 48, color: Colors.white38),
+                          Icon(Icons.broken_image_outlined,
+                              size: 48, color: Colors.white38),
                           SizedBox(height: 8),
-                          Text('图片加载失败', style: TextStyle(color: Colors.white54, fontSize: 13)),
+                          Text('图片加载失败',
+                              style: TextStyle(
+                                  color: Colors.white54, fontSize: 13)),
                         ],
                       ),
                     ),
@@ -4264,12 +4938,14 @@ class _SmoothGalleryViewerState extends State<_SmoothGalleryViewer> {
             child: Align(
               alignment: Alignment.topCenter,
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: Row(
                   children: [
                     if (widget.images.length > 1)
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
                         decoration: BoxDecoration(
                           color: Colors.black.withAlpha(130),
                           borderRadius: BorderRadius.circular(16),
@@ -4304,7 +4980,8 @@ class _SmoothGalleryViewerState extends State<_SmoothGalleryViewer> {
                       icon: const Icon(Icons.copy_rounded, size: 19),
                       tooltip: '复制图片直链',
                       onPressed: () {
-                        Clipboard.setData(ClipboardData(text: widget.images[_currentIndex]));
+                        Clipboard.setData(
+                            ClipboardData(text: widget.images[_currentIndex]));
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(content: Text('已复制图片直链')),
                         );
@@ -4325,5 +5002,3 @@ class _SmoothGalleryViewerState extends State<_SmoothGalleryViewer> {
     );
   }
 }
-
-

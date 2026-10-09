@@ -1,4 +1,5 @@
-﻿import 'package:flutter/material.dart';
+﻿import '../widgets/app_motion.dart';
+import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../widgets/global_app_drawer.dart';
@@ -96,7 +97,7 @@ class _PmPageState extends State<PmPage> {
                     ? const SizedBox(
                         width: 20,
                         height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                        child: AppLoadingIndicator(strokeWidth: 2),
                       )
                     : const Text('发送'),
               ),

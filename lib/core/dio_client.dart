@@ -1,376 +1,407 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_config.dart';
+import 'discuz_cookie_jar.dart';
+import 'discuz_request_policy.dart';
 import '../models/server_outage_info.dart';
 
-/// Dio 单例：统一 UA、超时、Cookie 会话管理与环境感知写策略
+/// 页面模板、会话范围及 HTTP 重定向由同一请求入口管理。
 class DioClient {
   DioClient._();
 
   static final Dio dio = _build();
+  static final _jar = DiscuzCookieJar();
+  static const _cookiePrefsKey = 'session_cookies_v2';
+  static const _legacyCookiePrefsKey = 'session_cookies_v1';
+  static Future<void> _pendingSave = Future.value();
+  static final sessionChanges = ValueNotifier<int>(0);
+  static String? _lastSessionKey;
+  static Uri get _forum => Uri.parse(AppConfig.baseUrl);
 
-  /// 会话 cookie 存储（登录后持久化）
-  static final Map<String, String> _cookies = {};
+  static String? cookie(String name) => _jar.valueFor(name, _forum);
+  static String get allCookiesHeader => cookiesForUrl(AppConfig.baseUrl);
+  static String cookiesForUrl(String url) =>
+      _jar.headerFor(_forum.resolve(url));
+  static List<DiscuzCookie> browserCookiesFor(String url) =>
+      _jar.cookiesFor(_forum.resolve(url)).toList();
 
-  /// 获取会话 cookie
-  static String? cookie(String name) => _cookies[name];
+  /// 只包含源站和认证身份的摘要，避免 SID 轮换使所有页面缓存失效。
+  static String get sessionKey {
+    final auth = _jar
+        .cookiesFor(_forum)
+        .where((cookie) => DiscuzCookieJar.isAuthCookie(cookie.name))
+        .map((cookie) => '${cookie.name}=${cookie.value}')
+        .toList()
+      ..sort();
+    return sha256
+        .convert(utf8.encode('${_forum.origin}|${auth.join(';')}'))
+        .toString();
+  }
 
-  /// 获取完整 Cookie 请求头字符串
-  static String get allCookiesHeader =>
-      _cookies.entries.map((e) => '${e.key}=${e.value}').join('; ');
+  /// Discuz 用 saltkey 派生 auth 加密密钥；并发的首次响应不能互相替换它。
+  /// 此标识只保护请求，不触发页面重建或缓存清空。
+  static String get cookieStateKey {
+    final identity = _jar
+        .cookiesFor(_forum)
+        .where((cookie) =>
+            DiscuzCookieJar.isAuthCookie(cookie.name) ||
+            cookie.name == 'saltkey' ||
+            cookie.name.endsWith('_saltkey'))
+        .map((cookie) => '${cookie.name}=${cookie.value}')
+        .toList()
+      ..sort();
+    return sha256
+        .convert(utf8.encode('${_forum.origin}|${identity.join(';')}'))
+        .toString();
+  }
 
-  /// 手动设置会话 cookie
+  static void _notifySession() {
+    final key = sessionKey;
+    if (_lastSessionKey == key) return;
+    _lastSessionKey = key;
+    sessionChanges.value++;
+  }
+
   static void setCookie(String name, String value) {
-    _cookies[name] = value;
+    _jar.importValues({name: value}, _forum);
+    _notifySession();
   }
 
-  static const String _cookiePrefsKey = 'session_cookies_v1';
-
-  /// 持久化当前会话 cookie（登录成功/导入 Cookie 后调用）
-  static Future<void> saveCookies() async {
-    if (_cookies.isEmpty) return;
-    try {
+  static Future<void> saveCookies() {
+    final snapshot = jsonEncode(_jar.toJson());
+    _pendingSave = _pendingSave.then((_) async {
       final sp = await SharedPreferences.getInstance();
-      await sp.setStringList(
-        _cookiePrefsKey,
-        _cookies.entries.map((e) => '${e.key}=${e.value}').toList(),
-      );
-    } catch (_) {}
+      await sp.setString(_cookiePrefsKey, snapshot);
+      await sp.remove(_legacyCookiePrefsKey);
+    }).catchError((Object error) {
+      debugPrint('保存论坛会话失败: ${error.runtimeType}');
+    });
+    return _pendingSave;
   }
 
-  /// 从本地恢复会话 cookie（App 启动时调用）
   static Future<void> loadCookies() async {
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final raw = sp.getStringList(_cookiePrefsKey) ?? const [];
-      for (final item in raw) {
-        final idx = item.indexOf('=');
-        if (idx <= 0) continue;
-        final name = item.substring(0, idx).trim();
-        final value = item.substring(idx + 1).trim();
-        if (name.isNotEmpty && value.isNotEmpty && value != 'deleted') {
-          _cookies[name] = value;
+    final sp = await SharedPreferences.getInstance();
+    final scoped = sp.getString(_cookiePrefsKey);
+    if (scoped != null) {
+      try {
+        final records = jsonDecode(scoped);
+        if (records is List) _jar.restore(records);
+      } on FormatException {
+        _jar.clear();
+      }
+    } else {
+      // 旧版无域信息，仅迁移到当前配置的论坛，不能广播给其他站点。
+      final values = <String, String>{};
+      for (final pair
+          in sp.getStringList(_legacyCookiePrefsKey) ?? <String>[]) {
+        final index = pair.indexOf('=');
+        if (index > 0) {
+          values[pair.substring(0, index).trim()] =
+              pair.substring(index + 1).trim();
         }
       }
-    } catch (_) {}
+      _jar.importValues(values, _forum);
+      await saveCookies();
+    }
+    _notifySession();
   }
 
-  /// 导入 Cookie 键值对 Map 并持久化
   static Future<void> importCookies(Map<String, String> cookies) async {
-    for (final e in cookies.entries) {
-      if (e.key.isNotEmpty && e.value.isNotEmpty && e.value != 'deleted') {
-        _cookies[e.key] = e.value;
-      }
-    }
+    _jar.importValues(cookies, _forum);
+    _notifySession();
     await saveCookies();
   }
 
-  /// 导入完整 Cookie 字符串（如 "k2U_2132_auth=xxx; k2U_2132_saltkey=yyy"）
   static Future<void> importCookieString(String rawCookieHeader) async {
-    final pairs = rawCookieHeader.split(';');
-    for (final pair in pairs) {
-      final idx = pair.indexOf('=');
-      if (idx <= 0) continue;
-      final name = pair.substring(0, idx).trim();
-      final value = pair.substring(idx + 1).trim();
-      if (name.isNotEmpty && value.isNotEmpty && value != 'deleted') {
-        _cookies[name] = value;
+    final values = <String, String>{};
+    for (final pair in rawCookieHeader.split(';')) {
+      final index = pair.indexOf('=');
+      if (index > 0) {
+        values[pair.substring(0, index).trim()] =
+            pair.substring(index + 1).trim();
       }
     }
-    await saveCookies();
+    await importCookies(values);
   }
 
-  /// 登出/清理会话时的附加回调（如清除用户资料持久化缓存）
   static Future<void> Function()? onSessionCleared;
 
-  /// 清空会话（登出/测试隔离），并移除本地持久化
   static Future<void> clearCookies() async {
-    _cookies.clear();
-    try {
-      final sp = await SharedPreferences.getInstance();
-      await sp.remove(_cookiePrefsKey);
-      await sp.remove('fav_forums');
-      await sp.remove('fav_tids');
-      await sp.remove('liked_tids');
-      await sp.remove('liked_pids');
-      await sp.remove('cached_forum_groups_json');
-    } catch (_) {}
-    try {
-      await onSessionCleared?.call();
-    } catch (_) {}
+    _jar.clear();
+    _notifySession();
+    await saveCookies();
+    final sp = await SharedPreferences.getInstance();
+    for (final key in [
+      'fav_forums',
+      'fav_tids',
+      'liked_tids',
+      'liked_pids',
+      'cached_forum_groups_json'
+    ]) {
+      await sp.remove(key);
+    }
+    await onSessionCleared?.call();
   }
 
-  /// 是否已登录（存在 auth cookie，Discuz 的 auth cookie 名带 cookiepre 前缀）
-  static bool get isLoggedIn =>
-      _cookies.entries
-          .where((e) => (e.key.endsWith('auth') && e.key != 'activationauth') || e.key == 'auth')
-          .any((e) => e.value.isNotEmpty && !e.value.startsWith('deleted'));
+  static bool get isLoggedIn {
+    return _jar
+        .cookiesFor(_forum)
+        .any((cookie) => DiscuzCookieJar.isAuthCookie(cookie.name));
+  }
 
-  /// 手动重定向最大深度
-  static const int _maxRedirects = 5;
+  static bool updateCookiesFromHeaders(List<String>? headers,
+      {Uri? source, String? requestSession, String? requestCookieState}) {
+    // 账号切换后，旧请求中的认证删除或续期不能覆盖新账号。
+    if (requestSession != null && requestSession != sessionKey) return false;
+    if (requestCookieState != null && requestCookieState != cookieStateKey) {
+      return false;
+    }
+    if (headers == null || headers.isEmpty) return true;
+    final uri = source ?? _forum;
+    // CDN 和外链不能设置论坛认证状态。
+    if (!DiscuzCookieJar.domainMatches(uri.host, _forum.host)) return true;
+    if (_jar.applyHeaders(headers, uri)) {
+      _notifySession();
+      unawaited(saveCookies());
+    }
+    return true;
+  }
 
-  /// 从 set-cookie 列表中解析并更新内存与本地持久化 Cookie
-  static void updateCookiesFromHeaders(List<String>? setCookies) {
-    if (setCookies == null || setCookies.isEmpty) return;
-    var changed = false;
-    for (final sc in setCookies) {
-      final parts = sc.split(';');
-      if (parts.isEmpty) continue;
-      final first = parts.first.trim();
-      final eqIdx = first.indexOf('=');
-      if (eqIdx > 0) {
-        final name = first.substring(0, eqIdx).trim();
-        final value = first.substring(eqIdx + 1).trim();
-        if (name.isNotEmpty) {
-          if (value == 'deleted' || value.isEmpty) {
-            _cookies.remove(name);
-          } else {
-            _cookies[name] = value;
-          }
-          changed = true;
-        }
+  static String? _header(Map<String, dynamic> headers, String name) {
+    for (final entry in headers.entries) {
+      if (entry.key.toLowerCase() == name.toLowerCase()) {
+        return entry.value?.toString();
       }
     }
-    if (changed) {
-      saveCookies();
-    }
+    return null;
   }
+
+  static void _removeHeader(Map<String, dynamic> headers, String name) {
+    DiscuzRequestPolicy.removeHeader(headers, name);
+  }
+
+  static String userAgentFor(Uri uri, {Map<String, String>? headers}) =>
+      DiscuzRequestPolicy.userAgentFor(
+        uri,
+        mobileUserAgent: AppConfig.mobileUserAgent,
+        desktopUserAgent: AppConfig.pcUserAgent,
+        composerUserAgent: AppConfig.userAgent,
+        explicitUserAgent:
+            headers == null ? null : _header(headers, 'User-Agent'),
+        referer: headers == null ? null : _header(headers, 'Referer'),
+      );
 
   static Dio _build() {
     AppConfig.getCookieHeader = () => allCookiesHeader;
-    final d = Dio(
-      BaseOptions(
-        baseUrl: AppConfig.baseUrl,
-        connectTimeout: AppConfig.timeout,
-        receiveTimeout: AppConfig.timeout,
-        sendTimeout: AppConfig.timeout,
-        followRedirects: false,
-        headers: {
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-          'Referer': AppConfig.baseUrl,
-          'Sec-Fetch-Site': 'same-origin',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Ch-Ua': '"Not A(Brand";v="99", "Chromium";v="120", "Google Chrome";v="120"',
-        },
-      ),
-    );
-
-    d.interceptors.add(
-      InterceptorsWrapper(
-        onRequest: (options, handler) {
-          // UA 按需设置，不要统一：优先尊重调用方显式指定的 User-Agent，未指定时按 endpoint 场景精准匹配
-          final String resolvedUa;
-          final explicitUa = options.headers['User-Agent'] as String?;
-          if (explicitUa != null && explicitUa.isNotEmpty) {
-            resolvedUa = explicitUa;
-          } else {
-            final p = options.path.toLowerCase();
-            final q = options.uri.query.toLowerCase();
-            final combined = '$p?$q';
-
-            // 1. 显式 PC 端参数或 PC 专属核心功能模块（Discuz! 核心道具、积分转账、管理面板、AI 钱包等在移动端无完整独立页面）
-            if (combined.contains('mobile=no') ||
-                combined.contains('mod=magic') ||
-                combined.contains('op=transfer') ||
-                combined.contains('klpbbs_ai') ||
-                combined.contains('mod=modcp') ||
-                combined.contains('action=order') ||
-                combined.contains('action=viewratings') ||
-                combined.contains('k_misign-sign')) {
-              resolvedUa = AppConfig.pcUserAgent;
-            } else if (combined.contains('mod=post') ||
-                combined.contains('topicsubmit=yes') ||
-                combined.contains('replysubmit=yes')) {
-              // 2. 发帖与回复：遵循用户在发帖/回复界面选择的设备设置 (AppConfig.userAgent / usePcUa)
-              resolvedUa = AppConfig.userAgent;
-            } else {
-              // 3. 其他所有常规页面按页面自身需求，默认移动端 (Comiis 手机模板)
-              resolvedUa = AppConfig.mobileUserAgent;
-            }
-            options.headers['User-Agent'] = resolvedUa;
-          }
-
-          // 动态 Client Hints 与 UA 特征完美协同，杜绝因 UA 与 Client Hints 矛盾被 WAF 拦截
-          final isPcUa = resolvedUa.contains('Windows') || resolvedUa.contains('x64') || resolvedUa == AppConfig.pcUserAgent;
-          options.headers['Sec-Ch-Ua-Mobile'] = isPcUa ? '?0' : '?1';
-          options.headers['Sec-Ch-Ua-Platform'] = isPcUa ? '"Windows"' : '"Android"';
-
-          options.headers['Referer'] ??= AppConfig.baseUrl;
-          if (options.path.contains('inajax=1') ||
-              options.uri.queryParameters['inajax'] == '1') {
-            options.headers['X-Requested-With'] = 'XMLHttpRequest';
-            options.headers['Sec-Fetch-Dest'] = 'empty';
-            options.headers['Sec-Fetch-Mode'] = 'cors';
-          }
-
-          // 环境感知策略：本地测试允许写，真实论坛写操作校验域名
-          if (!ReadWritePolicy.isAllowed(
-            options.method,
-            options.uri.toString(),
-          )) {
-            handler.reject(
-              DioException(
-                requestOptions: options,
-                type: DioExceptionType.badResponse,
-                message: '[策略拦截] ${options.method} ${options.uri}',
-              ),
-            );
-            return;
-          }
-          // 附加会话 cookie
-          if (_cookies.isNotEmpty) {
-            final cookieHeader = _cookies.entries
-                .where((e) => e.value.isNotEmpty && e.value != 'deleted')
-                .map((e) => '${e.key}=${e.value}')
-                .join('; ');
-            if (cookieHeader.isNotEmpty) {
-              options.headers['Cookie'] = cookieHeader;
-            }
-          }
-          handler.next(options);
-        },
-        onResponse: (response, handler) async {
-          // 保存 Set-Cookie
-          updateCookiesFromHeaders(response.headers['set-cookie']);
-          final code = response.statusCode ?? 0;
-          if (code >= 300 && code < 400) {
-            final loc = response.headers.value('location');
-            if (loc == null) {
-              handler.reject(
-                DioException(
-                  requestOptions: response.requestOptions,
-                  type: DioExceptionType.badResponse,
-                  message: '重定向缺少 Location',
-                ),
-              );
-              return;
-            }
-            final resolved = response.requestOptions.uri
-                .resolve(loc)
-                .toString();
-            if (!ReadWritePolicy.isAllowed('GET', resolved)) {
-              handler.reject(
-                DioException(
-                  requestOptions: response.requestOptions,
-                  type: DioExceptionType.badResponse,
-                  message: '重定向被策略拦截: $resolved',
-                ),
-              );
-              return;
-            }
-            try {
-              // 重定向跟随使用 GET（POST 提交后 302 → GET 目标页）
-              final next = await _followRedirects(
-                d,
-                response.requestOptions.copyWith(path: resolved, method: 'GET'),
-                1,
-              );
-              handler.resolve(next);
-            } on DioException catch (e) {
-              handler.reject(e);
-            }
-            return;
-          }
+    AppConfig.getCookieHeaderForUrl = cookiesForUrl;
+    AppConfig.onForumChanged = _notifySession;
+    final d = Dio(BaseOptions(
+      baseUrl: AppConfig.baseUrl,
+      connectTimeout: AppConfig.timeout,
+      receiveTimeout: AppConfig.timeout,
+      sendTimeout: AppConfig.timeout,
+      followRedirects: false,
+      headers: {
+        'Accept':
+            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      },
+    ));
+    if (!kIsWeb) {
+      d.httpClientAdapter = IOHttpClientAdapter(createHttpClient: () {
+        final client = HttpClient();
+        client.findProxy = (uri) => AppConfig.useSystemProxy
+            ? HttpClient.findProxyFromEnvironment(uri)
+            : 'DIRECT';
+        return client;
+      });
+    }
+    d.interceptors.add(InterceptorsWrapper(
+      onRequest: (options, handler) {
+        options.baseUrl = AppConfig.baseUrl;
+        final expected = options.extra['discuz.expectedSession'];
+        if (expected != null && expected != sessionKey) {
+          handler.reject(DioException(
+            requestOptions: options,
+            type: DioExceptionType.cancel,
+            error: StateError('账号已变化，请重新打开表单'),
+          ));
+          return;
+        }
+        _notifySession();
+        options.extra['discuz.session'] = sessionKey;
+        options.extra['discuz.cookieState'] = cookieStateKey;
+        final suppliedUa = _header(options.headers, 'User-Agent');
+        final generatedUa = options.extra['discuz.generatedUa'];
+        final ua = DiscuzRequestPolicy.userAgentFor(
+          options.uri,
+          mobileUserAgent: AppConfig.mobileUserAgent,
+          desktopUserAgent: AppConfig.pcUserAgent,
+          composerUserAgent: AppConfig.userAgent,
+          explicitUserAgent: suppliedUa == generatedUa ? null : suppliedUa,
+          referer: _header(options.headers, 'Referer'),
+        );
+        if (suppliedUa == null || suppliedUa == generatedUa) {
+          options.extra['discuz.generatedUa'] = ua;
+        }
+        _removeHeader(options.headers, 'User-Agent');
+        options.headers['User-Agent'] = ua;
+        final chrome = RegExp(r'Chrome/(\d+)').firstMatch(ua);
+        for (final header in [
+          'Sec-Ch-Ua',
+          'Sec-Ch-Ua-Mobile',
+          'Sec-Ch-Ua-Platform'
+        ]) {
+          _removeHeader(options.headers, header);
+        }
+        if (chrome != null) {
+          options.headers['Sec-Ch-Ua'] =
+              '"Chromium";v="${chrome.group(1)}", "Google Chrome";v="${chrome.group(1)}", "Not_A Brand";v="99"';
+          options.headers['Sec-Ch-Ua-Mobile'] =
+              ua.contains('Mobile') ? '?1' : '?0';
+          final platform = ua.contains('Android')
+              ? 'Android'
+              : ua.contains('Windows')
+                  ? 'Windows'
+                  : ua.contains('Macintosh')
+                      ? 'macOS'
+                      : 'Linux';
+          options.headers['Sec-Ch-Ua-Platform'] = '"$platform"';
+        }
+        options.headers['Referer'] ??= AppConfig.baseUrl;
+        // Redirects reuse RequestOptions. A header generated for inajax must
+        // not become a caller's explicit XHR declaration on the next hop.
+        final explicitAjax = options.extra['discuz.generatedAjax'] != true &&
+            _header(options.headers, 'X-Requested-With')
+                    ?.trim()
+                    .toLowerCase() ==
+                'xmlhttprequest';
+        final ajax = explicitAjax ||
+            const {'1', 'yes', 'true'}
+                .contains(options.uri.queryParameters['inajax']);
+        if (ajax && !explicitAjax) {
+          options.extra['discuz.generatedAjax'] = true;
+        } else {
+          options.extra.remove('discuz.generatedAjax');
+        }
+        options.headers['Sec-Fetch-Dest'] = ajax ? 'empty' : 'document';
+        options.headers['Sec-Fetch-Mode'] = ajax ? 'cors' : 'navigate';
+        options.headers['Sec-Fetch-Site'] =
+            DiscuzRequestPolicy.sameOrigin(options.uri, _forum)
+                ? 'same-origin'
+                : 'cross-site';
+        _removeHeader(options.headers, 'X-Requested-With');
+        if (ajax) options.headers['X-Requested-With'] = 'XMLHttpRequest';
+        if (!ReadWritePolicy.isAllowed(
+            options.method, options.uri.toString())) {
+          handler.reject(
+              DioException(requestOptions: options, message: '请求目标不允许此操作'));
+          return;
+        }
+        _removeHeader(options.headers, 'Cookie');
+        final cookies = _jar.headerFor(options.uri);
+        if (cookies.isNotEmpty) options.headers['Cookie'] = cookies;
+        handler.next(options);
+      },
+      onResponse: (response, handler) async {
+        final request = response.requestOptions;
+        request.extra['discuz.cookiesAccepted'] = updateCookiesFromHeaders(
+            response.headers['set-cookie'],
+            source: request.uri,
+            requestSession: request.extra['discuz.session'] as String?,
+            requestCookieState: request.extra['discuz.cookieState'] as String?);
+        final code = response.statusCode ?? 0;
+        if (!const {301, 302, 303, 307, 308}.contains(code)) {
           handler.next(response);
-        },
-        onError: (err, handler) {
-          if (ServerOutageInfo.isOutageDioException(err)) {
-            final outageInfo = ServerOutageInfo.fromDioException(err);
-            err = err.copyWith(error: ServerOutageException(outageInfo));
+          return;
+        }
+        final depth = request.extra['discuz.redirects'] as int? ?? 0;
+        final location = response.headers.value('location');
+        if (depth >= 5 || location == null || location.trim().isEmpty) {
+          handler.reject(DioException(
+              requestOptions: request,
+              response: response,
+              message: depth >= 5 ? '重定向次数过多' : '重定向缺少 Location'));
+          return;
+        }
+        final target = request.uri.resolve(location);
+        final method = DiscuzRequestPolicy.redirectMethod(code, request.method);
+        if (!ReadWritePolicy.isAllowed(method, target.toString())) {
+          handler.reject(
+              DioException(requestOptions: request, message: '重定向目标不允许此操作'));
+          return;
+        }
+        final next = request.copyWith(
+            path: target.toString(),
+            method: method,
+            queryParameters: <String, dynamic>{},
+            headers: Map<String, dynamic>.from(request.headers),
+            extra: {...request.extra, 'discuz.redirects': depth + 1});
+        if (method != request.method.toUpperCase()) {
+          next.data = null;
+          _removeHeader(next.headers, 'Content-Type');
+          _removeHeader(next.headers, 'Content-Length');
+        }
+        if (!DiscuzRequestPolicy.sameOrigin(request.uri, target)) {
+          for (final name in [
+            'Authorization',
+            'Cookie',
+            'Origin',
+            'X-Requested-With'
+          ]) {
+            _removeHeader(next.headers, name);
           }
-          handler.next(err);
-        },
-      ),
-    );
+        }
+        try {
+          handler.resolve(await d.fetch<dynamic>(next));
+        } on DioException catch (error) {
+          handler.reject(error);
+        } catch (error) {
+          handler.reject(DioException(requestOptions: next, error: error));
+        }
+      },
+      onError: (error, handler) {
+        updateCookiesFromHeaders(error.response?.headers['set-cookie'],
+            source: error.requestOptions.uri,
+            requestSession:
+                error.requestOptions.extra['discuz.session'] as String?,
+            requestCookieState:
+                error.requestOptions.extra['discuz.cookieState'] as String?);
+        if (ServerOutageInfo.isOutageDioException(error)) {
+          error = error.copyWith(
+              error: ServerOutageException(
+                  ServerOutageInfo.fromDioException(error)));
+        }
+        handler.next(error);
+      },
+    ));
     return d;
-  }
-
-  static Future<Response<dynamic>> _followRedirects(
-    Dio d,
-    RequestOptions options,
-    int depth,
-  ) async {
-    if (depth > _maxRedirects) {
-      throw DioException(
-        requestOptions: options,
-        type: DioExceptionType.badResponse,
-        message: '重定向次数过多',
-      );
-    }
-    if (_cookies.isNotEmpty) {
-      final cookieHeader = _cookies.entries
-          .where((e) => e.value.isNotEmpty && e.value != 'deleted')
-          .map((e) => '${e.key}=${e.value}')
-          .join('; ');
-      if (cookieHeader.isNotEmpty) {
-        options.headers['Cookie'] = cookieHeader;
-      }
-    }
-    final resp = await d.fetch<dynamic>(options);
-    updateCookiesFromHeaders(resp.headers['set-cookie']);
-    final code = resp.statusCode ?? 0;
-    if (code >= 300 && code < 400) {
-      final loc = resp.headers.value('location');
-      if (loc == null) {
-        throw DioException(
-          requestOptions: resp.requestOptions,
-          type: DioExceptionType.badResponse,
-          message: '重定向缺少 Location',
-        );
-      }
-      final resolved = resp.requestOptions.uri.resolve(loc).toString();
-      if (!ReadWritePolicy.isAllowed('GET', resolved)) {
-        throw DioException(
-          requestOptions: resp.requestOptions,
-          type: DioExceptionType.badResponse,
-          message: '重定向被策略拦截: $resolved',
-        );
-      }
-      return _followRedirects(d, options.copyWith(path: resolved), depth + 1);
-    }
-    return resp;
   }
 }
 
-/// 访问策略
-///
-/// 允许 GET 浏览 + POST 写操作（登录/发帖/回复/私信/签到），
-/// 适用于本地测试与真实 klpbbs（风险由用户在 UI 确认承担）。
 class ReadWritePolicy {
-
-  static bool _isHostAllowed(String host) {
-    final h = host.toLowerCase();
-    final base = Uri.parse(AppConfig.baseUrl);
-    final baseHost = base.host.toLowerCase();
-    if (h == baseHost || h.endsWith('.$baseHost')) return true;
-    if (h.endsWith('.klpbbs.com') || h == 'klpbbs.com') return true;
-    if (h == 'localhost' || h == '127.0.0.1') return true;
-    return false;
-  }
-
   static bool isAllowed(String method, String url) {
     final uri = Uri.tryParse(url);
-    if (uri == null || !uri.hasScheme || uri.host.isEmpty) return false;
-    final scheme = uri.scheme.toLowerCase();
-    if (scheme != 'http' && scheme != 'https') return false;
-
-    final m = method.toUpperCase();
-
-    // GET / HEAD：放行所有合法 HTTP/HTTPS 浏览、图片 CDN、资源及附件/网盘下载
-    if (m == 'GET' || m == 'HEAD') return true;
-
-    // POST / 其他写操作：校验目标主机是否为官方论坛或本地测试域名
-    if (!_isHostAllowed(uri.host)) return false;
-
-    // 登录操作在任意模式下放行
-    final u = url.toLowerCase();
-    if (u.contains('mod=logging&action=login')) return true;
-
-    // 其余写操作遵循 AppConfig.allowWrite
-    return AppConfig.allowWrite;
+    if (uri == null ||
+        uri.host.isEmpty ||
+        !const {'http', 'https'}.contains(uri.scheme)) {
+      return false;
+    }
+    if (const {'GET', 'HEAD'}.contains(method.toUpperCase())) return true;
+    final host = uri.host.toLowerCase();
+    final forumHost = Uri.parse(AppConfig.baseUrl).host.toLowerCase();
+    final allowed = (forumHost.isNotEmpty &&
+            DiscuzCookieJar.domainMatches(host, forumHost)) ||
+        DiscuzCookieJar.domainMatches(host, 'klpbbs.com') ||
+        host == 'localhost' ||
+        host == '127.0.0.1';
+    return allowed && AppConfig.allowWrite;
   }
 }

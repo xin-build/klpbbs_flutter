@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/app_config.dart';
+import '../core/home_layout_metrics.dart';
 import '../models/dashboard_card_model.dart';
 import '../models/post_floor.dart';
 import '../pages/settings_page.dart';
@@ -77,7 +78,6 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-
     final bottomInset = MediaQuery.of(context).padding.bottom;
 
     return LayoutBuilder(
@@ -95,7 +95,7 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  RepaintBoundary(child: widget.child),
+                  widget.child,
                   if (widget.bottomBar != null)
                     Positioned(
                       left: 0,
@@ -105,9 +105,12 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                     ),
                   if (widget.floatingActionButton != null)
                     Positioned(
-                      right: 16,
-                      bottom: widget.bottomBar != null ? (bottomInset + 72) : (bottomInset + 16),
-                      child: RepaintBoundary(child: widget.floatingActionButton!),
+                      right: 20,
+                      bottom: widget.bottomBar != null
+                          ? (bottomInset + 76)
+                          : (bottomInset + 20),
+                      child:
+                          RepaintBoundary(child: widget.floatingActionButton!),
                     ),
                 ],
               ),
@@ -118,7 +121,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
         return ListenableBuilder(
           listenable: AppConfig.instance,
           builder: (context, _) {
-            final showRight = AppConfig.threadRightEnabled && AppConfig.threadRightModules.isNotEmpty;
+            final showRight = AppConfig.threadRightEnabled &&
+                AppConfig.threadRightModules.isNotEmpty;
 
             return Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -128,20 +132,20 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      RepaintBoundary(
-                        child: Center(
-                          child: ValueListenableBuilder<double>(
-                            valueListenable: AppConfig.threadContentMaxWidthNotifier,
-                            builder: (context, maxWidth, contentChild) {
-                              return ConstrainedBox(
-                                constraints: BoxConstraints(
-                                  maxWidth: maxWidth > 0 ? maxWidth : double.infinity,
-                                ),
-                                child: contentChild,
-                              );
-                            },
-                            child: widget.child,
-                          ),
+                      Center(
+                        child: ValueListenableBuilder<double>(
+                          valueListenable:
+                              AppConfig.threadContentMaxWidthNotifier,
+                          builder: (context, maxWidth, contentChild) {
+                            return ConstrainedBox(
+                              constraints: BoxConstraints(
+                                maxWidth:
+                                    maxWidth > 0 ? maxWidth : double.infinity,
+                              ),
+                              child: contentChild,
+                            );
+                          },
+                          child: widget.child,
                         ),
                       ),
                       if (widget.bottomBar != null)
@@ -153,9 +157,12 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                         ),
                       if (widget.floatingActionButton != null)
                         Positioned(
-                          right: 16,
-                          bottom: widget.bottomBar != null ? (bottomInset + 72) : (bottomInset + 16),
-                          child: RepaintBoundary(child: widget.floatingActionButton!),
+                          right: 20,
+                          bottom: widget.bottomBar != null
+                              ? (bottomInset + 76)
+                              : (bottomInset + 20),
+                          child: RepaintBoundary(
+                              child: widget.floatingActionButton!),
                         ),
                     ],
                   ),
@@ -169,11 +176,13 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                     child: GestureDetector(
                       behavior: HitTestBehavior.translucent,
                       onHorizontalDragUpdate: (details) {
-                        final newW = AppConfig.threadRightWidth - details.delta.dx;
+                        final newW =
+                            AppConfig.threadRightWidth - details.delta.dx;
                         AppConfig.updateThreadRightWidth(newW);
                       },
                       onHorizontalDragEnd: (_) {
-                        AppConfig.setThreadRightWidth(AppConfig.threadRightWidth);
+                        AppConfig.setThreadRightWidth(
+                            AppConfig.threadRightWidth);
                       },
                       child: Container(
                         width: 8,
@@ -232,28 +241,50 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    return Center(
-      child: Tooltip(
-        message: '展开右侧边栏 (工作台助手)',
-        child: InkWell(
-          onTap: () {
-            AppConfig.setThreadRightEnabled(true);
-          },
-          borderRadius: BorderRadius.circular(8),
-          child: Container(
-            width: 18,
-            height: 60,
-            margin: const EdgeInsets.symmetric(horizontal: 2),
-            decoration: BoxDecoration(
-              color: colorScheme.surfaceContainerHighest.withAlpha(160),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: colorScheme.outlineVariant.withAlpha(60), width: 0.8),
-              boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4)],
-            ),
-            child: Icon(
-              Icons.chevron_left_rounded,
-              size: 16,
-              color: colorScheme.primary,
+    return Tooltip(
+      message: '展开右侧边栏 (工作台助手)',
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () {
+              AppConfig.setThreadRightEnabled(true);
+            },
+            child: Container(
+              width: 20,
+              decoration: BoxDecoration(
+                color: colorScheme.surfaceContainerHighest.withAlpha(40),
+                border: Border(
+                  left: BorderSide(
+                      color: colorScheme.outlineVariant.withAlpha(60),
+                      width: 0.8),
+                ),
+              ),
+              child: Center(
+                child: Container(
+                  width: 18,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainerHighest,
+                    borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(8),
+                      bottomLeft: Radius.circular(8),
+                    ),
+                    border: Border.all(
+                        color: colorScheme.outlineVariant.withAlpha(140),
+                        width: 1.0),
+                    boxShadow: const [
+                      BoxShadow(color: Colors.black12, blurRadius: 4)
+                    ],
+                  ),
+                  child: Icon(
+                    Icons.chevron_left_rounded,
+                    size: 16,
+                    color: colorScheme.primary,
+                  ),
+                ),
+              ),
             ),
           ),
         ),
@@ -307,7 +338,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                 onPressed: () {
                   Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (_) => const SettingsPage(initialCategory: SettingsCategory.layout),
+                      builder: (_) => const SettingsPage(
+                          initialCategory: SettingsCategory.layout),
                     ),
                   );
                 },
@@ -346,21 +378,22 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
   Widget _buildModuleWidget(BuildContext context, String moduleId) {
     switch (moduleId) {
       case 'forum_list':
-        return _buildForumListModule(context);
+        return _savedModuleSize(moduleId, _buildForumListModule(context),
+            bounded: true);
       case 'toc_outline':
-        return _buildTocOutlineModule(context);
+        return _savedModuleSize(moduleId, _buildTocOutlineModule(context));
       case 'floor_compass':
-        return _buildFloorCompassModule(context);
+        return _savedModuleSize(moduleId, _buildFloorCompassModule(context));
       case 'reader_tuning':
-        return _buildReaderTuningModule(context);
+        return _savedModuleSize(moduleId, _buildReaderTuningModule(context));
       case 'rating_hub':
-        return _buildRatingHubModule(context);
+        return _savedModuleSize(moduleId, _buildRatingHubModule(context));
       case 'media_gallery':
-        return _buildMediaGalleryModule(context);
+        return _savedModuleSize(moduleId, _buildMediaGalleryModule(context));
       case 'thread_search':
-        return _buildThreadSearchModule(context);
+        return _savedModuleSize(moduleId, _buildThreadSearchModule(context));
       case 'author_card':
-        return _buildAuthorCardModule(context);
+        return _savedModuleSize(moduleId, _buildAuthorCardModule(context));
       case 'sign_calendar':
         return _buildSignInCalendarModule(context);
       default:
@@ -373,45 +406,62 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
     }
   }
 
-  /// 全站通用卡片工作台自适应包装器
-  Widget _buildGenericCardModule(BuildContext context, String moduleId, CardDefinition def) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final savedItem = AppConfig.threadDashboardLayout.cast<DashboardGridItem?>().firstWhere(
-      (e) => e?.cardType == moduleId,
-      orElse: () => null,
-    );
-    final rowSpan = savedItem?.rowSpan ?? def.defaultRowSpan;
-    final item = DashboardGridItem(
-      id: savedItem?.id ?? 'th_$moduleId',
-      cardType: moduleId,
-      col: 8,
-      row: 0,
-      colSpan: 4,
-      rowSpan: rowSpan,
-    );
+  /// Native thread tools keep their saved canvas height too. Long content
+  /// scrolls inside the card; the embedded forum has its own bounded viewport.
+  Widget _savedModuleSize(String moduleId, Widget content,
+      {bool bounded = false}) {
+    final saved = AppConfig.threadDashboardLayout
+        .where((item) => item.cardType == moduleId)
+        .firstOrNull;
+    final rows = saved?.rowSpan ?? CardRegistry.get(moduleId).defaultRowSpan;
+    return LayoutBuilder(builder: (context, constraints) {
+      final height = HomeLayoutMetrics.sidebarCardHeight(
+          type: moduleId, rows: rows, width: constraints.maxWidth);
+      return SizedBox(
+          key: ValueKey('thread-module-$moduleId'),
+          height: height,
+          child: bounded
+              ? content
+              : ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: SingleChildScrollView(
+                      primary: false,
+                      child: ConstrainedBox(
+                          constraints: BoxConstraints(minHeight: height),
+                          child: content))));
+    });
+  }
 
-    return Container(
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest.withAlpha(40),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: colorScheme.outlineVariant.withAlpha(50),
-          width: 0.8,
-        ),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          minHeight: rowSpan * 64.0,
-          maxHeight: rowSpan * 88.0 + 30,
-        ),
-        child: DashboardCardFactory.buildCard(
-          item: item,
-          isPreview: false,
-        ),
-      ),
-    );
+  /// 全站通用卡片工作台自适应包装器
+  Widget _buildGenericCardModule(
+      BuildContext context, String moduleId, CardDefinition def) {
+    final savedItem =
+        AppConfig.threadDashboardLayout.cast<DashboardGridItem?>().firstWhere(
+              (e) => e?.cardType == moduleId,
+              orElse: () => null,
+            );
+    final rowSpan = savedItem?.rowSpan ?? def.defaultRowSpan;
+    final item = savedItem?.copyWith(col: 8, row: 0, colSpan: 4) ??
+        DashboardGridItem(
+          id: savedItem?.id ?? 'th_$moduleId',
+          cardType: moduleId,
+          col: 8,
+          row: 0,
+          colSpan: 4,
+          rowSpan: rowSpan,
+        );
+
+    return LayoutBuilder(
+        builder: (context, constraints) => SizedBox(
+              height: HomeLayoutMetrics.sidebarCardHeight(
+                  type: item.cardType,
+                  rows: rowSpan,
+                  width: constraints.maxWidth),
+              child: DashboardCardFactory.buildCard(
+                item: item,
+                isPreview: false,
+              ),
+            ));
   }
 
   // 1. 同版块帖子列表（1:1 对齐原生版块界面，具备分类芯片、原生 RefreshIndicator、置顶流与高光跟手切帖）
@@ -446,7 +496,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
         outlineItems.add((floorIdx: i, text: '3# 板凳 (${f.author})', level: 2));
       } else if (widget.isDescOrder && widget.currentPage == 1 && i == 1) {
         final label = f.floorNumber.isNotEmpty ? f.floorNumber : '最新回帖';
-        outlineItems.add((floorIdx: i, text: '最新回帖 · $label (${f.author})', level: 2));
+        outlineItems
+            .add((floorIdx: i, text: '最新回帖 · $label (${f.author})', level: 2));
       } else {
         final fn = f.floorNumber.trim();
         String label = '';
@@ -459,7 +510,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
         }
         if (i == 0 || i == 1 || i % 5 == 0 || i == widget.floors.length - 1) {
           final authorSuffix = f.author.isNotEmpty ? ' (${f.author})' : '';
-          outlineItems.add((floorIdx: i, text: '$label$authorSuffix', level: 2));
+          outlineItems
+              .add((floorIdx: i, text: '$label$authorSuffix', level: 2));
         }
       }
     }
@@ -469,7 +521,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
       margin: EdgeInsets.zero,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
-        side: BorderSide(color: colorScheme.outlineVariant.withAlpha(45), width: 0.8),
+        side: BorderSide(
+            color: colorScheme.outlineVariant.withAlpha(45), width: 0.8),
       ),
       child: Padding(
         padding: const EdgeInsets.all(10),
@@ -478,7 +531,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
           children: [
             Row(
               children: [
-                Icon(Icons.format_list_bulleted_rounded, size: 16, color: colorScheme.primary),
+                Icon(Icons.format_list_bulleted_rounded,
+                    size: 16, color: colorScheme.primary),
                 const SizedBox(width: 6),
                 const Text(
                   '文章大纲目录',
@@ -488,14 +542,16 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
             ),
             const SizedBox(height: 6),
             if (outlineItems.isEmpty) ...[
-              Text('暂无目录节点', style: TextStyle(fontSize: 11, color: colorScheme.outline)),
+              Text('暂无目录节点',
+                  style: TextStyle(fontSize: 11, color: colorScheme.outline)),
             ] else ...[
               for (final item in outlineItems) ...[
                 InkWell(
                   onTap: () => widget.onJumpToFloor?.call(item.floorIdx),
                   borderRadius: BorderRadius.circular(4),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
                     child: Row(
                       children: [
                         Container(
@@ -536,45 +592,13 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
     final num = int.tryParse(text.replaceAll(RegExp(r'[^\d]'), ''));
     if (num == null || num <= 0) return;
 
-    // 1. 优先在当前页寻找真实楼层或称谓，杜绝不必要的页面重载
-    int? targetIndex;
-    if (num == 1 && widget.currentPage == 1) {
-      targetIndex = 0;
-    } else {
-      for (int i = 0; i < widget.floors.length; i++) {
-        final f = widget.floors[i];
-        final fNum = f.floorNumber.replaceAll(RegExp(r'[^\d]'), '');
-        if (fNum.isNotEmpty && int.tryParse(fNum) == num) {
-          targetIndex = i;
-          break;
-        }
-        if (num == 1 && (f.floorNumber == '楼主' || f.isThreadAuthor || (widget.currentPage == 1 && i == 0))) {
-          targetIndex = i;
-          break;
-        }
-        if (num == 2 && f.floorNumber.contains('沙发')) {
-          targetIndex = i;
-          break;
-        }
-        if (num == 3 && f.floorNumber.contains('板凳')) {
-          targetIndex = i;
-          break;
-        }
-        if (num == 4 && f.floorNumber.contains('地板')) {
-          targetIndex = i;
-          break;
-        }
-      }
-    }
-
-    if (targetIndex != null) {
-      widget.onJumpToFloor?.call(targetIndex);
+    if (widget.onNavigateToFloor != null) {
+      widget.onNavigateToFloor!(num);
       return;
     }
 
-    // 2. 当前页未找到，委托全局跨页导航器
-    if (widget.onNavigateToFloor != null) {
-      widget.onNavigateToFloor!(num);
+    if (widget.onJumpToFloor != null) {
+      widget.onJumpToFloor!(num - 1);
       return;
     }
 
@@ -592,14 +616,26 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final totalReplies = widget.totalReplies;
-    final totalFloors = totalReplies > 0 ? totalReplies + 1 : widget.floors.length;
+    int totalFloors =
+        totalReplies > 0 ? totalReplies + 1 : widget.floors.length;
+    if (widget.currentPage == widget.totalPages && widget.floors.isNotEmpty) {
+      final last = widget.floors.last;
+      final m = RegExp(r'(\d+)').firstMatch(last.floorNumber);
+      if (m != null) {
+        final parsed = int.tryParse(m.group(1)!);
+        if (parsed != null && parsed > 0 && parsed < totalFloors) {
+          totalFloors = parsed;
+        }
+      }
+    }
 
     return Card(
       elevation: 0,
       margin: EdgeInsets.zero,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
-        side: BorderSide(color: colorScheme.outlineVariant.withAlpha(45), width: 0.8),
+        side: BorderSide(
+            color: colorScheme.outlineVariant.withAlpha(45), width: 0.8),
       ),
       child: Padding(
         padding: const EdgeInsets.all(10),
@@ -608,7 +644,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
           children: [
             Row(
               children: [
-                Icon(Icons.explore_rounded, size: 16, color: colorScheme.primary),
+                Icon(Icons.explore_rounded,
+                    size: 16, color: colorScheme.primary),
                 const SizedBox(width: 6),
                 const Text(
                   '楼层罗盘',
@@ -630,11 +667,7 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                   visualDensity: VisualDensity.compact,
                   label: const Text('1# 楼主', style: TextStyle(fontSize: 11)),
                   onPressed: () {
-                    if (widget.currentPage == 1) {
-                      widget.onJumpToFloor?.call(0);
-                    } else if (widget.onNavigateToFloor != null) {
-                      widget.onNavigateToFloor!(1);
-                    }
+                    widget.onNavigateToFloor?.call(1);
                   },
                 ),
                 if (totalFloors > 1)
@@ -642,11 +675,7 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                     visualDensity: VisualDensity.compact,
                     label: const Text('2# 沙发', style: TextStyle(fontSize: 11)),
                     onPressed: () {
-                      if (!widget.isDescOrder && widget.currentPage == 1) {
-                        widget.onJumpToFloor?.call(widget.floors.length > 1 ? 1 : 0);
-                      } else if (widget.onNavigateToFloor != null) {
-                        widget.onNavigateToFloor!(2);
-                      }
+                      widget.onNavigateToFloor?.call(2);
                     },
                   ),
                 if (totalFloors > 2)
@@ -654,23 +683,17 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                     visualDensity: VisualDensity.compact,
                     label: const Text('3# 板凳', style: TextStyle(fontSize: 11)),
                     onPressed: () {
-                      if (!widget.isDescOrder && widget.currentPage == 1) {
-                        widget.onJumpToFloor?.call(widget.floors.length > 2 ? 2 : 0);
-                      } else if (widget.onNavigateToFloor != null) {
-                        widget.onNavigateToFloor!(3);
-                      }
+                      widget.onNavigateToFloor?.call(3);
                     },
                   ),
                 ActionChip(
                   visualDensity: VisualDensity.compact,
-                  label: Text(widget.isDescOrder ? '最新回帖 (第1页)' : '最新回帖 ($totalFloors#)', style: const TextStyle(fontSize: 11)),
+                  label: Text(
+                    widget.isDescOrder ? '最新回帖 (第1页)' : '最新回帖 (末页)',
+                    style: const TextStyle(fontSize: 11),
+                  ),
                   onPressed: () {
-                    if (widget.isDescOrder && widget.currentPage == 1) {
-                      final idx = widget.floors.length > 1 ? 1 : 0;
-                      widget.onJumpToFloor?.call(idx);
-                    } else if (widget.onNavigateToFloor != null) {
-                      widget.onNavigateToFloor!(totalFloors);
-                    }
+                    widget.onNavigateToFloor?.call(-1);
                   },
                 ),
               ],
@@ -687,9 +710,12 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                       style: const TextStyle(fontSize: 12),
                       decoration: InputDecoration(
                         hintText: '直达楼层号 (如 5)',
-                        hintStyle: TextStyle(fontSize: 11, color: colorScheme.outline),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                        hintStyle:
+                            TextStyle(fontSize: 11, color: colorScheme.outline),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 0),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(6)),
                       ),
                       onSubmitted: (v) => _executeFloorJump(v, context),
                     ),
@@ -697,7 +723,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                 ),
                 const SizedBox(width: 6),
                 FilledButton.tonal(
-                  onPressed: () => _executeFloorJump(_compassController.text, context),
+                  onPressed: () =>
+                      _executeFloorJump(_compassController.text, context),
                   style: FilledButton.styleFrom(
                     visualDensity: VisualDensity.compact,
                     padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -722,7 +749,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
       margin: EdgeInsets.zero,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
-        side: BorderSide(color: colorScheme.outlineVariant.withAlpha(45), width: 0.8),
+        side: BorderSide(
+            color: colorScheme.outlineVariant.withAlpha(45), width: 0.8),
       ),
       child: Padding(
         padding: const EdgeInsets.all(10),
@@ -819,7 +847,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
       margin: EdgeInsets.zero,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
-        side: BorderSide(color: colorScheme.outlineVariant.withAlpha(45), width: 0.8),
+        side: BorderSide(
+            color: colorScheme.outlineVariant.withAlpha(45), width: 0.8),
       ),
       child: Padding(
         padding: const EdgeInsets.all(10),
@@ -828,7 +857,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
           children: [
             Row(
               children: [
-                Icon(Icons.card_giftcard_rounded, size: 16, color: colorScheme.primary),
+                Icon(Icons.card_giftcard_rounded,
+                    size: 16, color: colorScheme.primary),
                 const SizedBox(width: 6),
                 const Text(
                   '评分与打赏大厅',
@@ -851,7 +881,9 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
               ),
               child: Text(
                 '支持多币种汇总、实时模糊搜索与大额正向加分筛选',
-                style: TextStyle(fontSize: 11, color: colorScheme.onSurfaceVariant.withAlpha(200)),
+                style: TextStyle(
+                    fontSize: 11,
+                    color: colorScheme.onSurfaceVariant.withAlpha(200)),
               ),
             ),
             const SizedBox(height: 8),
@@ -887,7 +919,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
       margin: EdgeInsets.zero,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
-        side: BorderSide(color: colorScheme.outlineVariant.withAlpha(45), width: 0.8),
+        side: BorderSide(
+            color: colorScheme.outlineVariant.withAlpha(45), width: 0.8),
       ),
       child: Padding(
         padding: const EdgeInsets.all(10),
@@ -896,7 +929,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
           children: [
             Row(
               children: [
-                Icon(Icons.photo_library_rounded, size: 16, color: colorScheme.primary),
+                Icon(Icons.photo_library_rounded,
+                    size: 16, color: colorScheme.primary),
                 const SizedBox(width: 6),
                 const Text(
                   '全帖媒体画廊',
@@ -914,7 +948,9 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 10),
                 child: Center(
-                  child: Text('本帖未包含图片附件', style: TextStyle(fontSize: 11, color: colorScheme.outline)),
+                  child: Text('本帖未包含图片附件',
+                      style:
+                          TextStyle(fontSize: 11, color: colorScheme.outline)),
                 ),
               ),
             ] else ...[
@@ -944,7 +980,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                         fit: BoxFit.cover,
                         memCacheWidth: 200,
                         placeholder: (_, __) => Container(
-                          color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                          color:
+                              colorScheme.surfaceContainerHighest.withAlpha(80),
                         ),
                       ),
                     ),
@@ -995,12 +1032,14 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
               const SizedBox(width: 6),
               Text(
                 '帖内搜索',
-                style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold),
               ),
               const Spacer(),
               if (query.isNotEmpty)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
                   decoration: BoxDecoration(
                     color: colorScheme.primaryContainer.withAlpha(60),
                     borderRadius: BorderRadius.circular(10),
@@ -1035,11 +1074,13 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                       },
                     )
                   : null,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               isDense: true,
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
-                borderSide: BorderSide(color: colorScheme.outlineVariant.withAlpha(80)),
+                borderSide:
+                    BorderSide(color: colorScheme.outlineVariant.withAlpha(80)),
               ),
             ),
             onChanged: (val) {
@@ -1075,20 +1116,24 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                       borderRadius: BorderRadius.circular(6),
                       onTap: () => widget.onJumpToFloor?.call(item.index),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 6, horizontal: 4),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Row(
                               children: [
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 5, vertical: 1),
                                   decoration: BoxDecoration(
                                     color: colorScheme.primary.withAlpha(20),
                                     borderRadius: BorderRadius.circular(4),
                                   ),
                                   child: Text(
-                                    f.floorNumber.isNotEmpty ? f.floorNumber : '${item.index + 1}#',
+                                    f.floorNumber.isNotEmpty
+                                        ? f.floorNumber
+                                        : '${item.index + 1}#',
                                     style: TextStyle(
                                       fontSize: 10,
                                       fontWeight: FontWeight.bold,
@@ -1102,18 +1147,26 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                                     f.author,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                    style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold),
                                   ),
                                 ),
-                                Icon(Icons.arrow_forward_ios_rounded, size: 10, color: colorScheme.outline),
+                                Icon(Icons.arrow_forward_ios_rounded,
+                                    size: 10, color: colorScheme.outline),
                               ],
                             ),
                             const SizedBox(height: 3),
                             Text(
-                              f.contentHtml.replaceAll(RegExp(r'<[^>]*>'), ' ').replaceAll('\n', ' ').trim(),
+                              f.contentHtml
+                                  .replaceAll(RegExp(r'<[^>]*>'), ' ')
+                                  .replaceAll('\n', ' ')
+                                  .trim(),
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
-                              style: TextStyle(fontSize: 11.5, color: colorScheme.onSurfaceVariant),
+                              style: TextStyle(
+                                  fontSize: 11.5,
+                                  color: colorScheme.onSurfaceVariant),
                             ),
                           ],
                         ),
@@ -1154,6 +1207,7 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
           Row(
             children: [
               UserAvatarWidget(
+                reserveFrameSpace: true,
                 uid: uid,
                 author: author,
                 size: 38,
@@ -1177,12 +1231,14 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                             author,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                            style: const TextStyle(
+                                fontSize: 13, fontWeight: FontWeight.bold),
                           ),
                         ),
                         const SizedBox(width: 4),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 1),
                           decoration: BoxDecoration(
                             color: Colors.amber.withAlpha(35),
                             borderRadius: BorderRadius.circular(4),
@@ -1201,7 +1257,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                     const SizedBox(height: 2),
                     Text(
                       'UID: $uid',
-                      style: TextStyle(fontSize: 10.5, color: colorScheme.outline),
+                      style:
+                          TextStyle(fontSize: 10.5, color: colorScheme.outline),
                     ),
                   ],
                 ),
@@ -1215,8 +1272,10 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
                 child: OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(
                     visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(6)),
                   ),
                   icon: const Icon(Icons.person_outline, size: 14),
                   label: const Text('个人空间', style: TextStyle(fontSize: 11)),
@@ -1233,8 +1292,10 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
               OutlinedButton(
                 style: OutlinedButton.styleFrom(
                   visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(6)),
                 ),
                 child: const Text('复制 UID', style: TextStyle(fontSize: 11)),
                 onPressed: () {
@@ -1255,7 +1316,8 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
   Widget _buildSignInCalendarModule(BuildContext context) {
     DashboardGridItem? savedItem;
     try {
-      savedItem = AppConfig.threadDashboardLayout.firstWhere((i) => i.cardType == 'sign_calendar');
+      savedItem = AppConfig.threadDashboardLayout
+          .firstWhere((i) => i.cardType == 'sign_calendar');
     } catch (_) {}
 
     final item = savedItem ??
@@ -1269,7 +1331,10 @@ class _ThreadLayoutWorkbenchState extends State<ThreadLayoutWorkbench> {
         );
 
     final effectiveRowSpan = item.rowSpan >= 1 ? item.rowSpan : 3;
-    final cardHeight = (effectiveRowSpan * 88.0 + (effectiveRowSpan - 1) * 8.0).clamp(170.0, 380.0);
+    final cardHeight = HomeLayoutMetrics.sidebarCardHeight(
+        type: item.cardType,
+        rows: effectiveRowSpan,
+        width: AppConfig.threadRightWidth);
 
     return SizedBox(
       height: cardHeight,

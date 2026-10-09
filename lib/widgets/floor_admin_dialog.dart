@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../api/klpbbs_api.dart';
@@ -374,7 +375,7 @@ class _FloorAdminDialogState extends State<FloorAdminDialog> {
 
             if (_submitting) ...[
               const SizedBox(height: 12),
-              const LinearProgressIndicator(),
+              const AppLoadingBar(),
             ],
 
             const SizedBox(height: 16),

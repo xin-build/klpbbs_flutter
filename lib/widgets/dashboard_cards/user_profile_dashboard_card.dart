@@ -23,29 +23,60 @@ class UserProfileDashboardCard extends StatefulWidget {
   });
 
   @override
-  State<UserProfileDashboardCard> createState() => _UserProfileDashboardCardState();
+  State<UserProfileDashboardCard> createState() =>
+      _UserProfileDashboardCardState();
 }
 
 class _UserProfileDashboardCardState extends State<UserProfileDashboardCard> {
   int? _uid;
   UserSpace? _space;
+  int _profileGeneration = 0;
 
   @override
   void initState() {
     super.initState();
-    _uid = KlpbbsApi.currentCachedMyUid;
-    _space = KlpbbsApi.cachedSpace;
-    if (DioClient.isLoggedIn) {
+    _readCurrentProfile();
+    DioClient.sessionChanges.addListener(_onProfileChanged);
+    KlpbbsApi.profileChanges.addListener(_onProfileChanged);
+    if (DioClient.isLoggedIn && !widget.isPreview) {
       _loadProfile();
     }
   }
 
+  @override
+  void dispose() {
+    DioClient.sessionChanges.removeListener(_onProfileChanged);
+    KlpbbsApi.profileChanges.removeListener(_onProfileChanged);
+    _profileGeneration++;
+    super.dispose();
+  }
+
+  void _readCurrentProfile() {
+    _uid = DioClient.isLoggedIn ? KlpbbsApi.currentCachedMyUid : null;
+    final space = KlpbbsApi.cachedSpace;
+    _space = _uid != null && space?.uid == _uid ? space : null;
+  }
+
+  void _onProfileChanged() {
+    if (!mounted) return;
+    _profileGeneration++;
+    setState(_readCurrentProfile);
+    if (DioClient.isLoggedIn && !widget.isPreview) _loadProfile();
+  }
+
   Future<void> _loadProfile() async {
+    final session = DioClient.sessionKey;
+    final generation = ++_profileGeneration;
+    bool current() =>
+        mounted &&
+        session == DioClient.sessionKey &&
+        generation == _profileGeneration;
     try {
       final uid = await KlpbbsApi.getMyUid();
+      if (!current()) return;
       if (uid != null && uid > 0) {
         final space = await KlpbbsApi.getUserSpace(uid);
-        if (mounted) {
+        if (current() && space?.uid == uid) {
           setState(() {
             _uid = uid;
             _space = space;
@@ -58,9 +89,11 @@ class _UserProfileDashboardCardState extends State<UserProfileDashboardCard> {
   @override
   Widget build(BuildContext context) {
     final customTitle = widget.item.customParams['customTitle'] as String?;
-    final title = (customTitle != null && customTitle.isNotEmpty) ? customTitle : '个人名片';
+    final title =
+        (customTitle != null && customTitle.isNotEmpty) ? customTitle : '个人名片';
 
-    final rawDataStyle = widget.item.customParams['dataStyle'] as String? ?? 'auto';
+    final rawDataStyle =
+        widget.item.customParams['dataStyle'] as String? ?? 'auto';
     final String dataStyle;
     if (rawDataStyle == 'auto') {
       final isCompact = widget.item.rowSpan <= 1;
@@ -70,21 +103,15 @@ class _UserProfileDashboardCardState extends State<UserProfileDashboardCard> {
       dataStyle = rawDataStyle;
     }
 
-    final isLoggedIn = DioClient.isLoggedIn || widget.isPreview;
-    final username = (_space?.username.isNotEmpty == true)
+    final isLoggedIn = DioClient.isLoggedIn;
+    final username = _space?.username.isNotEmpty == true
         ? _space!.username
-        : (widget.isPreview
-            ? '苦力怕老友'
-            : (isLoggedIn
-                ? (_uid != null ? 'UID: $_uid' : '已登录会员')
-                : '未登录访客'));
-    final role = (_space?.group.isNotEmpty == true)
+        : (isLoggedIn ? (_uid != null ? 'UID: $_uid' : '已登录') : '未登录访客');
+    final role = _space?.group.isNotEmpty == true
         ? _space!.group
         : (_space?.level.isNotEmpty == true
             ? _space!.level
-            : (isLoggedIn
-                ? (widget.isPreview ? 'Lv.5 金牌会员' : '社区成员')
-                : '点击登录'));
+            : (isLoggedIn ? '资料尚未取得' : '点击登录'));
 
     return RepaintBoundary(
       child: DashboardCardFrame(
@@ -97,8 +124,10 @@ class _UserProfileDashboardCardState extends State<UserProfileDashboardCard> {
             );
             return;
           }
-          final targetUid = _uid ?? await KlpbbsApi.getMyUid() ?? 1;
-          if (context.mounted) {
+          final session = DioClient.sessionKey;
+          final targetUid = _uid ?? await KlpbbsApi.getMyUid();
+          if (targetUid == null || targetUid <= 0) return;
+          if (context.mounted && session == DioClient.sessionKey) {
             Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => UserSpacePage(uid: targetUid)),
             );
@@ -111,23 +140,28 @@ class _UserProfileDashboardCardState extends State<UserProfileDashboardCard> {
     );
   }
 
-  Widget _buildCompact(BuildContext context, String username, String role, String title, bool isLoggedIn) {
+  Widget _buildCompact(BuildContext context, String username, String role,
+      String title, bool isLoggedIn) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Row(
       children: [
         if (isLoggedIn && _uid != null)
           UserAvatarWidget(
+            reserveFrameSpace: true,
             uid: _uid,
             author: username,
-            faceUrl: (_space?.faceUrl.isNotEmpty == true) ? _space!.faceUrl : AppConfig.myFaceUrl,
+            faceUrl: (_space?.faceUrl.isNotEmpty == true)
+                ? _space!.faceUrl
+                : AppConfig.myFaceUrl,
             size: 34,
           )
         else
           CircleAvatar(
             radius: 17,
             backgroundColor: colorScheme.primaryContainer,
-            child: Icon(Icons.person_rounded, size: 20, color: colorScheme.primary),
+            child: Icon(Icons.person_rounded,
+                size: 20, color: colorScheme.primary),
           ),
         const SizedBox(width: 8),
         Expanded(
@@ -139,7 +173,8 @@ class _UserProfileDashboardCardState extends State<UserProfileDashboardCard> {
                 username,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                style: const TextStyle(
+                    fontSize: 12.5, fontWeight: FontWeight.bold),
               ),
               Text(
                 role,
@@ -158,7 +193,8 @@ class _UserProfileDashboardCardState extends State<UserProfileDashboardCard> {
     );
   }
 
-  Widget _buildExpanded(BuildContext context, String username, String role, String title, bool isLoggedIn) {
+  Widget _buildExpanded(BuildContext context, String username, String role,
+      String title, bool isLoggedIn) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Column(
@@ -168,16 +204,20 @@ class _UserProfileDashboardCardState extends State<UserProfileDashboardCard> {
           children: [
             if (isLoggedIn && _uid != null)
               UserAvatarWidget(
+                reserveFrameSpace: true,
                 uid: _uid,
                 author: username,
-                faceUrl: (_space?.faceUrl.isNotEmpty == true) ? _space!.faceUrl : AppConfig.myFaceUrl,
+                faceUrl: (_space?.faceUrl.isNotEmpty == true)
+                    ? _space!.faceUrl
+                    : AppConfig.myFaceUrl,
                 size: 38,
               )
             else
               CircleAvatar(
                 radius: 19,
                 backgroundColor: colorScheme.primaryContainer,
-                child: Icon(Icons.person_rounded, size: 22, color: colorScheme.primary),
+                child: Icon(Icons.person_rounded,
+                    size: 22, color: colorScheme.primary),
               ),
             const SizedBox(width: 8),
             Expanded(
@@ -188,24 +228,30 @@ class _UserProfileDashboardCardState extends State<UserProfileDashboardCard> {
                     username,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 2),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                     decoration: BoxDecoration(
                       color: colorScheme.primary.withAlpha(25),
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: Text(
                       role,
-                      style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold, color: colorScheme.primary),
+                      style: TextStyle(
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.bold,
+                          color: colorScheme.primary),
                     ),
                   ),
                 ],
               ),
             ),
-            const Icon(Icons.arrow_forward_ios_rounded, size: 12, color: Colors.grey),
+            const Icon(Icons.arrow_forward_ios_rounded,
+                size: 12, color: Colors.grey),
           ],
         ),
         const Spacer(),
@@ -213,16 +259,20 @@ class _UserProfileDashboardCardState extends State<UserProfileDashboardCard> {
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
             _buildStatCol('我的空间', Icons.home_rounded, () async {
-              final targetUid = _uid ?? await KlpbbsApi.getMyUid() ?? 1;
+              final targetUid = _uid ?? await KlpbbsApi.getMyUid();
+              if (targetUid == null || targetUid <= 0) return;
               if (context.mounted) {
-                Navigator.of(context).push(MaterialPageRoute(builder: (_) => UserSpacePage(uid: targetUid)));
+                Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => UserSpacePage(uid: targetUid)));
               }
             }),
             _buildStatCol('道具背包', Icons.inventory_2_rounded, () {
-              Navigator.of(context).push(MaterialPageRoute(builder: (_) => const MagicPage(initialTab: 1)));
+              Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => const MagicPage(initialTab: 1)));
             }),
             _buildStatCol('积分明细', Icons.monetization_on_rounded, () {
-              Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CreditPage()));
+              Navigator.of(context)
+                  .push(MaterialPageRoute(builder: (_) => const CreditPage()));
             }),
           ],
         ),
@@ -240,7 +290,8 @@ class _UserProfileDashboardCardState extends State<UserProfileDashboardCard> {
           children: [
             Icon(icon, size: 16, color: Colors.grey.shade600),
             const SizedBox(height: 2),
-            Text(label, style: const TextStyle(fontSize: 10, color: Colors.grey)),
+            Text(label,
+                style: const TextStyle(fontSize: 10, color: Colors.grey)),
           ],
         ),
       ),

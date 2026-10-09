@@ -50,6 +50,7 @@ class UserSpace {
 
   /// 资料完整度百分比（如 88 表示 88%）
   final int profileProgress;
+  final bool hasProfileProgress;
 
   /// 空间是否被锁定或无法访问（如被封禁或删除）
   final bool isLocked;
@@ -76,6 +77,7 @@ class UserSpace {
     this.isOnline = false,
     this.onlineStatusText = '',
     this.profileProgress = 0,
+    this.hasProfileProgress = false,
     this.isLocked = false,
     this.lockReason = '',
   });
@@ -99,6 +101,7 @@ class UserSpace {
     bool? isOnline,
     String? onlineStatusText,
     int? profileProgress,
+    bool? hasProfileProgress,
     bool? isLocked,
     String? lockReason,
   }) {
@@ -121,40 +124,42 @@ class UserSpace {
       isOnline: isOnline ?? this.isOnline,
       onlineStatusText: onlineStatusText ?? this.onlineStatusText,
       profileProgress: profileProgress ?? this.profileProgress,
+      hasProfileProgress: hasProfileProgress ?? this.hasProfileProgress,
       isLocked: isLocked ?? this.isLocked,
       lockReason: lockReason ?? this.lockReason,
     );
   }
 
   Map<String, dynamic> toJson() => {
-    'uid': uid,
-    'username': username,
-    'credits': credits,
-    'group': group,
-    'regdate': regdate,
-    'lastvisit': lastvisit,
-    'signature': signature,
-    'level': level,
-    'levelName': levelName,
-    'medals': medals
-        .map((m) => {
-              'id': m.id,
-              'name': m.name,
-              'desc': m.desc,
-              'img': m.img,
-            })
-        .toList(),
-    'faceUrl': faceUrl,
-    'bgUrl': bgUrl,
-    'stats': stats,
-    'creditsDetail': creditsDetail,
-    'gameProfile': gameProfile,
-    'isOnline': isOnline,
-    'onlineStatusText': onlineStatusText,
-    'profileProgress': profileProgress,
-    'isLocked': isLocked,
-    'lockReason': lockReason,
-  };
+        'uid': uid,
+        'username': username,
+        'credits': credits,
+        'group': group,
+        'regdate': regdate,
+        'lastvisit': lastvisit,
+        'signature': signature,
+        'level': level,
+        'levelName': levelName,
+        'medals': medals
+            .map((m) => {
+                  'id': m.id,
+                  'name': m.name,
+                  'desc': m.desc,
+                  'img': m.img,
+                })
+            .toList(),
+        'faceUrl': faceUrl,
+        'bgUrl': bgUrl,
+        'stats': stats,
+        'creditsDetail': creditsDetail,
+        'gameProfile': gameProfile,
+        'isOnline': isOnline,
+        'onlineStatusText': onlineStatusText,
+        'profileProgress': profileProgress,
+        'hasProfileProgress': hasProfileProgress,
+        'isLocked': isLocked,
+        'lockReason': lockReason,
+      };
 
   factory UserSpace.fromJson(Map<String, dynamic> json) {
     final rawMedals = json['medals'] as List<dynamic>? ?? const [];
@@ -182,12 +187,19 @@ class UserSpace {
       medals: medalsList,
       faceUrl: json['faceUrl']?.toString() ?? '',
       bgUrl: json['bgUrl']?.toString() ?? '',
-      stats: (json['stats'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const {},
-      creditsDetail: (json['creditsDetail'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const {},
-      gameProfile: (json['gameProfile'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const {},
+      stats: (json['stats'] as Map?)
+              ?.map((k, v) => MapEntry(k.toString(), v.toString())) ??
+          const {},
+      creditsDetail: (json['creditsDetail'] as Map?)
+              ?.map((k, v) => MapEntry(k.toString(), v.toString())) ??
+          const {},
+      gameProfile: (json['gameProfile'] as Map?)
+              ?.map((k, v) => MapEntry(k.toString(), v.toString())) ??
+          const {},
       isOnline: json['isOnline'] as bool? ?? false,
       onlineStatusText: json['onlineStatusText']?.toString() ?? '',
       profileProgress: (json['profileProgress'] as num?)?.toInt() ?? 0,
+      hasProfileProgress: json['hasProfileProgress'] == true,
       isLocked: json['isLocked'] as bool? ?? false,
       lockReason: json['lockReason']?.toString() ?? '',
     );

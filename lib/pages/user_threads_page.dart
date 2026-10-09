@@ -1,14 +1,16 @@
+import '../widgets/app_motion.dart';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/dio_client.dart';
+import '../models/server_outage_info.dart';
 import '../models/thread_summary.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/favorite_dialog.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
+import '../widgets/server_outage_view.dart';
 import '../widgets/thread_card.dart';
 import 'login_page.dart';
 import 'thread_detail_page.dart';
@@ -36,13 +38,17 @@ class UserThreadsPage extends StatefulWidget {
   State<UserThreadsPage> createState() => _UserThreadsPageState();
 }
 
-class _UserThreadsPageState extends State<UserThreadsPage> {
+class _UserThreadsPageState extends State<UserThreadsPage>
+    with AutomaticKeepAliveClientMixin {
   late String _currentType;
   int _page = 1;
   late Future<List<ThreadSummary>> _future;
   bool _sortByName = false;
   String _selectedTag = '全部';
   List<String> _favTags = ['全部'];
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -72,25 +78,12 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
         widget.uid,
         page: _page,
         tag: _selectedTag == '全部' ? null : _selectedTag,
-      ).then((threads) {
-        KlpbbsApi.getMyUid().then((myUid) async {
-          if (myUid != null && myUid == widget.uid) {
-            final prefs = await SharedPreferences.getInstance();
-            final serverTids = threads.map((t) => '${t.tid}').toSet();
-            if (_page == 1) {
-              await prefs.setStringList('fav_tids', serverTids.toList());
-            } else {
-              final list = (prefs.getStringList('fav_tids') ?? []).toSet();
-              list.addAll(serverTids);
-              await prefs.setStringList('fav_tids', list.toList());
-            }
-          }
-        }).catchError((_) {});
-        return threads;
-      });
+      );
     } else {
-      _future = KlpbbsApi.getUserThreads(widget.uid, type: _currentType, page: _page);
+      _future =
+          KlpbbsApi.getUserThreads(widget.uid, type: _currentType, page: _page);
     }
+    _future.ignore();
   }
 
   void _switchType(String newType) {
@@ -121,6 +114,7 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
@@ -173,7 +167,8 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
         : (_favTags.length > 1
             ? Container(
                 height: 44,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
                   color: colorScheme.surface,
                   border: Border(
@@ -209,16 +204,39 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
       future: _future,
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done) {
-          return const Center(child: Padding(
+          return const Center(
+              child: Padding(
             padding: EdgeInsets.all(24),
-            child: CircularProgressIndicator(),
+            child: AppLoadingIndicator(),
           ));
         }
         if (snap.hasError) {
-          return Center(child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Text('加载失败：${snap.error}'),
-          ));
+          final outage = ServerOutageInfo.tryParse(snap.error);
+          if (outage != null) {
+            return ServerOutageView(
+              outage: outage,
+              onRetry: () => setState(() => _fetch()),
+            );
+          }
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline_rounded,
+                      size: 48, color: Theme.of(context).colorScheme.error),
+                  const SizedBox(height: 12),
+                  Text('加载失败：${snap.error}', textAlign: TextAlign.center),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: () => setState(() => _fetch()),
+                    child: const Text('重试'),
+                  ),
+                ],
+              ),
+            ),
+          );
         }
         var list = snap.data ?? [];
         if (_sortByName && _currentType == 'favorite') {
@@ -256,7 +274,10 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
         }
         final listView = ListView.separated(
           shrinkWrap: widget.shrinkWrap,
-          physics: widget.physics ?? (widget.shrinkWrap ? const NeverScrollableScrollPhysics() : const AlwaysScrollableScrollPhysics()),
+          physics: widget.physics ??
+              (widget.shrinkWrap
+                  ? const NeverScrollableScrollPhysics()
+                  : const AlwaysScrollableScrollPhysics()),
           padding: const EdgeInsets.only(bottom: 24),
           itemCount: list.length + 1,
           separatorBuilder: (_, __) => const Divider(height: 1),
@@ -264,7 +285,11 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
             if (i == list.length) {
               return PaginationControl(
                 page: _page,
-                hasMore: list.length >= 8,
+                hasMore: _currentType == 'favorite'
+                    ? KlpbbsApi.favoriteHasNextPage(widget.uid, _page,
+                            tag: _selectedTag == '全部' ? null : _selectedTag) ??
+                        false
+                    : list.length >= 8,
                 onPageChanged: _goPage,
               );
             }
@@ -278,47 +303,60 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
               author: t.author.isNotEmpty
                   ? t.author
                   : (_currentType == 'favorite' ? '' : fallbackAuthor),
-              uid: _currentType == 'favorite'
-                  ? t.uid
-                  : (t.uid ?? widget.uid),
+              uid: _currentType == 'favorite' ? t.uid : (t.uid ?? widget.uid),
             );
+            Widget itemWidget;
             if (_currentType == 'reply') {
-              return _buildReplyTimelineTile(filledThread, colorScheme);
-            }
-            return GestureDetector(
-              onLongPress: _currentType == 'favorite'
-                  ? () async {
-                      final res = await FavoriteDialog.show(
-                        context,
-                        tid: filledThread.tid,
-                        title: filledThread.title,
-                        isFavorited: true,
-                        favid: filledThread.favid ?? KlpbbsApi.getCachedFavid(filledThread.tid),
-                      );
-                      if (res == false && mounted) {
-                        try {
-                          final prefs = await SharedPreferences.getInstance();
-                          final list = (prefs.getStringList('fav_tids') ?? []).toSet();
-                          list.remove('${filledThread.tid}');
-                          await prefs.setStringList('fav_tids', list.toList());
-                        } catch (_) {}
-                        setState(() => _fetch());
+              itemWidget = _buildReplyTimelineTile(filledThread, colorScheme);
+            } else {
+              itemWidget = GestureDetector(
+                onLongPress: _currentType == 'favorite'
+                    ? () async {
+                        final res = await FavoriteDialog.show(
+                          context,
+                          tid: filledThread.tid,
+                          title: filledThread.title,
+                          isFavorited: true,
+                          favid: filledThread.favid ??
+                              KlpbbsApi.getCachedFavid(filledThread.tid),
+                        );
+                        if (res == false && mounted) {
+                          setState(() => _fetch());
+                        }
                       }
+                    : null,
+                child: ThreadCard(
+                  thread: filledThread,
+                  onTap: () async {
+                    await Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => ThreadDetailPage(tid: filledThread.tid),
+                      ),
+                    );
+                    if (_currentType == 'favorite' && mounted) {
+                      setState(() => _fetch());
                     }
-                  : null,
-              child: ThreadCard(
-                thread: filledThread,
-                onTap: () async {
-                  await Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => ThreadDetailPage(tid: filledThread.tid),
-                    ),
-                  );
-                  if (_currentType == 'favorite' && mounted) {
-                    setState(() => _fetch());
-                  }
-                },
-              ),
+                  },
+                ),
+              );
+            }
+
+            // 丝滑微动效交错入场动画（Staggered Entrance Animation）
+            return TweenAnimationBuilder<double>(
+              key: ValueKey('user_thread_${filledThread.tid}_$i'),
+              tween: Tween<double>(begin: 0.0, end: 1.0),
+              duration: Duration(milliseconds: 280 + (i.clamp(0, 8) * 35)),
+              curve: Curves.easeOutCubic,
+              builder: (context, animValue, child) {
+                return Opacity(
+                  opacity: animValue,
+                  child: Transform.translate(
+                    offset: Offset(0, 16 * (1.0 - animValue)),
+                    child: child,
+                  ),
+                );
+              },
+              child: itemWidget,
             );
           },
         );
@@ -339,17 +377,22 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
       },
     );
 
-    final body = Column(
-      mainAxisSize: widget.shrinkWrap ? MainAxisSize.min : MainAxisSize.max,
-      children: [
-        typeSelector,
-        if (widget.shrinkWrap)
-          listWidget
-        else
-          Expanded(
-            child: listWidget,
-          ),
-      ],
+    final body = Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 880),
+        child: Column(
+          mainAxisSize: widget.shrinkWrap ? MainAxisSize.min : MainAxisSize.max,
+          children: [
+            typeSelector,
+            if (widget.shrinkWrap)
+              listWidget
+            else
+              Expanded(
+                child: listWidget,
+              ),
+          ],
+        ),
+      ),
     );
 
     if (!widget.showAppBar) {
@@ -390,12 +433,14 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
             Column(
               children: [
                 const SizedBox(height: 3),
-                Icon(Icons.access_time_filled, size: 14, color: colorScheme.primary),
+                Icon(Icons.access_time_filled,
+                    size: 14, color: colorScheme.primary),
                 if (t.timeText != null && t.timeText!.isNotEmpty) ...[
                   const SizedBox(height: 2),
                   Text(
                     t.timeText!,
-                    style: TextStyle(fontSize: 10.5, color: colorScheme.outline),
+                    style:
+                        TextStyle(fontSize: 10.5, color: colorScheme.outline),
                   ),
                 ],
               ],
@@ -411,7 +456,8 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
                     children: [
                       if (t.forumName != null && t.forumName!.isNotEmpty) ...[
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
                           margin: const EdgeInsets.only(right: 6),
                           decoration: BoxDecoration(
                             color: colorScheme.primaryContainer.withAlpha(120),
@@ -454,7 +500,8 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
                         width: 0.5,
                       ),
                     ),
-                    child: _buildReplyContent(t.excerpt ?? t.title, colorScheme),
+                    child:
+                        _buildReplyContent(t.excerpt ?? t.title, colorScheme),
                   ),
                 ],
               ),
@@ -466,13 +513,19 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
   }
 
   Widget _buildReplyContent(String raw, ColorScheme colorScheme) {
-    final hasAttach = raw.contains('[attach]') || raw.contains('attachimg') || raw.contains('[附件]');
+    final hasAttach = raw.contains('[attach]') ||
+        raw.contains('attachimg') ||
+        raw.contains('[附件]');
     String? quoteText;
     String mainText = raw;
-    final quoteMatch = RegExp(r'\[quote\](.*?)\[/quote\]', dotAll: true).firstMatch(raw);
+    final quoteMatch =
+        RegExp(r'\[quote\](.*?)\[/quote\]', dotAll: true).firstMatch(raw);
     if (quoteMatch != null) {
-      quoteText = quoteMatch.group(1)?.replaceAll(RegExp(r'\[.*?\]'), '').trim();
-      mainText = raw.replaceAll(RegExp(r'\[quote\].*?\[/quote\]', dotAll: true), '').trim();
+      quoteText =
+          quoteMatch.group(1)?.replaceAll(RegExp(r'\[.*?\]'), '').trim();
+      mainText = raw
+          .replaceAll(RegExp(r'\[quote\].*?\[/quote\]', dotAll: true), '')
+          .trim();
     }
     mainText = mainText
         .replaceAll(RegExp(r'\[attach\]\d+\[/attach\]'), '')
@@ -489,7 +542,8 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
             decoration: BoxDecoration(
               color: colorScheme.surfaceContainerHighest.withAlpha(50),
               borderRadius: BorderRadius.circular(6),
-              border: Border(left: BorderSide(color: colorScheme.primary, width: 3)),
+              border: Border(
+                  left: BorderSide(color: colorScheme.primary, width: 3)),
             ),
             child: Text(
               '引用: $quoteText',
@@ -515,7 +569,10 @@ class _UserThreadsPageState extends State<UserThreadsPage> {
               const SizedBox(width: 4),
               Text(
                 '包含附件/图片',
-                style: TextStyle(fontSize: 10.5, color: colorScheme.primary, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                    fontSize: 10.5,
+                    color: colorScheme.primary,
+                    fontWeight: FontWeight.bold),
               ),
             ],
           ),

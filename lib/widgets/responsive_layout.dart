@@ -1,6 +1,16 @@
 import 'package:flutter/material.dart';
+import 'app_motion.dart';
 import 'package:flutter/services.dart';
 import '../core/app_config.dart';
+import '../api/klpbbs_api.dart';
+import '../core/dio_client.dart';
+import '../pages/favorite_hub_page.dart';
+import '../pages/guide_page.dart';
+import '../pages/login_page.dart';
+import '../pages/membership_page.dart';
+import '../pages/notice_page.dart';
+import '../pages/search_page.dart';
+import '../pages/settings_page.dart';
 
 /// 响应式断点与设备排版辅助类
 class ResponsiveBreakpoints {
@@ -26,14 +36,11 @@ class ResponsiveBreakpoints {
 
   /// 计算网格列表适合的列数
   static int getGridColumnCount(BuildContext context) {
+    if (isMobile(context)) return 1;
     if (AppConfig.desktopGridColumns > 0) {
       return AppConfig.desktopGridColumns;
     }
-    if (isMobile(context)) return 1;
-    final width = MediaQuery.sizeOf(context).width;
-    if (width < 900) return 2;
-    if (width < 1400) return 3;
-    return 4;
+    return 2;
   }
 }
 
@@ -61,7 +68,9 @@ class AdaptiveScaffold extends StatefulWidget {
 
   /// 供全局任意子页面打开主壳侧边栏抽屉
   static void openMainDrawer() {
-    if (_activeState != null && _activeState!.mounted && _activeState!._isDesktop) {
+    if (_activeState != null &&
+        _activeState!.mounted &&
+        _activeState!._isDesktop) {
       _activeState!.openDesktopDrawer();
       return;
     }
@@ -69,7 +78,9 @@ class AdaptiveScaffold extends StatefulWidget {
   }
 
   static void closeMainDrawer() {
-    if (_activeState != null && _activeState!.mounted && _activeState!._isDesktop) {
+    if (_activeState != null &&
+        _activeState!.mounted &&
+        _activeState!._isDesktop) {
       _activeState!.closeDesktopDrawer();
       return;
     }
@@ -77,7 +88,9 @@ class AdaptiveScaffold extends StatefulWidget {
   }
 
   static bool get isDesktopDrawerOpen =>
-      _activeState != null && _activeState!.mounted && _activeState!._isDesktopDrawerOpen;
+      _activeState != null &&
+      _activeState!.mounted &&
+      _activeState!._isDesktopDrawerOpen;
 
   static bool get isDesktopActive =>
       _activeState != null && _activeState!.mounted && _activeState!._isDesktop;
@@ -116,6 +129,8 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
   bool _isRailExtended = false;
   bool _isDesktop = false;
   bool _isDesktopDrawerOpen = false;
+  bool _drawerClosing = false;
+  int _drawerTransition = 0;
   late AnimationController _desktopDrawerCtrl;
   late Animation<double> _desktopDrawerAnim;
 
@@ -128,11 +143,19 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
       duration: const Duration(milliseconds: 240),
       reverseDuration: const Duration(milliseconds: 180),
     );
-    _desktopDrawerAnim = CurvedAnimation(
-      parent: _desktopDrawerCtrl,
-      curve: Curves.easeOutCubic,
-      reverseCurve: Curves.easeInCubic,
-    );
+    _desktopDrawerAnim = _desktopDrawerCtrl;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _desktopDrawerCtrl.duration = AppMotion.duration(context, 300);
+    _desktopDrawerCtrl.reverseDuration = AppMotion.duration(context, 220);
+    if (!AppMotion.enabled(context)) {
+      _desktopDrawerCtrl.value =
+          _isDesktopDrawerOpen && !_drawerClosing ? 1 : 0;
+      if (_drawerClosing) _isDesktopDrawerOpen = false;
+    }
   }
 
   @override
@@ -145,26 +168,158 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
   }
 
   void openDesktopDrawer() {
-    if (!_isDesktopDrawerOpen) {
-      setState(() => _isDesktopDrawerOpen = true);
-      _desktopDrawerCtrl.forward(from: 0.0);
-    }
+    _drawerTransition++;
+    _drawerClosing = false;
+    setState(() => _isDesktopDrawerOpen = true);
+    _desktopDrawerCtrl.animateTo(1, curve: AppMotion.emphasized);
   }
 
   void closeDesktopDrawer() {
     if (_isDesktopDrawerOpen) {
-      _desktopDrawerCtrl.reverse().then((_) {
-        if (mounted) setState(() => _isDesktopDrawerOpen = false);
+      final transition = ++_drawerTransition;
+      _drawerClosing = true;
+      _desktopDrawerCtrl.animateBack(0, curve: AppMotion.exit).then((_) {
+        if (mounted &&
+            transition == _drawerTransition &&
+            _desktopDrawerCtrl.isDismissed) {
+          setState(() {
+            _isDesktopDrawerOpen = false;
+            _drawerClosing = false;
+          });
+        }
       });
     }
   }
 
   void toggleDesktopDrawer() {
-    if (_isDesktopDrawerOpen) {
+    if (_isDesktopDrawerOpen && !_drawerClosing) {
       closeDesktopDrawer();
     } else {
       openDesktopDrawer();
     }
+  }
+
+  void _pushRailPage(Widget page) {
+    if (_isDesktopDrawerOpen) closeDesktopDrawer();
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
+  }
+
+  Future<void> _openRailFavorites() async {
+    final session = DioClient.sessionKey;
+    try {
+      final uid = await KlpbbsApi.getMyUid();
+      if (!mounted || session != DioClient.sessionKey) return;
+      _pushRailPage(uid != null && uid > 0
+          ? FavoriteHubPage(uid: uid)
+          : const LoginPage());
+    } catch (_) {
+      if (mounted && session == DioClient.sessionKey) {
+        ScaffoldMessenger.maybeOf(context)
+            ?.showSnackBar(const SnackBar(content: Text('暂时无法读取账号，请重试。')));
+      }
+    }
+  }
+
+  List<NavItem> get _desktopShortcuts => [
+        NavItem(
+            icon: Icons.search_rounded,
+            selectedIcon: Icons.search_rounded,
+            label: '搜索',
+            onTap: () => _pushRailPage(const SearchPage())),
+        NavItem(
+            icon: Icons.local_fire_department_outlined,
+            selectedIcon: Icons.local_fire_department_rounded,
+            label: '导读',
+            onTap: () => _pushRailPage(const GuidePage())),
+        NavItem(
+            icon: Icons.notifications_outlined,
+            selectedIcon: Icons.notifications_rounded,
+            label: '消息',
+            onTap: () => _pushRailPage(const NoticePage())),
+        NavItem(
+            icon: Icons.star_border_rounded,
+            selectedIcon: Icons.star_rounded,
+            label: '收藏',
+            onTap: _openRailFavorites),
+        NavItem(
+            icon: Icons.workspace_premium_outlined,
+            selectedIcon: Icons.workspace_premium_rounded,
+            label: '会员',
+            onTap: () => _pushRailPage(const MembershipPage())),
+        NavItem(
+            icon: Icons.settings_outlined,
+            selectedIcon: Icons.settings_rounded,
+            label: '设置',
+            onTap: () => _pushRailPage(const SettingsPage())),
+      ];
+
+  Widget _buildRailItem(BuildContext context, NavItem item,
+      {required bool selected,
+      required bool extended,
+      required VoidCallback onTap}) {
+    final scheme = Theme.of(context).colorScheme;
+    final foreground =
+        selected ? scheme.onSecondaryContainer : scheme.onSurfaceVariant;
+    final indicator = selected ? scheme.secondaryContainer : Colors.transparent;
+    final duration = AppMotion.duration(context, 160);
+    Widget icon = Badge(
+      isLabelVisible: (item.badgeCount ?? 0) > 0,
+      label: Text('${item.badgeCount ?? 0}'),
+      child: Icon(selected ? item.selectedIcon : item.icon,
+          size: 24, color: foreground),
+    );
+    final label = Text(item.label,
+        maxLines: extended ? 1 : 2,
+        textAlign: extended ? TextAlign.start : TextAlign.center,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+            fontSize: extended ? 14 : 11.5,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+            color: foreground));
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: 2, horizontal: extended ? 8 : 4),
+      child: Tooltip(
+        message: item.label,
+        child: Semantics(
+          selected: selected,
+          button: true,
+          child: Material(
+            color: extended ? indicator : Colors.transparent,
+            animationDuration: duration,
+            borderRadius: BorderRadius.circular(28),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              key: ValueKey('desktop-nav-${item.label}'),
+              borderRadius: BorderRadius.circular(28),
+              onTap: onTap,
+              child: extended
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
+                      child: Row(children: [
+                        icon,
+                        const SizedBox(width: 14),
+                        Expanded(child: label)
+                      ]))
+                  : Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        Material(
+                            color: indicator,
+                            animationDuration: duration,
+                            borderRadius: BorderRadius.circular(18),
+                            child: SizedBox(
+                                width: 52,
+                                height: 32,
+                                child: Center(child: icon))),
+                        const SizedBox(height: 4),
+                        label,
+                      ])),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -182,16 +337,16 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
       final isNarrow = screenWidth < 768.0;
 
       // 顶栏背景色与前景色（与全局 AppBarTheme 严格保持 100% 一致，沉浸统合）
-      final headerBg = theme.appBarTheme.backgroundColor ?? colorScheme.primary;
-      final headerFg = theme.appBarTheme.foregroundColor ?? Colors.white;
+      final headerBg = theme.appBarTheme.backgroundColor ?? colorScheme.surface;
+      final headerFg =
+          theme.appBarTheme.foregroundColor ?? colorScheme.onSurface;
       final useLightIcons =
           ThemeData.estimateBrightnessForColor(headerBg) == Brightness.dark;
       final overlayStyle = SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
         statusBarIconBrightness:
             useLightIcons ? Brightness.light : Brightness.dark,
-        statusBarBrightness:
-            useLightIcons ? Brightness.dark : Brightness.light,
+        statusBarBrightness: useLightIcons ? Brightness.dark : Brightness.light,
       );
 
       // 侧边栏主体背景色：白天使用柔和清爽的 M3 表面底色（不再是刺眼生硬的纯白），夜间使用深邃底色
@@ -201,12 +356,17 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
               ? Colors.black
               : colorScheme.surfaceContainerLow);
 
-      // 侧边栏宽度：在手机等窄屏下严格保持 68px 紧凑态，杜绝展开后挤爆右侧内容
+      // 窄窗口保持紧凑导航；扩展模式为文字和操作留足空间。
       final effectiveExtended = !isNarrow && _isRailExtended;
-      final railWidth = effectiveExtended ? 200.0 : 68.0;
+      final railWidth = effectiveExtended ? 216.0 : 76.0;
+      final railItems = [
+        ...widget.navItems,
+        ..._desktopShortcuts.where((shortcut) =>
+            !widget.navItems.any((item) => item.label == shortcut.label))
+      ];
 
       // 抽屉最大宽度自适应，保证遮罩层至少留有 32px 供点击退出
-      final drawerWidth = (screenWidth - railWidth - 32.0).clamp(240.0, 320.0);
+      final drawerWidth = (screenWidth - railWidth - 32.0).clamp(0.0, 320.0);
 
       // 桌面 PC 宽屏排版：外层统合顶栏状态栏 + 左侧精致 NavigationRail + 右侧主体
       return AnnotatedRegion<SystemUiOverlayStyle>(
@@ -229,332 +389,233 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
                     // 左侧侧边栏
                     Material(
                       color: sidebarBodyBg,
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 240),
-                        curve: Curves.easeOutCubic,
-                        width: railWidth,
-                        decoration: BoxDecoration(
-                          border: Border(
-                            right: BorderSide(
-                              color: colorScheme.outlineVariant
-                                  .withAlpha(isLight ? 45 : 35),
-                              width: 1,
+                      child: ClipRect(
+                        clipBehavior: Clip.hardEdge,
+                        child: AnimatedContainer(
+                          key: const ValueKey('desktop-navigation-rail'),
+                          duration: AppMotion.duration(context, 240),
+                          curve: AppMotion.emphasized,
+                          width: railWidth,
+                          decoration: BoxDecoration(
+                            border: Border(
+                              right: BorderSide(
+                                color: colorScheme.outlineVariant
+                                    .withAlpha(isLight ? 45 : 35),
+                                width: 1,
+                              ),
                             ),
                           ),
-                        ),
-                        child: Column(
-                          children: [
-                            // 顶部 Logo / 标题区（高度精准对应 AppBar 的 kToolbarHeight 56px）
-                            Container(
-                              height: kToolbarHeight,
-                              width: double.infinity,
-                              color: headerBg,
-                              padding: EdgeInsets.symmetric(
-                                horizontal: effectiveExtended ? 14 : 0,
-                              ),
-                              child: effectiveExtended
-                                  ? Row(
-                                      children: [
-                                        Container(
-                                          width: 36,
-                                          height: 36,
-                                          decoration: BoxDecoration(
-                                            color: Colors.white.withAlpha(36),
-                                            borderRadius:
-                                                BorderRadius.circular(10),
-                                            border: Border.all(
-                                              color: Colors.white.withAlpha(60),
-                                              width: 1,
-                                            ),
-                                          ),
-                                          child: const Icon(
-                                            Icons.view_in_ar_rounded,
-                                            color: Colors.white,
-                                            size: 21,
-                                          ),
-                                        ),
-                                        const SizedBox(width: 12),
-                                        Expanded(
-                                          child: Column(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.center,
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              Text(
-                                                '苦力怕论坛',
-                                                style: TextStyle(
-                                                  color: headerFg,
-                                                  fontWeight: FontWeight.bold,
-                                                  fontSize: 15,
-                                                  letterSpacing: 0.5,
-                                                ),
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                              Text(
-                                                'KLPBBS Desktop',
-                                                style: TextStyle(
-                                                  color:
-                                                      headerFg.withAlpha(180),
-                                                  fontSize: 10.5,
-                                                ),
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ],
-                                    )
-                                  : Center(
-                                      child: Tooltip(
-                                        message: '苦力怕论坛',
-                                        child: Container(
-                                          width: 36,
-                                          height: 36,
-                                          decoration: BoxDecoration(
-                                            color: Colors.white.withAlpha(36),
-                                            borderRadius:
-                                                BorderRadius.circular(10),
-                                            border: Border.all(
-                                              color: Colors.white.withAlpha(60),
-                                              width: 1,
-                                            ),
-                                          ),
-                                          child: const Icon(
-                                            Icons.view_in_ar_rounded,
-                                            color: Colors.white,
-                                            size: 21,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                            ),
-                            if (widget.desktopHeader != null)
-                              widget.desktopHeader!,
-                            Divider(
-                              height: 1,
-                              thickness: 1,
-                              color: colorScheme.outlineVariant
-                                  .withAlpha(isLight ? 40 : 25),
-                            ),
-                            // 导航项列表
-                            Expanded(
-                              child: ListView.builder(
-                                padding: const EdgeInsets.symmetric(
-                                    vertical: 8, horizontal: 4),
-                                itemCount: widget.navItems.length,
-                                itemBuilder: (context, index) {
-                                  final item = widget.navItems[index];
-                                  final isSelected =
-                                      widget.currentIndex == index;
-                                  final activeBg = isLight
-                                      ? colorScheme.primary.withAlpha(28)
-                                      : colorScheme.primaryContainer
-                                          .withAlpha(100);
-                                  final activeFg = isLight
-                                      ? colorScheme.primary
-                                      : colorScheme.primary;
-
-                                  void handleTap() {
-                                    if (item.onTap != null) {
-                                      item.onTap!();
-                                    } else {
-                                      widget.onNavigationChanged(index);
-                                    }
-                                  }
-
-                                  if (!effectiveExtended) {
-                                    // 紧凑模式 (68px)：胶囊药丸指示器 + 精致小标
-                                    return Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                          vertical: 3, horizontal: 4),
-                                      child: Tooltip(
-                                        message: item.label,
-                                        preferBelow: false,
-                                        child: InkWell(
-                                          onTap: handleTap,
-                                          borderRadius:
-                                              BorderRadius.circular(14),
-                                          child: Padding(
-                                            padding: const EdgeInsets.symmetric(
-                                                vertical: 4),
-                                            child: Column(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                AnimatedContainer(
-                                                  duration: const Duration(
-                                                      milliseconds: 180),
-                                                  curve: Curves.easeOutCubic,
-                                                  width: 48,
-                                                  height: 28,
-                                                  decoration: BoxDecoration(
-                                                    color: isSelected
-                                                        ? activeBg
-                                                        : Colors.transparent,
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                            14),
-                                                  ),
-                                                  alignment: Alignment.center,
-                                                  child: Badge(
-                                                    isLabelVisible:
-                                                        (item.badgeCount ?? 0) >
-                                                            0,
-                                                    label: Text(
-                                                        '${item.badgeCount}'),
-                                                    child: Icon(
-                                                      isSelected
-                                                          ? item.selectedIcon
-                                                          : item.icon,
-                                                      size: 20,
-                                                      color: isSelected
-                                                          ? activeFg
-                                                          : colorScheme
-                                                              .onSurfaceVariant,
-                                                    ),
-                                                  ),
-                                                ),
-                                                const SizedBox(height: 3),
-                                                Text(
-                                                  item.label,
-                                                  style: TextStyle(
-                                                    fontSize: 10.5,
-                                                    fontWeight: isSelected
-                                                        ? FontWeight.bold
-                                                        : FontWeight.w500,
-                                                    color: isSelected
-                                                        ? activeFg
-                                                        : colorScheme
-                                                            .onSurfaceVariant
-                                                            .withAlpha(200),
-                                                    letterSpacing: 0.2,
-                                                  ),
-                                                  maxLines: 1,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    );
-                                  }
-
-                                  // 展开模式 (200px)：横向胶囊
-                                  return Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                        vertical: 3, horizontal: 8),
-                                    child: InkWell(
-                                      onTap: handleTap,
-                                      borderRadius: BorderRadius.circular(14),
-                                      child: AnimatedContainer(
-                                        duration:
-                                            const Duration(milliseconds: 180),
-                                        curve: Curves.easeOutCubic,
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 14,
-                                          vertical: 10,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: isSelected
-                                              ? activeBg
-                                              : Colors.transparent,
-                                          borderRadius:
-                                              BorderRadius.circular(14),
-                                        ),
-                                        child: Row(
+                          child: OverflowBox(
+                            alignment: Alignment.topLeft,
+                            minWidth: railWidth,
+                            maxWidth: railWidth,
+                            child: Column(
+                              children: [
+                                // 顶部标题区正常保持工具栏高度，大字号允许自然增高。
+                                Container(
+                                  constraints: const BoxConstraints(
+                                      minHeight: kToolbarHeight),
+                                  width: double.infinity,
+                                  color: headerBg,
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: effectiveExtended ? 14 : 0,
+                                    vertical: 8,
+                                  ),
+                                  child: effectiveExtended
+                                      ? Row(
                                           children: [
-                                            Badge(
-                                              isLabelVisible:
-                                                  (item.badgeCount ?? 0) > 0,
-                                              label:
-                                                  Text('${item.badgeCount}'),
+                                            Container(
+                                              width: 36,
+                                              height: 36,
+                                              decoration: BoxDecoration(
+                                                color: colorScheme
+                                                    .primaryContainer,
+                                                borderRadius:
+                                                    BorderRadius.circular(10),
+                                                border: Border.all(
+                                                  color: colorScheme
+                                                      .outlineVariant,
+                                                  width: 1,
+                                                ),
+                                              ),
                                               child: Icon(
-                                                isSelected
-                                                    ? item.selectedIcon
-                                                    : item.icon,
-                                                size: 22,
-                                                color: isSelected
-                                                    ? activeFg
-                                                    : colorScheme
-                                                        .onSurfaceVariant,
+                                                Icons.view_in_ar_rounded,
+                                                color: colorScheme
+                                                    .onPrimaryContainer,
+                                                size: 21,
                                               ),
                                             ),
-                                            const SizedBox(width: 14),
+                                            const SizedBox(width: 12),
                                             Expanded(
-                                              child: Text(
-                                                item.label,
-                                                style: TextStyle(
-                                                  fontSize: 13.5,
-                                                  fontWeight: isSelected
-                                                      ? FontWeight.bold
-                                                      : FontWeight.w500,
-                                                  color: isSelected
-                                                      ? activeFg
-                                                      : colorScheme.onSurface,
-                                                ),
-                                                maxLines: 1,
-                                                overflow:
-                                                    TextOverflow.ellipsis,
+                                              child: Column(
+                                                mainAxisSize: MainAxisSize.min,
+                                                mainAxisAlignment:
+                                                    MainAxisAlignment.center,
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    '苦力怕论坛',
+                                                    style: TextStyle(
+                                                      color: headerFg,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      fontSize: 15,
+                                                      letterSpacing: 0.5,
+                                                    ),
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                  Text(
+                                                    'KLPBBS Desktop',
+                                                    style: TextStyle(
+                                                      color: headerFg
+                                                          .withAlpha(180),
+                                                      fontSize: 10.5,
+                                                    ),
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                ],
                                               ),
                                             ),
                                           ],
+                                        )
+                                      : Center(
+                                          child: Tooltip(
+                                            message: '苦力怕论坛',
+                                            child: Container(
+                                              width: 36,
+                                              height: 36,
+                                              decoration: BoxDecoration(
+                                                color: colorScheme
+                                                    .primaryContainer,
+                                                borderRadius:
+                                                    BorderRadius.circular(10),
+                                                border: Border.all(
+                                                  color: colorScheme
+                                                      .outlineVariant,
+                                                  width: 1,
+                                                ),
+                                              ),
+                                              child: Icon(
+                                                Icons.view_in_ar_rounded,
+                                                color: colorScheme
+                                                    .onPrimaryContainer,
+                                                size: 21,
+                                              ),
+                                            ),
+                                          ),
                                         ),
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                            ),
-                            // 底部折叠切换与操作
-                            if (widget.desktopFooter != null)
-                              widget.desktopFooter!,
-                            Divider(
-                              height: 1,
-                              indent: 8,
-                              endIndent: 8,
-                              color: colorScheme.outlineVariant
-                                  .withAlpha(isLight ? 40 : 25),
-                            ),
-                            Padding(
-                              padding: const EdgeInsets.all(8.0),
-                              child: isNarrow
-                                  ? IconButton(
-                                      tooltip: '更多功能菜单',
-                                      icon: Icon(
-                                        Icons.menu_rounded,
-                                        size: 20,
-                                        color: colorScheme.onSurfaceVariant,
-                                      ),
-                                      onPressed: openDesktopDrawer,
-                                    )
-                                  : IconButton(
-                                      tooltip: _isRailExtended
-                                          ? '收起侧栏'
-                                          : '展开侧栏',
-                                      icon: AnimatedRotation(
-                                        turns: _isRailExtended ? 0.5 : 0.0,
-                                        duration:
-                                            const Duration(milliseconds: 200),
-                                        child: Icon(
-                                          _isRailExtended
-                                              ? Icons.arrow_back_ios_new_rounded
-                                              : Icons.arrow_forward_ios_rounded,
-                                          size: 17,
-                                          color:
-                                              colorScheme.onSurfaceVariant,
-                                        ),
-                                      ),
-                                      onPressed: () {
-                                        setState(() => _isRailExtended =
-                                            !_isRailExtended);
+                                ),
+                                if (widget.desktopHeader != null)
+                                  widget.desktopHeader!,
+                                Divider(
+                                  height: 1,
+                                  thickness: 1,
+                                  color: colorScheme.outlineVariant
+                                      .withAlpha(isLight ? 40 : 25),
+                                ),
+                                // 导航项列表
+                                Expanded(
+                                  child: ScrollConfiguration(
+                                    behavior: ScrollConfiguration.of(context)
+                                        .copyWith(scrollbars: false),
+                                    child: ListView.builder(
+                                      primary: false,
+                                      physics: const ClampingScrollPhysics(),
+                                      padding: const EdgeInsets.symmetric(
+                                          vertical: 8, horizontal: 4),
+                                      itemCount: railItems.length,
+                                      itemBuilder: (context, index) {
+                                        final item = railItems[index];
+                                        final button = _buildRailItem(
+                                            context, item,
+                                            selected: index <
+                                                    widget.navItems.length &&
+                                                widget.currentIndex == index,
+                                            extended: effectiveExtended,
+                                            onTap: item.onTap ??
+                                                () =>
+                                                    widget.onNavigationChanged(
+                                                        index));
+                                        return index == widget.navItems.length
+                                            ? Column(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                    Divider(
+                                                        height: 16,
+                                                        indent: 12,
+                                                        endIndent: 12,
+                                                        color: colorScheme
+                                                            .outlineVariant),
+                                                    button
+                                                  ])
+                                            : button;
                                       },
                                     ),
+                                  ),
+                                ),
+                                // 底部折叠切换与操作
+                                if (widget.desktopFooter != null)
+                                  widget.desktopFooter!,
+                                Divider(
+                                  height: 1,
+                                  indent: 8,
+                                  endIndent: 8,
+                                  color: colorScheme.outlineVariant
+                                      .withAlpha(isLight ? 40 : 25),
+                                ),
+                                if (!isNarrow)
+                                  IconButton(
+                                    tooltip: '更多功能与设置',
+                                    icon: Icon(Icons.apps_rounded,
+                                        color: colorScheme.onSurfaceVariant),
+                                    onPressed: openDesktopDrawer,
+                                  ),
+                                Padding(
+                                  padding: const EdgeInsets.all(8.0),
+                                  child: isNarrow
+                                      ? IconButton(
+                                          tooltip: '更多功能菜单',
+                                          icon: Icon(
+                                            Icons.menu_rounded,
+                                            size: 20,
+                                            color: colorScheme.onSurfaceVariant,
+                                          ),
+                                          onPressed: openDesktopDrawer,
+                                        )
+                                      : IconButton(
+                                          key: const ValueKey(
+                                              'desktop-rail-toggle'),
+                                          tooltip:
+                                              _isRailExtended ? '收起侧栏' : '展开侧栏',
+                                          icon: AnimatedRotation(
+                                            turns: _isRailExtended ? 0.5 : 0.0,
+                                            duration: AppMotion.duration(
+                                                context, 200),
+                                            child: Icon(
+                                              _isRailExtended
+                                                  ? Icons
+                                                      .arrow_back_ios_new_rounded
+                                                  : Icons
+                                                      .arrow_forward_ios_rounded,
+                                              size: 17,
+                                              color:
+                                                  colorScheme.onSurfaceVariant,
+                                            ),
+                                          ),
+                                          onPressed: () {
+                                            setState(() => _isRailExtended =
+                                                !_isRailExtended);
+                                          },
+                                        ),
+                                ),
+                              ],
                             ),
-                          ],
+                          ),
                         ),
                       ),
                     ),
@@ -592,27 +653,62 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
                                               ),
                                             ),
                                           ),
-                                          // 2. 抽屉面板：平滑淡入 + 35px 优雅微滑出
+                                          // 面板从边缘完整滑入，拖动时直接跟随指针。
                                           Positioned(
                                             top: 0,
                                             bottom: 0,
                                             left: 0,
                                             child: Transform.translate(
                                               offset: Offset(
-                                                  -35.0 * (1.0 - t), 0),
+                                                  -drawerWidth * (1.0 - t), 0),
                                               child: Opacity(
-                                                opacity: t.clamp(0.0, 1.0),
+                                                opacity: 1,
                                                 child: Material(
-                                                  elevation: 16,
+                                                  elevation: 2,
                                                   shadowColor: Colors.black38,
                                                   borderRadius:
-                                                      const BorderRadius.horizontal(
-                                                    right: Radius.circular(16),
+                                                      const BorderRadius
+                                                          .horizontal(
+                                                    right: Radius.circular(28),
                                                   ),
                                                   clipBehavior: Clip.antiAlias,
                                                   child: SizedBox(
                                                     width: drawerWidth,
-                                                    child: widget.drawer,
+                                                    child: GestureDetector(
+                                                      onHorizontalDragStart:
+                                                          (_) {
+                                                        _drawerTransition++;
+                                                        _drawerClosing = false;
+                                                        _desktopDrawerCtrl
+                                                            .stop();
+                                                      },
+                                                      onHorizontalDragUpdate:
+                                                          (details) {
+                                                        _desktopDrawerCtrl
+                                                                .value =
+                                                            (_desktopDrawerCtrl
+                                                                        .value +
+                                                                    details.delta
+                                                                            .dx /
+                                                                        drawerWidth)
+                                                                .clamp(
+                                                                    0.0, 1.0);
+                                                      },
+                                                      onHorizontalDragEnd:
+                                                          (details) {
+                                                        if ((details.primaryVelocity ??
+                                                                    0) <
+                                                                -300 ||
+                                                            _desktopDrawerCtrl
+                                                                    .value <
+                                                                .5) {
+                                                          closeDesktopDrawer();
+                                                        } else {
+                                                          openDesktopDrawer();
+                                                        }
+                                                      },
+                                                      child: widget.drawer,
+                                                    ),
                                                   ),
                                                 ),
                                               ),
@@ -639,8 +735,10 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
 
     // 移动端排版：常驻底栏 或 常驻紧凑侧轨（确保导航菜单始终常驻）
     final useSideRail = AppConfig.navLayout == NavLayout.side;
-    final bottomNavItems = widget.navItems.where((item) => item.onTap == null).toList();
-    final effectiveBottomNav = bottomNavItems.isNotEmpty ? bottomNavItems : widget.navItems;
+    final bottomNavItems =
+        widget.navItems.where((item) => item.onTap == null).toList();
+    final effectiveBottomNav =
+        bottomNavItems.isNotEmpty ? bottomNavItems : widget.navItems;
 
     final mobileBody = useSideRail
         ? Row(
@@ -667,7 +765,8 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
                 final curItem = widget.currentIndex < widget.navItems.length
                     ? widget.navItems[widget.currentIndex]
                     : null;
-                final effIdx = curItem != null ? effectiveBottomNav.indexOf(curItem) : -1;
+                final effIdx =
+                    curItem != null ? effectiveBottomNav.indexOf(curItem) : -1;
                 return (effIdx >= 0 ? effIdx : widget.currentIndex)
                     .clamp(0, effectiveBottomNav.length - 1);
               })(),
@@ -702,11 +801,16 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
 
   Widget _buildMobileSideRail(ThemeData theme, ColorScheme colorScheme) {
     final isLight = theme.brightness == Brightness.light;
-    final activeBg = isLight ? colorScheme.primaryContainer : colorScheme.primary.withAlpha(50);
-    final activeFg = isLight ? colorScheme.onPrimaryContainer : colorScheme.primary;
+    final activeBg = isLight
+        ? colorScheme.primaryContainer
+        : colorScheme.primary.withAlpha(50);
+    final activeFg =
+        isLight ? colorScheme.onPrimaryContainer : colorScheme.primary;
     final sidebarBg = isLight
         ? colorScheme.surfaceContainerLowest
-        : (AppConfig.isOledDark ? Colors.black : colorScheme.surfaceContainerLow);
+        : (AppConfig.isOledDark
+            ? Colors.black
+            : colorScheme.surfaceContainerLow);
 
     return Material(
       color: sidebarBg,
@@ -734,7 +838,8 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
                     final item = widget.navItems[i];
                     final isSelected = i == widget.currentIndex;
                     return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 6),
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 4, horizontal: 6),
                       child: InkWell(
                         onTap: () {
                           HapticFeedback.selectionClick();
@@ -751,12 +856,14 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               AnimatedContainer(
-                                duration: const Duration(milliseconds: 180),
-                                curve: Curves.easeOutCubic,
+                                duration: AppMotion.duration(context, 180),
+                                curve: AppMotion.emphasized,
                                 width: 46,
                                 height: 28,
                                 decoration: BoxDecoration(
-                                  color: isSelected ? activeBg : Colors.transparent,
+                                  color: isSelected
+                                      ? activeBg
+                                      : Colors.transparent,
                                   borderRadius: BorderRadius.circular(14),
                                 ),
                                 alignment: Alignment.center,
@@ -766,7 +873,9 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
                                   child: Icon(
                                     isSelected ? item.selectedIcon : item.icon,
                                     size: 20,
-                                    color: isSelected ? activeFg : colorScheme.onSurfaceVariant,
+                                    color: isSelected
+                                        ? activeFg
+                                        : colorScheme.onSurfaceVariant,
                                   ),
                                 ),
                               ),
@@ -775,10 +884,13 @@ class _AdaptiveScaffoldState extends State<AdaptiveScaffold>
                                 item.label,
                                 style: TextStyle(
                                   fontSize: 10,
-                                  fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                                  fontWeight: isSelected
+                                      ? FontWeight.bold
+                                      : FontWeight.w500,
                                   color: isSelected
                                       ? activeFg
-                                      : colorScheme.onSurfaceVariant.withAlpha(200),
+                                      : colorScheme.onSurfaceVariant
+                                          .withAlpha(200),
                                 ),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,

@@ -24,6 +24,9 @@ class ReplyFloorComment {
   /// 回复时间文本（如 2026-6-24 13:17）
   final String timeText;
 
+  /// 服务端记录的发帖端 / 设备文字（KLPBBS replyfloor_content_from）。
+  final String sourceLabel;
+
   /// IP 归属地（如 IP：Coast / IP:辽宁省）
   final String location;
 
@@ -53,6 +56,7 @@ class ReplyFloorComment {
     this.faceUrl = '',
     this.contentHtml = '',
     this.timeText = '',
+    this.sourceLabel = '',
     this.location = '',
     this.isWarned = false,
     this.warningText = '',
@@ -150,6 +154,9 @@ class PostFloor {
 
   /// IP 归属地（klpbbs 楼层显示"IP:xx省"）
   final String ipText;
+
+  /// 服务端记录的发帖端 / 设备文字（KLPBBS klp_appfrom）。
+  final String sourceLabel;
 
   /// 作者等级（klpbbs 楼层"Lv.x 会员等级" / "管理员" / "版主"）
   final String levelText;
@@ -254,6 +261,7 @@ class PostFloor {
     this.floorNumber = '',
     this.faceUrl = '',
     this.ipText = '',
+    this.sourceLabel = '',
     this.levelText = '',
     this.levelGid,
     this.levelColor = '',
@@ -284,6 +292,26 @@ class PostFloor {
     this.canEdit = false,
   });
 
+  /// 获取正文纯文本（去除 HTML 标签、审核管理记录与常见转义符）
+  String get message {
+    return contentHtml
+        .replaceAll(RegExp(r'<[^>]*>'), ' ')
+        .replaceAll(RegExp(r'&nbsp;', caseSensitive: false), ' ')
+        .replaceAll(RegExp(r'&lt;', caseSensitive: false), '<')
+        .replaceAll(RegExp(r'&gt;', caseSensitive: false), '>')
+        .replaceAll(RegExp(r'&amp;', caseSensitive: false), '&')
+        .replaceAll(
+          RegExp(
+            r'(?:(?:本(?:主题|帖)?)?\s*由\s*[\S]+?(?:\s+于\s+[\d\-: \s]+?)?|本(?:主题|帖)\s*(?:于\s+[\d\-: \s]+?)?)\s*(?:审核通过|通过审核|审核|移动|置顶|高亮|关闭|加精|提升|分类|设置|解除|下沉)[:：\s]*',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .replaceAll(RegExp(r'本(?:主题|帖)最后由\s*.*?\s*编辑', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
   PostFloor copyWith({
     int? pid,
     int? uid,
@@ -299,6 +327,7 @@ class PostFloor {
     String? floorNumber,
     String? faceUrl,
     String? ipText,
+    String? sourceLabel,
     String? levelText,
     int? levelGid,
     String? levelColor,
@@ -343,6 +372,7 @@ class PostFloor {
       floorNumber: floorNumber ?? this.floorNumber,
       faceUrl: faceUrl ?? this.faceUrl,
       ipText: ipText ?? this.ipText,
+      sourceLabel: sourceLabel ?? this.sourceLabel,
       levelText: levelText ?? this.levelText,
       levelGid: levelGid ?? this.levelGid,
       levelColor: levelColor ?? this.levelColor,

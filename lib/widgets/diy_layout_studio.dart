@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../core/app_config.dart';
+import '../core/diy_layout_draft.dart';
+import 'app_motion.dart';
 import 'visual_grid_canvas.dart';
 
 /// DIY 模块元数据注册定义
@@ -20,23 +22,31 @@ class DiyModuleMeta {
 
 /// DIY 布局工坊（支持实时所见即所得调控）
 class DiyLayoutStudio extends StatefulWidget {
-  final int initialTab; // 0: 首页, 1: 帖子详情页, 2: 预设
+  final int initialTab; // 0: 首页, 1: 版块, 2: 帖子详情, 3: 尺寸与预设
+  final bool embeddedInCanvas;
 
-  const DiyLayoutStudio({super.key, this.initialTab = 0});
+  const DiyLayoutStudio(
+      {super.key, this.initialTab = 0, this.embeddedInCanvas = false});
 
   /// 静态呼出方法
-  static Future<void> show(BuildContext context, {int initialTab = 0}) {
-    return showDialog(
+  static Future<DiyLayoutDraft?> show(BuildContext context,
+      {int initialTab = 0, bool embeddedInCanvas = false}) {
+    return showDialog<DiyLayoutDraft>(
       context: context,
+      barrierDismissible: false,
       barrierColor: Colors.black45,
-      builder: (_) => DiyLayoutStudio(initialTab: initialTab),
+      builder: (_) => DiyLayoutStudio(
+          initialTab: initialTab, embeddedInCanvas: embeddedInCanvas),
     );
   }
 
   /// 公共模块元数据字典查询
-  static Map<String, DiyModuleMeta> get homeModuleRegistry => _DiyLayoutStudioState.homeModuleRegistry;
-  static Map<String, DiyModuleMeta> get forumModuleRegistry => _DiyLayoutStudioState.forumModuleRegistry;
-  static Map<String, DiyModuleMeta> get threadModuleRegistry => _DiyLayoutStudioState.threadModuleRegistry;
+  static Map<String, DiyModuleMeta> get homeModuleRegistry =>
+      _DiyLayoutStudioState.homeModuleRegistry;
+  static Map<String, DiyModuleMeta> get forumModuleRegistry =>
+      _DiyLayoutStudioState.forumModuleRegistry;
+  static Map<String, DiyModuleMeta> get threadModuleRegistry =>
+      _DiyLayoutStudioState.threadModuleRegistry;
 
   @override
   State<DiyLayoutStudio> createState() => _DiyLayoutStudioState();
@@ -45,6 +55,69 @@ class DiyLayoutStudio extends StatefulWidget {
 class _DiyLayoutStudioState extends State<DiyLayoutStudio>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  late final DiyLayoutDraft _draft;
+  bool _applying = false;
+
+  Map<String, Object> _snapshot() => {
+        'homeModules': AppConfig.homeModules,
+        'forumModules': AppConfig.forumModules,
+        'threadRightModules': AppConfig.threadRightModules,
+        'threadLeftModules': AppConfig.threadLeftModules,
+        'threadLeftEnabled': AppConfig.threadLeftEnabled,
+        'threadRightEnabled': AppConfig.threadRightEnabled,
+        'threadForumSidebarWidth': AppConfig.threadForumSidebarWidth,
+        'threadRightWidth': AppConfig.threadRightWidth,
+        'threadContentMaxWidth': AppConfig.threadContentMaxWidth,
+        'threadReaderFontSize': AppConfig.threadReaderFontSize,
+        'threadReaderLineHeight': AppConfig.threadReaderLineHeight,
+      };
+
+  Future<void> _apply() async {
+    if (_applying) return;
+    if (_draft.conflicts(_snapshot()).isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('这些布局设置已在其他页面更新，请关闭后重新打开。')));
+      return;
+    }
+    final changes = _draft.changes;
+    setState(() => _applying = true);
+    try {
+      for (final entry in changes.entries) {
+        switch (entry.key) {
+          case 'homeModules':
+            await AppConfig.setHomeModules(entry.value as List<String>);
+          case 'forumModules':
+            await AppConfig.setForumModules(entry.value as List<String>);
+          case 'threadRightModules':
+            await AppConfig.setThreadRightModules(entry.value as List<String>);
+          case 'threadLeftModules':
+            await AppConfig.setThreadLeftModules(entry.value as List<String>);
+          case 'threadLeftEnabled':
+            await AppConfig.setThreadLeftEnabled(entry.value as bool);
+          case 'threadRightEnabled':
+            await AppConfig.setThreadRightEnabled(entry.value as bool);
+          case 'threadForumSidebarWidth':
+            await AppConfig.setThreadForumSidebarWidth(
+                (entry.value as num).toDouble());
+          case 'threadRightWidth':
+            await AppConfig.setThreadRightWidth(
+                (entry.value as num).toDouble());
+          case 'threadContentMaxWidth':
+            await AppConfig.setThreadContentMaxWidth(
+                (entry.value as num).toDouble());
+          case 'threadReaderFontSize':
+            await AppConfig.setThreadReaderFontSize(
+                (entry.value as num).toDouble());
+          case 'threadReaderLineHeight':
+            await AppConfig.setThreadReaderLineHeight(
+                (entry.value as num).toDouble());
+        }
+      }
+      if (mounted) Navigator.pop(context, _draft);
+    } finally {
+      if (mounted) setState(() => _applying = false);
+    }
+  }
 
   // 首页可选模块字典
   static const Map<String, DiyModuleMeta> homeModuleRegistry = {
@@ -199,6 +272,19 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
   @override
   void initState() {
     super.initState();
+    _draft = DiyLayoutDraft(_snapshot(), defaults: {
+      'homeModules': AppConfig.defaultHomeModules,
+      'forumModules': AppConfig.defaultForumModules,
+      'threadRightModules': AppConfig.defaultThreadRightModules,
+      'threadLeftModules': AppConfig.defaultThreadLeftModules,
+      'threadLeftEnabled': true,
+      'threadRightEnabled': true,
+      'threadForumSidebarWidth': 380.0,
+      'threadRightWidth': 320.0,
+      'threadContentMaxWidth': 960.0,
+      'threadReaderFontSize': 15.0,
+      'threadReaderLineHeight': 1.6,
+    });
     _tabController = TabController(
       length: 4,
       vsync: this,
@@ -219,152 +305,189 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
     final size = MediaQuery.sizeOf(context);
     final isCompact = size.width < 700;
 
-    return Center(
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth: isCompact ? size.width * 0.96 : 680,
-          maxHeight: isCompact ? size.height * 0.88 : 640,
-        ),
-        child: Material(
-          color: colorScheme.surface,
-          elevation: 8,
-          borderRadius: BorderRadius.circular(20),
-          clipBehavior: Clip.antiAlias,
-          child: Column(
-            children: [
-              // 头部操作条
-              Container(
-                padding: const EdgeInsets.fromLTRB(20, 14, 12, 10),
-                decoration: BoxDecoration(
-                  color: colorScheme.surfaceContainerHigh.withAlpha(80),
-                  border: Border(
-                    bottom: BorderSide(
-                      color: colorScheme.outlineVariant.withAlpha(40),
-                      width: 0.8,
-                    ),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: BoxDecoration(
-                        color: colorScheme.primaryContainer,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Icon(
-                        Icons.space_dashboard_rounded,
-                        size: 20,
-                        color: colorScheme.onPrimaryContainer,
+    return PopScope(
+        canPop: !_applying,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: isCompact ? size.width * 0.96 : 680,
+              maxHeight: isCompact ? size.height * 0.88 : 640,
+            ),
+            child: Material(
+              color: colorScheme.surface,
+              elevation: 8,
+              borderRadius: BorderRadius.circular(20),
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                children: [
+                  // 头部操作条
+                  Container(
+                    padding: const EdgeInsets.fromLTRB(20, 14, 12, 10),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHigh.withAlpha(80),
+                      border: Border(
+                        bottom: BorderSide(
+                          color: colorScheme.outlineVariant.withAlpha(40),
+                          width: 0.8,
+                        ),
                       ),
                     ),
-                    const SizedBox(width: 10),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    child: Row(
                       children: [
-                        Text(
-                          'DIY 布局工坊',
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
+                        Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: colorScheme.primaryContainer,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Icon(
+                            Icons.space_dashboard_rounded,
+                            size: 20,
+                            color: colorScheme.onPrimaryContainer,
                           ),
                         ),
-                        Text(
-                          '实时所见即所得 · 模块化自定义排版',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: colorScheme.onSurfaceVariant.withAlpha(190),
+                        const SizedBox(width: 10),
+                        Expanded(
+                            child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'DIY 布局工坊',
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Text(
+                              '页面模块、阅读尺寸与布局预设',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color:
+                                    colorScheme.onSurfaceVariant.withAlpha(190),
+                              ),
+                            ),
+                          ],
+                        )),
+                        if (!isCompact)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF10B981).withAlpha(30),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: const Color(0xFF059669).withAlpha(80),
+                                width: 0.6,
+                              ),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.bolt_rounded,
+                                    size: 13, color: Color(0xFF059669)),
+                                SizedBox(width: 3),
+                                Text(
+                                  '应用后保存',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF059669),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
+                        const SizedBox(width: 6),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded, size: 20),
+                          tooltip: '取消修改',
+                          onPressed: _applying
+                              ? null
+                              : () => Navigator.of(context).pop(),
                         ),
                       ],
                     ),
-                    const Spacer(),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF10B981).withAlpha(30),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                          color: const Color(0xFF059669).withAlpha(80),
-                          width: 0.6,
-                        ),
-                      ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.bolt_rounded, size: 13, color: Color(0xFF059669)),
-                          SizedBox(width: 3),
-                          Text(
-                            '实时生效',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF059669),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    IconButton(
-                      icon: const Icon(Icons.close_rounded, size: 20),
-                      tooltip: '完成并关闭',
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
-                  ],
-                ),
-              ),
+                  ),
 
-              // Tab 切换栏
-              TabBar(
-                controller: _tabController,
-                labelColor: colorScheme.primary,
-                unselectedLabelColor: colorScheme.onSurfaceVariant,
-                indicatorColor: colorScheme.primary,
-                indicatorWeight: 2.5,
-                tabs: const [
-                  Tab(
-                    icon: Icon(Icons.home_outlined, size: 18),
-                    text: '首页模块 DIY',
+                  // Tab 切换栏
+                  TabBar(
+                    controller: _tabController,
+                    isScrollable: isCompact,
+                    tabAlignment:
+                        isCompact ? TabAlignment.start : TabAlignment.fill,
+                    labelColor: colorScheme.primary,
+                    unselectedLabelColor: colorScheme.onSurfaceVariant,
+                    indicatorColor: colorScheme.primary,
+                    indicatorWeight: 2.5,
+                    tabs: const [
+                      Tab(
+                        icon: Icon(Icons.home_outlined, size: 18),
+                        text: '首页模块 DIY',
+                      ),
+                      Tab(
+                        icon: Icon(Icons.forum_outlined, size: 18),
+                        text: '版块模块 DIY',
+                      ),
+                      Tab(
+                        icon: Icon(Icons.article_outlined, size: 18),
+                        text: '帖子详情工作台',
+                      ),
+                      Tab(
+                        icon: Icon(Icons.tune_rounded, size: 18),
+                        text: '尺寸与预设',
+                      ),
+                    ],
                   ),
-                  Tab(
-                    icon: Icon(Icons.forum_outlined, size: 18),
-                    text: '版块模块 DIY',
+
+                  // Tab 页面
+                  Expanded(
+                    child: IgnorePointer(
+                        ignoring: _applying,
+                        child: TabBarView(
+                          controller: _tabController,
+                          children: [
+                            _buildHomeTab(context),
+                            _buildForumTab(context),
+                            _buildThreadTab(context),
+                            _buildTuningTab(context),
+                          ],
+                        )),
                   ),
-                  Tab(
-                    icon: Icon(Icons.article_outlined, size: 18),
-                    text: '帖子详情工作台',
-                  ),
-                  Tab(
-                    icon: Icon(Icons.tune_rounded, size: 18),
-                    text: '尺寸与预设',
-                  ),
+                  Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(children: [
+                        Expanded(
+                            child: Text(
+                                _draft.hasChanges ? '有尚未应用的修改' : '当前设置未更改',
+                                style: theme.textTheme.bodySmall)),
+                        TextButton(
+                            onPressed:
+                                _applying ? null : () => Navigator.pop(context),
+                            child: const Text('取消')),
+                        const SizedBox(width: 8),
+                        FilledButton.icon(
+                            key: const ValueKey('layout-studio-apply'),
+                            onPressed:
+                                _applying || !_draft.hasChanges ? null : _apply,
+                            icon: _applying
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: AppLoadingIndicator(strokeWidth: 2))
+                                : const Icon(Icons.check_rounded, size: 18),
+                            label: const Text('应用布局')),
+                      ])),
                 ],
               ),
-
-              // Tab 页面
-              Expanded(
-                child: TabBarView(
-                  controller: _tabController,
-                  children: [
-                    _buildHomeTab(context),
-                    _buildForumTab(context),
-                    _buildThreadTab(context),
-                    _buildTuningTab(context),
-                  ],
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
-      ),
-    );
+        ));
   }
 
   // ================= 1. 首页 DIY 选项卡 =================
   Widget _buildHomeTab(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final activeModules = List<String>.from(AppConfig.homeModules);
+    final activeModules = List<String>.from(_draft.homeModules);
 
     // 未添加的可用模块
     final availableModules = homeModuleRegistry.keys
@@ -375,66 +498,75 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
       padding: const EdgeInsets.all(16),
       children: [
         // 0. 进入 2D 可视化自由排版画布（首页）
-        Container(
-          margin: const EdgeInsets.only(bottom: 14),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [
-                colorScheme.primaryContainer.withAlpha(120),
-                colorScheme.surfaceContainerHighest.withAlpha(100),
+        if (!widget.embeddedInCanvas)
+          Container(
+            margin: const EdgeInsets.only(bottom: 14),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  colorScheme.primaryContainer.withAlpha(120),
+                  colorScheme.surfaceContainerHighest.withAlpha(100),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                  color: colorScheme.primary.withAlpha(60), width: 0.8),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: colorScheme.primary,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.grid_view_rounded,
+                      size: 20, color: Colors.white),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('首页 2D 可视化自由画布',
+                          style: TextStyle(
+                              fontSize: 13.5, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 2),
+                      Text(
+                        '桌面端左右侧栏卡片自由拖拽、无级拉伸尺寸与实时吸附对齐',
+                        style:
+                            TextStyle(fontSize: 11, color: colorScheme.outline),
+                      ),
+                    ],
+                  ),
+                ),
+                FilledButton.tonalIcon(
+                  icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                  label: const Text('进入画布',
+                      style:
+                          TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  style: FilledButton.styleFrom(
+                      visualDensity: VisualDensity.compact),
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => VisualGridCanvas(
+                          pageCategory: 'home',
+                          initialLayout: AppConfig.homeDashboardLayout,
+                          onSave: (layout) {
+                            AppConfig.setHomeDashboardLayout(layout);
+                          },
+                          onExit: () => Navigator.of(context).pop(),
+                        ),
+                      ),
+                    );
+                  },
+                ),
               ],
             ),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: colorScheme.primary.withAlpha(60), width: 0.8),
           ),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: colorScheme.primary,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Icon(Icons.grid_view_rounded, size: 20, color: Colors.white),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('首页 2D 可视化自由画布', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 2),
-                    Text(
-                      '桌面端左右侧栏卡片自由拖拽、无级拉伸尺寸与实时吸附对齐',
-                      style: TextStyle(fontSize: 11, color: colorScheme.outline),
-                    ),
-                  ],
-                ),
-              ),
-              FilledButton.tonalIcon(
-                icon: const Icon(Icons.open_in_new_rounded, size: 16),
-                label: const Text('进入画布', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
-                onPressed: () {
-                  Navigator.of(context).pop();
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => VisualGridCanvas(
-                        pageCategory: 'home',
-                        initialLayout: AppConfig.homeDashboardLayout,
-                        onSave: (layout) {
-                          AppConfig.setHomeDashboardLayout(layout);
-                        },
-                        onExit: () => Navigator.of(context).pop(),
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-        ),
 
         // 1. 移动端/流式排版说明与已启用列表
         Container(
@@ -443,21 +575,26 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
           decoration: BoxDecoration(
             color: colorScheme.surfaceContainerHighest.withAlpha(60),
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: colorScheme.outlineVariant.withAlpha(40), width: 0.8),
+            border: Border.all(
+                color: colorScheme.outlineVariant.withAlpha(40), width: 0.8),
           ),
           child: Row(
             children: [
-              Icon(Icons.stay_current_portrait_rounded, size: 20, color: colorScheme.primary),
+              Icon(Icons.stay_current_portrait_rounded,
+                  size: 20, color: colorScheme.primary),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('移动端 / 竖屏信息流组件排版', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                    const Text('移动端 / 竖屏信息流组件排版',
+                        style: TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 2),
                     Text(
                       '移动端及主信息流中广播喇叭、版块导航、全站统计与帖子流的上下展示顺序与开关。',
-                      style: TextStyle(fontSize: 11, color: colorScheme.outline),
+                      style:
+                          TextStyle(fontSize: 11, color: colorScheme.outline),
                     ),
                   ],
                 ),
@@ -494,7 +631,7 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
               if (newIndex > oldIndex) newIndex -= 1;
               final item = activeModules.removeAt(oldIndex);
               activeModules.insert(newIndex, item);
-              AppConfig.setHomeModules(activeModules);
+              _draft.setHomeModules(activeModules);
             });
           },
           itemBuilder: (ctx, index) {
@@ -507,24 +644,28 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                   icon: Icons.widgets_outlined,
                 );
 
-            return Container(
+            return Card(
               key: ValueKey('home_$id'),
               margin: const EdgeInsets.only(bottom: 8),
-              decoration: BoxDecoration(
-                color: colorScheme.surfaceContainerHighest.withAlpha(70),
+              elevation: 0,
+              color: colorScheme.surfaceContainerHighest.withAlpha(70),
+              shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(
+                side: BorderSide(
                   color: colorScheme.outlineVariant.withAlpha(40),
                   width: 0.8,
                 ),
               ),
+              clipBehavior: Clip.antiAlias,
               child: ListTile(
                 dense: true,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                 leading: Icon(meta.icon, size: 22, color: colorScheme.primary),
                 title: Text(
                   meta.name,
-                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w600, fontSize: 13.5),
                 ),
                 subtitle: Text(
                   meta.description,
@@ -543,7 +684,7 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                       onPressed: () {
                         setState(() {
                           activeModules.removeAt(index);
-                          AppConfig.setHomeModules(activeModules);
+                          _draft.setHomeModules(activeModules);
                         });
                       },
                     ),
@@ -589,10 +730,12 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                 ),
                 child: ListTile(
                   dense: true,
-                  leading: Icon(meta.icon, size: 20, color: colorScheme.outline),
+                  leading:
+                      Icon(meta.icon, size: 20, color: colorScheme.outline),
                   title: Text(
                     meta.name,
-                    style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w500, fontSize: 13),
                   ),
                   subtitle: Text(
                     meta.description,
@@ -605,12 +748,13 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                     onPressed: () {
                       setState(() {
                         activeModules.add(id);
-                        AppConfig.setHomeModules(activeModules);
+                        _draft.setHomeModules(activeModules);
                       });
                     },
                     style: FilledButton.styleFrom(
                       visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
                     ),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
@@ -634,7 +778,7 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
   Widget _buildForumTab(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final activeModules = List<String>.from(AppConfig.forumModules);
+    final activeModules = List<String>.from(_draft.forumModules);
 
     final availableModules = forumModuleRegistry.keys
         .where((id) => !activeModules.contains(id))
@@ -655,7 +799,8 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
               ],
             ),
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: colorScheme.primary.withAlpha(50), width: 0.8),
+            border: Border.all(
+                color: colorScheme.primary.withAlpha(50), width: 0.8),
           ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -666,18 +811,24 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                   color: colorScheme.primary,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: const Icon(Icons.view_stream_rounded, size: 20, color: Colors.white),
+                child: const Icon(Icons.view_stream_rounded,
+                    size: 20, color: Colors.white),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('版块页信息流排版定制', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold)),
+                    const Text('版块页信息流排版定制',
+                        style: TextStyle(
+                            fontSize: 13.5, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 3),
                     Text(
                       '版块列表页采用原汁原味的垂直流式架构（非 2D 网格）。您可以在下方上下拖拽调整版头横幅、分类筛选、子版块网格、置顶主题与主帖列表的显示顺序及启用状态。',
-                      style: TextStyle(fontSize: 11.5, color: colorScheme.onSurfaceVariant, height: 1.4),
+                      style: TextStyle(
+                          fontSize: 11.5,
+                          color: colorScheme.onSurfaceVariant,
+                          height: 1.4),
                     ),
                   ],
                 ),
@@ -715,7 +866,7 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
               if (newIndex > oldIndex) newIndex -= 1;
               final item = activeModules.removeAt(oldIndex);
               activeModules.insert(newIndex, item);
-              AppConfig.setForumModules(activeModules);
+              _draft.setForumModules(activeModules);
             });
           },
           itemBuilder: (ctx, index) {
@@ -728,24 +879,28 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                   icon: Icons.widgets_outlined,
                 );
 
-            return Container(
+            return Card(
               key: ValueKey('forum_$id'),
               margin: const EdgeInsets.only(bottom: 8),
-              decoration: BoxDecoration(
-                color: colorScheme.surfaceContainerHighest.withAlpha(70),
+              elevation: 0,
+              color: colorScheme.surfaceContainerHighest.withAlpha(70),
+              shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(
+                side: BorderSide(
                   color: colorScheme.outlineVariant.withAlpha(40),
                   width: 0.8,
                 ),
               ),
+              clipBehavior: Clip.antiAlias,
               child: ListTile(
                 dense: true,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                 leading: Icon(meta.icon, size: 22, color: colorScheme.primary),
                 title: Text(
                   meta.name,
-                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w600, fontSize: 13.5),
                 ),
                 subtitle: Text(
                   meta.description,
@@ -764,7 +919,7 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                       onPressed: () {
                         setState(() {
                           activeModules.removeAt(index);
-                          AppConfig.setForumModules(activeModules);
+                          _draft.setForumModules(activeModules);
                         });
                       },
                     ),
@@ -810,10 +965,12 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                 ),
                 child: ListTile(
                   dense: true,
-                  leading: Icon(meta.icon, size: 20, color: colorScheme.outline),
+                  leading:
+                      Icon(meta.icon, size: 20, color: colorScheme.outline),
                   title: Text(
                     meta.name,
-                    style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w500, fontSize: 13),
                   ),
                   subtitle: Text(
                     meta.description,
@@ -826,12 +983,13 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                     onPressed: () {
                       setState(() {
                         activeModules.add(id);
-                        AppConfig.setForumModules(activeModules);
+                        _draft.setForumModules(activeModules);
                       });
                     },
                     style: FilledButton.styleFrom(
                       visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
                     ),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
@@ -851,11 +1009,27 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
     );
   }
 
+  Widget _controlPanel(BuildContext context, {required Widget child}) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.surfaceContainerHighest.withAlpha(60),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: scheme.outlineVariant.withAlpha(40), width: .8),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        child: child,
+      ),
+    );
+  }
+
   // ================= 3. 帖子详情工作台选项卡 =================
   Widget _buildThreadTab(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final rightModules = List<String>.from(AppConfig.threadRightModules);
+    final rightModules = List<String>.from(_draft.threadRightModules);
 
     // 未添加至工作台的模块
     final unassigned = threadModuleRegistry.keys
@@ -866,75 +1040,79 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
       padding: const EdgeInsets.all(16),
       children: [
         // 0. 进入 2D 可视化自由排版画布
-        Container(
-          margin: const EdgeInsets.only(bottom: 14),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [
-                colorScheme.primaryContainer.withAlpha(120),
-                colorScheme.surfaceContainerHighest.withAlpha(100),
+        if (!widget.embeddedInCanvas)
+          Container(
+            margin: const EdgeInsets.only(bottom: 14),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  colorScheme.primaryContainer.withAlpha(120),
+                  colorScheme.surfaceContainerHighest.withAlpha(100),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                  color: colorScheme.primary.withAlpha(60), width: 0.8),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: colorScheme.primary,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.grid_view_rounded,
+                      size: 20, color: Colors.white),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('2D 可视化自由排版画布',
+                          style: TextStyle(
+                              fontSize: 13.5, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 2),
+                      Text(
+                        '拖拽调整卡片，使用页面预览核对实际布局',
+                        style:
+                            TextStyle(fontSize: 11, color: colorScheme.outline),
+                      ),
+                    ],
+                  ),
+                ),
+                FilledButton.tonalIcon(
+                  icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                  label: const Text('进入画布',
+                      style:
+                          TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  style: FilledButton.styleFrom(
+                      visualDensity: VisualDensity.compact),
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => VisualGridCanvas(
+                          pageCategory: 'thread',
+                          initialLayout: AppConfig.threadDashboardLayout,
+                          onSave: (layout) {
+                            AppConfig.setThreadDashboardLayout(layout);
+                          },
+                          onExit: () => Navigator.of(context).pop(),
+                        ),
+                      ),
+                    );
+                  },
+                ),
               ],
             ),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: colorScheme.primary.withAlpha(60), width: 0.8),
           ),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: colorScheme.primary,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Icon(Icons.grid_view_rounded, size: 20, color: Colors.white),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('2D 可视化自由排版画布', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 2),
-                    Text(
-                      '自由拖拽卡片、无级拉伸尺寸、实时 1:1 仿真对齐',
-                      style: TextStyle(fontSize: 11, color: colorScheme.outline),
-                    ),
-                  ],
-                ),
-              ),
-              FilledButton.tonalIcon(
-                icon: const Icon(Icons.open_in_new_rounded, size: 16),
-                label: const Text('进入画布', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
-                onPressed: () {
-                  Navigator.of(context).pop();
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => VisualGridCanvas(
-                        pageCategory: 'thread',
-                        initialLayout: AppConfig.threadDashboardLayout,
-                        onSave: (layout) {
-                          AppConfig.setThreadDashboardLayout(layout);
-                        },
-                        onExit: () => Navigator.of(context).pop(),
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-        ),
 
         // 1. 左侧版块导航分栏配置
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: colorScheme.surfaceContainerHighest.withAlpha(60),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: colorScheme.outlineVariant.withAlpha(40), width: 0.8),
-          ),
+        _controlPanel(
+          context,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -947,45 +1125,55 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                     color: Colors.blue.withAlpha(25),
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: const Icon(Icons.view_sidebar_rounded, size: 20, color: Colors.blue),
+                  child: const Icon(Icons.view_sidebar_rounded,
+                      size: 20, color: Colors.blue),
                 ),
-                title: const Text('左侧版块列表分栏', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
-                subtitle: Text('桌面宽屏下，帖子左侧展示同版块帖子列表，支持自由拖拽调宽与 1 键快捷折叠', style: TextStyle(fontSize: 11, color: colorScheme.outline)),
-                value: AppConfig.threadLeftEnabled,
+                title: const Text('左侧版块列表分栏',
+                    style:
+                        TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                subtitle: Text('桌面宽屏下，帖子左侧展示同版块帖子列表，支持自由拖拽调宽与 1 键快捷折叠',
+                    style: TextStyle(fontSize: 11, color: colorScheme.outline)),
+                value: _draft.threadLeftEnabled,
                 onChanged: (v) {
-                  setState(() => AppConfig.setThreadLeftEnabled(v));
+                  setState(() => _draft.setThreadLeftEnabled(v));
                 },
               ),
-              if (AppConfig.threadLeftEnabled) ...[
+              if (_draft.threadLeftEnabled) ...[
                 const Divider(height: 12),
                 Row(
                   children: [
                     const Text('分栏默认宽度：', style: TextStyle(fontSize: 12)),
                     Text(
-                      '${AppConfig.threadForumSidebarWidth.toInt()} px',
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: colorScheme.primary),
+                      '${_draft.threadForumSidebarWidth.toInt()} px',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: colorScheme.primary),
                     ),
                     const Spacer(),
                     TextButton(
-                      style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                      style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact),
                       onPressed: () {
-                        setState(() => AppConfig.setThreadForumSidebarWidth(380.0));
+                        setState(
+                            () => _draft.setThreadForumSidebarWidth(380.0));
                       },
-                      child: const Text('恢复 380px', style: TextStyle(fontSize: 11)),
+                      child: const Text('恢复 380px',
+                          style: TextStyle(fontSize: 11)),
                     ),
                   ],
                 ),
                 Slider(
-                  value: AppConfig.threadForumSidebarWidth.clamp(240.0, 640.0),
+                  value: _draft.threadForumSidebarWidth.clamp(240.0, 640.0),
                   min: 240,
                   max: 640,
                   divisions: 40,
-                  label: '${AppConfig.threadForumSidebarWidth.toInt()}px',
+                  label: '${_draft.threadForumSidebarWidth.toInt()}px',
                   onChanged: (v) {
-                    setState(() => AppConfig.updateThreadForumSidebarWidth(v));
+                    setState(() => _draft.updateThreadForumSidebarWidth(v));
                   },
                   onChangeEnd: (v) {
-                    AppConfig.setThreadForumSidebarWidth(v);
+                    _draft.setThreadForumSidebarWidth(v);
                   },
                 ),
               ],
@@ -995,13 +1183,8 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
         const SizedBox(height: 14),
 
         // 2. 右侧工作台助手总开关与说明
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: colorScheme.surfaceContainerHighest.withAlpha(60),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: colorScheme.outlineVariant.withAlpha(40), width: 0.8),
-          ),
+        _controlPanel(
+          context,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1014,45 +1197,54 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                     color: Colors.purple.withAlpha(25),
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: const Icon(Icons.dashboard_customize_rounded, size: 20, color: Colors.purple),
+                  child: const Icon(Icons.dashboard_customize_rounded,
+                      size: 20, color: Colors.purple),
                 ),
-                title: const Text('右侧工作台助手', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
-                subtitle: Text('桌面宽屏常驻助手，提供目录树、打赏大厅、阅读字号微调与楼层罗盘', style: TextStyle(fontSize: 11, color: colorScheme.outline)),
-                value: AppConfig.threadRightEnabled,
+                title: const Text('右侧工作台助手',
+                    style:
+                        TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                subtitle: Text('桌面宽屏常驻助手，提供目录树、打赏大厅、阅读字号微调与楼层罗盘',
+                    style: TextStyle(fontSize: 11, color: colorScheme.outline)),
+                value: _draft.threadRightEnabled,
                 onChanged: (v) {
-                  setState(() => AppConfig.setThreadRightEnabled(v));
+                  setState(() => _draft.setThreadRightEnabled(v));
                 },
               ),
-              if (AppConfig.threadRightEnabled) ...[
+              if (_draft.threadRightEnabled) ...[
                 const Divider(height: 12),
                 Row(
                   children: [
                     const Text('工作台默认宽度：', style: TextStyle(fontSize: 12)),
                     Text(
-                      '${AppConfig.threadRightWidth.toInt()} px',
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: colorScheme.primary),
+                      '${_draft.threadRightWidth.toInt()} px',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: colorScheme.primary),
                     ),
                     const Spacer(),
                     TextButton(
-                      style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                      style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact),
                       onPressed: () {
-                        setState(() => AppConfig.setThreadRightWidth(320.0));
+                        setState(() => _draft.setThreadRightWidth(320.0));
                       },
-                      child: const Text('恢复 320px', style: TextStyle(fontSize: 11)),
+                      child: const Text('恢复 320px',
+                          style: TextStyle(fontSize: 11)),
                     ),
                   ],
                 ),
                 Slider(
-                  value: AppConfig.threadRightWidth.clamp(200.0, 500.0),
+                  value: _draft.threadRightWidth.clamp(200.0, 500.0),
                   min: 200,
                   max: 500,
                   divisions: 30,
-                  label: '${AppConfig.threadRightWidth.toInt()}px',
+                  label: '${_draft.threadRightWidth.toInt()}px',
                   onChanged: (v) {
-                    setState(() => AppConfig.updateThreadRightWidth(v));
+                    setState(() => _draft.updateThreadRightWidth(v));
                   },
                   onChangeEnd: (v) {
-                    AppConfig.setThreadRightWidth(v);
+                    _draft.setThreadRightWidth(v);
                   },
                 ),
               ],
@@ -1066,7 +1258,8 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
           children: [
             Text(
               '已挂载工作台模块（拖动调整上下顺序）',
-              style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+              style: theme.textTheme.titleSmall
+                  ?.copyWith(fontWeight: FontWeight.bold),
             ),
             const Spacer(),
             Text(
@@ -1085,7 +1278,8 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
               borderRadius: BorderRadius.circular(10),
             ),
             child: Center(
-              child: Text('当前工作台未挂载任何模块，点击下方卡片可快速添加', style: TextStyle(fontSize: 12, color: colorScheme.outline)),
+              child: Text('当前工作台未挂载任何模块，点击下方卡片可快速添加',
+                  style: TextStyle(fontSize: 12, color: colorScheme.outline)),
             ),
           )
         else
@@ -1099,7 +1293,7 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
               final item = rightModules.removeAt(oldIdx);
               rightModules.insert(newIdx, item);
               setState(() {
-                AppConfig.setThreadRightModules(rightModules);
+                _draft.setThreadRightModules(rightModules);
               });
             },
             itemBuilder: (ctx, idx) {
@@ -1112,20 +1306,31 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                     icon: Icons.widgets_outlined,
                   );
 
-              return Container(
+              return Card(
                 key: ValueKey('th_$id'),
                 margin: const EdgeInsets.only(bottom: 8),
-                decoration: BoxDecoration(
-                  color: colorScheme.surfaceContainerHighest.withAlpha(70),
+                elevation: 0,
+                color: colorScheme.surfaceContainerHighest.withAlpha(70),
+                shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: colorScheme.outlineVariant.withAlpha(40), width: 0.8),
+                  side: BorderSide(
+                      color: colorScheme.outlineVariant.withAlpha(40),
+                      width: 0.8),
                 ),
+                clipBehavior: Clip.antiAlias,
                 child: ListTile(
                   dense: true,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-                  leading: Icon(meta.icon, size: 22, color: colorScheme.primary),
-                  title: Text(meta.name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
-                  subtitle: Text(meta.description, style: TextStyle(fontSize: 11, color: colorScheme.onSurfaceVariant.withAlpha(180))),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                  leading:
+                      Icon(meta.icon, size: 22, color: colorScheme.primary),
+                  title: Text(meta.name,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w600, fontSize: 13.5)),
+                  subtitle: Text(meta.description,
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: colorScheme.onSurfaceVariant.withAlpha(180))),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -1136,7 +1341,7 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                         onPressed: () {
                           setState(() {
                             rightModules.removeAt(idx);
-                            AppConfig.setThreadRightModules(rightModules);
+                            _draft.setThreadRightModules(rightModules);
                           });
                         },
                       ),
@@ -1144,7 +1349,8 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                         index: idx,
                         child: Padding(
                           padding: const EdgeInsets.all(8),
-                          child: Icon(Icons.drag_handle_rounded, size: 20, color: colorScheme.outline),
+                          child: Icon(Icons.drag_handle_rounded,
+                              size: 20, color: colorScheme.outline),
                         ),
                       ),
                     ],
@@ -1159,7 +1365,8 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
         if (unassigned.isNotEmpty) ...[
           Text(
             '未挂载模块库（点击即可加入右侧工作台）',
-            style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+            style: theme.textTheme.titleSmall
+                ?.copyWith(fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 10),
           for (final id in unassigned) ...[
@@ -1170,23 +1377,32 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                 margin: const EdgeInsets.only(bottom: 8),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10),
-                  side: BorderSide(color: colorScheme.outlineVariant.withAlpha(45), width: 0.8),
+                  side: BorderSide(
+                      color: colorScheme.outlineVariant.withAlpha(45),
+                      width: 0.8),
                 ),
                 child: ListTile(
                   dense: true,
-                  leading: Icon(meta.icon, size: 20, color: colorScheme.outline),
-                  title: Text(meta.name, style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13)),
-                  subtitle: Text(meta.description, style: TextStyle(fontSize: 11, color: colorScheme.onSurfaceVariant.withAlpha(160))),
+                  leading:
+                      Icon(meta.icon, size: 20, color: colorScheme.outline),
+                  title: Text(meta.name,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w500, fontSize: 13)),
+                  subtitle: Text(meta.description,
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: colorScheme.onSurfaceVariant.withAlpha(160))),
                   trailing: FilledButton.tonal(
                     onPressed: () {
                       setState(() {
                         rightModules.add(id);
-                        AppConfig.setThreadRightModules(rightModules);
+                        _draft.setThreadRightModules(rightModules);
                       });
                     },
                     style: FilledButton.styleFrom(
                       visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
                     ),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
@@ -1216,7 +1432,8 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
       children: [
         Text(
           '正文与边栏尺寸微调',
-          style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+          style:
+              theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 12),
 
@@ -1228,9 +1445,9 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
               children: [
                 const Text('正文限制宽度：', style: TextStyle(fontSize: 13)),
                 Text(
-                  AppConfig.threadContentMaxWidth == 0
+                  _draft.threadContentMaxWidth == 0
                       ? '100% 全屏满铺'
-                      : '${AppConfig.threadContentMaxWidth.toInt()} px',
+                      : '${_draft.threadContentMaxWidth.toInt()} px',
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.bold,
@@ -1241,34 +1458,67 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                 TextButton(
                   onPressed: () {
                     setState(() {
-                      AppConfig.setThreadContentMaxWidth(
-                        AppConfig.threadContentMaxWidth == 0 ? 960.0 : 0,
+                      _draft.setThreadContentMaxWidth(
+                        _draft.threadContentMaxWidth == 0 ? 960.0 : 0,
                       );
                     });
                   },
                   child: Text(
-                    AppConfig.threadContentMaxWidth == 0 ? '设为 960px' : '一键全屏满铺',
+                    _draft.threadContentMaxWidth == 0 ? '设为 960px' : '一键全屏满铺',
                     style: const TextStyle(fontSize: 12),
                   ),
                 ),
               ],
             ),
             Slider(
-              value: AppConfig.threadContentMaxWidth == 0 ? 1800 : AppConfig.threadContentMaxWidth,
+              value: _draft.threadContentMaxWidth == 0
+                  ? 1800
+                  : _draft.threadContentMaxWidth.clamp(680.0, 1800.0),
               min: 680,
               max: 1800,
               divisions: 28,
-              label: AppConfig.threadContentMaxWidth == 0
+              label: _draft.threadContentMaxWidth == 0
                   ? '全屏'
-                  : '${AppConfig.threadContentMaxWidth.toInt()}px',
+                  : '${_draft.threadContentMaxWidth.toInt()}px',
               onChanged: (v) {
-                setState(() => AppConfig.updateThreadContentMaxWidth(v));
+                setState(() => _draft.updateThreadContentMaxWidth(v));
               },
               onChangeEnd: (v) {
-                AppConfig.setThreadContentMaxWidth(v);
+                _draft.setThreadContentMaxWidth(v);
               },
             ),
           ],
+        ),
+
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('正文字号'),
+          trailing: Text('${_draft.threadReaderFontSize.round()} sp'),
+        ),
+        Slider(
+          key: const ValueKey('diy-reader-font'),
+          value: _draft.threadReaderFontSize.clamp(12.0, 28.0),
+          min: 12,
+          max: 28,
+          divisions: 16,
+          label: '${_draft.threadReaderFontSize.round()} sp',
+          onChanged: (value) =>
+              setState(() => _draft.setThreadReaderFontSize(value)),
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('正文行距'),
+          trailing: Text(_draft.threadReaderLineHeight.toStringAsFixed(1)),
+        ),
+        Slider(
+          key: const ValueKey('diy-reader-line-height'),
+          value: _draft.threadReaderLineHeight.clamp(1.2, 2.2),
+          min: 1.2,
+          max: 2.2,
+          divisions: 10,
+          label: _draft.threadReaderLineHeight.toStringAsFixed(1),
+          onChanged: (value) =>
+              setState(() => _draft.setThreadReaderLineHeight(value)),
         ),
 
         // 版块列表边栏宽度（左侧）
@@ -1279,7 +1529,7 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
               children: [
                 const Text('版块列表边栏宽度（左侧）：', style: TextStyle(fontSize: 13)),
                 Text(
-                  '${AppConfig.threadForumSidebarWidth.toInt()} px',
+                  '${_draft.threadForumSidebarWidth.toInt()} px',
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.bold,
@@ -1290,24 +1540,25 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
                 TextButton(
                   onPressed: () {
                     setState(() {
-                      AppConfig.setThreadForumSidebarWidth(380.0);
+                      _draft.setThreadForumSidebarWidth(380.0);
                     });
                   },
-                  child: const Text('重置为 380px', style: TextStyle(fontSize: 12)),
+                  child:
+                      const Text('重置为 380px', style: TextStyle(fontSize: 12)),
                 ),
               ],
             ),
             Slider(
-              value: AppConfig.threadForumSidebarWidth.clamp(240.0, 680.0),
+              value: _draft.threadForumSidebarWidth.clamp(240.0, 680.0),
               min: 240,
               max: 680,
               divisions: 44,
-              label: '${AppConfig.threadForumSidebarWidth.toInt()}px',
+              label: '${_draft.threadForumSidebarWidth.toInt()}px',
               onChanged: (v) {
-                setState(() => AppConfig.updateThreadForumSidebarWidth(v));
+                setState(() => _draft.updateThreadForumSidebarWidth(v));
               },
               onChangeEnd: (v) {
-                AppConfig.setThreadForumSidebarWidth(v);
+                _draft.setThreadForumSidebarWidth(v);
               },
             ),
           ],
@@ -1321,7 +1572,7 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
               children: [
                 const Text('右侧工作台宽度：', style: TextStyle(fontSize: 13)),
                 Text(
-                  '${AppConfig.threadRightWidth.toInt()} px',
+                  '${_draft.threadRightWidth.toInt()} px',
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.bold,
@@ -1331,16 +1582,16 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
               ],
             ),
             Slider(
-              value: AppConfig.threadRightWidth,
+              value: _draft.threadRightWidth.clamp(200.0, 500.0),
               min: 200,
               max: 500,
               divisions: 30,
-              label: '${AppConfig.threadRightWidth.toInt()}px',
+              label: '${_draft.threadRightWidth.toInt()}px',
               onChanged: (v) {
-                setState(() => AppConfig.updateThreadRightWidth(v));
+                setState(() => _draft.updateThreadRightWidth(v));
               },
               onChangeEnd: (v) {
-                AppConfig.setThreadRightWidth(v);
+                _draft.setThreadRightWidth(v);
               },
             ),
           ],
@@ -1349,7 +1600,8 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
         const Divider(height: 24),
         Text(
           '一键经典布局预设',
-          style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+          style:
+              theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 10),
 
@@ -1362,13 +1614,20 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
               label: const Text('标准双栏工作台'),
               onPressed: () {
                 setState(() {
-                  AppConfig.setHomeModules(List.from(AppConfig.defaultHomeModules));
-                  AppConfig.setForumModules(List.from(AppConfig.defaultForumModules));
-                  AppConfig.setThreadRightModules(['toc_outline', 'floor_compass', 'reader_tuning', 'rating_hub']);
-                  AppConfig.setThreadRightEnabled(true);
-                  AppConfig.setThreadForumSidebarWidth(380);
-                  AppConfig.setThreadRightWidth(320);
-                  AppConfig.setThreadContentMaxWidth(960);
+                  _draft
+                      .setHomeModules(List.from(AppConfig.defaultHomeModules));
+                  _draft.setForumModules(
+                      List.from(AppConfig.defaultForumModules));
+                  _draft.setThreadRightModules([
+                    'toc_outline',
+                    'floor_compass',
+                    'reader_tuning',
+                    'rating_hub'
+                  ]);
+                  _draft.setThreadRightEnabled(true);
+                  _draft.setThreadForumSidebarWidth(380);
+                  _draft.setThreadRightWidth(320);
+                  _draft.setThreadContentMaxWidth(960);
                 });
               },
             ),
@@ -1377,8 +1636,8 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
               label: const Text('沉浸专注阅读'),
               onPressed: () {
                 setState(() {
-                  AppConfig.setThreadRightEnabled(false);
-                  AppConfig.setThreadContentMaxWidth(1100);
+                  _draft.setThreadRightEnabled(false);
+                  _draft.setThreadContentMaxWidth(1100);
                 });
               },
             ),
@@ -1387,7 +1646,7 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
               label: const Text('100% 满屏填满'),
               onPressed: () {
                 setState(() {
-                  AppConfig.setThreadContentMaxWidth(0);
+                  _draft.setThreadContentMaxWidth(0);
                 });
               },
             ),
@@ -1396,7 +1655,7 @@ class _DiyLayoutStudioState extends State<DiyLayoutStudio>
               label: const Text('恢复全部默认'),
               onPressed: () {
                 setState(() {
-                  AppConfig.resetDiyLayout();
+                  _draft.resetDiyLayout();
                 });
               },
             ),

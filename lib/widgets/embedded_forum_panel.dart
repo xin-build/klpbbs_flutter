@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../api/klpbbs_api.dart';
@@ -120,8 +121,15 @@ class _EmbeddedForumPanelState extends State<EmbeddedForumPanel> {
     final colorScheme = theme.colorScheme;
 
     final forumTitle = _headerInfo?.name ?? '当前版块';
-    final todayPosts = _headerInfo?.todayPosts ?? 0;
-    final totalThreads = _headerInfo?.threadsCount ?? 0;
+    final header = _headerInfo;
+    final statistics = header == null
+        ? const <String>[]
+        : [
+            if (header.hasTodayPosts) '今日 ${header.displayCount('today')} 帖',
+            if (header.hasThreadsCount)
+              '本版 ${header.displayCount('topics')} 篇主题',
+            if (header.hasPostsCount) '帖数 ${header.displayCount('posts')}',
+          ];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -150,7 +158,8 @@ class _EmbeddedForumPanelState extends State<EmbeddedForumPanel> {
                       color: colorScheme.primaryContainer,
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: Icon(Icons.forum_rounded, size: 18, color: colorScheme.primary),
+                    child: Icon(Icons.forum_rounded,
+                        size: 18, color: colorScheme.primary),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
@@ -161,11 +170,15 @@ class _EmbeddedForumPanelState extends State<EmbeddedForumPanel> {
                           forumTitle,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                              fontSize: 13.5, fontWeight: FontWeight.bold),
                         ),
                         Text(
-                          '今日 $todayPosts 帖 · 共 $totalThreads 篇主题',
-                          style: TextStyle(fontSize: 10.5, color: colorScheme.outline),
+                          statistics.isEmpty
+                              ? '本版统计暂未取得'
+                              : statistics.join(' · '),
+                          style: TextStyle(
+                              fontSize: 10.5, color: colorScheme.outline),
                         ),
                       ],
                     ),
@@ -174,13 +187,15 @@ class _EmbeddedForumPanelState extends State<EmbeddedForumPanel> {
                   PopupMenuButton<String>(
                     tooltip: '排序方式',
                     initialValue: _orderby,
-                    icon: Icon(Icons.sort_rounded, size: 20, color: colorScheme.primary),
+                    icon: Icon(Icons.sort_rounded,
+                        size: 20, color: colorScheme.primary),
                     onSelected: (val) {
                       setState(() => _orderby = val);
                       _fetchForumData(page: 1, isInitial: true);
                     },
                     itemBuilder: (ctx) => const [
-                      PopupMenuItem(value: 'lastpost', child: Text('最新回复 (默认)')),
+                      PopupMenuItem(
+                          value: 'lastpost', child: Text('最新回复 (默认)')),
                       PopupMenuItem(value: 'dateline', child: Text('最新发表')),
                       PopupMenuItem(value: 'digest', child: Text('精华帖子')),
                       PopupMenuItem(value: 'views', child: Text('最多浏览')),
@@ -213,7 +228,8 @@ class _EmbeddedForumPanelState extends State<EmbeddedForumPanel> {
                           selected: isSel,
                           visualDensity: VisualDensity.compact,
                           onSelected: (_) {
-                            setState(() => _selectedType = isSel ? null : tp.typeid);
+                            setState(
+                                () => _selectedType = isSel ? null : tp.typeid);
                             _fetchForumData(page: 1, isInitial: true);
                           },
                         ),
@@ -233,7 +249,8 @@ class _EmbeddedForumPanelState extends State<EmbeddedForumPanel> {
                   child: SizedBox(
                     width: 24,
                     height: 24,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: colorScheme.primary),
+                    child: AppLoadingIndicator(
+                        strokeWidth: 2, color: colorScheme.primary),
                   ),
                 )
               : RefreshIndicator(
@@ -245,23 +262,31 @@ class _EmbeddedForumPanelState extends State<EmbeddedForumPanel> {
                   backgroundColor: colorScheme.surface,
                   child: ListView(
                     controller: _scrollController,
-                    physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
-                    padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                    physics: const AlwaysScrollableScrollPhysics(
+                        parent: BouncingScrollPhysics()),
+                    padding:
+                        const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
                     children: [
                       // 置顶贴群组折叠区
                       if (_stickyThreads.isNotEmpty) ...[
                         InkWell(
-                          onTap: () => setState(() => _stickyExpanded = !_stickyExpanded),
+                          onTap: () => setState(
+                              () => _stickyExpanded = !_stickyExpanded),
                           borderRadius: BorderRadius.circular(6),
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
                             child: Row(
                               children: [
-                                Icon(Icons.push_pin_rounded, size: 14, color: Colors.orange.shade700),
+                                Icon(Icons.push_pin_rounded,
+                                    size: 14, color: Colors.orange.shade700),
                                 const SizedBox(width: 4),
                                 Text(
                                   '版块置顶 (${_stickyThreads.length})',
-                                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.orange.shade800),
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.orange.shade800),
                                 ),
                                 const Spacer(),
                                 AnimatedExpandArrow(
@@ -277,7 +302,10 @@ class _EmbeddedForumPanelState extends State<EmbeddedForumPanel> {
                           isCollapsed: !_stickyExpanded,
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
-                            children: _stickyThreads.map((t) => _buildThreadItem(context, t, isSticky: true)).toList(),
+                            children: _stickyThreads
+                                .map((t) => _buildThreadItem(context, t,
+                                    isSticky: true))
+                                .toList(),
                           ),
                         ),
                         const Divider(height: 12, thickness: 0.8),
@@ -288,11 +316,14 @@ class _EmbeddedForumPanelState extends State<EmbeddedForumPanel> {
                         const Padding(
                           padding: EdgeInsets.symmetric(vertical: 36),
                           child: Center(
-                            child: Text('本版块暂无相关帖子', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                            child: Text('本版块暂无相关帖子',
+                                style: TextStyle(
+                                    fontSize: 12, color: Colors.grey)),
                           ),
                         ),
                       ] else ...[
-                        ..._normalThreads.map((t) => _buildThreadItem(context, t, isSticky: false)),
+                        ..._normalThreads.map((t) =>
+                            _buildThreadItem(context, t, isSticky: false)),
                       ],
 
                       // 底部加载更多按钮
@@ -301,8 +332,10 @@ class _EmbeddedForumPanelState extends State<EmbeddedForumPanel> {
                         child: Center(
                           child: TextButton.icon(
                             onPressed: () => _fetchForumData(page: _page + 1),
-                            icon: const Icon(Icons.arrow_downward_rounded, size: 14),
-                            label: Text('加载更多 (当前第 $_page 页)', style: const TextStyle(fontSize: 11)),
+                            icon: const Icon(Icons.arrow_downward_rounded,
+                                size: 14),
+                            label: Text('加载更多 (当前第 $_page 页)',
+                                style: const TextStyle(fontSize: 11)),
                           ),
                         ),
                       ),
@@ -315,105 +348,126 @@ class _EmbeddedForumPanelState extends State<EmbeddedForumPanel> {
   }
 
   /// 单个跟手切帖项（当前浏览中的帖子附带醒目高光标识）
-  Widget _buildThreadItem(BuildContext context, ThreadSummary t, {required bool isSticky}) {
+  Widget _buildThreadItem(BuildContext context, ThreadSummary t,
+      {required bool isSticky}) {
     final colorScheme = Theme.of(context).colorScheme;
     final isCurrent = t.tid == widget.currentTid;
 
     return RepaintBoundary(
       child: PressScaleEffect(
-      scaleDown: 0.982,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 5),
-      child: Material(
-        color: isCurrent
-            ? colorScheme.primaryContainer.withAlpha(110)
-            : Colors.transparent,
-        borderRadius: BorderRadius.circular(8),
-        child: InkWell(
-          onTap: isCurrent
-              ? null
-              : () {
-                  HapticFeedback.selectionClick();
-                  widget.onSelectThread(t.tid);
-                },
-          borderRadius: BorderRadius.circular(8),
-          child: Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
+        scaleDown: 0.982,
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 5),
+          child: Material(
+            color: isCurrent
+                ? colorScheme.primaryContainer.withAlpha(110)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+            child: InkWell(
+              onTap: isCurrent
+                  ? null
+                  : () {
+                      HapticFeedback.selectionClick();
+                      widget.onSelectThread(t.tid);
+                    },
               borderRadius: BorderRadius.circular(8),
-              border: isCurrent
-                  ? Border.all(color: colorScheme.primary, width: 1.2)
-                  : Border.all(color: colorScheme.outlineVariant.withAlpha(35), width: 0.6),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: isCurrent
+                      ? Border.all(color: colorScheme.primary, width: 1.2)
+                      : Border.all(
+                          color: colorScheme.outlineVariant.withAlpha(35),
+                          width: 0.6),
+                ),
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    if (isSticky)
-                      Container(
-                        margin: const EdgeInsets.only(right: 6, top: 2),
-                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: Colors.orange.withAlpha(30),
-                          borderRadius: BorderRadius.circular(3),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (isSticky)
+                          Container(
+                            margin: const EdgeInsets.only(right: 6, top: 2),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 4, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: Colors.orange.withAlpha(30),
+                              borderRadius: BorderRadius.circular(3),
+                            ),
+                            child: Text(
+                              '置顶',
+                              style: TextStyle(
+                                  fontSize: 9.5,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.orange.shade800),
+                            ),
+                          ),
+                        Expanded(
+                          child: Text(
+                            t.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight:
+                                  isCurrent ? FontWeight.bold : FontWeight.w600,
+                              color: isCurrent
+                                  ? colorScheme.primary
+                                  : colorScheme.onSurface,
+                            ),
+                          ),
                         ),
-                        child: Text(
-                          '置顶',
-                          style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold, color: Colors.orange.shade800),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Text(
+                          t.author,
+                          style: TextStyle(
+                              fontSize: 10.5,
+                              color: colorScheme.outline.withAlpha(190)),
                         ),
-                      ),
-                    Expanded(
-                      child: Text(
-                        t.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: isCurrent ? FontWeight.bold : FontWeight.w600,
-                          color: isCurrent ? colorScheme.primary : colorScheme.onSurface,
+                        const SizedBox(width: 8),
+                        Text(
+                          t.timeText ?? '',
+                          style: TextStyle(
+                              fontSize: 10,
+                              color: colorScheme.outline.withAlpha(150)),
                         ),
-                      ),
+                        const Spacer(),
+                        if (isCurrent)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 5, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: colorScheme.primary,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text('正在阅读',
+                                style: TextStyle(
+                                    fontSize: 9.5,
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold)),
+                          )
+                        else
+                          Text(
+                            '${t.replies} 评',
+                            style: TextStyle(
+                                fontSize: 10,
+                                color: colorScheme.outline.withAlpha(180)),
+                          ),
+                      ],
                     ),
                   ],
                 ),
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    Text(
-                      t.author,
-                      style: TextStyle(fontSize: 10.5, color: colorScheme.outline.withAlpha(190)),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      t.timeText ?? '',
-                      style: TextStyle(fontSize: 10, color: colorScheme.outline.withAlpha(150)),
-                    ),
-                    const Spacer(),
-                    if (isCurrent)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: colorScheme.primary,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: const Text('正在阅读', style: TextStyle(fontSize: 9.5, color: Colors.white, fontWeight: FontWeight.bold)),
-                      )
-                    else
-                      Text(
-                        '${t.replies} 评',
-                        style: TextStyle(fontSize: 10, color: colorScheme.outline.withAlpha(180)),
-                      ),
-                  ],
-                ),
-              ],
+              ),
             ),
           ),
         ),
       ),
-    ),
-  ),
-);
-}
+    );
+  }
 }

@@ -1,6 +1,9 @@
+import '../app_motion.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import '../../api/klpbbs_api.dart';
+import '../../core/dio_client.dart';
+import '../../core/preload_service.dart';
 import '../../models/dashboard_card_model.dart';
 import '../../pages/medal_page.dart';
 import 'dashboard_card_frame.dart';
@@ -23,19 +26,19 @@ class MedalDashboardCard extends StatefulWidget {
 class _MedalDashboardCardState extends State<MedalDashboardCard> {
   List<({int id, String name, String desc, String img})> _medals = [];
   bool _loading = true;
-
-  // 预览占位数据（真实论坛风格名称，无失效外链）
-  static const List<({int id, String name, String desc, String img})> _fixedPreviewMedals = [
-    (id: 1, name: '开荒先锋', desc: '论坛资深活跃开荒者', img: ''),
-    (id: 2, name: '红石爱好者', desc: '精通机械与红石工程', img: ''),
-    (id: 3, name: '资源达人', desc: '优质资源分享者', img: ''),
-  ];
+  bool _known = false;
 
   @override
   void initState() {
     super.initState();
+    final cached = PreloadService.instance
+        .get<List<({int id, String name, String desc, String img})>>(
+            'my_medals',
+            ignoreExpired: true);
+    _medals = cached ?? [];
+    _known = cached != null;
+    _loading = !widget.isPreview && !_known;
     if (widget.isPreview) {
-      _medals = _fixedPreviewMedals;
       _loading = false;
     } else {
       _loadRealMedals();
@@ -43,18 +46,19 @@ class _MedalDashboardCardState extends State<MedalDashboardCard> {
   }
 
   Future<void> _loadRealMedals() async {
+    final session = DioClient.sessionKey;
     try {
       final list = await KlpbbsApi.getMyMedalsList();
-      if (mounted) {
+      if (mounted && session == DioClient.sessionKey) {
         setState(() {
           _medals = list; // 真实数据，绝不无中生有乱填
+          _known = true;
           _loading = false;
         });
       }
     } catch (_) {
-      if (mounted) {
+      if (mounted && session == DioClient.sessionKey) {
         setState(() {
-          _medals = [];
           _loading = false;
         });
       }
@@ -74,7 +78,8 @@ class _MedalDashboardCardState extends State<MedalDashboardCard> {
     final isCompact = widget.item.rowSpan <= 1;
     final isNarrow = widget.item.colSpan <= 2;
     final customTitle = widget.item.customParams['customTitle'] as String?;
-    final title = (customTitle != null && customTitle.isNotEmpty) ? customTitle : '荣誉勋章墙';
+    final title =
+        (customTitle != null && customTitle.isNotEmpty) ? customTitle : '荣誉勋章墙';
 
     return RepaintBoundary(
       child: DashboardCardFrame(
@@ -86,7 +91,8 @@ class _MedalDashboardCardState extends State<MedalDashboardCard> {
                 child: SizedBox(
                   width: 20,
                   height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: colorScheme.primary),
+                  child: AppLoadingIndicator(
+                      strokeWidth: 2, color: colorScheme.primary),
                 ),
               )
             : (isCompact || isNarrow)
@@ -118,7 +124,8 @@ class _MedalDashboardCardState extends State<MedalDashboardCard> {
               ),
             ],
           ),
-          child: const Icon(Icons.military_tech_rounded, size: 20, color: Colors.white),
+          child: const Icon(Icons.military_tech_rounded,
+              size: 20, color: Colors.white),
         ),
         const SizedBox(width: 8),
         Expanded(
@@ -130,10 +137,15 @@ class _MedalDashboardCardState extends State<MedalDashboardCard> {
                 title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                style: const TextStyle(
+                    fontSize: 12.5, fontWeight: FontWeight.bold),
               ),
               Text(
-                _medals.isNotEmpty ? '已佩戴 ${_medals.length} 枚荣誉勋章' : '暂未佩戴勋章 · 点击前往中心',
+                _medals.isNotEmpty
+                    ? '已拥有 ${_medals.length} 枚勋章'
+                    : _known
+                        ? '暂无已拥有的勋章'
+                        : '尚未载入勋章数据',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 10.5, color: colorScheme.outline),
@@ -149,8 +161,11 @@ class _MedalDashboardCardState extends State<MedalDashboardCard> {
             border: Border.all(color: Colors.amber.withAlpha(90), width: 0.8),
           ),
           child: Text(
-            '${_medals.length} 枚',
-            style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.amber.shade800),
+            _known ? '${_medals.length} 枚' : '—',
+            style: TextStyle(
+                fontSize: 10.5,
+                fontWeight: FontWeight.bold,
+                color: Colors.amber.shade800),
           ),
         ),
       ],
@@ -172,7 +187,8 @@ class _MedalDashboardCardState extends State<MedalDashboardCard> {
                 color: Colors.amber.withAlpha(30),
                 shape: BoxShape.circle,
               ),
-              child: Icon(Icons.military_tech_rounded, size: 16, color: Colors.amber.shade700),
+              child: Icon(Icons.military_tech_rounded,
+                  size: 16, color: Colors.amber.shade700),
             ),
             const SizedBox(width: 6),
             Text(
@@ -197,11 +213,16 @@ class _MedalDashboardCardState extends State<MedalDashboardCard> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.military_tech_outlined, size: 26, color: colorScheme.outlineVariant),
+                      Icon(Icons.military_tech_outlined,
+                          size: 26, color: colorScheme.outlineVariant),
                       const SizedBox(height: 4),
-                      Text('暂未佩戴勋章', style: TextStyle(fontSize: 11, color: colorScheme.outline)),
+                      Text(_known ? '暂无已拥有的勋章' : '尚未载入勋章数据',
+                          style: TextStyle(
+                              fontSize: 11, color: colorScheme.outline)),
                       const SizedBox(height: 2),
-                      Text('点击前往勋章中心挑选与佩戴', style: TextStyle(fontSize: 9.5, color: colorScheme.primary)),
+                      Text('点击前往勋章中心挑选与佩戴',
+                          style: TextStyle(
+                              fontSize: 9.5, color: colorScheme.primary)),
                     ],
                   ),
                 )
@@ -223,7 +244,8 @@ class _MedalDashboardCardState extends State<MedalDashboardCard> {
                         return Container(
                           padding: const EdgeInsets.all(4),
                           decoration: BoxDecoration(
-                            color: colorScheme.surfaceContainerHighest.withAlpha(90),
+                            color: colorScheme.surfaceContainerHighest
+                                .withAlpha(90),
                             borderRadius: BorderRadius.circular(8),
                             border: Border.all(
                               color: Colors.amber.withAlpha(45),
@@ -238,17 +260,22 @@ class _MedalDashboardCardState extends State<MedalDashboardCard> {
                                   child: CachedNetworkImage(
                                     imageUrl: m.img,
                                     fit: BoxFit.contain,
-                                    errorWidget: (_, __, ___) => const Icon(Icons.military_tech, size: 22, color: Colors.amber),
+                                    errorWidget: (_, __, ___) => const Icon(
+                                        Icons.military_tech,
+                                        size: 22,
+                                        color: Colors.amber),
                                   ),
                                 )
                               else
-                                const Icon(Icons.military_tech, size: 22, color: Colors.amber),
+                                const Icon(Icons.military_tech,
+                                    size: 22, color: Colors.amber),
                               const SizedBox(height: 2),
                               Text(
                                 m.name,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600),
+                                style: const TextStyle(
+                                    fontSize: 10, fontWeight: FontWeight.w600),
                               ),
                             ],
                           ),

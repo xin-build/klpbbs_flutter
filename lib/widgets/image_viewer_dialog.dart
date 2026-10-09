@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -81,7 +82,7 @@ class _ImageViewerDialogState extends State<ImageViewerDialog> {
                       child: SizedBox(
                         width: 32,
                         height: 32,
-                        child: CircularProgressIndicator(
+                        child: AppLoadingIndicator(
                           color: Colors.white70,
                           strokeWidth: 2,
                         ),

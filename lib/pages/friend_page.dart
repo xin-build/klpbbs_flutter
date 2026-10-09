@@ -1,11 +1,14 @@
+import '../widgets/app_motion.dart';
 import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/dio_client.dart';
 import '../models/friend_item.dart';
+import '../models/server_outage_info.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
+import '../widgets/server_outage_view.dart';
 import '../widgets/thread_card.dart';
 import 'pm_detail_page.dart';
 import 'user_space_page.dart';
@@ -81,7 +84,8 @@ class _FriendPageState extends State<FriendPage>
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isMe = widget.isMe ?? (DioClient.isLoggedIn && (_myUid == widget.uid || widget.uid <= 0));
+    final isMe = widget.isMe ??
+        (DioClient.isLoggedIn && (_myUid == widget.uid || widget.uid <= 0));
     final title = isMe
         ? '我的好友'
         : (widget.username != null && widget.username!.isNotEmpty
@@ -101,17 +105,23 @@ class _FriendPageState extends State<FriendPage>
                 preferredSize: const Size.fromHeight(48),
                 child: Container(
                   color: theme.colorScheme.surface,
-                  child: TabBar(
-                    controller: _tabController,
-                    isScrollable: true,
-                    tabAlignment: TabAlignment.start,
-                    labelColor: theme.colorScheme.primary,
-                    unselectedLabelColor: theme.colorScheme.onSurfaceVariant,
-                    indicatorColor: theme.colorScheme.primary,
-                    indicatorWeight: 3,
-                    labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                    unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.normal, fontSize: 14),
-                    tabs: _tabs.map((t) => Tab(text: t.label)).toList(),
+                  alignment: Alignment.center,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 880),
+                    child: TabBar(
+                      controller: _tabController,
+                      isScrollable: true,
+                      tabAlignment: TabAlignment.start,
+                      labelColor: theme.colorScheme.primary,
+                      unselectedLabelColor: theme.colorScheme.onSurfaceVariant,
+                      indicatorColor: theme.colorScheme.primary,
+                      indicatorWeight: 3,
+                      labelStyle: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 14),
+                      unselectedLabelStyle: const TextStyle(
+                          fontWeight: FontWeight.normal, fontSize: 14),
+                      tabs: _tabs.map((t) => Tab(text: t.label)).toList(),
+                    ),
                   ),
                 ),
               )
@@ -169,7 +179,8 @@ class _FriendPageState extends State<FriendPage>
                       ),
                     ),
                     filled: true,
-                    fillColor: theme.colorScheme.surfaceContainerHighest.withAlpha(50),
+                    fillColor:
+                        theme.colorScheme.surfaceContainerHighest.withAlpha(50),
                   ),
                 ),
               ),
@@ -236,6 +247,7 @@ class _FriendTabListViewState extends State<_FriendTabListView>
   bool _hasMore = true;
   int _currentPage = 1;
   String? _error;
+  Object? _rawError;
 
   @override
   bool get wantKeepAlive => true;
@@ -257,7 +269,8 @@ class _FriendTabListViewState extends State<_FriendTabListView>
 
   void _onScroll() {
     if (_scrollController.hasClients &&
-        _scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 300) {
+        _scrollController.position.pixels >=
+            _scrollController.position.maxScrollExtent - 300) {
       if (!_isLoading && _hasMore) {
         _load(refresh: false);
       }
@@ -272,6 +285,7 @@ class _FriendTabListViewState extends State<_FriendTabListView>
       setState(() {
         _isLoading = true;
         _error = null;
+        _rawError = null;
         if (_items.isEmpty) _isFirstLoad = true;
       });
     } else {
@@ -279,6 +293,7 @@ class _FriendTabListViewState extends State<_FriendTabListView>
       setState(() {
         _isLoading = true;
         _error = null;
+        _rawError = null;
       });
     }
 
@@ -311,6 +326,7 @@ class _FriendTabListViewState extends State<_FriendTabListView>
       if (!mounted) return;
       setState(() {
         _error = e.toString();
+        _rawError = e;
         _isLoading = false;
         _isFirstLoad = false;
       });
@@ -402,7 +418,8 @@ class _FriendTabListViewState extends State<_FriendTabListView>
                       hintText: '输入需要添加黑名单的用户名',
                       hintStyle: TextStyle(
                         fontSize: 13,
-                        color: theme.colorScheme.onSurfaceVariant.withAlpha(150),
+                        color:
+                            theme.colorScheme.onSurfaceVariant.withAlpha(150),
                       ),
                       isDense: true,
                       contentPadding: const EdgeInsets.symmetric(
@@ -424,18 +441,20 @@ class _FriendTabListViewState extends State<_FriendTabListView>
                       ? const SizedBox(
                           width: 14,
                           height: 14,
-                          child: CircularProgressIndicator(
+                          child: AppLoadingIndicator(
                             strokeWidth: 2,
                             color: Colors.white,
                           ),
                         )
                       : const Icon(Icons.person_add_disabled_rounded, size: 16),
-                  label: const Text('添加', style: TextStyle(fontWeight: FontWeight.bold)),
+                  label: const Text('添加',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
                   style: FilledButton.styleFrom(
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 11),
                   ),
                   onPressed: _isAddingBlacklist ? null : _addBlacklist,
                 ),
@@ -446,22 +465,31 @@ class _FriendTabListViewState extends State<_FriendTabListView>
 
         Expanded(
           child: _isFirstLoad
-              ? const Center(child: CircularProgressIndicator())
+              ? const Center(child: AppLoadingIndicator())
               : _error != null && _items.isEmpty
-                  ? EmptyView(
-                      icon: Icons.error_outline,
-                      title: '加载${widget.tabTitle}失败',
-                      subtitle: '$_error',
-                      action: FilledButton.tonal(
-                        onPressed: () => _load(refresh: true),
-                        child: const Text('重试'),
-                      ),
-                    )
+                  ? (ServerOutageInfo.tryParse(_rawError ?? _error) != null
+                      ? ServerOutageView(
+                          outage:
+                              ServerOutageInfo.tryParse(_rawError ?? _error)!,
+                          onRetry: () => _load(refresh: true),
+                        )
+                      : EmptyView(
+                          icon: Icons.error_outline,
+                          title: '加载${widget.tabTitle}失败',
+                          subtitle: '$_error',
+                          action: FilledButton.tonal(
+                            onPressed: () => _load(refresh: true),
+                            child: const Text('重试'),
+                          ),
+                        ))
                   : _items.isEmpty
                       ? EmptyView(
                           icon: _getTabEmptyIcon(widget.view),
-                          title: widget.view == 'blacklist' ? '没有相关用户列表' : '暂无数据',
-                          subtitle: widget.isMe ? '您目前没有${widget.tabTitle}数据' : '暂无${widget.tabTitle}数据',
+                          title:
+                              widget.view == 'blacklist' ? '没有相关用户列表' : '暂无数据',
+                          subtitle: widget.isMe
+                              ? '您目前没有${widget.tabTitle}数据'
+                              : '暂无${widget.tabTitle}数据',
                           action: FilledButton.tonal(
                             onPressed: () => _load(refresh: true),
                             child: const Text('刷新'),
@@ -472,10 +500,18 @@ class _FriendTabListViewState extends State<_FriendTabListView>
                             final filteredList = widget.filterKeyword.isEmpty
                                 ? _items
                                 : _items.where((f) {
-                                    return f.username.toLowerCase().contains(widget.filterKeyword) ||
-                                        f.usergroup.toLowerCase().contains(widget.filterKeyword) ||
-                                        f.uid.toString().contains(widget.filterKeyword) ||
-                                        f.note.toLowerCase().contains(widget.filterKeyword);
+                                    return f.username
+                                            .toLowerCase()
+                                            .contains(widget.filterKeyword) ||
+                                        f.usergroup
+                                            .toLowerCase()
+                                            .contains(widget.filterKeyword) ||
+                                        f.uid
+                                            .toString()
+                                            .contains(widget.filterKeyword) ||
+                                        f.note
+                                            .toLowerCase()
+                                            .contains(widget.filterKeyword);
                                   }).toList();
 
                             return RefreshIndicator(
@@ -484,30 +520,37 @@ class _FriendTabListViewState extends State<_FriendTabListView>
                                   ? Center(
                                       child: Text(
                                         '未找到匹配「${widget.filterKeyword}」的结果',
-                                        style: TextStyle(color: theme.colorScheme.outline),
+                                        style: TextStyle(
+                                            color: theme.colorScheme.outline),
                                       ),
                                     )
                                   : ListView.builder(
                                       controller: _scrollController,
-                                      physics: const AlwaysScrollableScrollPhysics(),
-                                      padding: const EdgeInsets.symmetric(vertical: 8),
-                                      itemCount: filteredList.length + (_hasMore ? 1 : 0),
+                                      physics:
+                                          const AlwaysScrollableScrollPhysics(),
+                                      padding: const EdgeInsets.symmetric(
+                                          vertical: 8),
+                                      itemCount: filteredList.length +
+                                          (_hasMore ? 1 : 0),
                                       itemBuilder: (context, index) {
                                         if (index == filteredList.length) {
                                           return const Padding(
-                                            padding: EdgeInsets.symmetric(vertical: 16),
+                                            padding: EdgeInsets.symmetric(
+                                                vertical: 16),
                                             child: Center(
                                               child: SizedBox(
                                                 width: 24,
                                                 height: 24,
-                                                child: CircularProgressIndicator(strokeWidth: 2),
+                                                child: AppLoadingIndicator(
+                                                    strokeWidth: 2),
                                               ),
                                             ),
                                           );
                                         }
                                         final item = filteredList[index];
                                         return _FriendCard(
-                                          key: ValueKey('${widget.view}_${item.uid}'),
+                                          key: ValueKey(
+                                              '${widget.view}_${item.uid}'),
                                           item: item,
                                           view: widget.view,
                                           isMe: widget.isMe,
@@ -589,7 +632,9 @@ class _FriendCardState extends State<_FriendCard> {
         SnackBar(
           content: Text(
             ok
-                ? (nextState ? '已关注「${widget.item.username}」' : '已取消关注「${widget.item.username}」')
+                ? (nextState
+                    ? '已关注「${widget.item.username}」'
+                    : '已取消关注「${widget.item.username}」')
                 : '操作失败，请重试',
           ),
           duration: const Duration(seconds: 2),
@@ -667,7 +712,8 @@ class _FriendCardState extends State<_FriendCard> {
                 padding: const EdgeInsets.all(16),
                 child: Text(
                   '选择好友「${widget.item.username}」分组',
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 16),
                 ),
               ),
               const Divider(height: 1),
@@ -822,7 +868,9 @@ class _FriendCardState extends State<_FriendCard> {
         borderRadius: BorderRadius.circular(14),
         side: BorderSide(color: colorScheme.outlineVariant.withAlpha(45)),
       ),
-      color: isDark ? colorScheme.surfaceContainerHigh : colorScheme.surfaceContainerLowest,
+      color: isDark
+          ? colorScheme.surfaceContainerHigh
+          : colorScheme.surfaceContainerLowest,
       child: InkWell(
         borderRadius: BorderRadius.circular(14),
         onTap: () {
@@ -838,8 +886,10 @@ class _FriendCardState extends State<_FriendCard> {
             children: [
               // 1. 头像区（带在线指示徽标）
               UserAvatarWidget(
+                reserveFrameSpace: true,
                 uid: f.uid,
                 avatarUrl: f.avatarUrl,
+                faceUrl: f.faceUrl,
                 author: f.username,
                 size: 44,
                 isOnline: f.isOnline,
@@ -888,7 +938,8 @@ class _FriendCardState extends State<_FriendCard> {
                       children: [
                         if (f.usergroup.isNotEmpty)
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
                             decoration: BoxDecoration(
                               color: f.usergroup.contains('禁止')
                                   ? colorScheme.errorContainer
@@ -910,10 +961,13 @@ class _FriendCardState extends State<_FriendCard> {
                           Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.stars_rounded, size: 13, color: Colors.amber.shade700),
+                              Icon(Icons.stars_rounded,
+                                  size: 13, color: Colors.amber.shade700),
                               const SizedBox(width: 2),
                               Text(
-                                f.credits.contains('积分') ? f.credits : '积分: ${f.credits}',
+                                f.credits.contains('积分')
+                                    ? f.credits
+                                    : '积分: ${f.credits}',
                                 style: TextStyle(
                                   fontSize: 11,
                                   color: colorScheme.onSurfaceVariant,
@@ -959,7 +1013,8 @@ class _FriendCardState extends State<_FriendCard> {
                         final ok = await KlpbbsApi.acceptFriendRequest(f.uid);
                         if (mounted) {
                           messenger.showSnackBar(
-                            SnackBar(content: Text(ok ? '已通过好友申请' : '操作失败，请重试')),
+                            SnackBar(
+                                content: Text(ok ? '已通过好友申请' : '操作失败，请重试')),
                           );
                           if (ok) widget.onChanged();
                         }
@@ -977,7 +1032,8 @@ class _FriendCardState extends State<_FriendCard> {
                         final ok = await KlpbbsApi.ignoreFriendRequest(f.uid);
                         if (mounted) {
                           messenger.showSnackBar(
-                            SnackBar(content: Text(ok ? '已忽略好友申请' : '操作失败，请重试')),
+                            SnackBar(
+                                content: Text(ok ? '已忽略好友申请' : '操作失败，请重试')),
                           );
                           if (ok) widget.onChanged();
                         }
@@ -1011,7 +1067,8 @@ class _FriendCardState extends State<_FriendCard> {
                   children: [
                     // 发消息 (Chat)
                     IconButton.filledTonal(
-                      icon: const Icon(Icons.chat_bubble_outline_rounded, size: 18),
+                      icon: const Icon(Icons.chat_bubble_outline_rounded,
+                          size: 18),
                       tooltip: '发消息',
                       visualDensity: VisualDensity.compact,
                       onPressed: () {
@@ -1032,7 +1089,9 @@ class _FriendCardState extends State<_FriendCard> {
                       icon: Icon(
                         Icons.waving_hand_rounded,
                         size: 18,
-                        color: isDark ? Colors.tealAccent : const Color(0xFF00897B),
+                        color: isDark
+                            ? Colors.tealAccent
+                            : const Color(0xFF00897B),
                       ),
                       tooltip: '打招呼',
                       visualDensity: VisualDensity.compact,
@@ -1046,12 +1105,16 @@ class _FriendCardState extends State<_FriendCard> {
                           ? const SizedBox(
                               width: 14,
                               height: 14,
-                              child: CircularProgressIndicator(strokeWidth: 2),
+                              child: AppLoadingIndicator(strokeWidth: 2),
                             )
                           : Icon(
-                              _isFollowing ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                              _isFollowing
+                                  ? Icons.favorite_rounded
+                                  : Icons.favorite_border_rounded,
                               size: 18,
-                              color: _isFollowing ? const Color(0xFFE53935) : colorScheme.onSurfaceVariant,
+                              color: _isFollowing
+                                  ? const Color(0xFFE53935)
+                                  : colorScheme.onSurfaceVariant,
                             ),
                       tooltip: _isFollowing ? '取消关注' : '关注',
                       visualDensity: VisualDensity.compact,
@@ -1080,7 +1143,8 @@ class _FriendCardState extends State<_FriendCard> {
                           case 'space':
                             if (f.uid > 0) {
                               Navigator.of(context).push(
-                                MaterialPageRoute(builder: (_) => UserSpacePage(uid: f.uid)),
+                                MaterialPageRoute(
+                                    builder: (_) => UserSpacePage(uid: f.uid)),
                               );
                             }
                             break;
@@ -1128,9 +1192,11 @@ class _FriendCardState extends State<_FriendCard> {
                           value: 'blacklist',
                           child: Row(
                             children: [
-                              Icon(Icons.block_outlined, size: 18, color: Colors.orange),
+                              Icon(Icons.block_outlined,
+                                  size: 18, color: Colors.orange),
                               SizedBox(width: 8),
-                              Text('加入黑名单', style: TextStyle(color: Colors.orange)),
+                              Text('加入黑名单',
+                                  style: TextStyle(color: Colors.orange)),
                             ],
                           ),
                         ),
@@ -1139,9 +1205,11 @@ class _FriendCardState extends State<_FriendCard> {
                             value: 'delete',
                             child: Row(
                               children: [
-                                Icon(Icons.person_remove_outlined, size: 18, color: Colors.red),
+                                Icon(Icons.person_remove_outlined,
+                                    size: 18, color: Colors.red),
                                 SizedBox(width: 8),
-                                Text('删除好友', style: TextStyle(color: Colors.red)),
+                                Text('删除好友',
+                                    style: TextStyle(color: Colors.red)),
                               ],
                             ),
                           ),
@@ -1157,4 +1225,3 @@ class _FriendCardState extends State<_FriendCard> {
     );
   }
 }
-

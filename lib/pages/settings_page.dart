@@ -1,3 +1,6 @@
+import '../widgets/app_motion.dart';
+import 'dart:async';
+import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -8,6 +11,8 @@ import '../services/auto_sign_service.dart';
 import '../services/download_service.dart';
 import '../services/push_notification_service.dart';
 import '../services/rgb_theme_service.dart';
+import '../widgets/rgb_theme_settings_panel.dart';
+import '../widgets/pc_gpu_settings.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/mobile_home_customizer.dart';
@@ -15,15 +20,23 @@ import '../widgets/responsive_layout.dart';
 import '../widgets/visual_grid_canvas.dart';
 import '../core/cache_manager.dart';
 import '../core/preload_service.dart';
+import 'package:flutter/services.dart';
+import '../models/thread_summary.dart';
+import '../widgets/thread_card.dart';
 import 'download_manager_page.dart';
 
 enum SettingsCategory {
-  appearance('外观与个性化', '色彩、深色模式、字体缩放', Icons.palette_outlined, Icons.palette_rounded),
-  sign('自动签到', '每日定时、多账号、极速冲榜', Icons.event_available_outlined, Icons.event_available_rounded),
-  notification('消息推送与后台', '轮询探测、后台挂起、托盘守护', Icons.notifications_outlined, Icons.notifications_rounded),
+  appearance(
+      '外观与个性化', '色彩、深色模式、字体缩放', Icons.palette_outlined, Icons.palette_rounded),
+  sign('自动签到', '当前账号、启动与定时签到', Icons.event_available_outlined,
+      Icons.event_available_rounded),
+  notification('消息推送与后台', '轮询探测、后台挂起、托盘守护', Icons.notifications_outlined,
+      Icons.notifications_rounded),
   layout('排版与多端模式', '宽屏双栏、导航布局', Icons.devices_outlined, Icons.devices_rounded),
-  download('下载与存储管理', '并发线程、路径配置', Icons.download_outlined, Icons.download_rounded),
-  performance('性能与 GPU 加速', '硬件加速、渲染引擎、图片缓存', Icons.speed_outlined, Icons.speed_rounded),
+  download(
+      '下载与存储管理', '并发线程、路径配置', Icons.download_outlined, Icons.download_rounded),
+  performance(
+      '动画与性能', '滚动、动效、后台解析与图片缓存', Icons.speed_outlined, Icons.speed_rounded),
   forum('论坛与阅读偏好', '剪贴板识别、阅读浏览、黑名单', Icons.forum_outlined, Icons.forum_rounded),
   about('关于与系统诊断', '版本信息、系统诊断、检查更新', Icons.info_outline, Icons.info_rounded);
 
@@ -31,7 +44,8 @@ enum SettingsCategory {
   final String subtitle;
   final IconData icon;
   final IconData selectedIcon;
-  const SettingsCategory(this.label, this.subtitle, this.icon, this.selectedIcon);
+  const SettingsCategory(
+      this.label, this.subtitle, this.icon, this.selectedIcon);
 }
 
 /// 高度自定义设置中心（支持 PC 宽屏双栏与移动端层级视图）
@@ -66,6 +80,11 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   late SettingsCategory _selectedCategory;
+  final _scrollBucket = PageStorageBucket();
+
+  bool _wide(BuildContext context) =>
+      ResponsiveBreakpoints.isDesktop(context) &&
+      MediaQuery.sizeOf(context).width >= 920;
 
   @override
   void initState() {
@@ -73,188 +92,291 @@ class _SettingsPageState extends State<SettingsPage> {
     _selectedCategory = widget.initialCategory ?? SettingsCategory.appearance;
     if (widget.initialCategory != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        final isDesktop = ResponsiveBreakpoints.isDesktop(context) &&
-            MediaQuery.sizeOf(context).width >= 600.0;
-        if (!isDesktop) {
-          final cat = widget.initialCategory!;
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => Scaffold(
-                appBar: AppBar(title: Text(cat.label)),
-                body: SettingsPage.buildCategoryView(cat),
-              ),
-            ),
-          );
-        }
+        if (mounted && !_wide(context)) _openCategory(widget.initialCategory!);
       });
     }
   }
 
+  void _openCategory(SettingsCategory category) {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => Scaffold(
+        appBar: AppBar(title: Text(category.label)),
+        body: _SettingsCategoryPane(category: category),
+      ),
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
-    final isDesktop = ResponsiveBreakpoints.isDesktop(context) &&
-        MediaQuery.sizeOf(context).width >= 600.0;
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
+    final scheme = Theme.of(context).colorScheme;
+    final wide = _wide(context);
     return Scaffold(
       drawer: const GlobalAppDrawer(),
-      drawerEdgeDragWidth: 50.0,
+      drawerEdgeDragWidth: 50,
       appBar: AppBar(
         leading: const GlobalNavLeading(),
         leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('系统设置'),
-        elevation: 0,
       ),
-      body: isDesktop
-          ? Row(
-              children: [
-                // 左侧设置分类导航
-                SizedBox(
-                  width: 260,
-                  child: Material(
-                    color: colorScheme.surfaceContainerLow,
-                    child: ListView(
-                      padding: const EdgeInsets.symmetric(
-                        vertical: 12,
-                        horizontal: 10,
+      body: wide
+          ? Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SizedBox(
+                      width: 272,
+                      child: Card.filled(
+                        margin: EdgeInsets.zero,
+                        child: ListView(
+                          padding: const EdgeInsets.all(12),
+                          children: [
+                            Padding(
+                              padding:
+                                  const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                              child: Text('设置分类',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelLarge
+                                      ?.copyWith(
+                                          color: scheme.onSurfaceVariant)),
+                            ),
+                            for (final category in SettingsCategory.values)
+                              _SettingsCategoryTile(
+                                category: category,
+                                selected: _selectedCategory == category,
+                                onTap: () {
+                                  if (_selectedCategory != category) {
+                                    setState(
+                                        () => _selectedCategory = category);
+                                  }
+                                },
+                              ),
+                          ],
+                        ),
                       ),
-                      children: SettingsCategory.values.map((cat) {
-                        final isSelected = _selectedCategory == cat;
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 2),
-                          child: ListTile(
-                            leading: Icon(
-                              isSelected ? cat.selectedIcon : cat.icon,
-                              color: isSelected
-                                  ? colorScheme.primary
-                                  : colorScheme.onSurfaceVariant,
-                            ),
-                            title: Text(
-                              cat.label,
-                              style: TextStyle(
-                                fontWeight: isSelected
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                                color: isSelected
-                                    ? colorScheme.primary
-                                    : colorScheme.onSurface,
-                              ),
-                            ),
-                            subtitle: Text(
-                              cat.subtitle,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: colorScheme.onSurfaceVariant.withAlpha(160),
-                              ),
-                            ),
-                            selected: isSelected,
-                            selectedTileColor: colorScheme.primaryContainer
-                                .withAlpha(80),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            onTap: () =>
-                                setState(() => _selectedCategory = cat),
-                          ),
-                        );
-                      }).toList(),
                     ),
-                  ),
-                ),
-                VerticalDivider(
-                  width: 1,
-                  thickness: 1,
-                  color: colorScheme.outlineVariant.withAlpha(50),
-                ),
-                // 右侧详细设置面板
-                Expanded(
-                  child: Scaffold(body: SettingsPage.buildCategoryView(_selectedCategory)),
-                ),
-              ],
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: PageStorage(
+                        bucket: _scrollBucket,
+                        child: AnimatedSwitcher(
+                          duration: AppMotion.duration(context, 300,
+                              scope: MotionScope.navigation),
+                          reverseDuration: AppMotion.duration(context, 140,
+                              scope: MotionScope.navigation),
+                          switchInCurve: AppMotion.emphasized,
+                          switchOutCurve: Curves.easeOut,
+                          transitionBuilder: (child, animation) =>
+                              FadeTransition(
+                            opacity: animation,
+                            child: SlideTransition(
+                              position: Tween<Offset>(
+                                      begin: const Offset(.025, 0),
+                                      end: Offset.zero)
+                                  .animate(animation),
+                              child: child,
+                            ),
+                          ),
+                          child: _SettingsCategoryPane(
+                            key: PageStorageKey(_selectedCategory.name),
+                            category: _selectedCategory,
+                            desktop: true,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ]),
             )
           : ListView(
-              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
               children: [
-                Card(
-                  elevation: 0,
-                  color: colorScheme.surfaceContainerLow,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    side: BorderSide(
-                      color: colorScheme.outlineVariant.withAlpha(40),
-                      width: 0.8,
-                    ),
-                  ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 8, 8, 20),
+                  child: Text('按使用习惯调整界面、阅读与消息提醒',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(color: scheme.onSurfaceVariant)),
+                ),
+                Card.filled(
+                  margin: EdgeInsets.zero,
                   clipBehavior: Clip.antiAlias,
-                  child: ListView.separated(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    itemCount: SettingsCategory.values.length,
-                    separatorBuilder: (_, __) => Divider(
-                      height: 1,
-                      indent: 58,
-                      color: colorScheme.outlineVariant.withAlpha(30),
-                    ),
-                    itemBuilder: (ctx, idx) {
-                      final cat = SettingsCategory.values[idx];
-                      return ListTile(
+                  child: Column(children: [
+                    for (var i = 0;
+                        i < SettingsCategory.values.length;
+                        i++) ...[
+                      if (i > 0)
+                        Divider(
+                            height: 1,
+                            indent: 76,
+                            endIndent: 20,
+                            color: scheme.outlineVariant.withAlpha(70)),
+                      ListTile(
+                        key: ValueKey(
+                            'settings-category-${SettingsCategory.values[i].name}'),
                         contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 4,
+                            horizontal: 20, vertical: 10),
+                        leading: CircleAvatar(
+                          backgroundColor: scheme.secondaryContainer,
+                          foregroundColor: scheme.onSecondaryContainer,
+                          child:
+                              Icon(SettingsCategory.values[i].icon, size: 22),
                         ),
-                        leading: Container(
-                          width: 40,
-                          height: 40,
-                          decoration: BoxDecoration(
-                            color: colorScheme.primaryContainer.withAlpha(90),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Icon(cat.icon, color: colorScheme.primary, size: 22),
+                        title: Text(SettingsCategory.values[i].label,
+                            style: Theme.of(context).textTheme.titleSmall),
+                        subtitle: Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(SettingsCategory.values[i].subtitle),
                         ),
-                        title: Text(
-                          cat.label,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w600,
-                            fontSize: 15,
-                          ),
-                        ),
-                        subtitle: Text(
-                          cat.subtitle,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: colorScheme.onSurfaceVariant.withAlpha(200),
-                          ),
-                        ),
-                        trailing: Icon(
-                          Icons.chevron_right_rounded,
-                          size: 20,
-                          color: colorScheme.onSurfaceVariant.withAlpha(140),
-                        ),
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => Scaffold(
-                                appBar: AppBar(title: Text(cat.label)),
-                                body: SettingsPage.buildCategoryView(cat),
-                              ),
-                            ),
-                          );
-                        },
-                      );
-                    },
-                  ),
+                        trailing: const Icon(Icons.chevron_right_rounded),
+                        onTap: () => _openCategory(SettingsCategory.values[i]),
+                      ),
+                    ],
+                  ]),
                 ),
               ],
             ),
     );
   }
+}
 
+class _SettingsCategoryTile extends StatelessWidget {
+  final SettingsCategory category;
+  final bool selected;
+  final VoidCallback onTap;
+  const _SettingsCategoryTile({
+    required this.category,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: TweenAnimationBuilder<Color?>(
+        tween: ColorTween(
+          end: selected ? scheme.secondaryContainer : Colors.transparent,
+        ),
+        duration: AppMotion.duration(context, 180),
+        curve: AppMotion.emphasized,
+        builder: (context, color, child) => Material(
+          color: color ?? Colors.transparent,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+          clipBehavior: Clip.antiAlias,
+          child: child,
+        ),
+        child: ListTile(
+          key: ValueKey('settings-category-${category.name}'),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          leading: Icon(selected ? category.selectedIcon : category.icon,
+              color: selected
+                  ? scheme.onSecondaryContainer
+                  : scheme.onSurfaceVariant),
+          title: Text(category.label,
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontSize: 15,
+                  color: selected
+                      ? scheme.onSecondaryContainer
+                      : scheme.onSurface)),
+          subtitle: Padding(
+            padding: const EdgeInsets.only(top: 3),
+            child: Text(category.subtitle,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    fontSize: 13,
+                    height: 1.35,
+                    color: selected
+                        ? scheme.onSecondaryContainer
+                        : scheme.onSurfaceVariant)),
+          ),
+          selected: selected,
+          onTap: onTap,
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsCategoryPane extends StatelessWidget {
+  final SettingsCategory category;
+  final bool desktop;
+  const _SettingsCategoryPane({
+    super.key,
+    required this.category,
+    this.desktop = false,
+  });
+
+  @override
+  Widget build(BuildContext context) => Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1040),
+          child: Theme(
+            data: Theme.of(context).copyWith(
+              cardTheme: Theme.of(context).cardTheme.copyWith(
+                    elevation: 0,
+                    color: Theme.of(context).colorScheme.surfaceContainerLow,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(24)),
+                  ),
+              listTileTheme: Theme.of(context).listTileTheme.copyWith(
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                    minVerticalPadding: 8,
+                    titleTextStyle: Theme.of(context)
+                        .textTheme
+                        .bodyLarge
+                        ?.copyWith(fontSize: 15, height: 1.35),
+                    subtitleTextStyle: Theme.of(context)
+                        .textTheme
+                        .bodyMedium
+                        ?.copyWith(
+                            fontSize: 14,
+                            height: 1.4,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant),
+                  ),
+            ),
+            child: Scaffold(
+              backgroundColor: Theme.of(context).colorScheme.surface,
+              body: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (desktop)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(24, 12, 24, 16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(category.label,
+                                style:
+                                    Theme.of(context).textTheme.headlineSmall),
+                            const SizedBox(height: 6),
+                            Text(category.subtitle,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodyMedium
+                                    ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurfaceVariant)),
+                          ],
+                        ),
+                      ),
+                    Expanded(child: SettingsPage.buildCategoryView(category)),
+                  ]),
+            ),
+          ),
+        ),
+      );
 }
 
 /// 1. 外观与个性化
@@ -266,6 +388,27 @@ class _AppearanceSettingsView extends StatefulWidget {
 
 class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
   late double _fontScaleValue;
+
+  static final _previewThread = ThreadSummary(
+    tid: 999999,
+    fid: 52,
+    title: '【1.20+】苦力怕论坛精选超清材质包 & 极致光影体验',
+    author: '苦力怕小助手',
+    uid: 1,
+    forumName: '基岩版附加包',
+    typeName: '材质光影',
+    timeText: '10分钟前',
+    views: 12580,
+    replies: 326,
+    recommendCount: 88,
+    isDigest: true,
+    isRecommend: true,
+    isHot: true,
+    excerpt: '专为移动端与桌面端深度优化的极致视觉光影材质包，带来逼真动态水面与全局光照反射效果...',
+    imageUrls: const [
+      'https://klpbbs.com/template/comiis_app/comiis/touch/css/img/none.png',
+    ],
+  );
 
   @override
   void initState() {
@@ -354,12 +497,14 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
                     ],
                   ),
                 ],
-                if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) ...[
+                if (!kIsWeb &&
+                    defaultTargetPlatform == TargetPlatform.android) ...[
                   const Divider(height: 24),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('系统动态莫奈取色 (Material You)'),
-                    subtitle: const Text('开启后提取 Android 12+ 系统壁纸主题色，关闭则使用上方选定色彩'),
+                    subtitle:
+                        const Text('开启后提取 Android 12+ 系统壁纸主题色，关闭则使用上方选定色彩'),
                     value: AppConfig.useSystemMonet,
                     onChanged: (v) {
                       AppConfig.setUseSystemMonet(v);
@@ -371,119 +516,7 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
             ),
           ),
         ),
-        if (RgbThemeService.instance.isUnlocked) ...[
-          const SizedBox(height: 16),
-          _buildSectionHeader('🌈 RGB 动态炫彩主题 (Chroma & Rave)'),
-          Card(
-            child: Column(
-              children: [
-                SwitchListTile(
-                  title: const Text('启用 RGB 动态炫彩'),
-                  subtitle: Text(
-                    RgbThemeService.instance.mode == RgbMode.strobe
-                        ? '⚡ 超频迪斯科：高频爆闪跳变，电竞狂暴光污染'
-                        : '🌈 流光幻彩：平滑色相流动，优雅电竞色彩',
-                  ),
-                  value: RgbThemeService.instance.isEnabled,
-                  onChanged: (v) {
-                    RgbThemeService.instance.setEnabled(v);
-                    setState(() {});
-                  },
-                ),
-                if (RgbThemeService.instance.isEnabled) ...[
-                  const Divider(height: 1),
-                  ListTile(
-                    title: const Text('炫彩模式'),
-                    subtitle: Text(RgbThemeService.instance.mode.description),
-                    trailing: SegmentedButton<RgbMode>(
-                      segments: const [
-                        ButtonSegment(
-                          value: RgbMode.flow,
-                          icon: Icon(Icons.waves_rounded, size: 16),
-                          label: Text('流光幻彩'),
-                        ),
-                        ButtonSegment(
-                          value: RgbMode.strobe,
-                          icon: Icon(Icons.flash_on_rounded, size: 16),
-                          label: Text('超频迪斯科'),
-                        ),
-                      ],
-                      selected: {RgbThemeService.instance.mode},
-                      onSelectionChanged: (s) {
-                        RgbThemeService.instance.setMode(s.first);
-                        setState(() {});
-                      },
-                      style: const ButtonStyle(
-                        visualDensity: VisualDensity.compact,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                    ),
-                  ),
-                  const Divider(height: 1),
-                  ListTile(
-                    title: const Text('变换速率 / 闪烁频率'),
-                    subtitle: Text(
-                      RgbThemeService.instance.speed <= 0.6
-                          ? '舒缓模式 (0.5x)'
-                          : (RgbThemeService.instance.speed >= 2.5
-                              ? '狂暴超频 (3.0x)'
-                              : (RgbThemeService.instance.speed >= 1.8
-                                  ? '疾速电竞 (2.0x)'
-                                  : '绚丽标准 (1.0x)')),
-                    ),
-                    trailing: SegmentedButton<double>(
-                      segments: const [
-                        ButtonSegment(value: 0.5, label: Text('0.5x')),
-                        ButtonSegment(value: 1.0, label: Text('1.0x')),
-                        ButtonSegment(value: 2.0, label: Text('2.0x')),
-                        ButtonSegment(value: 3.0, label: Text('3.0x')),
-                      ],
-                      selected: {RgbThemeService.instance.speed},
-                      onSelectionChanged: (s) {
-                        RgbThemeService.instance.setSpeed(s.first);
-                        setState(() {});
-                      },
-                      style: const ButtonStyle(
-                        visualDensity: VisualDensity.compact,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                    ),
-                  ),
-                  RepaintBoundary(
-                    child: Container(
-                      height: 34,
-                      margin: const EdgeInsets.fromLTRB(16, 6, 16, 14),
-                      decoration: BoxDecoration(
-                        gradient: RgbThemeService.instance.rainbowGradient,
-                        borderRadius: BorderRadius.circular(8),
-                        boxShadow: [
-                          BoxShadow(
-                            color: RgbThemeService.instance.currentColor.withAlpha(80),
-                            blurRadius: 8,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        RgbThemeService.instance.mode == RgbMode.strobe
-                            ? '⚡ OVERCLOCKED RAVE DISCO STROBE ⚡'
-                            : '🌈 RGB CHROMA DYNAMIC STREAMING 🌈',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 1.2,
-                          shadows: [Shadow(color: Colors.black87, blurRadius: 4)],
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ],
+        const RgbThemeSettingsPanel(),
         const SizedBox(height: 16),
         _buildSectionHeader('暗色与深色模式'),
         Card(
@@ -540,7 +573,8 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
                   children: [
                     Text(
                       '85%',
-                      style: TextStyle(fontSize: 12, color: colorScheme.outline),
+                      style:
+                          TextStyle(fontSize: 12, color: colorScheme.outline),
                     ),
                     Expanded(
                       child: Slider(
@@ -551,7 +585,8 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
                           setState(() => _fontScaleValue = v);
                         },
                         onChangeEnd: (v) {
-                          final snapped = ((v * 20).round() / 20.0).clamp(0.85, 1.35);
+                          final snapped =
+                              ((v * 20).round() / 20.0).clamp(0.85, 1.35);
                           setState(() => _fontScaleValue = snapped);
                           AppConfig.setFontScale(snapped);
                         },
@@ -559,7 +594,8 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
                     ),
                     Text(
                       '135%',
-                      style: TextStyle(fontSize: 12, color: colorScheme.outline),
+                      style:
+                          TextStyle(fontSize: 12, color: colorScheme.outline),
                     ),
                   ],
                 ),
@@ -607,21 +643,103 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
                 ),
               ),
               const Divider(height: 1),
-              ListTile(
-                title: const Text('帖子卡片风格'),
-                trailing: DropdownButton<CardStyle>(
-                  value: AppConfig.cardStyle,
-                  underline: const SizedBox(),
-                  items: CardStyle.values
-                      .map(
-                        (c) => DropdownMenuItem(
-                          value: c,
-                          child: Text(c.label.split(' ')[0]),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.style_outlined, size: 20),
+                        const SizedBox(width: 8),
+                        const Text(
+                          '帖子卡片排版风格',
+                          style: TextStyle(
+                              fontSize: 15, fontWeight: FontWeight.bold),
                         ),
-                      )
-                      .toList(),
-                  onChanged: (v) =>
-                      v != null ? AppConfig.setCardStyle(v) : null,
+                        const Spacer(),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 9, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: colorScheme.primaryContainer,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            AppConfig.cardStyle.label
+                                .split('（')[0]
+                                .split(' ')[0],
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.bold,
+                              color: colorScheme.onPrimaryContainer,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    // 实时交互预览区域（支持所见即所得，彻底对齐用户需求）
+                    Container(
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        color:
+                            colorScheme.surfaceContainerHighest.withAlpha(70),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: colorScheme.outlineVariant.withAlpha(90),
+                          width: 1,
+                        ),
+                      ),
+                      padding: const EdgeInsets.all(10),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.remove_red_eye_outlined,
+                                  size: 14, color: colorScheme.primary),
+                              const SizedBox(width: 4),
+                              Text(
+                                '当前风格实时预览',
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: colorScheme.primary,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          ThreadCard(
+                            thread: _previewThread,
+                            cardStyle: AppConfig.cardStyle,
+                            margin: EdgeInsets.zero,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    // 风格选项选择芯片
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final style in CardStyle.values)
+                          ChoiceChip(
+                            label: Text(style.label),
+                            selected: AppConfig.cardStyle == style,
+                            onSelected: (selected) {
+                              if (selected) {
+                                HapticFeedback.lightImpact();
+                                AppConfig.setCardStyle(style);
+                                setState(() {});
+                              }
+                            },
+                          ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -672,7 +790,8 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
     ];
 
     Color currentColor = Color(AppConfig.customSeedColorValue);
-    String hexString = '#${currentColor.toARGB32().toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
+    String hexString =
+        '#${currentColor.toARGB32().toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
     final textCtrl = TextEditingController(text: hexString);
 
     Color? parseHex(String val) {
@@ -736,7 +855,9 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
                       ],
                     ),
                     const SizedBox(height: 16),
-                    const Text('常用调色板：', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    const Text('常用调色板：',
+                        style: TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 8),
                     Wrap(
                       spacing: 10,
@@ -747,7 +868,8 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
                           onTap: () {
                             setDialogState(() {
                               currentColor = c;
-                              textCtrl.text = '#${c.toARGB32().toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
+                              textCtrl.text =
+                                  '#${c.toARGB32().toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
                             });
                           },
                           borderRadius: BorderRadius.circular(18),
@@ -758,7 +880,8 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
                               color: c,
                               shape: BoxShape.circle,
                               border: Border.all(
-                                color: isSel ? Colors.white : Colors.transparent,
+                                color:
+                                    isSel ? Colors.white : Colors.transparent,
                                 width: 2,
                               ),
                               boxShadow: isSel
@@ -772,7 +895,8 @@ class _AppearanceSettingsViewState extends State<_AppearanceSettingsView> {
                                   : null,
                             ),
                             child: isSel
-                                ? const Icon(Icons.check, size: 18, color: Colors.white)
+                                ? const Icon(Icons.check,
+                                    size: 18, color: Colors.white)
                                 : null,
                           ),
                         );
@@ -810,6 +934,14 @@ class _LayoutSettingsView extends StatefulWidget {
 }
 
 class _LayoutSettingsViewState extends State<_LayoutSettingsView> {
+  late double _minimumContentWidth;
+
+  @override
+  void initState() {
+    super.initState();
+    _minimumContentWidth = AppConfig.mainContentMinWidth;
+  }
+
   void _openStudio(String pageCategory) {
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -817,7 +949,9 @@ class _LayoutSettingsViewState extends State<_LayoutSettingsView> {
           pageCategory: pageCategory,
           initialLayout: pageCategory == 'home'
               ? AppConfig.homeDashboardLayout
-              : (pageCategory == 'thread' ? AppConfig.threadDashboardLayout : AppConfig.guideDashboardLayout),
+              : (pageCategory == 'thread'
+                  ? AppConfig.threadDashboardLayout
+                  : AppConfig.guideDashboardLayout),
           onExit: () => Navigator.of(context).pop(),
           onSave: (saved) {
             setState(() {});
@@ -859,15 +993,13 @@ class _LayoutSettingsViewState extends State<_LayoutSettingsView> {
         // ================= 2. 桌面 PC 端专属：自由画布工作台与宽屏双栏配置 =================
         if (isDesktop) ...[
           const SizedBox(height: 16),
-          _buildSectionHeader('界面排版与 DIY 定制中心 (桌面端专属)'),
-          Card(
-            elevation: 1,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: BorderSide(color: colorScheme.primary.withAlpha(80), width: 1.2),
-            ),
+          _buildSectionHeader('桌面布局'),
+          Card.filled(
+            key: const ValueKey('settings-desktop-layout'),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
             child: Padding(
-              padding: const EdgeInsets.all(14),
+              padding: const EdgeInsets.all(20),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -879,7 +1011,8 @@ class _LayoutSettingsViewState extends State<_LayoutSettingsView> {
                           color: colorScheme.primary.withAlpha(25),
                           borderRadius: BorderRadius.circular(8),
                         ),
-                        child: Icon(Icons.dashboard_customize_rounded, color: colorScheme.primary, size: 24),
+                        child: Icon(Icons.dashboard_customize_rounded,
+                            color: colorScheme.primary, size: 24),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -887,38 +1020,26 @@ class _LayoutSettingsViewState extends State<_LayoutSettingsView> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
-                              '🎨 界面自定义排版中枢',
-                              style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.bold),
+                              '页面与卡片布局',
+                              style: TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.w600),
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              '提供轻量列表排序配置与 2D 可视化自由网格拖拽两层深度定制',
-                              style: TextStyle(fontSize: 11, color: colorScheme.outline),
+                              '调整侧栏宽度、卡片顺序和外观',
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: colorScheme.onSurfaceVariant),
                             ),
                           ],
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 14),
-                  const Divider(height: 1),
                   const SizedBox(height: 12),
-
-                  // 界面排版与自由画布工坊（彻底整合）
-                  Row(
-                    children: [
-                      Icon(Icons.dashboard_customize_rounded, size: 18, color: colorScheme.primary),
-                      const SizedBox(width: 8),
-                      const Text(
-                        '界面排版与自由画布工坊',
-                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
                   Text(
-                    '进入全图形化 12 列蓝图画布，自由拖放卡片、拉伸尺寸与吸附对齐，深度调谐工作台参数与信息流组件排序',
-                    style: TextStyle(fontSize: 11.5, color: colorScheme.outline),
+                    '在自由画布中拖动和调整卡片，使用页面预览检查实际窗口中的排版。',
+                    style: theme.textTheme.bodyMedium
+                        ?.copyWith(color: colorScheme.onSurfaceVariant),
                   ),
                   const SizedBox(height: 12),
                   Wrap(
@@ -926,16 +1047,19 @@ class _LayoutSettingsViewState extends State<_LayoutSettingsView> {
                     runSpacing: 10,
                     children: [
                       FilledButton.tonalIcon(
+                        key: const ValueKey('settings-canvas-home'),
                         onPressed: () => _openStudio('home'),
                         icon: const Icon(Icons.home_outlined, size: 16),
                         label: const Text('首页自由画布'),
                       ),
                       FilledButton.tonalIcon(
+                        key: const ValueKey('settings-canvas-guide'),
                         onPressed: () => _openStudio('guide'),
                         icon: const Icon(Icons.explore_outlined, size: 16),
                         label: const Text('导读工作台画布'),
                       ),
                       FilledButton.tonalIcon(
+                        key: const ValueKey('settings-canvas-thread'),
                         onPressed: () => _openStudio('thread'),
                         icon: const Icon(Icons.article_outlined, size: 16),
                         label: const Text('帖子工作台画布'),
@@ -948,24 +1072,24 @@ class _LayoutSettingsViewState extends State<_LayoutSettingsView> {
 
                   // 主页内容最小保护宽度滑块
                   Text(
-                    '主页/正文内容最小保护宽度: ${AppConfig.mainContentMinWidth.toInt()} px',
-                    style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                    '首页内容最小宽度 · ${_minimumContentWidth.round()} px',
+                    style: theme.textTheme.titleSmall,
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '无论添加多少卡片，确保主要信息流保留此最小宽度，窄屏下自动自适应折叠，防止被卡片占满',
-                    style: TextStyle(fontSize: 11, color: colorScheme.outline),
+                    '空间不足时收起侧栏，为帖子列表留出更多空间。',
+                    style: theme.textTheme.bodyMedium
+                        ?.copyWith(color: colorScheme.onSurfaceVariant),
                   ),
                   Slider(
-                    value: AppConfig.mainContentMinWidth.clamp(400.0, 1000.0),
+                    key: const ValueKey('settings-minimum-content-width'),
+                    value: _minimumContentWidth.clamp(400.0, 1000.0),
                     min: 400.0,
                     max: 1000.0,
                     divisions: 12,
-                    label: '${AppConfig.mainContentMinWidth.toInt()} px',
-                    onChanged: (v) {
-                      setState(() {});
-                      AppConfig.setMainContentMinWidth(v);
-                    },
+                    label: '${_minimumContentWidth.round()} px',
+                    onChanged: (v) => setState(() => _minimumContentWidth = v),
+                    onChangeEnd: AppConfig.setMainContentMinWidth,
                   ),
 
                   Row(
@@ -974,15 +1098,18 @@ class _LayoutSettingsViewState extends State<_LayoutSettingsView> {
                       TextButton.icon(
                         onPressed: () async {
                           await AppConfig.resetAllDashboards();
-                          setState(() {});
+                          if (!mounted) return;
+                          setState(() => _minimumContentWidth =
+                              AppConfig.mainContentMinWidth);
                           if (context.mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('已将所有页面布局重置为官方推荐默认方案')),
+                              const SnackBar(content: Text('已恢复所有页面的默认布局')),
                             );
                           }
                         },
                         icon: const Icon(Icons.restore_rounded, size: 16),
-                        label: const Text('恢复全部页面默认布局', style: TextStyle(fontSize: 11.5)),
+                        label: const Text('恢复全部页面默认布局',
+                            style: TextStyle(fontSize: 13)),
                       ),
                     ],
                   ),
@@ -996,8 +1123,8 @@ class _LayoutSettingsViewState extends State<_LayoutSettingsView> {
             child: Column(
               children: [
                 ListTile(
-                  title: const Text('宽屏网格列数'),
-                  subtitle: const Text('在 PC 桌面或平板横屏下帖子流的分列排版'),
+                  title: const Text('版块列表网格列数'),
+                  subtitle: const Text('调整版块列表等宽屏页面的帖子排版'),
                   trailing: DropdownButton<int>(
                     value: AppConfig.desktopGridColumns,
                     underline: const SizedBox(),
@@ -1007,16 +1134,23 @@ class _LayoutSettingsViewState extends State<_LayoutSettingsView> {
                       DropdownMenuItem(value: 3, child: Text('三列 (3 列)')),
                       DropdownMenuItem(value: 4, child: Text('四列 (4 列)')),
                     ],
-                    onChanged: (v) =>
-                        v != null ? AppConfig.setDesktopGridColumns(v) : null,
+                    onChanged: (v) {
+                      if (v != null) {
+                        AppConfig.setDesktopGridColumns(v);
+                        setState(() {});
+                      }
+                    },
                   ),
                 ),
                 const Divider(height: 1),
                 SwitchListTile(
-                  title: const Text('版块双栏主从视图 (Master-Detail)'),
+                  title: const Text('版块列表与详情分栏'),
                   subtitle: const Text('宽屏下左侧展示帖子列表，右侧直接展示详情'),
                   value: AppConfig.isMasterDetailEnabled,
-                  onChanged: (v) => AppConfig.setIsMasterDetailEnabled(v),
+                  onChanged: (v) {
+                    AppConfig.setIsMasterDetailEnabled(v);
+                    setState(() {});
+                  },
                 ),
               ],
             ),
@@ -1036,14 +1170,16 @@ class _LayoutSettingsViewState extends State<_LayoutSettingsView> {
               ),
             ),
             child: ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
               leading: Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
                   color: colorScheme.primaryContainer.withAlpha(90),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Icon(Icons.tune_rounded, color: colorScheme.primary, size: 22),
+                child: Icon(Icons.tune_rounded,
+                    color: colorScheme.primary, size: 22),
               ),
               title: const Text(
                 '移动端首页板块与快捷入口定制',
@@ -1051,34 +1187,34 @@ class _LayoutSettingsViewState extends State<_LayoutSettingsView> {
               ),
               subtitle: const Text(
                 '自定义公告小喇叭、数据统计、快捷金刚区、版块导航与精华推荐流的显隐及排序',
-                style: TextStyle(fontSize: 12),
+                style: TextStyle(fontSize: 14, height: 1.4),
               ),
               trailing: const Icon(Icons.chevron_right_rounded),
               onTap: () => MobileHomeCustomizer.show(context),
             ),
           ),
-        ],
 
-        // ================= 4. 移动端导航布局 =================
-        const SizedBox(height: 16),
-        _buildSectionHeader('移动端导航布局'),
-        Card(
-          child: Column(
-            children: NavLayout.values.map((l) {
-              return RadioListTile<NavLayout>(
-                title: Text(l.label),
-                value: l,
-                groupValue: AppConfig.navLayout,
-                onChanged: (v) {
-                  if (v != null) {
-                    AppConfig.setNavLayout(v);
-                    setState(() {});
-                  }
-                },
-              );
-            }).toList(),
+          // ================= 4. 移动端导航布局 =================
+          const SizedBox(height: 16),
+          _buildSectionHeader('移动端导航布局'),
+          Card(
+            child: Column(
+              children: NavLayout.values.map((l) {
+                return RadioListTile<NavLayout>(
+                  title: Text(l.label),
+                  value: l,
+                  groupValue: AppConfig.navLayout,
+                  onChanged: (v) {
+                    if (v != null) {
+                      AppConfig.setNavLayout(v);
+                      setState(() {});
+                    }
+                  },
+                );
+              }).toList(),
+            ),
           ),
-        ),
+        ],
       ],
     );
   }
@@ -1149,7 +1285,8 @@ class _DownloadSettingsViewState extends State<_DownloadSettingsView> {
         _buildSectionHeader('下载任务管理'),
         Card(
           child: ListTile(
-            leading: Icon(Icons.download_done_rounded, color: colorScheme.primary),
+            leading:
+                Icon(Icons.download_done_rounded, color: colorScheme.primary),
             title: const Text('下载任务管理器'),
             subtitle: const Text('查看正在下载与已下载的附件文件、实时网速及进度'),
             trailing: const Icon(Icons.chevron_right_rounded),
@@ -1170,7 +1307,8 @@ class _DownloadSettingsViewState extends State<_DownloadSettingsView> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               ListTile(
-                leading: Icon(Icons.folder_outlined, color: colorScheme.primary),
+                leading:
+                    Icon(Icons.folder_outlined, color: colorScheme.primary),
                 title: const Text('下载保存目录'),
                 subtitle: Text(
                   _currentPath.isNotEmpty ? _currentPath : '正在获取默认下载路径...',
@@ -1185,13 +1323,15 @@ class _DownloadSettingsViewState extends State<_DownloadSettingsView> {
                   runSpacing: 6,
                   children: [
                     FilledButton.tonalIcon(
-                      style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
+                      style: FilledButton.styleFrom(
+                          visualDensity: VisualDensity.compact),
                       onPressed: _pickDirectory,
                       icon: const Icon(Icons.folder_open_rounded, size: 16),
                       label: const Text('更改目录'),
                     ),
                     OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+                      style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact),
                       onPressed: _currentPath.isNotEmpty
                           ? () => DownloadManager.openFolder(_currentPath)
                           : null,
@@ -1200,7 +1340,8 @@ class _DownloadSettingsViewState extends State<_DownloadSettingsView> {
                     ),
                     if (AppConfig.downloadPath.isNotEmpty)
                       TextButton(
-                        style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                        style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact),
                         onPressed: _resetToDefault,
                         child: const Text('恢复系统默认'),
                       ),
@@ -1258,7 +1399,8 @@ class _DownloadSettingsViewState extends State<_DownloadSettingsView> {
 /// 6. 性能与 GPU 加速 / 缓存生命周期管理
 class _PerformanceSettingsView extends StatefulWidget {
   @override
-  State<_PerformanceSettingsView> createState() => _PerformanceSettingsViewState();
+  State<_PerformanceSettingsView> createState() =>
+      _PerformanceSettingsViewState();
 }
 
 class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
@@ -1304,7 +1446,35 @@ class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('已深度彻底清理本地缓存，释放 ${KlpbbsCacheManager.formatBytes(freedBytes)} 空间'),
+            content: Text(
+                '已深度彻底清理本地缓存，释放 ${KlpbbsCacheManager.formatBytes(freedBytes)} 空间'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isClearing = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('清理缓存时发生异常：$e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _pruneExpiredCache() async {
+    setState(() => _isClearing = true);
+    try {
+      final freedBytes =
+          await KlpbbsCacheManager.purgeExpiredAndOvercapacityCache();
+      await _refreshCacheSize();
+      if (mounted) {
+        setState(() => _isClearing = false);
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                '已清理过期、坏块与超容缓存，释放 ${KlpbbsCacheManager.formatBytes(freedBytes)} 空间'),
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -1327,70 +1497,130 @@ class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       children: [
-        // 1. 硬件加速与渲染引擎
-        _buildSectionHeader(
-          '硬件加速与渲染引擎',
-          subtitle: '调节图形合成管线、高刷新率渲染与后台并发计算',
-        ),
+        if (!kIsWeb &&
+            defaultTargetPlatform == TargetPlatform.windows &&
+            ResponsiveBreakpoints.isDesktop(context)) ...[
+          const PcGpuSettingsPanel(),
+          const SizedBox(height: 20),
+        ],
+        _buildSectionHeader('动画与滚动', subtitle: '调整实际的页面动效、鼠标滚动与 HTML 解析方式'),
         _buildSettingCard(
           context: context,
           children: [
             _buildSettingSwitchTile(
               context: context,
-              title: 'GPU 硬件加速渲染 (Hardware Acceleration)',
-              subtitle: '启用 Vulkan / Direct3D 纹理硬件合成加速，降低 CPU 占用',
-              icon: Icons.speed_rounded,
-              value: AppConfig.gpuAcceleration,
+              title: '减少动画',
+              subtitle: '关闭位移和展开动画，并暂停 RGB 动态颜色；同时遵循系统设置',
+              icon: Icons.motion_photos_off_outlined,
+              value: AppConfig.reduceMotion,
               onChanged: (v) {
-                AppConfig.setGpuAcceleration(v);
+                AppConfig.setReduceMotion(v);
                 setState(() {});
               },
             ),
-            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
-            _buildSettingSwitchTile(
-              context: context,
-              title: '120Hz / 高刷帧率解除限制',
-              subtitle: '支持高刷新率显示屏流畅动画渲染',
-              icon: Icons.flare_rounded,
-              value: AppConfig.highRefreshRate,
-              onChanged: (v) {
-                AppConfig.setHighRefreshRate(v);
-                setState(() {});
-              },
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('动画节奏',
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 10),
+                    SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: SegmentedButton<MotionPace>(
+                          showSelectedIcon: false,
+                          segments: MotionPace.values
+                              .map((pace) => ButtonSegment(
+                                  value: pace, label: Text(pace.label)))
+                              .toList(),
+                          selected: {AppConfig.motionPace},
+                          onSelectionChanged: AppConfig.reduceMotion
+                              ? null
+                              : (values) {
+                                  AppConfig.setMotionPace(values.first);
+                                  setState(() {});
+                                },
+                        )),
+                  ]),
             ),
-            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+            for (final option in [
+              (
+                'animate_pages',
+                '页面与标签切换',
+                Icons.open_in_new_rounded,
+                AppConfig.animatePageTransitions
+              ),
+              (
+                'animate_panels',
+                '侧栏、展开与按压反馈',
+                Icons.view_sidebar_outlined,
+                AppConfig.animatePanels
+              ),
+              (
+                'animate_lists',
+                '列表进入动画',
+                Icons.view_stream_outlined,
+                AppConfig.animateLists
+              ),
+              (
+                'animate_loading',
+                '加载与骨架动画',
+                Icons.hourglass_top_rounded,
+                AppConfig.animateLoading
+              ),
+              (
+                'banner_auto_play',
+                '霸屏自动轮播',
+                Icons.view_carousel_outlined,
+                AppConfig.bannerAutoPlay
+              ),
+            ])
+              _buildSettingSwitchTile(
+                context: context,
+                title: option.$2,
+                subtitle: option.$1 == 'banner_auto_play'
+                    ? '每 5 秒切换；拖动或鼠标停留时暂停，仍可手动滑动'
+                    : '按所选节奏播放，并遵循减少动画设置',
+                icon: option.$3,
+                value: option.$4,
+                onChanged: AppConfig.reduceMotion
+                    ? null
+                    : (value) {
+                        AppConfig.setMotionOption(option.$1, value);
+                        setState(() {});
+                      },
+              ),
+            Divider(
+                height: 1,
+                indent: 68,
+                color: colorScheme.outlineVariant.withAlpha(40)),
+            if (ResponsiveBreakpoints.isDesktop(context))
+              _buildSettingSwitchTile(
+                context: context,
+                title: '平滑鼠标滚动',
+                subtitle: '首页与版块列表的滚轮渐进滚动；触摸和触控板保留系统行为',
+                icon: Icons.swap_vert_circle_outlined,
+                value: AppConfig.smoothScrollPhysics,
+                onChanged: AppConfig.reduceMotion
+                    ? null
+                    : (v) {
+                        AppConfig.setSmoothScrollPhysics(v);
+                        setState(() {});
+                      },
+              ),
+            Divider(
+                height: 1,
+                indent: 68,
+                color: colorScheme.outlineVariant.withAlpha(40)),
             _buildSettingSwitchTile(
               context: context,
-              title: '阻尼平滑惯性滚动 (Smooth Scrolling)',
-              subtitle: '优化鼠标滚轮与触摸滑动平滑物理曲线',
-              icon: Icons.swap_vert_circle_outlined,
-              value: AppConfig.smoothScrollPhysics,
-              onChanged: (v) {
-                AppConfig.setSmoothScrollPhysics(v);
-                setState(() {});
-              },
-            ),
-            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
-            _buildSettingSwitchTile(
-              context: context,
-              title: '后台多线程并发解析引擎 (Isolate Engine)',
-              subtitle: '利用多核 CPU 后台多线程解析帖子 HTML 与 BBCode，彻底消除主线程掉帧与卡顿',
+              title: '后台解析页面',
+              subtitle: '将较大的论坛 HTML 放到独立任务解析，减少界面线程的阻塞',
               icon: Icons.memory_rounded,
               value: AppConfig.enableMultiThreadParsing,
               onChanged: (v) {
                 AppConfig.setMultiThreadParsing(v);
-                setState(() {});
-              },
-            ),
-            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
-            _buildSettingSwitchTile(
-              context: context,
-              title: 'GPU 独立图层光栅缓存 (Layer Raster Cache)',
-              subtitle: '启用 GPU 独立图层缓存与重绘边界隔离，显著降低复杂图文滚动时的 GPU/CPU 综合功耗',
-              icon: Icons.layers_outlined,
-              value: AppConfig.enableGpuAcceleratedRendering,
-              onChanged: (v) {
-                AppConfig.setGpuAcceleratedRendering(v);
                 setState(() {});
               },
             ),
@@ -1407,7 +1637,8 @@ class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
           context: context,
           children: [
             ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               leading: Container(
                 width: 38,
                 height: 38,
@@ -1415,16 +1646,21 @@ class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
                   color: colorScheme.secondaryContainer.withAlpha(90),
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(Icons.image_outlined, color: colorScheme.secondary, size: 20),
+                child: Icon(Icons.image_outlined,
+                    color: colorScheme.secondary, size: 20),
               ),
-              title: const Text('图片加载质量', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
-              subtitle: Text('控制帖子插图与附件下载清晰度', style: TextStyle(fontSize: 12, color: colorScheme.outline)),
+              title: const Text('图片加载质量',
+                  style:
+                      TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+              subtitle: Text('控制帖子插图与附件下载清晰度',
+                  style: TextStyle(fontSize: 12, color: colorScheme.outline)),
               trailing: DropdownButton<ImageQuality>(
                 value: AppConfig.imageQuality,
                 underline: const SizedBox(),
                 borderRadius: BorderRadius.circular(12),
                 items: ImageQuality.values
-                    .map((q) => DropdownMenuItem(value: q, child: Text(q.label)))
+                    .map(
+                        (q) => DropdownMenuItem(value: q, child: Text(q.label)))
                     .toList(),
                 onChanged: (v) {
                   if (v != null) {
@@ -1434,9 +1670,13 @@ class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
                 },
               ),
             ),
-            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+            Divider(
+                height: 1,
+                indent: 68,
+                color: colorScheme.outlineVariant.withAlpha(40)),
             ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               leading: Container(
                 width: 38,
                 height: 38,
@@ -1444,20 +1684,31 @@ class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
                   color: colorScheme.primaryContainer.withAlpha(90),
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(Icons.pie_chart_outline_rounded, color: colorScheme.primary, size: 20),
+                child: Icon(Icons.pie_chart_outline_rounded,
+                    color: colorScheme.primary, size: 20),
               ),
-              title: const Text('运行时图片内存配额', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
-              subtitle: Text('当前设置: ${AppConfig.imageCacheMaxMb} MB', style: TextStyle(fontSize: 12, color: colorScheme.outline)),
+              title: const Text('运行时图片内存配额',
+                  style:
+                      TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+              subtitle: Text('当前设置: ${AppConfig.imageCacheMaxMb} MB',
+                  style: TextStyle(fontSize: 12, color: colorScheme.outline)),
               trailing: DropdownButton<int>(
                 value: AppConfig.imageCacheMaxMb,
                 underline: const SizedBox(),
                 borderRadius: BorderRadius.circular(12),
-                items: const [
-                  DropdownMenuItem(value: 100, child: Text('100 MB')),
-                  DropdownMenuItem(value: 250, child: Text('250 MB')),
-                  DropdownMenuItem(value: 500, child: Text('500 MB')),
-                  DropdownMenuItem(value: 1024, child: Text('1024 MB (1GB)')),
-                ],
+                items: ({
+                  100,
+                  128,
+                  250,
+                  256,
+                  500,
+                  1024,
+                  AppConfig.imageCacheMaxMb
+                }.toList()
+                      ..sort())
+                    .map((mb) =>
+                        DropdownMenuItem(value: mb, child: Text('$mb MB')))
+                    .toList(),
                 onChanged: (v) {
                   if (v != null) {
                     AppConfig.setImageCacheMaxMb(v);
@@ -1480,7 +1731,8 @@ class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
           children: [
             // 缓存空间探测栏
             ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
               leading: Container(
                 width: 38,
                 height: 38,
@@ -1488,9 +1740,12 @@ class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
                   color: colorScheme.tertiaryContainer.withAlpha(90),
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(Icons.storage_rounded, color: colorScheme.tertiary, size: 20),
+                child: Icon(Icons.storage_rounded,
+                    color: colorScheme.tertiary, size: 20),
               ),
-              title: const Text('已占用本地磁盘缓存', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+              title: const Text('已占用本地磁盘缓存',
+                  style:
+                      TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
               subtitle: Text(
                 '包含头像、勋章、附件、表情与网络快速缓存',
                 style: TextStyle(fontSize: 12, color: colorScheme.outline),
@@ -1499,7 +1754,8 @@ class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
                     decoration: BoxDecoration(
                       color: colorScheme.surfaceContainerHighest,
                       borderRadius: BorderRadius.circular(8),
@@ -1519,7 +1775,7 @@ class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
                         ? const SizedBox(
                             width: 16,
                             height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
+                            child: AppLoadingIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.refresh_rounded, size: 19),
                     tooltip: '重新计算缓存容量',
@@ -1529,7 +1785,10 @@ class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
                 ],
               ),
             ),
-            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+            Divider(
+                height: 1,
+                indent: 68,
+                color: colorScheme.outlineVariant.withAlpha(40)),
 
             // 缓存生命周期说明
             Padding(
@@ -1545,18 +1804,20 @@ class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
                   children: [
                     Row(
                       children: [
-                        Icon(Icons.info_outline_rounded, size: 16, color: colorScheme.primary),
+                        Icon(Icons.info_outline_rounded,
+                            size: 16, color: colorScheme.primary),
                         const SizedBox(width: 6),
                         const Text(
                           '智能双层缓存策略',
-                          style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                          style: TextStyle(
+                              fontSize: 12.5, fontWeight: FontWeight.bold),
                         ),
                       ],
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      '• 静态资源长期持久化：头像、表情、勋章、图章与附件长期保存在本地磁盘缓存中（90天TTL），支持离线秒开，节约网络流量。\n'
-                      '• 帖子与动态短期内存流转：帖子列表、详情、全站统计等在内存高效流转；关闭应用自动清空，点击刷新或下拉刷新即刻从原站抓取最新数据。',
+                      '• 静态资源规范化去重：跨 CDN 论坛图片、附件与表情合并存储，默认头像不占磁盘，彻底杜绝重复堆积。\n'
+                      '• 智能生命周期与容量控制：磁盘图片 14 天过期自动修剪，超出 350MB 按 LRU 自动清理；应用启动自动静默瘦身。',
                       style: TextStyle(
                         fontSize: 11.5,
                         color: colorScheme.onSurfaceVariant.withAlpha(200),
@@ -1569,20 +1830,51 @@ class _PerformanceSettingsViewState extends State<_PerformanceSettingsView> {
             ),
             Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
 
-            // 一键深度清空缓存
+            // 清理过期与超容缓存
             ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              title: const Text('彻底清除应用缓存', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
-              subtitle: const Text('清空所有磁盘持久化图片、临时目录、内存图片解码与运行时网络缓存', style: TextStyle(fontSize: 12)),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              title: const Text('清理过期与超容缓存',
+                  style:
+                      TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+              subtitle: const Text(
+                  '移除超过 14 天的过期缓存、0 字节坏块并按 LRU 压降至 250MB，保留热点缓存',
+                  style: TextStyle(fontSize: 12)),
               trailing: FilledButton.tonalIcon(
                 icon: _isClearing
                     ? const SizedBox(
                         width: 14,
                         height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                        child: AppLoadingIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.cleaning_services_rounded, size: 17),
+                label: Text(_isClearing ? '清理中...' : '优化清理'),
+                onPressed: _isClearing ? null : _pruneExpiredCache,
+              ),
+            ),
+            Divider(
+                height: 1,
+                indent: 68,
+                color: colorScheme.outlineVariant.withAlpha(40)),
+
+            // 一键深度清空缓存
+            ListTile(
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              title: const Text('彻底清除全部缓存',
+                  style:
+                      TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+              subtitle: const Text('清空所有磁盘持久化图片、临时目录、内存图片解码与运行时网络缓存',
+                  style: TextStyle(fontSize: 12)),
+              trailing: OutlinedButton.icon(
+                icon: _isClearing
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: AppLoadingIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.delete_sweep_rounded, size: 17),
-                label: Text(_isClearing ? '清理中...' : '立即清理'),
+                label: Text(_isClearing ? '清理中...' : '彻底清空'),
                 onPressed: _isClearing ? null : _clearCache,
               ),
             ),
@@ -1618,6 +1910,30 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       children: [
+        // 0. 底层网络直连与代理
+        _buildSectionHeader(
+          '底层网络与代理连接',
+          subtitle: '控制论坛请求路由，默认直连可规避代理节点拦截与 523 报错',
+        ),
+        _buildSettingCard(
+          context: context,
+          children: [
+            _buildSettingSwitchTile(
+              context: context,
+              title: '遵循系统代理网络 (System Proxy)',
+              subtitle:
+                  '默认关闭（强制 DIRECT 直连）。开启后遵循系统 VPN / 代理分流；若频繁遭遇 523 错误或 WAF 验证阻断，建议保持关闭直连。',
+              icon: Icons.vpn_lock_rounded,
+              value: AppConfig.useSystemProxy,
+              onChanged: (v) {
+                AppConfig.setUseSystemProxy(v);
+                setState(() {});
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+
         // 1. 智能剪贴板跳转
         _buildSectionHeader(
           '智能剪贴板识别',
@@ -1638,7 +1954,10 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
               },
             ),
             if (AppConfig.clipboardJumpEnabled) ...[
-              Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+              Divider(
+                  height: 1,
+                  indent: 68,
+                  color: colorScheme.outlineVariant.withAlpha(40)),
               _buildSettingSwitchTile(
                 context: context,
                 title: '识别帖子链接',
@@ -1652,7 +1971,10 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
                   setState(() {});
                 },
               ),
-              Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+              Divider(
+                  height: 1,
+                  indent: 68,
+                  color: colorScheme.outlineVariant.withAlpha(40)),
               _buildSettingSwitchTile(
                 context: context,
                 title: '识别站内搜索链接',
@@ -1666,7 +1988,10 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
                   setState(() {});
                 },
               ),
-              Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+              Divider(
+                  height: 1,
+                  indent: 68,
+                  color: colorScheme.outlineVariant.withAlpha(40)),
               _buildSettingSwitchTile(
                 context: context,
                 title: '跳转前弹窗确认',
@@ -1704,7 +2029,10 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
                 setState(() {});
               },
             ),
-            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+            Divider(
+                height: 1,
+                indent: 68,
+                color: colorScheme.outlineVariant.withAlpha(40)),
             _buildSettingSwitchTile(
               context: context,
               title: '显示楼层个性签名档',
@@ -1716,9 +2044,13 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
                 setState(() {});
               },
             ),
-            Divider(height: 1, indent: 68, color: colorScheme.outlineVariant.withAlpha(40)),
+            Divider(
+                height: 1,
+                indent: 68,
+                color: colorScheme.outlineVariant.withAlpha(40)),
             ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               leading: Container(
                 width: 38,
                 height: 38,
@@ -1726,7 +2058,8 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
                   color: colorScheme.primaryContainer.withAlpha(90),
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(Icons.launch_rounded, color: colorScheme.primary, size: 20),
+                child: Icon(Icons.launch_rounded,
+                    color: colorScheme.primary, size: 20),
               ),
               title: const Text(
                 '默认启动页',
@@ -1740,20 +2073,23 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
                 ),
               ),
               trailing: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
                 decoration: BoxDecoration(
                   color: colorScheme.surfaceContainerHighest.withAlpha(120),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: colorScheme.outlineVariant.withAlpha(50), width: 0.8),
+                  border: Border.all(
+                      color: colorScheme.outlineVariant.withAlpha(50),
+                      width: 0.8),
                 ),
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<int>(
                     value: AppConfig.defaultStartTab,
                     borderRadius: BorderRadius.circular(12),
                     items: const [
-                      DropdownMenuItem(value: 0, child: Text('首页推荐')),
-                      DropdownMenuItem(value: 1, child: Text('导读中心')),
-                      DropdownMenuItem(value: 2, child: Text('签到排行')),
+                      DropdownMenuItem(value: 0, child: Text('论坛首页')),
+                      DropdownMenuItem(value: 1, child: Text('论坛导读')),
+                      DropdownMenuItem(value: 2, child: Text('每日签到')),
                       DropdownMenuItem(value: 3, child: Text('封神榜')),
                       DropdownMenuItem(value: 4, child: Text('论坛搜索')),
                     ],
@@ -1801,13 +2137,17 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
                           decoration: InputDecoration(
                             hintText: '输入屏蔽关键词...',
                             isDense: true,
-                            prefixIcon: const Icon(Icons.block_rounded, size: 18),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                            prefixIcon:
+                                const Icon(Icons.block_rounded, size: 18),
+                            contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 10),
+                            border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(10)),
                           ),
                           onSubmitted: (_) {
                             if (_keywordCtrl.text.trim().isNotEmpty) {
-                              AppConfig.addBlockedKeyword(_keywordCtrl.text.trim());
+                              AppConfig.addBlockedKeyword(
+                                  _keywordCtrl.text.trim());
                               _keywordCtrl.clear();
                               setState(() {});
                             }
@@ -1817,12 +2157,15 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
                       const SizedBox(width: 8),
                       FilledButton.icon(
                         style: FilledButton.styleFrom(
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 10),
                         ),
                         onPressed: () {
                           if (_keywordCtrl.text.trim().isNotEmpty) {
-                            AppConfig.addBlockedKeyword(_keywordCtrl.text.trim());
+                            AppConfig.addBlockedKeyword(
+                                _keywordCtrl.text.trim());
                             _keywordCtrl.clear();
                             setState(() {});
                           }
@@ -1868,9 +2211,12 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
                           decoration: InputDecoration(
                             hintText: '输入屏蔽作者编号 (UID)...',
                             isDense: true,
-                            prefixIcon: const Icon(Icons.person_off_outlined, size: 18),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                            prefixIcon:
+                                const Icon(Icons.person_off_outlined, size: 18),
+                            contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 10),
+                            border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(10)),
                           ),
                           onSubmitted: (_) {
                             final uid = int.tryParse(_uidCtrl.text.trim()) ?? 0;
@@ -1885,8 +2231,10 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
                       const SizedBox(width: 8),
                       FilledButton.icon(
                         style: FilledButton.styleFrom(
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 10),
                         ),
                         onPressed: () {
                           final uid = int.tryParse(_uidCtrl.text.trim()) ?? 0;
@@ -1908,7 +2256,8 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
                       runSpacing: 6,
                       children: AppConfig.blockedUids.map((uid) {
                         return Chip(
-                          avatar: const Icon(Icons.person_off_rounded, size: 16),
+                          avatar:
+                              const Icon(Icons.person_off_rounded, size: 16),
                           label: Text('UID: $uid'),
                           deleteIcon: const Icon(Icons.close_rounded, size: 16),
                           onDeleted: () {
@@ -1930,7 +2279,6 @@ class _ForumSettingsViewState extends State<_ForumSettingsView> {
 }
 
 /// 5. 网络与环境安全
-
 
 /// 2. 消息推送与后台设置
 class _NotificationSettingsView extends StatefulWidget {
@@ -1971,7 +2319,8 @@ class _NotificationSettingsViewState extends State<_NotificationSettingsView> {
                       .map(
                         (e) => DropdownMenuItem(
                           value: e,
-                          child: Text(e.label, style: const TextStyle(fontSize: 13)),
+                          child: Text(e.label,
+                              style: const TextStyle(fontSize: 13)),
                         ),
                       )
                       .toList(),
@@ -1996,42 +2345,50 @@ class _NotificationSettingsViewState extends State<_NotificationSettingsView> {
             ],
           ),
         ),
-        const SizedBox(height: 16),
-        _buildSectionHeader('多平台后台挂起与托盘守护'),
-        Card(
-          child: Column(
-            children: [
-              SwitchListTile(
-                title: const Text('关闭窗口时挂起到系统托盘后台'),
-                subtitle: const Text('点击右上角关闭按钮时自动隐藏到托盘，保持消息接收正常'),
-                value: AppConfig.minimizeToTrayOnClose,
-                onChanged: (v) {
-                  AppConfig.setMinimizeToTrayOnClose(v);
-                  setState(() {});
-                },
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.notifications_active_outlined),
-                title: const Text('测试系统通知与提示'),
-                subtitle: const Text('向操作系统发送一条模拟新消息通知以验证权限与展示效果'),
-                trailing: OutlinedButton.icon(
-                  icon: const Icon(Icons.send_rounded, size: 16),
-                  label: const Text('发送测试通知'),
-                  onPressed: () async {
-                    final messenger = ScaffoldMessenger.of(context);
-                    await pushService.testNotification();
-                    if (mounted) {
-                      messenger.showSnackBar(
-                        const SnackBar(content: Text('已触发系统测试通知')),
-                      );
-                    }
+        if (ResponsiveBreakpoints.isDesktop(context) &&
+            !kIsWeb &&
+            const {
+              TargetPlatform.windows,
+              TargetPlatform.macOS,
+              TargetPlatform.linux
+            }.contains(defaultTargetPlatform)) ...[
+          const SizedBox(height: 16),
+          _buildSectionHeader('多平台后台挂起与托盘守护'),
+          Card(
+            child: Column(
+              children: [
+                SwitchListTile(
+                  title: const Text('关闭窗口时挂起到系统托盘后台'),
+                  subtitle: const Text('点击右上角关闭按钮时自动隐藏到托盘，保持消息接收正常'),
+                  value: AppConfig.minimizeToTrayOnClose,
+                  onChanged: (v) {
+                    AppConfig.setMinimizeToTrayOnClose(v);
+                    setState(() {});
                   },
                 ),
-              ),
-            ],
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.notifications_active_outlined),
+                  title: const Text('测试系统通知与提示'),
+                  subtitle: const Text('向操作系统发送一条模拟新消息通知以验证权限与展示效果'),
+                  trailing: OutlinedButton.icon(
+                    icon: const Icon(Icons.send_rounded, size: 16),
+                    label: const Text('发送测试通知'),
+                    onPressed: () async {
+                      final messenger = ScaffoldMessenger.of(context);
+                      await pushService.testNotification();
+                      if (mounted) {
+                        messenger.showSnackBar(
+                          const SnackBar(content: Text('已触发系统测试通知')),
+                        );
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
+        ],
       ],
     );
   }
@@ -2046,10 +2403,73 @@ class _AboutSettingsView extends StatefulWidget {
 class _AboutSettingsViewState extends State<_AboutSettingsView> {
   int _tapCount = 0;
   DateTime? _lastTapTime;
+  bool _diagnosing = false;
+  String? _networkResult;
+  CancelToken? _networkRequest;
+
+  @override
+  void dispose() {
+    _networkRequest?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _diagnoseNetwork() async {
+    if (_diagnosing) return;
+    final cancel = CancelToken();
+    _networkRequest = cancel;
+    final target = Uri.parse(AppConfig.baseUrl).resolve('forum.php?mobile=no');
+    final elapsed = Stopwatch()..start();
+    setState(() {
+      _diagnosing = true;
+      _networkResult = null;
+    });
+    String message;
+    try {
+      final response = await DioClient.dio
+          .get<String>(target.toString(),
+              cancelToken: cancel,
+              options: Options(
+                  responseType: ResponseType.plain,
+                  sendTimeout: const Duration(seconds: 4),
+                  receiveTimeout: const Duration(seconds: 4),
+                  headers: {'User-Agent': AppConfig.pcUserAgent}))
+          .timeout(const Duration(seconds: 6), onTimeout: () {
+        cancel.cancel();
+        throw TimeoutException('network probe');
+      });
+      message =
+          'HTTP ${response.statusCode} · ${elapsed.elapsedMilliseconds} ms';
+      if ((response.data ?? '').trim().isEmpty) {
+        message += ' · 响应内容为空';
+      }
+    } on TimeoutException {
+      message = '请求超时，请检查网络或代理设置';
+    } on DioException catch (error) {
+      message = switch (error.type) {
+        DioExceptionType.connectionTimeout ||
+        DioExceptionType.sendTimeout ||
+        DioExceptionType.receiveTimeout =>
+          '请求超时，请检查网络或代理设置',
+        DioExceptionType.badCertificate => 'HTTPS 证书验证失败',
+        DioExceptionType.badResponse =>
+          '服务器返回 HTTP ${error.response?.statusCode ?? "未知"}',
+        DioExceptionType.cancel => '诊断已取消',
+        _ => '连接失败，请检查网络或代理设置',
+      };
+    } catch (_) {
+      message = '未能完成诊断，请稍后重试';
+    }
+    if (!mounted || _networkRequest != cancel) return;
+    setState(() {
+      _diagnosing = false;
+      _networkResult = message;
+    });
+  }
 
   void _onVersionTap() {
     final now = DateTime.now();
-    if (_lastTapTime == null || now.difference(_lastTapTime!).inMilliseconds < 600) {
+    if (_lastTapTime == null ||
+        now.difference(_lastTapTime!).inMilliseconds < 600) {
       _tapCount++;
     } else {
       _tapCount = 1;
@@ -2067,7 +2487,7 @@ class _AboutSettingsViewState extends State<_AboutSettingsView> {
           SnackBar(
             content: Text(
               newMode == RgbMode.strobe
-                  ? '⚡ 已快速切换至【超频迪斯科】狂暴爆闪模式！'
+                  ? '已切换至跃变色彩，更新预算保持不变'
                   : '🌈 已快速切换至【流光幻彩】平滑流动模式！',
             ),
             duration: const Duration(seconds: 2),
@@ -2091,7 +2511,7 @@ class _AboutSettingsViewState extends State<_AboutSettingsView> {
     if (_tapCount >= 3 && _tapCount < 7) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('⚡ 再连续点击 ${7 - _tapCount} 次解锁隐藏特性...'),
+          content: Text('再连续点击 ${7 - _tapCount} 次解锁高级特性...'),
           duration: const Duration(milliseconds: 600),
         ),
       );
@@ -2102,9 +2522,9 @@ class _AboutSettingsViewState extends State<_AboutSettingsView> {
         context: context,
         builder: (ctx) => AlertDialog(
           icon: const Icon(Icons.auto_awesome, color: Colors.amber, size: 36),
-          title: const Text('🎉 恭喜解锁双重隐藏彩蛋！'),
+          title: const Text('已解锁 RGB 动态炫彩主题'),
           content: const Text(
-            '您已成功解锁【RGB 动态炫彩主题】！\n\n包含两种模式：\n• 🌈「流光幻彩」：平滑色相流动，优雅电竞光效\n• ⚡「超频迪斯科」：高频跳变爆闪，极致狂暴光污染\n\n已自动为您开启，可在「外观与个性化」中自由切换与调节速率！',
+            '您已成功解锁【RGB 动态炫彩主题】！\n\n包含两种模式：\n• 「流光幻彩」：连续变化的主题色\n• 「跃变色彩」：按节奏切换颜色\n\n已自动为您开启，可在「外观与个性化」中选择节能、平衡或流畅档位，并独立调节变色速度。后台与减少动画时会自动暂停。',
           ),
           actions: [
             FilledButton(
@@ -2150,7 +2570,7 @@ class _AboutSettingsViewState extends State<_AboutSettingsView> {
               ),
               const SizedBox(height: 4),
               Text(
-                'Flutter 跨平台深度重构客户端',
+                '浏览社区、发现资源，与玩家交流',
                 style: TextStyle(color: colorScheme.outline, fontSize: 13),
               ),
             ],
@@ -2161,28 +2581,24 @@ class _AboutSettingsViewState extends State<_AboutSettingsView> {
           child: Column(
             children: [
               const ListTile(
-                leading: Icon(Icons.code_rounded),
-                title: Text('核心技术规范'),
-                subtitle: Text('Discuz! X3.4 + 克米设计手机模板 (comiis_app) 逆向解析'),
-              ),
-              const Divider(height: 1),
-              const ListTile(
                 leading: Icon(Icons.auto_awesome_rounded),
-                title: Text('设计规范参考'),
-                subtitle: Text('Material 3 现代化交互与自适应双排版引擎'),
+                title: Text('为你的设备调整布局'),
+                subtitle: Text('在「外观与个性化」和「排版与多端模式」中调整'),
               ),
               const Divider(height: 1),
               ListTile(
                 leading: const Icon(Icons.network_check_rounded),
                 title: const Text('网络连接诊断'),
-                subtitle: Text('当前地址: ${AppConfig.baseUrl}'),
+                subtitle: Text(_networkResult ?? '当前地址: ${AppConfig.baseUrl}'),
                 trailing: OutlinedButton(
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('网络诊断正常，连接畅通')),
-                    );
-                  },
-                  child: const Text('测试连通'),
+                  key: const ValueKey('settings-network-probe'),
+                  onPressed: _diagnosing ? null : _diagnoseNetwork,
+                  child: _diagnosing
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Text('测试连通'),
                 ),
               ),
             ],
@@ -2241,12 +2657,12 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
       final loginStatus = await KlpbbsApi.checkLoginStatus();
       if (!loginStatus.isLoggedIn && !DioClient.isLoggedIn) {
         PushNotificationService.instance.pushCustomNotification(
-          title: '苦力怕论坛 · 今日签到数据 📅',
-          body: '⚠️ 当前尚未登录论坛账号，请先登录账号后再查看今日签到数据',
+          title: '苦力怕论坛 · 今日签到数据',
+          body: '当前尚未登录论坛账号，请先登录账号后再查看今日签到数据',
         );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('⚠️ 当前尚未登录论坛账号，请先登录')),
+            const SnackBar(content: Text('当前尚未登录论坛账号，请先登录')),
           );
         }
         return;
@@ -2259,9 +2675,11 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
           : (loginStatus.username != null && loginStatus.username!.isNotEmpty
               ? '（${loginStatus.username}）'
               : '');
-      final continuousText = info.continuousDays > 0 ? ' | 连续签到 ${info.continuousDays} 天' : '';
+      final continuousText =
+          info.continuousDays > 0 ? ' | 连续签到 ${info.continuousDays} 天' : '';
       final totalText = info.totalDays > 0 ? ' | 累计打卡 ${info.totalDays} 天' : '';
-      final rewardText = info.rewardIron.isNotEmpty ? ' | 奖励 +${info.rewardIron} 粒铁粒' : '';
+      final rewardText =
+          info.rewardIron.isNotEmpty ? ' | 奖励 +${info.rewardIron} 粒铁粒' : '';
 
       if (info.isSignedToday) {
         PushNotificationService.instance.pushCustomNotification(
@@ -2270,7 +2688,7 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
         );
       } else {
         PushNotificationService.instance.pushCustomNotification(
-          title: '苦力怕论坛 · 今日签到提醒 📅',
+          title: '苦力怕论坛 · 今日签到提醒',
           body: '今日状态：今日尚未签到$userText$continuousText$totalText | 点击前往签到打卡',
         );
       }
@@ -2303,15 +2721,12 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: isDark
-                      ? [colorScheme.primaryContainer.withAlpha(80), colorScheme.surfaceContainerHigh]
-                      : [colorScheme.primary.withAlpha(25), colorScheme.surfaceContainerLow],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: colorScheme.primary.withAlpha(40)),
+                color: isDark
+                    ? colorScheme.surfaceContainerHigh
+                    : colorScheme.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(24),
+                border:
+                    Border.all(color: colorScheme.outlineVariant.withAlpha(50)),
               ),
               child: Row(
                 children: [
@@ -2322,7 +2737,8 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                       color: colorScheme.primary.withAlpha(30),
                       shape: BoxShape.circle,
                     ),
-                    child: Icon(Icons.event_available_rounded, color: colorScheme.primary, size: 24),
+                    child: Icon(Icons.event_available_rounded,
+                        color: colorScheme.primary, size: 24),
                   ),
                   const SizedBox(width: 14),
                   Expanded(
@@ -2339,22 +2755,30 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                             ),
                             const SizedBox(width: 8),
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 2),
                               decoration: BoxDecoration(
-                                color: (sign.autoSignOnLaunch || sign.scheduledSignEnabled || sign.burstModeEnabled)
-                                    ? Colors.green.withAlpha(30)
-                                    : colorScheme.outlineVariant.withAlpha(50),
+                                color: (sign.autoSignOnLaunch ||
+                                        sign.scheduledSignEnabled ||
+                                        sign.burstModeEnabled)
+                                    ? colorScheme.primaryContainer
+                                    : colorScheme.surfaceContainerHighest
+                                        .withAlpha(120),
                                 borderRadius: BorderRadius.circular(10),
                               ),
                               child: Text(
-                                (sign.autoSignOnLaunch || sign.scheduledSignEnabled || sign.burstModeEnabled)
-                                    ? '🟢 已启用自动化'
-                                    : '⚪ 未启用自动化',
+                                (sign.autoSignOnLaunch ||
+                                        sign.scheduledSignEnabled ||
+                                        sign.burstModeEnabled)
+                                    ? '已启用自动化'
+                                    : '未启用自动化',
                                 style: TextStyle(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w600,
-                                  color: (sign.autoSignOnLaunch || sign.scheduledSignEnabled || sign.burstModeEnabled)
-                                      ? Colors.green.shade600
+                                  color: (sign.autoSignOnLaunch ||
+                                          sign.scheduledSignEnabled ||
+                                          sign.burstModeEnabled)
+                                      ? colorScheme.onPrimaryContainer
                                       : colorScheme.outline,
                                 ),
                               ),
@@ -2363,8 +2787,10 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          '支持启动静默打卡、每日定时探测打卡与 23:59 零点极速冲榜模式',
-                          style: TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant),
+                          '支持启动检测、每日定时签到与跨天签到，结果可通过应用内提示查看',
+                          style: TextStyle(
+                              fontSize: 14,
+                              color: colorScheme.onSurfaceVariant),
                         ),
                       ],
                     ),
@@ -2379,8 +2805,9 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
             Card(
               elevation: 0,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
+                borderRadius: BorderRadius.circular(24),
+                side:
+                    BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
               ),
               child: Column(
                 children: [
@@ -2388,28 +2815,41 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                     secondary: Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: Colors.green.withAlpha(25),
+                        color:
+                            colorScheme.surfaceContainerHighest.withAlpha(140),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: const Icon(Icons.rocket_launch_rounded, color: Colors.green, size: 20),
+                      child: Icon(Icons.rocket_launch_rounded,
+                          color: colorScheme.primary, size: 20),
                     ),
-                    title: const Text('启动时自动静默打卡', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
-                    subtitle: const Text('打开应用时自动检测今日打卡状态，未签则后台自动打卡并推送结果', style: TextStyle(fontSize: 12)),
+                    title: const Text('启动时自动静默打卡',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 14.5)),
+                    subtitle: const Text('打开应用时自动检测今日打卡状态，未签则后台自动打卡并推送结果',
+                        style: TextStyle(fontSize: 14)),
                     value: sign.autoSignOnLaunch,
                     onChanged: (v) => sign.setAutoSignOnLaunch(v),
                   ),
-                  Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                  Divider(
+                      height: 1,
+                      color: colorScheme.outlineVariant.withAlpha(40)),
                   SwitchListTile(
                     secondary: Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: Colors.blue.withAlpha(25),
+                        color:
+                            colorScheme.surfaceContainerHighest.withAlpha(140),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: const Icon(Icons.notifications_active_rounded, color: Colors.blue, size: 20),
+                      child: Icon(Icons.notifications_active_rounded,
+                          color: colorScheme.primary, size: 20),
                     ),
-                    title: const Text('签到结果全平台消息推送', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
-                    subtitle: const Text('打卡成功后推送奖励铁粒、经验与连续签到天数（全平台支持系统 Toast 与应用内横幅）', style: TextStyle(fontSize: 12)),
+                    title: const Text('签到结果全平台消息推送',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 14.5)),
+                    subtitle: const Text(
+                        '打卡成功后推送奖励铁粒、经验与连续签到天数（全平台支持系统 Toast 与应用内横幅）',
+                        style: TextStyle(fontSize: 14)),
                     value: sign.notifyOnResult,
                     onChanged: (v) => sign.setNotifyOnResult(v),
                   ),
@@ -2423,8 +2863,9 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
             Card(
               elevation: 0,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
+                borderRadius: BorderRadius.circular(24),
+                side:
+                    BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
               ),
               child: Column(
                 children: [
@@ -2432,26 +2873,38 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                     secondary: Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: Colors.indigo.withAlpha(25),
+                        color:
+                            colorScheme.surfaceContainerHighest.withAlpha(140),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: const Icon(Icons.alarm_on_rounded, color: Colors.indigo, size: 20),
+                      child: Icon(Icons.alarm_on_rounded,
+                          color: colorScheme.primary, size: 20),
                     ),
-                    title: const Text('开启每日定时签到', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
-                    subtitle: const Text('每天到达指定时间时自动探测服务端打卡状态并触发签到', style: TextStyle(fontSize: 12)),
+                    title: const Text('开启每日定时签到',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 14.5)),
+                    subtitle: const Text('每天到达指定时间时自动探测服务端打卡状态并触发签到',
+                        style: TextStyle(fontSize: 14)),
                     value: sign.scheduledSignEnabled,
                     onChanged: (v) => sign.setScheduledSignEnabled(v),
                   ),
                   if (sign.scheduledSignEnabled) ...[
-                    Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                    Divider(
+                        height: 1,
+                        color: colorScheme.outlineVariant.withAlpha(40)),
                     ListTile(
                       leading: const Icon(Icons.schedule_rounded),
-                      title: const Text('定时执行时间', style: TextStyle(fontSize: 14)),
-                      subtitle: Text('每天将在 ${sign.scheduledTimeString} 自动打卡（持续探测 ${sign.scheduledWindowSec} 秒）', style: const TextStyle(fontSize: 12)),
+                      title:
+                          const Text('定时执行时间', style: TextStyle(fontSize: 14)),
+                      subtitle: Text(
+                          '每天将在 ${sign.scheduledTimeString} 自动打卡（持续探测 ${sign.scheduledWindowSec} 秒）',
+                          style: const TextStyle(fontSize: 14)),
                       trailing: FilledButton.tonal(
                         style: FilledButton.styleFrom(
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(20)),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 6),
                         ),
                         onPressed: () async {
                           final picked = await showTimePicker(
@@ -2465,14 +2918,20 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                             sign.setScheduledTime(picked.hour, picked.minute);
                           }
                         },
-                        child: Text(sign.scheduledTimeString, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                        child: Text(sign.scheduledTimeString,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold, fontSize: 14)),
                       ),
                     ),
-                    Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                    Divider(
+                        height: 1,
+                        color: colorScheme.outlineVariant.withAlpha(40)),
                     ListTile(
                       leading: const Icon(Icons.timelapse_rounded),
-                      title: const Text('定时容差探测区间', style: TextStyle(fontSize: 14)),
-                      subtitle: const Text('到达定时后持续探测状态，防止服务端产生秒级延迟', style: TextStyle(fontSize: 12)),
+                      title: const Text('定时容差探测区间',
+                          style: TextStyle(fontSize: 14)),
+                      subtitle: const Text('到达定时后持续探测状态，防止服务端产生秒级延迟',
+                          style: TextStyle(fontSize: 14)),
                       trailing: DropdownButton<int>(
                         value: sign.scheduledWindowSec,
                         underline: const SizedBox(),
@@ -2481,7 +2940,8 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                           DropdownMenuItem(value: 30, child: Text('30 秒 (推荐)')),
                           DropdownMenuItem(value: 60, child: Text('60 秒')),
                         ],
-                        onChanged: (v) => v != null ? sign.setScheduledWindowSec(v) : null,
+                        onChanged: (v) =>
+                            v != null ? sign.setScheduledWindowSec(v) : null,
                       ),
                     ),
                   ],
@@ -2491,12 +2951,13 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
             const SizedBox(height: 18),
 
             // 3. 零点极速冲榜模式
-            _buildSectionHeader('零点极速冲榜模式（冲刺第一名）'),
+            _buildSectionHeader('零点自动签到'),
             Card(
               elevation: 0,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
+                borderRadius: BorderRadius.circular(24),
+                side:
+                    BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
               ),
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 4),
@@ -2507,42 +2968,60 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                       secondary: Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: Colors.amber.withAlpha(25),
+                          color: colorScheme.surfaceContainerHighest
+                              .withAlpha(140),
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: const Icon(Icons.military_tech_rounded, color: Colors.amber, size: 20),
+                        child: Icon(Icons.military_tech_rounded,
+                            color: colorScheme.primary, size: 20),
                       ),
-                      title: const Text('开启 23:59 零点极速冲榜', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
-                      subtitle: const Text('每天北京时间 23:59 激活准备状态并校准时钟，在跨天窗口期极速打卡抢占前排', style: TextStyle(fontSize: 12)),
+                      title: const Text('开启零点自动签到',
+                          style: TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 14.5)),
+                      subtitle: const Text('跨天前校准服务器时钟，跨天后为当前账号提交一次签到',
+                          style: TextStyle(fontSize: 14)),
                       value: sign.burstModeEnabled,
                       onChanged: (v) => sign.setBurstModeEnabled(v),
                     ),
                     if (sign.burstModeEnabled) ...[
-                      Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                      Divider(
+                          height: 1,
+                          color: colorScheme.outlineVariant.withAlpha(40)),
                       ListTile(
-                        title: const Text('冲榜策略模式', style: TextStyle(fontSize: 14)),
-                        subtitle: Text(sign.burstStrategy.label, style: const TextStyle(fontSize: 12)),
+                        title:
+                            const Text('签到前检查', style: TextStyle(fontSize: 14)),
+                        subtitle: Text(sign.burstStrategy.label,
+                            style: const TextStyle(fontSize: 14)),
                         trailing: DropdownButton<BurstStrategy>(
                           value: sign.burstStrategy,
                           underline: const SizedBox(),
                           items: BurstStrategy.values.map((s) {
                             return DropdownMenuItem(
                               value: s,
-                              child: Text(s == BurstStrategy.statusPolling ? '高频探测抢签 (单路极速)' : '多路并发冲刺 (暴力冲第1)'),
+                              child: Text(s == BurstStrategy.statusPolling
+                                  ? '先读取状态，再提交一次'
+                                  : '零点直接提交一次'),
                             );
                           }).toList(),
-                          onChanged: (v) => v != null ? sign.setBurstStrategy(v) : null,
+                          onChanged: (v) =>
+                              v != null ? sign.setBurstStrategy(v) : null,
                         ),
                       ),
-                      Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                      Divider(
+                          height: 1,
+                          color: colorScheme.outlineVariant.withAlpha(40)),
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const Text('发包间隔 / 延迟调节', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
+                            const Text('跨天时钟检查间隔',
+                                style: TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 13.5)),
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 3),
                               decoration: BoxDecoration(
                                 color: colorScheme.primaryContainer,
                                 borderRadius: BorderRadius.circular(12),
@@ -2561,9 +3040,9 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                       ),
                       Slider(
                         value: sign.burstIntervalMs.toDouble(),
-                        min: 50,
+                        min: 100,
                         max: 1000,
-                        divisions: 19,
+                        divisions: 18,
                         label: '${sign.burstIntervalMs} ms',
                         onChanged: (v) => sign.setBurstIntervalMs(v.round()),
                       ),
@@ -2573,15 +3052,16 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                           spacing: 8,
                           runSpacing: 8,
                           children: [
-                            _buildIntervalChip(sign, '极限 50ms (抢第1推荐)', 50),
-                            _buildIntervalChip(sign, '极速 100ms', 100),
-                            _buildIntervalChip(sign, '高速 200ms', 200),
-                            _buildIntervalChip(sign, '平衡 300ms', 300),
-                            _buildIntervalChip(sign, '稳健 500ms', 500),
+                            _buildIntervalChip(sign, '100ms', 100),
+                            _buildIntervalChip(sign, '200ms', 200),
+                            _buildIntervalChip(sign, '300ms', 300),
+                            _buildIntervalChip(sign, '500ms', 500),
                           ],
                         ),
                       ),
-                      Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                      Divider(
+                          height: 1,
+                          color: colorScheme.outlineVariant.withAlpha(40)),
 
                       // 防时钟不同步时间区间
                       Padding(
@@ -2589,60 +3069,83 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                         child: Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                            color: colorScheme.surfaceContainerHighest
+                                .withAlpha(80),
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: colorScheme.outlineVariant.withAlpha(40)),
+                            border: Border.all(
+                                color:
+                                    colorScheme.outlineVariant.withAlpha(40)),
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Row(
                                 children: [
-                                  const Icon(Icons.shield_outlined, size: 16, color: Colors.blueAccent),
+                                  Icon(Icons.shield_outlined,
+                                      size: 16, color: colorScheme.primary),
                                   const SizedBox(width: 6),
-                                  const Text('跨天保护时间区间', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                  const Text('跨天保护时间区间',
+                                      style: TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 13)),
                                 ],
                               ),
                               const SizedBox(height: 4),
                               Text(
                                 sign.burstTimeWindowDescription,
-                                style: TextStyle(fontSize: 12, color: colorScheme.primary, height: 1.3),
+                                style: TextStyle(
+                                    fontSize: 14,
+                                    color: colorScheme.primary,
+                                    height: 1.3),
                               ),
                             ],
                           ),
                         ),
                       ),
                       ListTile(
-                        title: const Text('提前开跑区间（防服务器时钟比本地快）', style: TextStyle(fontSize: 13.5)),
-                        subtitle: Text('23:59:${(60 - sign.burstPreSeconds).toString().padLeft(2, '0')} 开始进入开跑探测', style: const TextStyle(fontSize: 11.5)),
+                        title: const Text('提前开跑区间（防服务器时钟比本地快）',
+                            style: TextStyle(fontSize: 13.5)),
+                        subtitle: Text(
+                            '23:59:${(60 - sign.burstPreSeconds).toString().padLeft(2, '0')} 开始进入开跑探测',
+                            style: const TextStyle(fontSize: 13)),
                         trailing: DropdownButton<int>(
                           value: sign.burstPreSeconds,
                           underline: const SizedBox(),
                           items: const [
                             DropdownMenuItem(value: 5, child: Text('提前 5 秒')),
                             DropdownMenuItem(value: 10, child: Text('提前 10 秒')),
-                            DropdownMenuItem(value: 15, child: Text('提前 15 秒 (推荐)')),
+                            DropdownMenuItem(
+                                value: 15, child: Text('提前 15 秒 (推荐)')),
                             DropdownMenuItem(value: 30, child: Text('提前 30 秒')),
-                            DropdownMenuItem(value: 59, child: Text('提前 60 秒 (23:59:00)')),
+                            DropdownMenuItem(
+                                value: 59, child: Text('提前 60 秒 (23:59:00)')),
                           ],
-                          onChanged: (v) => v != null ? sign.setBurstPreSeconds(v) : null,
+                          onChanged: (v) =>
+                              v != null ? sign.setBurstPreSeconds(v) : null,
                         ),
                       ),
-                      Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                      Divider(
+                          height: 1,
+                          color: colorScheme.outlineVariant.withAlpha(40)),
                       ListTile(
-                        title: const Text('跨天延后区间（防服务器时钟比本地慢）', style: TextStyle(fontSize: 13.5)),
-                        subtitle: Text('跨过零点后持续探测 / 发包至 00:00:${sign.burstPostSeconds.toString().padLeft(2, '0')}', style: const TextStyle(fontSize: 11.5)),
+                        title: const Text('跨天延后区间（防服务器时钟比本地慢）',
+                            style: TextStyle(fontSize: 13.5)),
+                        subtitle: Text(
+                            '跨过零点后持续探测 / 发包至 00:00:${sign.burstPostSeconds.toString().padLeft(2, '0')}',
+                            style: const TextStyle(fontSize: 13)),
                         trailing: DropdownButton<int>(
                           value: sign.burstPostSeconds,
                           underline: const SizedBox(),
                           items: const [
                             DropdownMenuItem(value: 10, child: Text('延后 10 秒')),
                             DropdownMenuItem(value: 15, child: Text('延后 15 秒')),
-                            DropdownMenuItem(value: 20, child: Text('延后 20 秒 (默认)')),
+                            DropdownMenuItem(
+                                value: 20, child: Text('延后 20 秒 (默认)')),
                             DropdownMenuItem(value: 30, child: Text('延后 30 秒')),
                             DropdownMenuItem(value: 60, child: Text('延后 60 秒')),
                           ],
-                          onChanged: (v) => v != null ? sign.setBurstPostSeconds(v) : null,
+                          onChanged: (v) =>
+                              v != null ? sign.setBurstPostSeconds(v) : null,
                         ),
                       ),
                     ],
@@ -2657,8 +3160,9 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
             Card(
               elevation: 0,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
+                borderRadius: BorderRadius.circular(24),
+                side:
+                    BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
               ),
               child: Column(
                 children: [
@@ -2666,18 +3170,26 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                     secondary: Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: Colors.amber.withAlpha(25),
+                        color:
+                            colorScheme.surfaceContainerHighest.withAlpha(140),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: const Icon(Icons.healing_rounded, color: Colors.amber, size: 20),
+                      child: Icon(Icons.healing_rounded,
+                          color: colorScheme.primary, size: 20),
                     ),
-                    title: const Text('502/宕机静默探测与恢复即签', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
-                    subtitle: const Text('当论坛出现 502 Bad Gateway / 网关超时 / 503 等异常时，进入静默轻量探测，一旦服务器恢复立即自动打卡', style: TextStyle(fontSize: 12)),
+                    title: const Text('502/宕机静默探测与恢复即签',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 14.5)),
+                    subtitle: const Text(
+                        '当论坛出现 502 Bad Gateway / 网关超时 / 503 等异常时，进入静默轻量探测，一旦服务器恢复立即自动打卡',
+                        style: TextStyle(fontSize: 14)),
                     value: sign.serverRecoverySignEnabled,
                     onChanged: (val) => sign.setServerRecoverySignEnabled(val),
                   ),
                   if (sign.serverRecoverySignEnabled) ...[
-                    Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                    Divider(
+                        height: 1,
+                        color: colorScheme.outlineVariant.withAlpha(40)),
                     Padding(
                       padding: const EdgeInsets.all(16),
                       child: Column(
@@ -2686,9 +3198,13 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                           Row(
                             children: [
                               Icon(
-                                sign.isProbingRecovery ? Icons.radar_rounded : Icons.check_circle_outline_rounded,
+                                sign.isProbingRecovery
+                                    ? Icons.radar_rounded
+                                    : Icons.check_circle_outline_rounded,
                                 size: 16,
-                                color: sign.isProbingRecovery ? Colors.amber.shade700 : Colors.teal.shade600,
+                                color: sign.isProbingRecovery
+                                    ? colorScheme.tertiary
+                                    : colorScheme.primary,
                               ),
                               const SizedBox(width: 6),
                               Expanded(
@@ -2699,7 +3215,9 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                                   style: TextStyle(
                                     fontWeight: FontWeight.bold,
                                     fontSize: 13,
-                                    color: sign.isProbingRecovery ? Colors.amber.shade900 : Colors.teal.shade800,
+                                    color: sign.isProbingRecovery
+                                        ? colorScheme.tertiary
+                                        : colorScheme.primary,
                                   ),
                                 ),
                               ),
@@ -2707,10 +3225,13 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                                 FilledButton.tonal(
                                   style: FilledButton.styleFrom(
                                     visualDensity: VisualDensity.compact,
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 10, vertical: 2),
                                   ),
-                                  onPressed: () => sign.startRecoveryProbeLoop(),
-                                  child: const Text('立即探针', style: TextStyle(fontSize: 11)),
+                                  onPressed: () =>
+                                      sign.startRecoveryProbeLoop(),
+                                  child: const Text('立即探针',
+                                      style: TextStyle(fontSize: 11)),
                                 ),
                             ],
                           ),
@@ -2719,19 +3240,25 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                             sign.isProbingRecovery
                                 ? '自适应递增退避间隔 (2s -> 3s -> 5s -> 10s)，采用超轻量 HEAD/GET 探针，零负担捕捉服务器恢复上升沿。'
                                 : '若启动检测、定时打卡或手动点击遇到 502/503 网关故障，系统会自动切换至高频探测通道，服务器恢复的第 1 秒内为您完成补签并推送通知。',
-                            style: TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant, height: 1.4),
+                            style: TextStyle(
+                                fontSize: 14,
+                                color: colorScheme.onSurfaceVariant,
+                                height: 1.4),
                           ),
                           if (sign.lastOutageInfo != null) ...[
                             const SizedBox(height: 8),
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 6),
                               decoration: BoxDecoration(
-                                color: colorScheme.surfaceContainerHighest.withAlpha(60),
+                                color: colorScheme.surfaceContainerHighest
+                                    .withAlpha(60),
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Text(
                                 '最近捕获异常：HTTP ${sign.lastOutageInfo?.statusCode} (${sign.lastOutageInfo?.title})',
-                                style: TextStyle(fontSize: 11, color: colorScheme.outline),
+                                style: TextStyle(
+                                    fontSize: 11, color: colorScheme.outline),
                               ),
                             ),
                           ],
@@ -2749,8 +3276,9 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
             Card(
               elevation: 0,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
+                borderRadius: BorderRadius.circular(24),
+                side:
+                    BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
               ),
               child: Column(
                 children: [
@@ -2760,88 +3288,120 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                       leading: Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: Colors.teal.withAlpha(25),
+                          color: colorScheme.surfaceContainerHighest
+                              .withAlpha(140),
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: const Icon(Icons.shield_moon_rounded, color: Colors.teal, size: 20),
+                        child: Icon(Icons.shield_moon_rounded,
+                            color: colorScheme.primary, size: 20),
                       ),
-                      title: const Text('Android 电池白名单与防杀配置教程', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
-                      subtitle: const Text('各厂商（小米/华为/OPPO/vivo/三星）后台保活、自启动与忽略电池优化设置', style: TextStyle(fontSize: 12)),
+                      title: const Text('Android 电池白名单与防杀配置教程',
+                          style: TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 14.5)),
+                      subtitle: const Text(
+                          '各厂商（小米/华为/OPPO/vivo/三星）后台保活、自启动与忽略电池优化设置',
+                          style: TextStyle(fontSize: 14)),
                       childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                       children: [
                         Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: Colors.amber.withAlpha(25),
+                            color: colorScheme.surfaceContainerHighest
+                                .withAlpha(90),
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.amber.withAlpha(60)),
+                            border: Border.all(
+                                color:
+                                    colorScheme.outlineVariant.withAlpha(50)),
                           ),
-                          child: const Text(
+                          child: Text(
                             '提示：国内 Android 定制系统（MIUI/HyperOS/ColorOS/OriginOS/HarmonyOS）会在息屏后激进查杀后台应用。为确保定时签到准时触发，请对照您的机型完成以下 3 项设置：',
-                            style: TextStyle(fontSize: 12, height: 1.4),
+                            style: TextStyle(
+                                fontSize: 14,
+                                height: 1.4,
+                                color: colorScheme.onSurfaceVariant),
                           ),
                         ),
                         const SizedBox(height: 12),
                         _buildGuideCard(
                           title: '通用第 1 步：关闭电池优化（设为无限制）',
-                          content: '进入【系统设置】->【应用】->【苦力怕论坛】->【电池/耗电详情】-> 设置为【无限制 / 不优化】。',
+                          content:
+                              '进入【系统设置】->【应用】->【苦力怕论坛】->【电池/耗电详情】-> 设置为【无限制 / 不优化】。',
                           icon: Icons.battery_charging_full_rounded,
-                          color: Colors.green,
                         ),
                         const SizedBox(height: 10),
                         _buildGuideCard(
                           title: '通用第 2 步：开启自启动与后台活动权限',
-                          content: '进入【系统设置】->【权限管理】->【自启动】-> 开启【苦力怕论坛】；并允许【后台活动】。',
+                          content:
+                              '进入【系统设置】->【权限管理】->【自启动】-> 开启【苦力怕论坛】；并允许【后台活动】。',
                           icon: Icons.power_settings_new_rounded,
-                          color: Colors.blue,
                         ),
                         const SizedBox(height: 10),
                         _buildGuideCard(
                           title: '通用第 3 步：多任务卡片锁定',
-                          content: '打开手机多任务后台界面 -> 找到「苦力怕论坛」卡片 -> 下拉卡片或长按 -> 点击【小锁图标】锁定常驻。',
+                          content:
+                              '打开手机多任务后台界面 -> 找到「苦力怕论坛」卡片 -> 下拉卡片或长按 -> 点击【小锁图标】锁定常驻。',
                           icon: Icons.lock_outline_rounded,
-                          color: Colors.purple,
                         ),
                         const SizedBox(height: 14),
                         Align(
                           alignment: Alignment.centerLeft,
-                          child: Text('主流厂商详细路径说明：', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
+                          child: Text('主流厂商详细路径说明：',
+                              style: theme.textTheme.titleSmall
+                                  ?.copyWith(fontWeight: FontWeight.bold)),
                         ),
                         const SizedBox(height: 8),
-                        _buildVendorTile('小米 / Redmi / HyperOS / MIUI', '手机管家 -> 应用管理 -> 权限 -> 自启动管理（开启）；电池 -> 应用省电策略 -> 设为「无限制」；多任务下拉加锁。'),
-                        _buildVendorTile('华为 / 荣耀 / HarmonyOS / MagicOS', '设置 -> 电池 -> 应用启动管理 -> 找到苦力怕论坛 -> 关闭「自动管理」，手动开启「允许自启动/关联启动/后台活动」；设置 -> 电池优化 -> 设为不允许。'),
-                        _buildVendorTile('OPPO / 一加 / Realme / ColorOS', '设置 -> 应用 -> 应用管理 -> 苦力怕论坛 -> 耗电管理 -> 开启「允许完全后台行为」与「允许应用自启动」；多任务卡片加锁。'),
-                        _buildVendorTile('vivo / iQOO / OriginOS', '设置 -> 电池 -> 后台高耗电 -> 开启「苦力怕论坛」；设置 -> 权限管理 -> 自启动（开启）；多任务卡片下拉锁定。'),
-                        _buildVendorTile('三星 / One UI', '设置 -> 应用程序 -> 苦力怕论坛 -> 电池 -> 选择「不受限制」；电池与设备维护 -> 后台限制 -> 移出深度休眠名单。'),
+                        _buildVendorTile('小米 / Redmi / HyperOS / MIUI',
+                            '手机管家 -> 应用管理 -> 权限 -> 自启动管理（开启）；电池 -> 应用省电策略 -> 设为「无限制」；多任务下拉加锁。'),
+                        _buildVendorTile('华为 / 荣耀 / HarmonyOS / MagicOS',
+                            '设置 -> 电池 -> 应用启动管理 -> 找到苦力怕论坛 -> 关闭「自动管理」，手动开启「允许自启动/关联启动/后台活动」；设置 -> 电池优化 -> 设为不允许。'),
+                        _buildVendorTile('OPPO / 一加 / Realme / ColorOS',
+                            '设置 -> 应用 -> 应用管理 -> 苦力怕论坛 -> 耗电管理 -> 开启「允许完全后台行为」与「允许应用自启动」；多任务卡片加锁。'),
+                        _buildVendorTile('vivo / iQOO / OriginOS',
+                            '设置 -> 电池 -> 后台高耗电 -> 开启「苦力怕论坛」；设置 -> 权限管理 -> 自启动（开启）；多任务卡片下拉锁定。'),
+                        _buildVendorTile('三星 / One UI',
+                            '设置 -> 应用程序 -> 苦力怕论坛 -> 电池 -> 选择「不受限制」；电池与设备维护 -> 后台限制 -> 移出深度休眠名单。'),
                       ],
                     ),
                   ),
-                  Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                  Divider(
+                      height: 1,
+                      color: colorScheme.outlineVariant.withAlpha(40)),
                   Theme(
                     data: theme.copyWith(dividerColor: Colors.transparent),
                     child: ExpansionTile(
                       leading: Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: Colors.deepPurple.withAlpha(25),
+                          color: colorScheme.surfaceContainerHighest
+                              .withAlpha(140),
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: const Icon(Icons.phone_iphone_rounded, color: Colors.deepPurple, size: 20),
+                        child: Icon(Icons.phone_iphone_rounded,
+                            color: colorScheme.primary, size: 20),
                       ),
-                      title: const Text('iOS 快捷指令自动化方案 (100% 必签教程)', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
-                      subtitle: const Text('利用 iOS 原生「快捷指令」每天定时唤醒 App，配合启动打卡彻底解决后台墓碑休眠', style: TextStyle(fontSize: 12)),
+                      title: const Text('iOS 快捷指令唤醒设置',
+                          style: TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 14.5)),
+                      subtitle: const Text('通过「快捷指令」定时打开应用，配合已启用的启动签到',
+                          style: TextStyle(fontSize: 14)),
                       childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                       children: [
                         Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: Colors.blue.withAlpha(25),
+                            color: colorScheme.surfaceContainerHighest
+                                .withAlpha(90),
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.blue.withAlpha(60)),
+                            border: Border.all(
+                                color:
+                                    colorScheme.outlineVariant.withAlpha(50)),
                           ),
-                          child: const Text(
-                            '💡 方案优势：由于 iOS 系统机制会对后台常驻应用执行严格挂起（墓碑），利用 iOS 原生「快捷指令」App 设定每日定时个人自动化，是 iOS 平台 100% 绝对稳定的自动化打卡方案！',
-                            style: TextStyle(fontSize: 12, height: 1.4),
+                          child: Text(
+                            'iOS 可能暂停后台应用。个人自动化可以定时打开应用；签到结果仍取决于登录状态、网络连接和论坛返回，请查看结果提示。',
+                            style: TextStyle(
+                                fontSize: 14,
+                                height: 1.4,
+                                color: colorScheme.onSurfaceVariant),
                           ),
                         ),
                         const SizedBox(height: 12),
@@ -2849,56 +3409,64 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                           title: '第 1 步：在 App 设置中开启启动自动打卡',
                           content: '在上方【基础自动化】中开启【启动时自动静默打卡】开关。',
                           icon: Icons.rocket_launch_rounded,
-                          color: Colors.green,
                         ),
                         const SizedBox(height: 10),
                         _buildGuideCard(
                           title: '第 2 步：打开 iPhone 的「快捷指令」App',
-                          content: '在 iPhone 上打开自带的「快捷指令」应用 -> 点击底部中间的【自动化】标签页。',
+                          content:
+                              '在 iPhone 上打开自带的「快捷指令」应用 -> 点击底部中间的【自动化】标签页。',
                           icon: Icons.touch_app_rounded,
-                          color: Colors.orange,
                         ),
                         const SizedBox(height: 10),
                         _buildGuideCard(
                           title: '第 3 步：新建每日特定时间自动化',
-                          content: '点击右上角【+】号 -> 选择【特定时间】（如每天 08:00）-> 重复选择【每天】-> 勾选【立即运行】并关闭【运行时通知】。',
+                          content:
+                              '点击右上角【+】号 -> 选择【特定时间】（如每天 08:00）-> 重复选择【每天】-> 勾选【立即运行】并关闭【运行时通知】。',
                           icon: Icons.alarm_rounded,
-                          color: Colors.blue,
                         ),
                         const SizedBox(height: 10),
                         _buildGuideCard(
                           title: '第 4 步：添加执行动作「打开 App」',
-                          content: '点击下一步 -> 选择【打开 App】动作 -> 在应用列表中选取【苦力怕论坛】-> 点击【完成】。',
+                          content:
+                              '点击下一步 -> 选择【打开 App】动作 -> 在应用列表中选取【苦力怕论坛】-> 点击【完成】。',
                           icon: Icons.check_circle_rounded,
-                          color: Colors.purple,
                         ),
                         const SizedBox(height: 12),
                         Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: colorScheme.surfaceContainerHighest.withAlpha(80),
+                            color: colorScheme.surfaceContainerHighest
+                                .withAlpha(80),
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: const Text(
                             '🎉 设置完成后，每天到达指定时间时，iPhone 会自动在后台/前台唤醒「苦力怕论坛」，应用在启动 3 秒内将自动完成打卡并推送打卡成功横幅通知！',
-                            style: TextStyle(fontSize: 12, height: 1.4),
+                            style: TextStyle(fontSize: 14, height: 1.4),
                           ),
                         ),
                       ],
                     ),
                   ),
-                  Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                  Divider(
+                      height: 1,
+                      color: colorScheme.outlineVariant.withAlpha(40)),
                   ListTile(
                     leading: Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: Colors.blue.withAlpha(25),
+                        color:
+                            colorScheme.surfaceContainerHighest.withAlpha(140),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: const Icon(Icons.all_inclusive_rounded, color: Colors.blue, size: 20),
+                      child: Icon(Icons.all_inclusive_rounded,
+                          color: colorScheme.primary, size: 20),
                     ),
-                    title: const Text('生命周期感知与错峰补签保障', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
-                    subtitle: const Text('已内置智能补签：若因关机/深度休眠错过准点，在手机解锁或唤醒时会自动立即检测补签', style: TextStyle(fontSize: 12)),
+                    title: const Text('生命周期感知与错峰补签保障',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 14.5)),
+                    subtitle: const Text(
+                        '已内置智能补签：若因关机/深度休眠错过准点，在手机解锁或唤醒时会自动立即检测补签',
+                        style: TextStyle(fontSize: 14)),
                   ),
                 ],
               ),
@@ -2910,8 +3478,9 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
             Card(
               elevation: 0,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
+                borderRadius: BorderRadius.circular(24),
+                side:
+                    BorderSide(color: colorScheme.outlineVariant.withAlpha(50)),
               ),
               child: Column(
                 children: [
@@ -2919,27 +3488,39 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                     leading: Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: (sign.isRunning ? Colors.green : colorScheme.primary).withAlpha(20),
+                        color:
+                            colorScheme.surfaceContainerHighest.withAlpha(140),
                         borderRadius: BorderRadius.circular(10),
                       ),
                       child: Icon(
-                        sign.isRunning ? Icons.sync_rounded : Icons.info_outline_rounded,
-                        color: sign.isRunning ? Colors.green : colorScheme.primary,
+                        sign.isRunning
+                            ? Icons.sync_rounded
+                            : Icons.info_outline_rounded,
+                        color: colorScheme.primary,
                         size: 20,
                       ),
                     ),
-                    title: const Text('当前服务状态', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                    subtitle: Text(sign.statusMessage, style: const TextStyle(fontSize: 12)),
+                    title: const Text('当前服务状态',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 14)),
+                    subtitle: Text(sign.statusMessage,
+                        style: const TextStyle(fontSize: 14)),
                   ),
                   if (sign.lastSuccessDate.isNotEmpty) ...[
-                    Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                    Divider(
+                        height: 1,
+                        color: colorScheme.outlineVariant.withAlpha(40)),
                     ListTile(
                       leading: const Icon(Icons.history_rounded),
-                      title: const Text('上次自动打卡成功记录', style: TextStyle(fontSize: 14)),
-                      subtitle: Text(sign.lastSuccessDate, style: const TextStyle(fontSize: 12)),
+                      title: const Text('上次自动打卡成功记录',
+                          style: TextStyle(fontSize: 14)),
+                      subtitle: Text(sign.lastSuccessDate,
+                          style: const TextStyle(fontSize: 14)),
                     ),
                   ],
-                  Divider(height: 1, color: colorScheme.outlineVariant.withAlpha(40)),
+                  Divider(
+                      height: 1,
+                      color: colorScheme.outlineVariant.withAlpha(40)),
                   Padding(
                     padding: const EdgeInsets.all(14),
                     child: Wrap(
@@ -2948,50 +3529,59 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                       children: [
                         FilledButton.tonalIcon(
                           style: FilledButton.styleFrom(
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
                           ),
                           onPressed: sign.isRunning
                               ? null
-                              : () => sign.checkAndAutoSignIn(triggerSource: '手动测试'),
+                              : () => sign.checkAndAutoSignIn(
+                                  triggerSource: '手动签到'),
                           icon: const Icon(Icons.play_arrow_rounded, size: 18),
-                          label: const Text('立即执行一次签到检测'),
+                          label: const Text('立即签到'),
                         ),
                         FilledButton.tonalIcon(
                           style: FilledButton.styleFrom(
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
                           ),
-                          onPressed: _testingToday ? null : _testTodayNotification,
+                          onPressed:
+                              _testingToday ? null : _testTodayNotification,
                           icon: _testingToday
                               ? const SizedBox(
                                   width: 14,
                                   height: 14,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                  child: AppLoadingIndicator(strokeWidth: 2),
                                 )
                               : const Icon(Icons.today_rounded, size: 18),
                           label: const Text('测试推送今日签到数据'),
                         ),
                         FilledButton.tonalIcon(
                           style: FilledButton.styleFrom(
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
                           ),
                           onPressed: sign.isRunning
                               ? null
                               : () async {
-                                  final report = await sign.runBurstDiagnosticTest();
+                                  final report =
+                                      await sign.runBurstDiagnosticTest();
                                   if (context.mounted) {
                                     showDialog(
                                       context: context,
                                       builder: (ctx) => AlertDialog(
-                                        title: const Row(
+                                        title: Row(
                                           children: [
-                                            Icon(Icons.bolt_rounded, color: Colors.amber),
-                                            SizedBox(width: 8),
-                                            Text('高频冲刺实测结果', style: TextStyle(fontSize: 16)),
+                                            Icon(Icons.bolt_rounded,
+                                                color: colorScheme.primary),
+                                            const SizedBox(width: 8),
+                                            const Text('签到读取诊断',
+                                                style: TextStyle(fontSize: 16)),
                                           ],
                                         ),
                                         content: SelectableText(
                                           report,
-                                          style: const TextStyle(fontSize: 13, height: 1.4),
+                                          style: const TextStyle(
+                                              fontSize: 13, height: 1.4),
                                         ),
                                         actions: [
                                           TextButton(
@@ -3003,29 +3593,35 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                                     );
                                   }
                                 },
-                          icon: const Icon(Icons.flash_on_rounded, size: 18, color: Colors.amber),
-                          label: const Text('立即运行高频冲刺实测'),
+                          icon: Icon(Icons.flash_on_rounded,
+                              size: 18, color: colorScheme.primary),
+                          label: const Text('检查签到接口与时钟'),
                         ),
                         FilledButton.tonalIcon(
                           style: FilledButton.styleFrom(
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
                           ),
                           onPressed: () async {
-                            final report = await sign.runRecoveryDiagnosticProbe();
+                            final report =
+                                await sign.runRecoveryDiagnosticProbe();
                             if (context.mounted) {
                               showDialog(
                                 context: context,
                                 builder: (ctx) => AlertDialog(
-                                  title: const Row(
+                                  title: Row(
                                     children: [
-                                      Icon(Icons.radar_rounded, color: Colors.teal),
-                                      SizedBox(width: 8),
-                                      Text('502 探针与恢复诊断', style: TextStyle(fontSize: 16)),
+                                      Icon(Icons.radar_rounded,
+                                          color: colorScheme.primary),
+                                      const SizedBox(width: 8),
+                                      const Text('502 探针与恢复诊断',
+                                          style: TextStyle(fontSize: 16)),
                                     ],
                                   ),
                                   content: SelectableText(
                                     report,
-                                    style: const TextStyle(fontSize: 13, height: 1.4),
+                                    style: const TextStyle(
+                                        fontSize: 13, height: 1.4),
                                   ),
                                   actions: [
                                     TextButton(
@@ -3037,20 +3633,24 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
                               );
                             }
                           },
-                          icon: const Icon(Icons.radar_rounded, size: 18, color: Colors.teal),
+                          icon: Icon(Icons.radar_rounded,
+                              size: 18, color: colorScheme.primary),
                           label: const Text('测试 502 探针与服务器健康度'),
                         ),
                         OutlinedButton.icon(
                           style: OutlinedButton.styleFrom(
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
                           ),
                           onPressed: () {
-                            PushNotificationService.instance.pushCustomNotification(
-                              title: '苦力怕论坛 · 签到测试通知 🎉',
+                            PushNotificationService.instance
+                                .pushCustomNotification(
+                              title: '苦力怕论坛 · 签到测试通知',
                               body: '签到奖励：+15 粒铁粒 | 经验 +10 EP | 连续签到 100 天',
                             );
                           },
-                          icon: const Icon(Icons.notifications_active_outlined, size: 18),
+                          icon: const Icon(Icons.notifications_active_outlined,
+                              size: 18),
                           label: const Text('测试模拟成功通知'),
                         ),
                       ],
@@ -3075,7 +3675,7 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
       onSelected: (_) => sign.setBurstIntervalMs(ms),
       selectedColor: colorScheme.primaryContainer,
       labelStyle: TextStyle(
-        fontSize: 11.5,
+        fontSize: 13,
         fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
         color: isSelected ? colorScheme.primary : colorScheme.onSurface,
       ),
@@ -3086,27 +3686,36 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
     required String title,
     required String content,
     required IconData icon,
-    required Color color,
   }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final iconColor = colorScheme.primary;
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: color.withAlpha(15),
+        color: colorScheme.surfaceContainerHighest.withAlpha(90),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withAlpha(40)),
+        border: Border.all(color: colorScheme.outlineVariant.withAlpha(50)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: color, size: 20),
+          Icon(icon, color: iconColor, size: 20),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: color)),
+                Text(title,
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                        color: colorScheme.onSurface)),
                 const SizedBox(height: 4),
-                Text(content, style: const TextStyle(fontSize: 12, height: 1.35)),
+                Text(content,
+                    style: TextStyle(
+                        fontSize: 14,
+                        height: 1.35,
+                        color: colorScheme.onSurfaceVariant)),
               ],
             ),
           ),
@@ -3121,15 +3730,24 @@ class _SignSettingsViewState extends State<_SignSettingsView> {
       child: Container(
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest.withAlpha(50),
+          color: Theme.of(context)
+              .colorScheme
+              .surfaceContainerHighest
+              .withAlpha(50),
           borderRadius: BorderRadius.circular(10),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('• $title', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
+            Text('• $title',
+                style: const TextStyle(
+                    fontWeight: FontWeight.bold, fontSize: 12.5)),
             const SizedBox(height: 2),
-            Text(desc, style: TextStyle(fontSize: 11.5, color: Theme.of(context).colorScheme.onSurfaceVariant, height: 1.3)),
+            Text(desc,
+                style: TextStyle(
+                    fontSize: 13,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    height: 1.3)),
           ],
         ),
       ),
@@ -3159,14 +3777,17 @@ Widget _buildSectionHeader(String title, {String? subtitle}) {
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
-                Text(
+                Expanded(
+                    child: Text(
                   title,
                   style: theme.textTheme.titleSmall?.copyWith(
+                    fontSize: 15,
+                    height: 1.35,
                     color: colorScheme.primary,
                     fontWeight: FontWeight.bold,
                     letterSpacing: 0.3,
                   ),
-                ),
+                )),
               ],
             ),
             if (subtitle != null && subtitle.isNotEmpty) ...[
@@ -3175,8 +3796,9 @@ Widget _buildSectionHeader(String title, {String? subtitle}) {
                 child: Text(
                   subtitle,
                   style: TextStyle(
-                    fontSize: 11.5,
-                    color: colorScheme.onSurfaceVariant.withAlpha(160),
+                    fontSize: 14,
+                    height: 1.4,
+                    color: colorScheme.onSurfaceVariant,
                   ),
                 ),
               ),
@@ -3193,12 +3815,12 @@ Widget _buildSettingCard({
   required List<Widget> children,
 }) {
   final colorScheme = Theme.of(context).colorScheme;
-  return Container(
-    decoration: BoxDecoration(
-      color: colorScheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(
-        color: colorScheme.outlineVariant.withAlpha(50),
+  return Material(
+    color: colorScheme.surfaceContainerLow,
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(24),
+      side: BorderSide(
+        color: colorScheme.outlineVariant.withAlpha(35),
         width: 0.8,
       ),
     ),
@@ -3216,19 +3838,19 @@ Widget _buildSettingSwitchTile({
   required String subtitle,
   required IconData icon,
   required bool value,
-  required ValueChanged<bool> onChanged,
+  required ValueChanged<bool>? onChanged,
   Color? iconColor,
   Color? iconBgColor,
 }) {
   final colorScheme = Theme.of(context).colorScheme;
   return SwitchListTile(
-    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
     secondary: Container(
-      width: 38,
-      height: 38,
+      width: 40,
+      height: 40,
       decoration: BoxDecoration(
         color: iconBgColor ?? colorScheme.primaryContainer.withAlpha(90),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Icon(
         icon,
@@ -3240,15 +3862,16 @@ Widget _buildSettingSwitchTile({
       title,
       style: const TextStyle(
         fontWeight: FontWeight.w600,
-        fontSize: 14.5,
+        fontSize: 15,
+        height: 1.35,
       ),
     ),
     subtitle: Text(
       subtitle,
       style: TextStyle(
-        fontSize: 12,
-        color: colorScheme.onSurfaceVariant.withAlpha(190),
-        height: 1.3,
+        fontSize: 14,
+        color: colorScheme.onSurfaceVariant,
+        height: 1.4,
       ),
     ),
     value: value,

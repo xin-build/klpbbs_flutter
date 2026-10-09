@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
@@ -33,8 +34,10 @@ class RatingFilterHall extends StatefulWidget {
         context: context,
         barrierColor: Colors.black45,
         builder: (_) => Dialog(
-          insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
           clipBehavior: Clip.antiAlias,
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 760, maxHeight: 720),
@@ -202,50 +205,59 @@ class _RatingFilterHallState extends State<RatingFilterHall> {
                 ),
               ),
               const SizedBox(width: 10),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        '评分与打赏大厅',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
-                        decoration: BoxDecoration(
-                          color: colorScheme.primary.withAlpha(25),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Text(
-                          '${_allRewards.length} 条',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                            color: colorScheme.primary,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            '评分与打赏大厅',
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                      ),
-                    ],
-                  ),
-                  Text(
-                    '支持实时模糊过滤、多币种统计与大额排序',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: colorScheme.onSurfaceVariant.withAlpha(180),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 1.5),
+                          decoration: BoxDecoration(
+                            color: colorScheme.primary.withAlpha(25),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            '${_allRewards.length} 条',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: colorScheme.primary,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
+                    Text(
+                      '支持实时模糊过滤、多币种统计与大额排序',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: colorScheme.onSurfaceVariant.withAlpha(180),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
               ),
-              const Spacer(),
+              const SizedBox(width: 8),
               if (_loading)
                 const SizedBox(
                   width: 16,
                   height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  child: AppLoadingIndicator(strokeWidth: 2),
                 )
               else
                 IconButton(
@@ -273,7 +285,8 @@ class _RatingFilterHallState extends State<RatingFilterHall> {
                 children: [
                   // 参与人数药丸
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
                       color: colorScheme.primaryContainer.withAlpha(160),
                       borderRadius: BorderRadius.circular(12),
@@ -281,7 +294,8 @@ class _RatingFilterHallState extends State<RatingFilterHall> {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.people_alt_rounded, size: 14, color: colorScheme.primary),
+                        Icon(Icons.people_alt_rounded,
+                            size: 14, color: colorScheme.primary),
                         const SizedBox(width: 4),
                         Text(
                           '${_allRewards.length} 人参与',
@@ -325,11 +339,13 @@ class _RatingFilterHallState extends State<RatingFilterHall> {
 
                       return Container(
                         margin: const EdgeInsets.only(right: 8),
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
                         decoration: BoxDecoration(
                           color: bg,
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: fg.withAlpha(50), width: 0.6),
+                          border:
+                              Border.all(color: fg.withAlpha(50), width: 0.6),
                         ),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
@@ -384,9 +400,11 @@ class _RatingFilterHallState extends State<RatingFilterHall> {
                               },
                             )
                           : null,
-                      contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 10),
+                      contentPadding: const EdgeInsets.symmetric(
+                          vertical: 0, horizontal: 10),
                       filled: true,
-                      fillColor: colorScheme.surfaceContainerHighest.withAlpha(60),
+                      fillColor:
+                          colorScheme.surfaceContainerHighest.withAlpha(60),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(10),
                         borderSide: BorderSide(
@@ -419,11 +437,13 @@ class _RatingFilterHallState extends State<RatingFilterHall> {
                   decoration: BoxDecoration(
                     color: colorScheme.surfaceContainerHighest.withAlpha(60),
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: colorScheme.outlineVariant.withAlpha(45)),
+                    border: Border.all(
+                        color: colorScheme.outlineVariant.withAlpha(45)),
                   ),
                   child: Row(
                     children: [
-                      Icon(Icons.sort_rounded, size: 16, color: colorScheme.primary),
+                      Icon(Icons.sort_rounded,
+                          size: 16, color: colorScheme.primary),
                       const SizedBox(width: 4),
                       Text(
                         _sortMode.label,
@@ -441,7 +461,8 @@ class _RatingFilterHallState extends State<RatingFilterHall> {
                   for (final m in RatingSortMode.values)
                     PopupMenuItem(
                       value: m,
-                      child: Text(m.label, style: const TextStyle(fontSize: 13)),
+                      child:
+                          Text(m.label, style: const TextStyle(fontSize: 13)),
                     ),
                 ],
               ),
@@ -474,7 +495,8 @@ class _RatingFilterHallState extends State<RatingFilterHall> {
                             ),
                             selected: _selectedCurrency == entry.key,
                             visualDensity: VisualDensity.compact,
-                            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
                             onSelected: (sel) {
                               if (sel) {
                                 setState(() => _selectedCurrency = entry.key);
@@ -504,7 +526,7 @@ class _RatingFilterHallState extends State<RatingFilterHall> {
         // 5. 虚拟化流畅列表（ListView.builder，即便 2000+ 条超长数据也是满帧 0 卡顿）
         Expanded(
           child: _loading && _allRewards.isEmpty
-              ? const Center(child: CircularProgressIndicator())
+              ? const Center(child: AppLoadingIndicator())
               : displayList.isEmpty
                   ? Center(
                       child: Column(
@@ -517,8 +539,11 @@ class _RatingFilterHallState extends State<RatingFilterHall> {
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            _searchQuery.isNotEmpty ? '未找到符合条件的评分记录' : '暂无评分打赏记录',
-                            style: TextStyle(fontSize: 13, color: colorScheme.outline),
+                            _searchQuery.isNotEmpty
+                                ? '未找到符合条件的评分记录'
+                                : '暂无评分打赏记录',
+                            style: TextStyle(
+                                fontSize: 13, color: colorScheme.outline),
                           ),
                         ],
                       ),
@@ -569,6 +594,7 @@ class _RatingFilterHallState extends State<RatingFilterHall> {
               uid: r.uid,
               author: r.username,
               size: 32,
+              reserveFrameSpace: true,
               faceUrl: null,
             ),
             const SizedBox(width: 10),

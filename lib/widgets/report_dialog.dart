@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
@@ -243,7 +244,7 @@ class _ReportDialogState extends State<ReportDialog> {
                           ? const SizedBox(
                               width: 16,
                               height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              child: AppLoadingIndicator(strokeWidth: 2, color: Colors.white),
                             )
                           : const Icon(Icons.send_rounded, size: 16),
                       label: Text(_submitting ? '提交中...' : '提交举报'),

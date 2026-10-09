@@ -1,12 +1,15 @@
+import '../widgets/app_motion.dart';
 import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/write_confirm.dart';
 import '../models/credit_log.dart';
+import '../models/server_outage_info.dart';
 import '../widgets/empty_view.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/pagination_control.dart';
+import '../widgets/server_outage_view.dart';
 import 'magic_page.dart';
 import 'medal_page.dart';
 import 'sign_rank_page.dart';
@@ -15,19 +18,22 @@ import 'sign_rank_page.dart';
 /// 深度对齐 Discuz spacecp credit (图二: home.php?mod=spacecp&ac=credit&op=log&mobile=2)
 class CreditPage extends StatefulWidget {
   final int initialTabIndex; // 0: 我的, 1: 转账, 2: 记录
+  final String initialLogCategory;
 
-  const CreditPage({super.key, this.initialTabIndex = 2});
+  const CreditPage(
+      {super.key, this.initialTabIndex = 2, this.initialLogCategory = ''});
 
   @override
   State<CreditPage> createState() => _CreditPageState();
 }
 
-class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateMixin {
+class _CreditPageState extends State<CreditPage>
+    with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
   // Tab 3: 积分记录
   int _logPage = 1;
-  String _subop = 'income'; // 1:1 对齐网页: income (积分收益), reward (系统奖励)
+  String _subop = ''; // '': 积分收益 (全部变动记录), 'reward': 系统奖励 (规则记录)
   Future<List<CreditLogEntry>>? _logsFuture;
 
   // Tab 1: 我的积分
@@ -44,6 +50,7 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
   @override
   void initState() {
     super.initState();
+    _subop = widget.initialLogCategory;
     final initialIdx = widget.initialTabIndex.clamp(0, 2);
     _tabController = TabController(
       length: 3,
@@ -80,9 +87,13 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
     super.dispose();
   }
 
-  void _reloadLogs() {
+  void _reloadLogs({bool forceRefresh = false}) {
     setState(() {
-      _logsFuture = KlpbbsApi.getCreditLogs(page: _logPage, subop: _subop);
+      _logsFuture = KlpbbsApi.getCreditLogs(
+        page: _logPage,
+        subop: _subop,
+        forceRefresh: forceRefresh,
+      );
     });
   }
 
@@ -107,16 +118,19 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
     final memo = _memoCtrl.text.trim();
 
     if (toUser.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请输入接收人用户名')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('请输入接收人用户名')));
       return;
     }
     final amount = int.tryParse(amountStr);
     if (amount == null || amount <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请输入有效的转账数量')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('请输入有效的转账数量')));
       return;
     }
     if (pwd.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请输入论坛登录支付密码')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('请输入论坛登录支付密码')));
       return;
     }
 
@@ -139,7 +153,9 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
       messenger.showSnackBar(
         SnackBar(
           content: Text(res.message),
-          backgroundColor: res.success ? Colors.green.shade700 : Theme.of(context).colorScheme.error,
+          backgroundColor: res.success
+              ? Colors.green.shade700
+              : Theme.of(context).colorScheme.error,
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -173,23 +189,35 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
             icon: const Icon(Icons.refresh),
             tooltip: '刷新',
             onPressed: () {
-              _reloadLogs();
+              _reloadLogs(forceRefresh: true);
               _reloadBase();
             },
           ),
         ],
-        bottom: TabBar(
-          controller: _tabController,
-          labelColor: colorScheme.primary,
-          unselectedLabelColor: colorScheme.outline,
-          indicatorColor: colorScheme.primary,
-          indicatorWeight: 3,
-          labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5),
-          tabs: const [
-            Tab(text: '我的'),
-            Tab(text: '转账'),
-            Tab(text: '记录'),
-          ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(46),
+          child: Container(
+            color: colorScheme.surface,
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 800),
+                child: TabBar(
+                  controller: _tabController,
+                  labelColor: colorScheme.primary,
+                  unselectedLabelColor: colorScheme.outline,
+                  indicatorColor: colorScheme.primary,
+                  indicatorWeight: 3,
+                  labelStyle: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 14.5),
+                  tabs: const [
+                    Tab(text: '我的'),
+                    Tab(text: '转账'),
+                    Tab(text: '记录'),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
       ),
       body: Center(
@@ -226,7 +254,7 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
                 InkWell(
                   onTap: () {
                     setState(() {
-                      _subop = 'income';
+                      _subop = '';
                       _logPage = 1;
                     });
                     _reloadLogs();
@@ -235,8 +263,11 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
                     '积分收益',
                     style: TextStyle(
                       fontSize: 13.5,
-                      fontWeight: _subop == 'income' ? FontWeight.bold : FontWeight.normal,
-                      color: _subop == 'income' ? colorScheme.primary : colorScheme.outline,
+                      fontWeight:
+                          _subop.isEmpty ? FontWeight.bold : FontWeight.normal,
+                      color: _subop.isEmpty
+                          ? colorScheme.primary
+                          : colorScheme.outline,
                     ),
                   ),
                 ),
@@ -253,8 +284,12 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
                     '系统奖励',
                     style: TextStyle(
                       fontSize: 13.5,
-                      fontWeight: _subop == 'reward' ? FontWeight.bold : FontWeight.normal,
-                      color: _subop == 'reward' ? colorScheme.primary : colorScheme.outline,
+                      fontWeight: _subop == 'reward'
+                          ? FontWeight.bold
+                          : FontWeight.normal,
+                      color: _subop == 'reward'
+                          ? colorScheme.primary
+                          : colorScheme.outline,
                     ),
                   ),
                 ),
@@ -269,12 +304,40 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
             future: _logsFuture,
             builder: (context, snap) {
               if (snap.connectionState != ConnectionState.done) {
-                return const Center(child: CircularProgressIndicator());
+                return const Center(child: AppLoadingIndicator());
+              }
+              if (snap.hasError) {
+                final outage = ServerOutageInfo.tryParse(snap.error);
+                if (outage != null) {
+                  return ServerOutageView(
+                    outage: outage,
+                    onRetry: () => _reloadLogs(forceRefresh: true),
+                  );
+                }
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.error_outline_rounded,
+                            size: 48, color: colorScheme.error),
+                        const SizedBox(height: 12),
+                        Text('加载失败：${snap.error}', textAlign: TextAlign.center),
+                        const SizedBox(height: 16),
+                        FilledButton(
+                          onPressed: () => _reloadLogs(forceRefresh: true),
+                          child: const Text('重试'),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
               }
               final list = snap.data ?? [];
               if (list.isEmpty) {
                 return RefreshIndicator(
-                  onRefresh: () async => _reloadLogs(),
+                  onRefresh: () async => _reloadLogs(forceRefresh: true),
                   child: ListView(
                     children: [
                       const SizedBox(height: 80),
@@ -289,7 +352,7 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
               }
 
               return RefreshIndicator(
-                onRefresh: () async => _reloadLogs(),
+                onRefresh: () async => _reloadLogs(forceRefresh: true),
                 child: ListView.separated(
                   padding: const EdgeInsets.symmetric(vertical: 4),
                   itemCount: list.length + 1,
@@ -316,7 +379,8 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
                     final isPos = item.isPositive;
 
                     return Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 12),
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -325,7 +389,9 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
                             width: 52,
                             height: 48,
                             decoration: BoxDecoration(
-                              color: isPos ? const Color(0xFF42A5F5) : const Color(0xFF5C9CE6),
+                              color: isPos
+                                  ? const Color(0xFF42A5F5)
+                                  : const Color(0xFF5C9CE6),
                               borderRadius: BorderRadius.circular(4),
                             ),
                             child: Column(
@@ -428,14 +494,17 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
             ),
             child: Row(
               children: [
-                Icon(Icons.account_balance_wallet_outlined, size: 32, color: colorScheme.primary),
+                Icon(Icons.account_balance_wallet_outlined,
+                    size: 32, color: colorScheme.primary),
                 const SizedBox(width: 14),
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       '当前账户可用余额',
-                      style: TextStyle(fontSize: 12, color: colorScheme.onPrimaryContainer.withAlpha(200)),
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: colorScheme.onPrimaryContainer.withAlpha(200)),
                     ),
                     const SizedBox(height: 2),
                     Text(
@@ -454,7 +523,9 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
           const SizedBox(height: 20),
 
           // 转账表单
-          Text('转账信息', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+          Text('转账信息',
+              style: theme.textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.bold)),
           const SizedBox(height: 12),
 
           // 接收人用户名
@@ -464,7 +535,8 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
               labelText: '转账接收人用户名',
               hintText: '输入对方的论坛用户名',
               prefixIcon: const Icon(Icons.person_outline),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              border:
+                  OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
             ),
           ),
           const SizedBox(height: 14),
@@ -478,7 +550,8 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
               hintText: '输入要转出的铁粒数量',
               prefixIcon: const Icon(Icons.monetization_on_outlined),
               suffixText: '粒',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              border:
+                  OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
             ),
           ),
           const SizedBox(height: 14),
@@ -491,7 +564,8 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
               labelText: '论坛登录密码',
               hintText: '输入当前账号密码以验证安全身份',
               prefixIcon: const Icon(Icons.lock_outline),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              border:
+                  OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
             ),
           ),
           const SizedBox(height: 14),
@@ -504,7 +578,8 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
               labelText: '转账附言 (选填)',
               hintText: '写给对方的留言说明',
               prefixIcon: const Icon(Icons.comment_outlined),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              border:
+                  OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
             ),
           ),
           const SizedBox(height: 12),
@@ -513,17 +588,24 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
           Builder(
             builder: (ctx) {
               final isDark = Theme.of(ctx).brightness == Brightness.dark;
-              final iconColor = isDark ? Colors.amber.shade400 : Colors.amber.shade800;
-              final titleColor = isDark ? Colors.amber.shade300 : Colors.amber.shade900;
-              final bodyColor = isDark ? Colors.amber.shade200 : Colors.amber.shade900;
+              final iconColor =
+                  isDark ? Colors.amber.shade400 : Colors.amber.shade800;
+              final titleColor =
+                  isDark ? Colors.amber.shade300 : Colors.amber.shade900;
+              final bodyColor =
+                  isDark ? Colors.amber.shade200 : Colors.amber.shade900;
 
               return Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: isDark ? Colors.amber.withAlpha(20) : Colors.amber.shade50,
+                  color: isDark
+                      ? Colors.amber.withAlpha(20)
+                      : Colors.amber.shade50,
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(
-                    color: isDark ? Colors.amber.withAlpha(60) : Colors.amber.shade200,
+                    color: isDark
+                        ? Colors.amber.withAlpha(60)
+                        : Colors.amber.shade200,
                     width: 0.8,
                   ),
                 ),
@@ -566,9 +648,15 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
             child: FilledButton.icon(
               onPressed: _transferring ? null : _submitTransfer,
               icon: _transferring
-                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: AppLoadingIndicator(
+                          strokeWidth: 2, color: Colors.white))
                   : const Icon(Icons.send_rounded),
-              label: Text(_transferring ? '正在提交转账...' : '确认转账', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              label: Text(_transferring ? '正在提交转账...' : '确认转账',
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.bold)),
             ),
           ),
         ],
@@ -585,7 +673,35 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
       future: _baseFuture,
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done) {
-          return const Center(child: CircularProgressIndicator());
+          return const Center(child: AppLoadingIndicator());
+        }
+        if (snap.hasError) {
+          final outage = ServerOutageInfo.tryParse(snap.error);
+          if (outage != null) {
+            return ServerOutageView(
+              outage: outage,
+              onRetry: _reloadBase,
+            );
+          }
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline_rounded,
+                      size: 48, color: colorScheme.error),
+                  const SizedBox(height: 12),
+                  Text('加载失败：${snap.error}', textAlign: TextAlign.center),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: _reloadBase,
+                    child: const Text('重试'),
+                  ),
+                ],
+              ),
+            ),
+          );
         }
         final info = snap.data;
 
@@ -614,7 +730,8 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('我的论坛总积分', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  const Text('我的论坛总积分',
+                      style: TextStyle(color: Colors.white70, fontSize: 13)),
                   const SizedBox(height: 6),
                   Text(
                     info?.totalCredits.isNotEmpty == true
@@ -668,17 +785,21 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
             const SizedBox(height: 20),
 
             // 资产明细（1:1 对齐苦力怕论坛真实积分项：铁粒、经验、铁锭[已弃用]、贡献、钻石）
-            Text('积分资产明细', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+            Text('积分资产明细',
+                style: theme.textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
 
             Card(
               elevation: 0,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
-                side: BorderSide(color: colorScheme.outlineVariant.withAlpha(80)),
+                side:
+                    BorderSide(color: colorScheme.outlineVariant.withAlpha(80)),
               ),
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: Column(
                   children: [
                     _buildCreditRow(
@@ -694,7 +815,9 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
                       '经验 (extcredits1)',
                       info?.details['经验'] != null
                           ? '${info!.details['经验']} EP'
-                          : (info?.totalCredits.isNotEmpty == true ? '${info!.totalCredits} EP' : '0 EP'),
+                          : (info?.totalCredits.isNotEmpty == true
+                              ? '${info!.totalCredits} EP'
+                              : '0 EP'),
                       Icons.star_border,
                       Colors.blue.shade700,
                     ),
@@ -727,7 +850,9 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
 
             // 积分计算公式
             if (info?.ruleFormula != null && info!.ruleFormula!.isNotEmpty) ...[
-              Text('积分计算规则', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+              Text('积分计算规则',
+                  style: theme.textTheme.titleMedium
+                      ?.copyWith(fontWeight: FontWeight.bold)),
               const SizedBox(height: 6),
               Container(
                 padding: const EdgeInsets.all(12),
@@ -737,7 +862,8 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
                 ),
                 child: Text(
                   info.ruleFormula!,
-                  style: TextStyle(fontSize: 12, color: colorScheme.outline, height: 1.4),
+                  style: TextStyle(
+                      fontSize: 12, color: colorScheme.outline, height: 1.4),
                 ),
               ),
             ],
@@ -747,7 +873,8 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
     );
   }
 
-  Widget _buildCreditRow(String name, String value, IconData icon, Color color) {
+  Widget _buildCreditRow(
+      String name, String value, IconData icon, Color color) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 10),
       child: Row(
@@ -756,7 +883,9 @@ class _CreditPageState extends State<CreditPage> with SingleTickerProviderStateM
           const SizedBox(width: 12),
           Text(name, style: const TextStyle(fontSize: 13.5)),
           const Spacer(),
-          Text(value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          Text(value,
+              style:
+                  const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
         ],
       ),
     );

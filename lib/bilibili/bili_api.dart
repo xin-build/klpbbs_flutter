@@ -338,19 +338,53 @@ abstract final class BiliApi {
     return list;
   }
 
+  static final Dio _transDio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(milliseconds: 3500),
+      receiveTimeout: const Duration(milliseconds: 4000),
+      headers: {
+        'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+            '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      },
+    ),
+  );
+
   static final Map<String, String> _transCache = {};
 
-  /// 字幕在线自动翻译（Google GTX 通道 + 内存缓存）
+  /// 字幕在线自动翻译（双通道高可用：MyMemory API 主通道 + Google GTX 备用通道 + 内存缓存）
   static Future<String?> translateText(String text, {String targetLang = 'zh-CN'}) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return null;
     final cacheKey = '$targetLang:$trimmed';
     if (_transCache.containsKey(cacheKey)) return _transCache[cacheKey];
 
+    // 通道 1: MyMemory 翻译服务（国内直连快速稳定）
+    try {
+      final myMemoryTarget = (targetLang == 'zh-CN' || targetLang == 'zh') ? 'zh' : targetLang;
+      final url =
+          'https://api.mymemory.translated.net/get?q=${Uri.encodeComponent(trimmed)}&langpair=autodetect|$myMemoryTarget';
+      final resp = await _transDio.get(url);
+      if (resp.data is Map) {
+        final resData = resp.data['responseData'];
+        if (resData is Map) {
+          final translated = resData['translatedText']?.toString().trim();
+          if (translated != null &&
+              translated.isNotEmpty &&
+              !translated.toUpperCase().contains('MYMEMORY WARNING') &&
+              translated != trimmed) {
+            _transCache[cacheKey] = translated;
+            return translated;
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 通道 2: Google GTX 备用通道
     try {
       final url =
           'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=$targetLang&dt=t&q=${Uri.encodeComponent(trimmed)}';
-      final resp = await _dio.get(url);
+      final resp = await _transDio.get(url);
       final data = resp.data;
       if (data is List && data.isNotEmpty && data[0] is List) {
         final buffer = StringBuffer();

@@ -1,9 +1,12 @@
+import '../widgets/app_motion.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../api/klpbbs_api.dart';
+import '../models/server_outage_info.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
+import '../widgets/server_outage_view.dart';
 
 /// 推广中心（klpbbs home.php?mod=spacecp&ac=promotion，需登录）
 class PromotionPage extends StatefulWidget {
@@ -32,19 +35,50 @@ class _PromotionPageState extends State<PromotionPage> {
         leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
         title: const Text('推广中心'),
       ),
-      body: FutureBuilder<List<({String label, String url})>>(
-        future: _future,
-        builder: (context, snap) {
-          if (snap.connectionState != ConnectionState.done) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snap.hasError) {
-            return Center(child: Text('加载失败：${snap.error}'));
-          }
-          final list = snap.data!;
-          final scheme = Theme.of(context).colorScheme;
-          return ListView(
-            padding: const EdgeInsets.all(12),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 800),
+          child: FutureBuilder<List<({String label, String url})>>(
+            future: _future,
+            builder: (context, snap) {
+              final scheme = Theme.of(context).colorScheme;
+              if (snap.connectionState != ConnectionState.done) {
+                return const Center(child: AppLoadingIndicator());
+              }
+              if (snap.hasError) {
+                final outage = ServerOutageInfo.tryParse(snap.error);
+                if (outage != null) {
+                  return ServerOutageView(
+                    outage: outage,
+                    onRetry: () => setState(() {
+                      _future = KlpbbsApi.getPromotion();
+                    }),
+                  );
+                }
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.error_outline_rounded, size: 48, color: scheme.error),
+                        const SizedBox(height: 12),
+                        Text('加载失败：${snap.error}', textAlign: TextAlign.center),
+                        const SizedBox(height: 16),
+                        FilledButton(
+                          onPressed: () => setState(() {
+                            _future = KlpbbsApi.getPromotion();
+                          }),
+                          child: const Text('重试'),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }
+              final list = snap.data!;
+              return ListView(
+                padding: const EdgeInsets.all(12),
             children: [
               Container(
                 padding: const EdgeInsets.all(14),
@@ -111,7 +145,7 @@ class _PromotionPageState extends State<PromotionPage> {
             ],
           );
         },
-      ),
+      ))),
     );
   }
 }

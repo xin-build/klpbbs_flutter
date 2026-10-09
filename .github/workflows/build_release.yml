@@ -9,12 +9,48 @@ on:
 permissions:
   contents: write
 
+env:
+  FLUTTER_VERSION: '3.44.9'
+
 jobs:
+  analyze:
+    name: Analyze Application
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: Get Dependencies
+        run: flutter pub get
+
+      - name: Analyze Application Code
+        run: |
+          set -o pipefail
+          dart analyze lib 2>&1 | tee analyze.log
+
+      - name: Upload Analysis Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-analysis
+          path: analyze.log
+          if-no-files-found: ignore
+
   # ==========================================
   # 1. Android Build (APK)
   # ==========================================
   build-android:
     name: Build Android
+    needs: analyze
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -29,7 +65,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.5'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
           cache: true
 
@@ -56,9 +92,8 @@ jobs:
       - name: Locate and Package Android APK
         run: |
           mkdir -p android-dist
-          APK_FILE=$(find build/app/outputs -name "*.apk" -type f | head -n 1)
-          echo "Found APK: $APK_FILE"
-          cp "$APK_FILE" android-dist/klpbbs-android-release.apk
+          test -s build/app/outputs/flutter-apk/app-release.apk
+          cp build/app/outputs/flutter-apk/app-release.apk android-dist/klpbbs-android-release.apk
           ls -lh android-dist/
 
       - name: Upload Android APK
@@ -66,12 +101,15 @@ jobs:
         with:
           name: klpbbs-android-apk
           path: android-dist/klpbbs-android-release.apk
+          if-no-files-found: error
 
   # ==========================================
   # 2. Windows Build (x64 Release ZIP)
   # ==========================================
   build-windows:
     name: Build Windows
+    needs: analyze
+    timeout-minutes: 45
     runs-on: windows-2022
     steps:
       - name: Checkout Code
@@ -80,7 +118,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.5'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
           cache: true
 
@@ -121,12 +159,15 @@ jobs:
         with:
           name: klpbbs-windows-x64
           path: klpbbs-windows-x64.zip
+          if-no-files-found: error
 
   # ==========================================
   # 3. macOS Build (.app ZIP)
   # ==========================================
   build-macos:
     name: Build macOS
+    needs: analyze
+    timeout-minutes: 45
     runs-on: macos-14
     steps:
       - name: Checkout Code
@@ -135,7 +176,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.5'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
           cache: true
 
@@ -159,21 +200,24 @@ jobs:
 
       - name: Package macOS Binary
         run: |
-          APP_PATH=$(find build/macos -name "*.app" -type d | head -n 1)
-          cd "$(dirname "$APP_PATH")"
-          zip -r "$GITHUB_WORKSPACE/klpbbs-macos.zip" "$(basename "$APP_PATH")"
+          APP_PATH=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" -type d -print -quit)
+          test -n "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$GITHUB_WORKSPACE/klpbbs-macos.zip"
 
       - name: Upload macOS Artifact
         uses: actions/upload-artifact@v4
         with:
           name: klpbbs-macos
           path: klpbbs-macos.zip
+          if-no-files-found: error
 
   # ==========================================
   # 4. iOS Build (Unsigned IPA)
   # ==========================================
   build-ios:
     name: Build iOS
+    needs: analyze
+    timeout-minutes: 45
     runs-on: macos-14
     steps:
       - name: Checkout Code
@@ -182,7 +226,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.5'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
           cache: true
 
@@ -207,8 +251,9 @@ jobs:
       - name: Package iOS IPA
         run: |
           mkdir -p Payload
-          APP_PATH=$(find build/ios -name "*.app" -type d | head -n 1)
-          cp -r "$APP_PATH" Payload/
+          APP_PATH=build/ios/iphoneos/Runner.app
+          test -d "$APP_PATH"
+          ditto "$APP_PATH" Payload/Runner.app
           zip -r klpbbs-ios-unsigned.ipa Payload
 
       - name: Upload iOS Artifact
@@ -216,12 +261,15 @@ jobs:
         with:
           name: klpbbs-ios-unsigned
           path: klpbbs-ios-unsigned.ipa
+          if-no-files-found: error
 
   # ==========================================
   # 5. Linux Build (x64 TAR.GZ)
   # ==========================================
   build-linux:
     name: Build Linux
+    needs: analyze
+    timeout-minutes: 45
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout Code
@@ -235,7 +283,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.5'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
           cache: true
 
@@ -267,6 +315,7 @@ jobs:
         with:
           name: klpbbs-linux-x64
           path: klpbbs-linux-x64.tar.gz
+          if-no-files-found: error
 
   # ==========================================
   # 6. Create GitHub Release
@@ -298,11 +347,3 @@ jobs:
           generate_release_notes: true
           make_latest: true
 
-      - name: Clean Old Failed Workflow Runs
-        uses: Mattraks/delete-workflow-runs@v2
-        continue-on-error: true
-        with:
-          token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          retain_days: 0
-          keep_minimum_runs: 1

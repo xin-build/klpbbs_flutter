@@ -13,6 +13,10 @@ class TrayService with TrayListener, WindowListener {
   TrayService._();
 
   bool _initialized = false;
+  bool _iconReady = false;
+  bool _updating = false;
+  bool _queued = false;
+  int? _lastUnread;
   bool get isSupported =>
       !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
@@ -22,6 +26,7 @@ class TrayService with TrayListener, WindowListener {
 
     try {
       await windowManager.ensureInitialized();
+      await windowManager.setTitle('苦力怕论坛');
       trayManager.addListener(this);
       windowManager.addListener(this);
 
@@ -38,60 +43,68 @@ class TrayService with TrayListener, WindowListener {
       await _updateTray();
 
       // 监听未读消息变化自动刷新托盘菜单
-      PushNotificationService.instance.addListener(() {
-        _updateTray();
-      });
+      PushNotificationService.instance.addListener(_updateTray);
     } catch (_) {}
+  }
+
+  Future<bool> _ensureIcon() async {
+    for (final path in Platform.isWindows
+        ? ['assets/app_icon.ico', 'assets/icon.png']
+        : ['assets/icon.png']) {
+      try {
+        await trayManager.setIcon(path);
+        return true;
+      } catch (_) {}
+    }
+    return false;
   }
 
   Future<void> _updateTray() async {
     if (!isSupported) return;
+    _queued = true;
+    if (_updating) return;
+    _updating = true;
     try {
-      // 优先设置 Windows .ico 托盘图标，若失败则回退到 .png
-      try {
-        if (Platform.isWindows) {
-          try {
-            await trayManager.setIcon('assets/app_icon.ico');
-          } catch (_) {
-            await trayManager.setIcon('assets/icon.png');
-          }
-        } else {
-          await trayManager.setIcon('assets/icon.png');
-        }
-      } catch (_) {}
+      while (_queued) {
+        _queued = false;
+        if (!_iconReady) _iconReady = await _ensureIcon();
+        final unread = PushNotificationService.instance.unreadCount;
+        if (_lastUnread == unread) continue;
+        final tooltip = unread > 0 ? '苦力怕论坛 ($unread 条未读消息)' : '苦力怕论坛 - 点击显示';
+        await trayManager.setToolTip(tooltip);
 
-      final unread = PushNotificationService.instance.unreadCount;
-      final tooltip = unread > 0
-          ? '苦力怕论坛 ($unread 条未读消息)'
-          : '苦力怕论坛 - 点击显示';
-      await trayManager.setToolTip(tooltip);
-
-      final menu = Menu(
-        items: [
-          MenuItem(
-            key: 'show_window',
-            label: '显示苦力怕论坛',
-          ),
-          if (unread > 0) ...[
+        final menu = Menu(
+          items: [
             MenuItem(
-              key: 'unread_notice',
-              label: '🔔 未读消息: $unread 条',
+              key: 'show_window',
+              label: '显示苦力怕论坛',
+            ),
+            if (unread > 0) ...[
+              MenuItem(
+                key: 'unread_notice',
+                label: '🔔 未读消息: $unread 条',
+              ),
+            ],
+            MenuItem.separator(),
+            MenuItem(
+              key: 'check_messages',
+              label: '立即检查新消息',
+            ),
+            MenuItem.separator(),
+            MenuItem(
+              key: 'exit_app',
+              label: '退出客户端',
             ),
           ],
-          MenuItem.separator(),
-          MenuItem(
-            key: 'check_messages',
-            label: '立即检查新消息',
-          ),
-          MenuItem.separator(),
-          MenuItem(
-            key: 'exit_app',
-            label: '退出客户端',
-          ),
-        ],
-      );
-      await trayManager.setContextMenu(menu);
-    } catch (_) {}
+        );
+        await trayManager.setContextMenu(menu);
+        _lastUnread = unread;
+      }
+    } catch (_) {
+      _lastUnread = null;
+    } finally {
+      _updating = false;
+    }
   }
 
   Future<void> showWindow() async {
@@ -129,6 +142,7 @@ class TrayService with TrayListener, WindowListener {
       } catch (_) {}
 
       // 2. 停止后台轮询服务
+      PushNotificationService.instance.removeListener(_updateTray);
       PushNotificationService.instance.dispose();
 
       // 3. 解除关闭阻止并销毁窗口

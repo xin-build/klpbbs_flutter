@@ -1,14 +1,17 @@
+import '../widgets/animated_side_panel.dart';
 import 'dart:async';
 
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../api/comiis_parser.dart';
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
+import '../core/home_layout_metrics.dart';
+import '../core/home_feed.dart';
 import '../core/dio_client.dart';
 import '../core/forum_events.dart';
 import '../core/preload_service.dart';
@@ -20,17 +23,15 @@ import '../models/thread_summary.dart';
 import '../models/server_outage_info.dart';
 import '../widgets/server_outage_view.dart';
 import '../widgets/dashboard_cards/dashboard_card_factory.dart';
-import '../widgets/dashboard_skeleton_view.dart';
 import '../widgets/desktop_shortcuts.dart';
-import '../widgets/diy_layout_studio.dart';
 import '../widgets/horn_banner_widget.dart';
+import '../widgets/home_content_slivers.dart';
+import '../widgets/home_page_header.dart';
 import '../widgets/mobile_home_customizer.dart';
 import '../widgets/responsive_layout.dart';
-import '../widgets/retry_image.dart';
-import '../widgets/site_stats_card.dart';
 import '../widgets/skeleton_list.dart';
 import '../widgets/interactive_animations.dart';
-import '../widgets/thread_card.dart';
+import '../widgets/smooth_scroll_controller.dart';
 import '../widgets/visual_grid_canvas.dart';
 import '../services/auto_sign_service.dart';
 import '../services/push_notification_service.dart';
@@ -38,6 +39,7 @@ import 'credit_page.dart';
 import 'darkroom_page.dart';
 import 'favorite_hub_page.dart';
 import 'forums_page.dart';
+import 'membership_page.dart';
 import 'guide_page.dart';
 import 'login_page.dart';
 import 'magic_page.dart';
@@ -81,17 +83,28 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   late Future<(List<ForumGroup>, List<ThreadSummary>, SiteStats)> _future;
   ServerOutageInfo? _activeOutage;
-  final _homeScrollCtrl = ScrollController();
+  final _homeScrollCtrl = SmoothScrollController();
+  final _homeSearchCtrl = TextEditingController();
   int _unreadPm = 0;
   int _unreadNotice = 0;
   Set<int> _favForums = {};
-  List<ThreadSummary> _more = [];
-  int _morePage = 1;
-  bool _loadingMore = false;
+  final Set<int> _busyFavoriteForums = {};
+  HomeFeed _feed = HomeFeed.recommended;
+  final _feeds = <HomeFeed, HomeFeedState>{};
+  HomeFeedState get _feedState => _feeds.putIfAbsent(_feed, HomeFeedState.new);
+  List<ThreadSummary> get _more => _feedState.more;
+  int get _morePage => _feedState.page;
+  bool get _loadingMore => _feedState.loadingMore;
+  set _loadingMore(bool value) => _feedState.loadingMore = value;
+  bool get _hasMore => _feedState.hasMore;
+  set _hasMore(bool value) => _feedState.hasMore = value;
+  bool _refreshing = false;
   List<ThreadSummary> _memoizedAllThreads = [];
   List<ThreadSummary>? _lastInitialThreads;
   int _lastMoreLength = -1;
   bool _showBackToTop = false;
+  bool _compactHomeFab = false;
+  int _loadGeneration = 0;
   ValueChanged<int>? get _onSwitchTab => widget.onSwitchTab;
 
   @override
@@ -103,7 +116,10 @@ class _HomePageState extends State<HomePage> {
     AppConfig.instance.addListener(_onAppConfigUpdate);
     ComiisParser.loadTidForumCache();
     _future = _load();
+    _future.ignore();
     _loadFavForums();
+    _syncFavoriteForums();
+    DioClient.sessionChanges.addListener(_onSessionChanged);
     if (DioClient.isLoggedIn) {
       AutoSignService.instance.checkOnAppLaunch();
     }
@@ -114,92 +130,105 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _onPushNotificationUpdate() {
+    if (_unreadNotice == PushNotificationService.instance.unreadNotices &&
+        _unreadPm == PushNotificationService.instance.unreadPm) {
+      return;
+    }
     if (mounted) {
       setState(() {
         _unreadNotice = PushNotificationService.instance.unreadNotices;
         _unreadPm = PushNotificationService.instance.unreadPm;
+        _rememberHomeHeaderCounts();
       });
     }
   }
 
   Future<void> _loadFavForums() async {
-    final prefs = await SharedPreferences.getInstance();
+    final session = DioClient.sessionKey;
+    final ids = await KlpbbsApi.getSavedFavoriteForumIds();
+    if (!mounted || session != DioClient.sessionKey) return;
+    setState(() => _favForums = ids);
+  }
+
+  Future<void> _syncFavoriteForums() async {
+    try {
+      final uid = await KlpbbsApi.getMyUid();
+      if (uid != null) {
+        await KlpbbsApi.getFavoriteForums(uid, forceRefresh: true);
+      }
+      await _loadFavForums();
+    } catch (_) {}
+  }
+
+  void _onSessionChanged() {
     if (!mounted) return;
-    setState(
-      () => _favForums = (prefs.getStringList('fav_forums') ?? const [])
-          .map(int.tryParse)
-          .whereType<int>()
-          .toSet(),
-    );
+    setState(() {
+      _favForums = {};
+      _busyFavoriteForums.clear();
+      _unreadPm = 0;
+      _unreadNotice = 0;
+      _rememberHomeHeaderCounts();
+      _loadGeneration++;
+      _feeds.clear();
+      _feed = HomeFeed.recommended;
+      _refreshing = false;
+      _future = _load(forceRefresh: true);
+      _future.ignore();
+    });
+    unawaited(_syncFavoriteForums());
   }
 
-  /// 切换版块收藏（本地持久化并同步原站）
-  Future<void> _toggleFavForum(Forum f) async {
-    final prefs = await SharedPreferences.getInstance();
-    final list = (prefs.getStringList('fav_forums') ?? []).toSet();
-    final isFav = _favForums.contains(f.fid);
-    if (isFav) {
-      list.remove('${f.fid}');
-      _favForums.remove(f.fid);
-      KlpbbsApi.unfavoriteForum(f.fid).catchError((_) => (success: false, message: ''));
-    } else {
-      list.add('${f.fid}');
-      _favForums.add(f.fid);
-      KlpbbsApi.favoriteForum(f.fid).catchError((_) => (success: false, message: ''));
+  /// 按目标状态同步收藏；弹层移除不会因为旧快照再次收藏版块。
+  Future<bool> _setForumFavorite(Forum f, bool favorite,
+      {required String expectedSession}) async {
+    if (!mounted || expectedSession != DioClient.sessionKey) return false;
+    if (!_busyFavoriteForums.add(f.fid)) return false;
+    final session = expectedSession;
+    try {
+      if (_favForums.contains(f.fid) == favorite) return true;
+      final result = favorite
+          ? await KlpbbsApi.favoriteForum(f.fid)
+          : await KlpbbsApi.unfavoriteForum(f.fid);
+      if (!mounted || session != DioClient.sessionKey) return false;
+      if (result.success) await _loadFavForums();
+      if (!mounted || session != DioClient.sessionKey) return false;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(result.message)));
+      return result.success;
+    } catch (_) {
+      if (mounted && session == DioClient.sessionKey) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('收藏同步失败，请稍后重试')));
+      }
+      return false;
+    } finally {
+      if (session == DioClient.sessionKey) _busyFavoriteForums.remove(f.fid);
     }
-    await prefs.setStringList('fav_forums', list.toList());
-    if (mounted) setState(() {});
   }
 
-  Future<(List<ForumGroup>, List<ThreadSummary>, SiteStats)> _load({bool forceRefresh = false}) async {
-    final cachedGroups = PreloadService.instance.get<List<ForumGroup>>('forum_groups', ignoreExpired: true);
-    final cachedThreads = PreloadService.instance.get<List<ThreadSummary>>('home_threads', ignoreExpired: true);
-    final cachedStats = PreloadService.instance.get<SiteStats>('site_stats', ignoreExpired: true);
+  Future<(List<ForumGroup>, List<ThreadSummary>, SiteStats)> _load(
+      {bool forceRefresh = false}) async {
+    final session = DioClient.sessionKey;
+    final generation = _loadGeneration;
+    final cachedGroups = PreloadService.instance
+        .get<List<ForumGroup>>('forum_groups', ignoreExpired: true);
+    final cachedThreads = PreloadService.instance
+        .get<List<ThreadSummary>>('home_threads', ignoreExpired: true);
+    final cachedStats = PreloadService.instance
+        .get<SiteStats>('site_stats', ignoreExpired: true);
 
-    // 检查缓存有效性：必须版块和推荐帖子都不为空
+    // Recognized empty feeds are valid; tab revisits keep content until the
+    // user refreshes rather than restarting an automatic global refresh.
     final hasValidCache = cachedGroups != null &&
         cachedGroups.isNotEmpty &&
-        cachedThreads != null &&
-        cachedThreads.isNotEmpty;
+        cachedThreads != null;
 
     if (!forceRefresh && hasValidCache) {
-      // 命中有效本地缓存直接 0ms 秒开呈现，并在后台静默拉取网络最新数据
-      unawaited(() async {
-        try {
-          final results = await Future.wait([
-            KlpbbsApi.getForumGroups(forceRefresh: true),
-            KlpbbsApi.getHome(forceRefresh: true),
-            KlpbbsApi.getSiteStats(forceRefresh: true),
-          ]);
-          _loadUnread();
-          if (mounted) {
-            final freshGroups = results[0] as List<ForumGroup>;
-            final freshThreads = results[1] as List<ThreadSummary>;
-            final freshStats = results[2] as SiteStats;
-            setState(() {
-              _activeOutage = null; // 网络拉取成功，清除故障状态
-              _future = Future.value((freshGroups, freshThreads, freshStats));
-            });
-          }
-        } catch (e) {
-          final outage = ServerOutageInfo.tryParse(e);
-          if (outage != null && mounted) {
-            setState(() {
-              _activeOutage = outage; // 激活置顶故障警告横幅，明确告知用户当前是离线缓存
-            });
-          }
-        }
-      }());
       _loadUnread();
       return (
         cachedGroups,
         cachedThreads,
-        cachedStats ?? const SiteStats(
-          todayPosts: 61,
-          yesterdayPosts: 273,
-          totalPosts: 10310794,
-          totalMembers: 2317632,
-        ),
+        cachedStats ?? const SiteStats(),
       );
     }
 
@@ -207,27 +236,16 @@ class _HomePageState extends State<HomePage> {
       final results = await Future.wait([
         KlpbbsApi.getForumGroups(forceRefresh: forceRefresh),
         KlpbbsApi.getHome(forceRefresh: forceRefresh),
-        KlpbbsApi.getSiteStats(forceRefresh: forceRefresh),
+        KlpbbsApi.getSiteStats(forceRefresh: forceRefresh)
+            .catchError((_) => cachedStats ?? const SiteStats()),
       ]);
+      if (session != DioClient.sessionKey || generation != _loadGeneration) {
+        throw StateError('页面已刷新，请等待最新数据');
+      }
       _loadUnread();
       final groups = results[0] as List<ForumGroup>;
       final threads = results[1] as List<ThreadSummary>;
       final stats = results[2] as SiteStats;
-
-      // 自动合并服务端已关注的版块到 _favForums（只合并不误删）
-      bool hasNew = false;
-      for (final g in groups) {
-        if (g.gid == 0 || g.name.contains('关注') || g.name.contains('收藏')) {
-          for (final f in g.forums) {
-            if (_favForums.add(f.fid)) hasNew = true;
-          }
-        }
-      }
-      if (hasNew) {
-        SharedPreferences.getInstance().then((prefs) {
-          prefs.setStringList('fav_forums', _favForums.map((e) => '$e').toList());
-        }).catchError((_) {});
-      }
 
       if (groups.isEmpty && threads.isEmpty) {
         throw Exception('暂未获取到内容，请检查网络或点击重试');
@@ -235,6 +253,9 @@ class _HomePageState extends State<HomePage> {
       _activeOutage = null;
       return (groups, threads, stats);
     } catch (e) {
+      if (session != DioClient.sessionKey || generation != _loadGeneration) {
+        rethrow;
+      }
       final outage = ServerOutageInfo.tryParse(e);
       if (outage != null) {
         _activeOutage = outage;
@@ -260,84 +281,228 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  void _reload() {
-    PreloadService.instance.remove('home_threads');
-    PreloadService.instance.remove('forum_groups');
-    PreloadService.instance.remove('site_stats');
-    unawaited(KlpbbsApi.getServerStatus(forceRefresh: true).catchError((_) => KlpbbsApi.getServerStatus()));
+  Future<bool> _reload() async {
+    if (!mounted || _refreshing) return false;
+    if (_feed != HomeFeed.recommended) {
+      final feed = _feed;
+      final state = _feedState;
+      await _loadFeed(feed, forceRefresh: true);
+      return state.error == null;
+    }
+    final session = DioClient.sessionKey;
+    final state = _feeds.putIfAbsent(HomeFeed.recommended, HomeFeedState.new);
+    final revision = state.beginRefresh();
+    setState(() => _refreshing = true);
+    _syncFavoriteForums();
+    // Forced API reads bypass their caches; retain last good data so a failed
+    // refresh can still offer the explicit cached-view action.
+    unawaited(KlpbbsApi.getServerStatus(forceRefresh: true)
+        .then<void>((_) {}, onError: (_) {}));
+    try {
+      final result = await _load(forceRefresh: true);
+      if (!mounted || session != DioClient.sessionKey) return false;
+      setState(() {
+        _activeOutage = null;
+        state.more = [];
+        state.page = 1;
+        state.hasMore = true;
+        state.error = null;
+        _lastInitialThreads = null;
+        _future = Future.value(result);
+      });
+      return true;
+    } catch (error) {
+      if (mounted && session == DioClient.sessionKey) {
+        setState(() => _activeOutage = ServerOutageInfo.tryParse(error));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('刷新暂未完成，已保留当前内容')));
+      }
+      return false;
+    } finally {
+      if (mounted && session == DioClient.sessionKey) {
+        setState(() {
+          if (state.accepts(revision)) state.loading = false;
+          _refreshing = false;
+        });
+      }
+    }
+  }
+
+  void _selectFeed(HomeFeed feed) {
+    if (feed == _feed) return;
+    if (_homeScrollCtrl.hasClients) {
+      _feedState.scrollOffset = _homeScrollCtrl.offset;
+    }
     setState(() {
-      _activeOutage = null;
-      _more = [];
-      _morePage = 1;
-      _memoizedAllThreads = [];
+      _feed = feed;
       _lastInitialThreads = null;
       _lastMoreLength = -1;
-      _future = _load(forceRefresh: true);
     });
+    PreloadService.instance.set('home_feed_selection',
+        (session: DioClient.sessionKey, feed: feed));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _feed == feed && _homeScrollCtrl.hasClients) {
+        _homeScrollCtrl.jumpTo(_feedState.scrollOffset
+            .clamp(0, _homeScrollCtrl.position.maxScrollExtent)
+            .toDouble());
+      }
+    });
+    if (feed != HomeFeed.recommended && _feedState.initial == null) {
+      unawaited(_loadFeed(feed));
+    }
   }
+
+  Future<void> _loadFeed(HomeFeed feed, {bool forceRefresh = false}) async {
+    final state = _feeds.putIfAbsent(feed, HomeFeedState.new);
+    if (state.pending != null) return state.pending;
+    if (!forceRefresh && state.initial != null) return;
+    final session = DioClient.sessionKey, generation = _loadGeneration;
+    final revision = state.beginRefresh();
+    if (mounted) setState(() {});
+    final future = Future<void>.microtask(() async {
+      try {
+        if (feed == HomeFeed.following && !DioClient.isLoggedIn) {
+          throw StateError('登录后查看关注的帖子');
+        }
+        final list = await KlpbbsApi.getGuide(feed.guideView!,
+            forceRefresh: forceRefresh);
+        if (session != DioClient.sessionKey ||
+            generation != _loadGeneration ||
+            !state.accepts(revision)) {
+          return;
+        }
+        state.initial = list;
+        state.more = [];
+        state.page = 1;
+        state.hasMore = KlpbbsApi.guideHasNextPage(feed.guideView!, 1) != false;
+      } catch (error) {
+        if (session == DioClient.sessionKey &&
+            generation == _loadGeneration &&
+            state.accepts(revision)) {
+          state.error = error is StateError
+              ? error.message.toString()
+              : '暂时连接不上论坛，已保留本分类内容';
+        }
+      } finally {
+        state.pending = null;
+        state.loading = false;
+        if (mounted &&
+            session == DioClient.sessionKey &&
+            generation == _loadGeneration) {
+          setState(() => _lastInitialThreads = null);
+        }
+      }
+    });
+    state.pending = future;
+    await future;
+  }
+
+  void _rememberHomeHeaderCounts() => PreloadService.instance.set(
+      'home_header_counts',
+      (session: DioClient.sessionKey, pm: _unreadPm, notice: _unreadNotice));
 
   /// 统计私信未读会话数与通知未读红点（本地已读记录过滤与服务端状态比对）
   Future<void> _loadUnread() async {
+    final session = DioClient.sessionKey;
     try {
       // 检查未读通知与私信
       if (!DioClient.isLoggedIn) {
-        if (mounted) setState(() { _unreadPm = 0; _unreadNotice = 0; });
+        if (mounted) {
+          setState(() {
+            _unreadPm = 0;
+            _unreadNotice = 0;
+            _rememberHomeHeaderCounts();
+          });
+        }
         return;
       }
       final prefs = await SharedPreferences.getInstance();
-      final read = (prefs.getStringList('pm_read') ?? const [])
-          .map(int.parse)
-          .toSet();
-      final unreadOverride = (prefs.getStringList('pm_unread_override') ?? const [])
-          .map(int.parse)
-          .toSet();
+      if (!mounted || session != DioClient.sessionKey) return;
+      final read =
+          (prefs.getStringList('pm_read') ?? const []).map(int.parse).toSet();
+      final unreadOverride =
+          (prefs.getStringList('pm_unread_override') ?? const [])
+              .map(int.parse)
+              .toSet();
       final list = await KlpbbsApi.getPmList();
+      if (!mounted || session != DioClient.sessionKey) return;
       final unread = list
-          .where((c) => (c.isNew && !read.contains(c.touid)) || unreadOverride.contains(c.touid))
+          .where((c) =>
+              (c.isNew && !read.contains(c.touid)) ||
+              unreadOverride.contains(c.touid))
           .length;
-      if (mounted) setState(() => _unreadPm = unread);
+      if (mounted) {
+        setState(() {
+          _unreadPm = unread;
+          _rememberHomeHeaderCounts();
+        });
+      }
 
       // 通知未读：优先从 PushNotificationService 状态复用，避免全量重复抓取解析
       final notices = PushNotificationService.instance.unreadNotices;
-      if (mounted) setState(() => _unreadNotice = notices);
+      if (mounted) {
+        setState(() {
+          _unreadNotice = notices;
+          _rememberHomeHeaderCounts();
+        });
+      }
     } catch (_) {}
   }
 
   Future<void> _loadMore() async {
-    if (_loadingMore) return;
-    _loadingMore = true;
+    if (_loadingMore || !_hasMore || !mounted) return;
+    final state = _feedState;
+    if (state.loading || state.pending != null) return;
+    final revision = state.revision;
+    final view = _feed.guideView ?? 'newthread';
+    if (KlpbbsApi.guideHasNextPage(view, _morePage) == false) {
+      _hasMore = false;
+      return;
+    }
+    final generation = _loadGeneration, session = DioClient.sessionKey;
+    final nextPage = _morePage + 1;
+    setState(() => _loadingMore = true);
     try {
-      final nextPage = _morePage + 1;
-      var next = await KlpbbsApi.getGuide('newthread', page: nextPage);
-      if (next.isEmpty) {
-        next = await KlpbbsApi.getGuide('digest', page: nextPage);
+      final next = await KlpbbsApi.getGuide(view, page: nextPage);
+      if (!mounted ||
+          generation != _loadGeneration ||
+          session != DioClient.sessionKey ||
+          !state.accepts(revision)) {
+        return;
       }
-      if (next.isEmpty) {
-        next = await KlpbbsApi.getThreadList(2, page: nextPage);
-      }
-      if (!mounted) return;
+      state.hasMore = next.isNotEmpty &&
+          KlpbbsApi.guideHasNextPage(view, nextPage) != false;
       if (next.isNotEmpty) {
-        _morePage = nextPage;
-        _more.addAll(next);
-        _memoizedAllThreads = _dedupeThreads([..._lastInitialThreads ?? const [], ..._more]);
-        _lastMoreLength = _more.length;
+        state.page = nextPage;
+        state.more.addAll(next);
+        state.error = null;
+        _lastInitialThreads = null;
         setState(() {});
       }
     } catch (_) {
+      if (mounted &&
+          generation == _loadGeneration &&
+          session == DioClient.sessionKey &&
+          state.accepts(revision)) {
+        setState(() => state.error = '加载更多暂未完成，可手动重试');
+      }
     } finally {
-      if (mounted) {
-        setState(() => _loadingMore = false);
-      } else {
-        _loadingMore = false;
+      if (mounted &&
+          generation == _loadGeneration &&
+          session == DioClient.sessionKey &&
+          state.accepts(revision)) {
+        setState(() => state.loadingMore = false);
       }
     }
   }
 
   @override
   void dispose() {
+    _homeSearchCtrl.dispose();
     _homeScrollCtrl.dispose();
     PushNotificationService.instance.removeListener(_onPushNotificationUpdate);
     ForumFavoriteNotifier.instance.removeListener(_loadFavForums);
+    DioClient.sessionChanges.removeListener(_onSessionChanged);
     AppConfig.instance.removeListener(_onAppConfigUpdate);
     super.dispose();
   }
@@ -346,12 +511,18 @@ class _HomePageState extends State<HomePage> {
   void _onHomeScroll() {
     if (!_homeScrollCtrl.hasClients) return;
     final pos = _homeScrollCtrl.position;
-    if (pos.pixels > 380 && !_showBackToTop) {
-      setState(() => _showBackToTop = true);
-    } else if (pos.pixels <= 380 && _showBackToTop) {
-      setState(() => _showBackToTop = false);
+    final showBackToTop = pos.pixels > 380;
+    // 顶部仍显示文字入口；不同阈值避免在顶端轻微滚动时反复伸缩。
+    final compactFab = pos.pixels > (_compactHomeFab ? 8 : 24);
+    if (_showBackToTop != showBackToTop || _compactHomeFab != compactFab) {
+      setState(() {
+        _showBackToTop = showBackToTop;
+        _compactHomeFab = compactFab;
+      });
     }
-    if (!_loadingMore && pos.pixels >= pos.maxScrollExtent - 600) {
+    if (!_loadingMore &&
+        _feedState.error == null &&
+        pos.pixels >= pos.maxScrollExtent - 600) {
       _loadMore();
     }
   }
@@ -383,10 +554,14 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _openNotifications() async {
     if (!DioClient.isLoggedIn) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先登录')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('请先登录')));
       return;
     }
-    setState(() => _unreadNotice = 0);
+    setState(() {
+      _unreadNotice = 0;
+      _rememberHomeHeaderCounts();
+    });
     try {
       final prefs = await SharedPreferences.getInstance();
       final notices = await KlpbbsApi.getNotices('mypost');
@@ -407,7 +582,8 @@ class _HomePageState extends State<HomePage> {
 
   void _openPmInbox() {
     if (!DioClient.isLoggedIn) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先登录')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('请先登录')));
       return;
     }
     Navigator.of(context).push(
@@ -451,9 +627,7 @@ class _HomePageState extends State<HomePage> {
               ListTile(
                 leading: const Icon(Icons.mail_outline),
                 title: const Text('私信收件箱'),
-                trailing: _unreadPm > 0
-                    ? Badge.count(count: _unreadPm)
-                    : null,
+                trailing: _unreadPm > 0 ? Badge.count(count: _unreadPm) : null,
                 onTap: () => Navigator.of(ctx).pop('pm'),
               ),
               ListTile(
@@ -477,14 +651,20 @@ class _HomePageState extends State<HomePage> {
       );
       if (!mounted) return;
       if (action == 'space') {
-        final uid = await KlpbbsApi.getMyUid() ?? 1;
+        final uid = await KlpbbsApi.getMyUid();
         if (!mounted) return;
+        if (uid == null) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('当前账号资料尚未加载，请刷新后重试')));
+          return;
+        }
         Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => UserSpacePage(uid: uid)),
         );
       } else if (action == 'credit') {
         Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => const CreditPage(initialTabIndex: 0)),
+          MaterialPageRoute(
+              builder: (_) => const CreditPage(initialTabIndex: 0)),
         );
       } else if (action == 'medal') {
         Navigator.of(context).push(
@@ -521,9 +701,79 @@ class _HomePageState extends State<HomePage> {
     if (ok == true && mounted) _reload();
   }
 
+  Future<void> _openFavorites() async {
+    if (!DioClient.isLoggedIn) {
+      await Navigator.of(context)
+          .push(MaterialPageRoute(builder: (_) => const LoginPage()));
+      if (!mounted || !DioClient.isLoggedIn) return;
+    }
+    final session = DioClient.sessionKey;
+    final uid = await KlpbbsApi.getMyUid();
+    if (!mounted || uid == null || session != DioClient.sessionKey) return;
+    await Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => FavoriteHubPage(uid: uid)));
+  }
+
+  void _openHomeSearch() {
+    final keyword = _homeSearchCtrl.text.trim();
+    Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) =>
+            SearchPage(initialKeyword: keyword.isEmpty ? null : keyword)));
+  }
+
+  void _onHomeHeaderAction(HomeHeaderAction action) {
+    switch (action) {
+      case HomeHeaderAction.refresh:
+        _reload();
+      case HomeHeaderAction.favorites:
+        _openFavorites();
+      case HomeHeaderAction.search:
+        _openHomeSearch();
+      case HomeHeaderAction.ai:
+        Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => const PapaAiChatPage()));
+      case HomeHeaderAction.pm:
+        _openPmInbox();
+      case HomeHeaderAction.notice:
+        _openNotifications();
+      case HomeHeaderAction.guide:
+        Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => const GuidePage()));
+      case HomeHeaderAction.membership:
+        Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => const MembershipPage()));
+      case HomeHeaderAction.canvas:
+      case HomeHeaderAction.layout:
+        Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => VisualGridCanvas(
+                pageCategory: 'home',
+                initialLayout: AppConfig.homeDashboardLayout,
+                onExit: () => Navigator.of(context).pop(),
+                onSave: (_) {
+                  if (mounted) setState(() {});
+                })));
+      case HomeHeaderAction.mobile:
+        MobileHomeCustomizer.show(context);
+      case HomeHeaderAction.left:
+        AppConfig.setHomeShowLeftCards(!AppConfig.homeShowLeftCards);
+      case HomeHeaderAction.right:
+        AppConfig.setHomeShowRightCards(!AppConfig.homeShowRightCards);
+      case HomeHeaderAction.settings:
+        widget.onOpenSettings?.call();
+      case HomeHeaderAction.account:
+        _openAccountMenu();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+    final nativeDesktop = !kIsWeb &&
+        const {
+          TargetPlatform.windows,
+          TargetPlatform.macOS,
+          TargetPlatform.linux
+        }.contains(defaultTargetPlatform);
 
     return DesktopShortcutsWrapper(
       onRefresh: _reload,
@@ -531,314 +781,54 @@ class _HomePageState extends State<HomePage> {
         context,
       ).push(MaterialPageRoute(builder: (_) => const SearchPage())),
       child: Scaffold(
-        appBar: AppBar(
-          title: const Text(
-            '苦力怕论坛',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-          ),
-          automaticallyImplyLeading: !isDesktop,
-          leading: (!isDesktop && widget.showDrawerButton)
-              ? IconButton(
-                  icon: const Icon(Icons.menu_rounded),
-                  tooltip: '打开导航菜单',
-                  onPressed: widget.onOpenDrawer,
-                )
-              : null,
-          actions: [
-            if (!isDesktop || MediaQuery.sizeOf(context).width < 600) ...[
-              // 移动端/窄屏紧凑顶部栏：仅保留搜索、通知与多功能气泡菜单，杜绝小屏幕元素拥挤与溢出
-              IconButton(
-                icon: const Icon(Icons.search),
-                tooltip: '搜索 (Ctrl+F)',
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.all(6),
-                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                onPressed: () {
-                  Navigator.of(
-                    context,
-                  ).push(MaterialPageRoute(builder: (_) => const SearchPage()));
-                },
-              ),
-              Badge(
-                isLabelVisible: _unreadNotice > 0,
-                label: Text(
-                  '$_unreadNotice',
-                  style: const TextStyle(fontSize: 10),
-                ),
-                child: IconButton(
-                  icon: const Icon(Icons.notifications_outlined),
-                  tooltip: '通知',
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.all(6),
-                  constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                  onPressed: _openNotifications,
-                ),
-              ),
-              PopupMenuButton<String>(
-                icon: const Icon(Icons.more_vert_rounded),
-                tooltip: '更多与自定义',
-                onSelected: (val) {
-                  if (val == 'mobile_custom') {
-                    MobileHomeCustomizer.show(context);
-                  } else if (val == 'refresh') {
-                    HapticFeedback.lightImpact();
-                    _reload();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('已刷新首页内容'),
-                        duration: Duration(milliseconds: 1500),
-                      ),
-                    );
-                  } else if (val == 'papa_ai') {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const PapaAiChatPage()),
-                    );
-                  } else if (val == 'pm') {
-                    _openPmInbox();
-                  } else if (val == 'account') {
-                    _openAccountMenu();
-                  } else if (val == 'diy_studio') {
-                    DiyLayoutStudio.show(context, initialTab: 0);
-                  }
-                },
-                itemBuilder: (context) => [
-                  const PopupMenuItem(
-                    value: 'mobile_custom',
-                    child: Row(
-                      children: [
-                        Icon(Icons.tune_rounded, size: 20),
-                        SizedBox(width: 10),
-                        Text('移动端首页自定义'),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuItem(
-                    value: 'refresh',
-                    child: Row(
-                      children: [
-                        Icon(Icons.refresh_rounded, size: 20),
-                        SizedBox(width: 10),
-                        Text('刷新首页'),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuItem(
-                    value: 'papa_ai',
-                    child: Row(
-                      children: [
-                        Icon(Icons.smart_toy_outlined, size: 20),
-                        SizedBox(width: 10),
-                        Text('帕帕 AI 助手'),
-                      ],
-                    ),
-                  ),
-                  PopupMenuItem(
-                    value: 'pm',
-                    child: Row(
-                      children: [
-                        const Icon(Icons.mail_outline, size: 20),
-                        const SizedBox(width: 10),
-                        const Text('私信收件箱'),
-                        if (_unreadPm > 0) ...[
-                          const Spacer(),
-                          Badge.count(count: _unreadPm),
-                        ],
-                      ],
-                    ),
-                  ),
-                  const PopupMenuDivider(),
-                  PopupMenuItem(
-                    value: 'account',
-                    child: Row(
-                      children: [
-                        Icon(
-                          DioClient.isLoggedIn
-                              ? Icons.account_circle_outlined
-                              : Icons.login_rounded,
-                          size: 20,
-                        ),
-                        const SizedBox(width: 10),
-                        Text(DioClient.isLoggedIn ? '我的空间 / 账户' : '登录账户'),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ] else ...[
-              // 宽屏桌面端完整工具栏
-              IconButton(
-                icon: const Icon(Icons.refresh_rounded),
-                tooltip: '手动刷新',
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.all(6),
-                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                onPressed: () {
-                  HapticFeedback.lightImpact();
-                  _reload();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('已刷新首页内容'),
-                      duration: Duration(milliseconds: 1500),
-                    ),
-                  );
-                },
-              ),
-              IconButton(
-                icon: const Icon(Icons.search),
-                tooltip: '搜索 (Ctrl+F)',
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.all(6),
-                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                onPressed: () {
-                  Navigator.of(
-                    context,
-                  ).push(MaterialPageRoute(builder: (_) => const SearchPage()));
-                },
-              ),
-              IconButton(
-                icon: const Icon(Icons.tune_rounded),
-                tooltip: '移动端首页配置 (预览)',
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.all(6),
-                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                onPressed: () => MobileHomeCustomizer.show(context),
-              ),
-              IconButton(
-                icon: const Icon(Icons.space_dashboard_outlined),
-                tooltip: '自定义首页布局 (DIY)',
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.all(6),
-                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                onPressed: () => DiyLayoutStudio.show(context, initialTab: 0),
-              ),
-              IconButton(
-                icon: const Icon(Icons.smart_toy_outlined),
-                tooltip: '帕帕 AI 助手',
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.all(6),
-                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                onPressed: () {
-                  Navigator.of(
-                    context,
-                  ).push(MaterialPageRoute(builder: (_) => const PapaAiChatPage()));
-                },
-              ),
-              Badge(
-                isLabelVisible: _unreadNotice > 0,
-                label: Text(
-                  '$_unreadNotice',
-                  style: const TextStyle(fontSize: 10),
-                ),
-                child: IconButton(
-                  icon: const Icon(Icons.notifications_outlined),
-                  tooltip: '通知',
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.all(6),
-                  constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                  onPressed: _openNotifications,
-                ),
-              ),
-              if (MediaQuery.sizeOf(context).width >= 768)
-                IconButton(
-                  icon: const Icon(Icons.settings_outlined),
-                  tooltip: '设置',
-                  onPressed: widget.onOpenSettings,
-                ),
-              Badge(
-                isLabelVisible: _unreadPm > 0,
-                label: Text('$_unreadPm', style: const TextStyle(fontSize: 10)),
-                child: IconButton(
-                  icon: const Icon(Icons.mail_outline),
-                  tooltip: '私信收件箱',
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.all(6),
-                  constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                  onPressed: _openPmInbox,
-                ),
-              ),
-              if (MediaQuery.sizeOf(context).width >= 850) ...[
-                IconButton(
-                  icon: Icon(
-                    AppConfig.homeShowLeftCards
-                        ? Icons.view_sidebar_rounded
-                        : Icons.view_sidebar_outlined,
-                    color: AppConfig.homeShowLeftCards ? Theme.of(context).colorScheme.primary : null,
-                  ),
-                  tooltip: AppConfig.homeShowLeftCards ? '收起左侧卡片栏' : '展开左侧卡片栏',
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.all(6),
-                  constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                  onPressed: () {
-                    HapticFeedback.lightImpact();
-                    AppConfig.setHomeShowLeftCards(!AppConfig.homeShowLeftCards);
-                  },
-                ),
-                IconButton(
-                  icon: Icon(
-                    AppConfig.homeShowRightCards
-                        ? Icons.dock_rounded
-                        : Icons.dock_outlined,
-                    color: AppConfig.homeShowRightCards ? Theme.of(context).colorScheme.primary : null,
-                  ),
-                  tooltip: AppConfig.homeShowRightCards ? '收起右侧卡片栏' : '展开右侧卡片栏',
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.all(6),
-                  constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                  onPressed: () {
-                    HapticFeedback.lightImpact();
-                    AppConfig.setHomeShowRightCards(!AppConfig.homeShowRightCards);
-                  },
-                ),
-              ],
-              IconButton(
-                icon: const Icon(Icons.dashboard_customize_outlined),
-                tooltip: '自由画布工坊 (DIY 界面)',
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.all(6),
-                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                onPressed: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => VisualGridCanvas(
-                        pageCategory: 'home',
-                        initialLayout: AppConfig.homeDashboardLayout,
-                        onExit: () => Navigator.of(context).pop(),
-                        onSave: (saved) {
-                          setState(() {});
-                        },
-                      ),
-                    ),
-                  );
-                },
-              ),
-              IconButton(
-                icon: Icon(
-                  DioClient.isLoggedIn ? Icons.account_circle : Icons.login,
-                ),
-                tooltip: DioClient.isLoggedIn ? '我的空间' : '登录',
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.all(6),
-                constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-                onPressed: _openAccountMenu,
-              ),
-            ],
-          ],
+        appBar: HomePageHeader(
+          isDesktop: isDesktop,
+          nativeDesktop: nativeDesktop,
+          searchController: _homeSearchCtrl,
+          toolbarHeight: HomePageHeader.heightFor(context),
+          showDrawerButton: widget.showDrawerButton,
+          onOpenDrawer: widget.onOpenDrawer,
+          loggedIn: DioClient.isLoggedIn,
+          leftExpanded: AppConfig.homeShowLeftCards,
+          rightExpanded: AppConfig.homeShowRightCards,
+          settingsAvailable: widget.onOpenSettings != null,
+          unreadPm: _unreadPm,
+          unreadNotice: _unreadNotice,
+          onAction: _onHomeHeaderAction,
         ),
         body: FutureBuilder(
+          key: ValueKey('home-session-${DioClient.sessionKey}'),
           future: _future,
           builder: (context, snap) {
             if (!snap.hasData) {
               if (snap.hasError) {
-                final hasCache = PreloadService.instance.get<List<ForumGroup>>('forum_groups', ignoreExpired: true)?.isNotEmpty == true &&
-                    PreloadService.instance.get<List<ThreadSummary>>('home_threads', ignoreExpired: true)?.isNotEmpty == true;
+                final hasCache = PreloadService.instance
+                            .get<List<ForumGroup>>('forum_groups',
+                                ignoreExpired: true)
+                            ?.isNotEmpty ==
+                        true &&
+                    PreloadService.instance
+                            .get<List<ThreadSummary>>('home_threads',
+                                ignoreExpired: true)
+                            ?.isNotEmpty ==
+                        true;
                 return _ErrorView(
                   error: '${snap.error}',
                   onRetry: _reload,
                   onViewCache: hasCache
                       ? () {
-                          final cg = PreloadService.instance.get<List<ForumGroup>>('forum_groups', ignoreExpired: true) ?? [];
-                          final ct = PreloadService.instance.get<List<ThreadSummary>>('home_threads', ignoreExpired: true) ?? [];
-                          final cs = PreloadService.instance.get<SiteStats>('site_stats', ignoreExpired: true) ?? const SiteStats();
+                          final cg = PreloadService.instance
+                                  .get<List<ForumGroup>>('forum_groups',
+                                      ignoreExpired: true) ??
+                              [];
+                          final ct = PreloadService.instance
+                                  .get<List<ThreadSummary>>('home_threads',
+                                      ignoreExpired: true) ??
+                              [];
+                          final cs = PreloadService.instance.get<SiteStats>(
+                                  'site_stats',
+                                  ignoreExpired: true) ??
+                              const SiteStats();
                           setState(() {
                             _future = Future.value((cg, ct, cs));
                           });
@@ -846,27 +836,14 @@ class _HomePageState extends State<HomePage> {
                       : null,
                 );
               }
-              // 布局同步动态微光骨架屏（完全契合用户当前个性化网格配置，完美自适应）
-              return SingleChildScrollView(
-                physics: const NeverScrollableScrollPhysics(),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 1280),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        DashboardSkeletonView(layout: AppConfig.homeDashboardLayout),
-                        const SkeletonList(itemCount: 4),
-                      ],
-                    ),
-                  ),
-                ),
-              );
+              // 响应式优雅微光骨架屏（PC 三栏比例与移动端单列流自适应，杜绝 12 列网格变形拉伸）
+              return _buildHomeLoadingView(context, isDesktop);
             }
             final (groups, threads, stats) = snap.data!;
             final messenger = ScaffoldMessenger.of(context);
-            final allThreads = _getDisplayThreads(threads);
-            final isDesktop = ResponsiveBreakpoints.isDesktop(context);
+            final allThreads = _getDisplayThreads(_feed == HomeFeed.recommended
+                ? threads
+                : _feedState.initial ?? const []);
 
             return SafeArea(
               top: false,
@@ -891,160 +868,194 @@ class _HomePageState extends State<HomePage> {
                       },
                     ),
                   Expanded(
-                    child: ListenableBuilder(
-                      listenable: AppConfig.instance,
-                      builder: (context, _) {
-                        return LayoutBuilder(
-                          builder: (context, constraints) {
-                      final availableWidth = constraints.maxWidth;
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final availableWidth = constraints.maxWidth;
 
-                      // 响应式三栏与折叠决策（比例较小自动隐藏卡片栏）
-                      // 1. 窄屏 / 移动端 (< 850px)：比例较小，完全隐藏左右卡片，原版内容 100% 呈现
-                      // 2. 中屏 (850 ~ 1150px)：展示原版内容 + 用户启用的一侧卡片（若两侧都启用优先展示右侧生态卡片）
-                      // 3. 宽屏 (>= 1150px)：完整三栏（左侧快捷工具 + 中间原版流弹性自适应 + 右侧社区动态）
-                      final isCompact = availableWidth < 850;
-                      final bool showLeft = !isCompact && AppConfig.homeShowLeftCards;
-                      final bool showRight = !isCompact && AppConfig.homeShowRightCards;
+                        // 卡片分配与过滤：彻底移除 credit_log 与 horn_banner
+                        final layout = AppConfig.homeDashboardLayout
+                            .where((c) =>
+                                c.cardType != 'credit_log' &&
+                                c.cardType != 'horn_banner')
+                            .toList();
 
-                      double leftWidth = AppConfig.homeLeftSidebarWidth;
-                      double rightWidth = AppConfig.homeRightSidebarWidth;
+                        final leftCards = layout.where((c) {
+                          return (c.col + c.colSpan / 2) < 6;
+                        }).toList()
+                          ..sort((a, b) => a.row != b.row
+                              ? a.row.compareTo(b.row)
+                              : a.col.compareTo(b.col));
 
-                      // 当左右两侧均开启时，根据屏幕可用宽度自适应约束两栏宽度，保证中央内容流至少拥有 380px 舒适阅读区
-                      if (showLeft && showRight) {
-                        const minCenterWidth = 380.0;
-                        final availableForSidebars = availableWidth - minCenterWidth - 16.0;
-                        final desiredTotal = leftWidth + rightWidth;
-                        if (availableForSidebars > 0 && desiredTotal > availableForSidebars) {
-                          final scale = (availableForSidebars / desiredTotal).clamp(0.6, 1.0);
-                          leftWidth = (leftWidth * scale).clamp(180.0, 320.0);
-                          rightWidth = (rightWidth * scale).clamp(180.0, 320.0);
-                        }
-                      }
+                        final rightCards = layout.where((c) {
+                          return (c.col + c.colSpan / 2) >= 6;
+                        }).toList()
+                          ..sort((a, b) => a.row != b.row
+                              ? a.row.compareTo(b.row)
+                              : a.col.compareTo(b.col));
 
-                      // 卡片分配与过滤：彻底移除 credit_log 与 horn_banner
-                      final layout = AppConfig.homeDashboardLayout
-                          .where((c) => c.cardType != 'credit_log' && c.cardType != 'horn_banner')
-                          .toList();
+                        final metrics = HomeLayoutMetrics.calculate(
+                          width: availableWidth,
+                          desktop: isDesktop,
+                          leftEnabled: AppConfig.homeShowLeftCards &&
+                              leftCards.isNotEmpty,
+                          rightEnabled: AppConfig.homeShowRightCards &&
+                              rightCards.isNotEmpty,
+                          preferredLeft: AppConfig.homeLeftSidebarWidth,
+                          preferredRight: AppConfig.homeRightSidebarWidth,
+                          minimumCenterWidth: AppConfig.mainContentMinWidth,
+                        );
+                        final showLeft = metrics.showLeft,
+                            showRight = metrics.showRight;
+                        final suppressDefaultStats = !stats.isEmpty &&
+                            (metrics.centerWidth < 600
+                                    ? AppConfig.mobileHomeSections
+                                    : AppConfig.defaultMobileHomeSections)
+                                .contains('stats');
 
-                      final leftCards = layout.where((c) {
-                        return (c.col + c.colSpan / 2) < 6;
-                      }).toList()..sort((a, b) => a.row != b.row ? a.row.compareTo(b.row) : a.col.compareTo(b.col));
-
-                      final rightCards = layout.where((c) {
-                        return (c.col + c.colSpan / 2) >= 6;
-                      }).toList()..sort((a, b) => a.row != b.row ? a.row.compareTo(b.row) : a.col.compareTo(b.col));
-
-                      // 平衡两栏卡片分布（若用户只排布了一边）
-                      if (leftCards.isEmpty && rightCards.length >= 4) {
-                        final half = (rightCards.length / 2).ceil();
-                        leftCards.addAll(rightCards.sublist(half));
-                        rightCards.removeRange(half, rightCards.length);
-                      } else if (rightCards.isEmpty && leftCards.length >= 4) {
-                        final half = (leftCards.length / 2).ceil();
-                        rightCards.addAll(leftCards.sublist(half));
-                        leftCards.removeRange(half, leftCards.length);
-                      }
-
-                      final centerWidth = availableWidth -
-                          (showLeft ? leftWidth + 8.0 : 0.0) -
-                          (showRight ? rightWidth + 8.0 : 0.0);
-
-                      return Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          // 左侧卡片栏（快捷工具区：独立 RepaintBoundary 隔离，杜绝中间流滚动时反复重绘）
-                          if (showLeft) ...[
-                            RepaintBoundary(
-                              child: ValueListenableBuilder<double>(
-                                valueListenable: AppConfig.homeLeftSidebarWidthNotifier,
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (isDesktop)
+                              ValueListenableBuilder<double>(
+                                valueListenable:
+                                    AppConfig.homeLeftSidebarWidthNotifier,
                                 builder: (context, width, _) {
-                                  return _buildCardSidebar(
-                                    context: context,
+                                  final panelWidth =
+                                      HomeLayoutMetrics.calculate(
+                                    width: availableWidth,
+                                    desktop: true,
+                                    leftEnabled: showLeft,
+                                    rightEnabled: showRight,
+                                    preferredLeft: width,
+                                    preferredRight:
+                                        AppConfig.homeRightSidebarWidth,
+                                    minimumCenterWidth:
+                                        AppConfig.mainContentMinWidth,
+                                  ).leftWidth;
+                                  return AnimatedSidePanel(
+                                    key: const ValueKey('home-left-panel'),
+                                    expanded: showLeft,
+                                    width: panelWidth,
                                     isLeft: true,
-                                    cards: leftCards,
-                                    allThreads: allThreads,
-                                    stats: stats,
-                                    width: width,
+                                    splitter:
+                                        _buildSidebarSplitter(isLeft: true),
+                                    handle:
+                                        _buildCollapsedEdgeHandle(isLeft: true),
+                                    child: _buildCardSidebar(
+                                        context: context,
+                                        isLeft: true,
+                                        cards: leftCards,
+                                        allThreads: allThreads,
+                                        stats: stats,
+                                        suppressDefaultStats:
+                                            suppressDefaultStats,
+                                        width: panelWidth),
                                   );
                                 },
                               ),
-                            ),
-                            _buildSidebarSplitter(isLeft: true),
-                          ],
 
-                          // 中间原版内容（自适应填满剩余全部空间，独立 RepaintBoundary 隔离，杜绝滚动时向上传播重绘全局窗口）
-                          Expanded(
-                            child: RepaintBoundary(
-                              child: RefreshIndicator(
-                                onRefresh: () async {
-                                  HapticFeedback.lightImpact();
-                                  _reload();
-                                  await Future.delayed(const Duration(milliseconds: 400));
-                                  if (mounted) {
-                                    final now = DateTime.now();
-                                    final hm =
-                                        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
-                                    messenger.showSnackBar(SnackBar(content: Text('已刷新 $hm')));
-                                  }
-                                },
-                                color: Theme.of(context).colorScheme.primary,
-                                backgroundColor: Theme.of(context).colorScheme.surface,
-                                displacement: 40,
-                                edgeOffset: 8,
-                                child: CustomScrollView(
-                                  controller: _homeScrollCtrl,
-                                  physics: const AlwaysScrollableScrollPhysics(),
-                                  slivers: _buildCenterOriginalSlivers(
-                                    context: context,
-                                    groups: groups,
-                                    threads: threads,
-                                    allThreads: allThreads,
-                                    stats: stats,
-                                    isDesktop: isDesktop,
-                                    centerWidth: centerWidth,
-                                  ),
+                            // 中间原版内容（自适应填满剩余全部空间，独立 RepaintBoundary 隔离，杜绝滚动时向上传播重绘全局窗口）
+                            Expanded(
+                              child: RepaintBoundary(
+                                child: RefreshIndicator(
+                                  onRefresh: () async {
+                                    HapticFeedback.lightImpact();
+                                    final refreshed = await _reload();
+                                    if (mounted) {
+                                      final now = DateTime.now();
+                                      final hm =
+                                          '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+                                      messenger.showSnackBar(SnackBar(
+                                          content: Text(refreshed
+                                              ? '刷新完成 $hm'
+                                              : '刷新未完成，请稍后重试')));
+                                    }
+                                  },
+                                  color: Theme.of(context).colorScheme.primary,
+                                  backgroundColor:
+                                      Theme.of(context).colorScheme.surface,
+                                  displacement: 40,
+                                  edgeOffset: 8,
+                                  child: LayoutBuilder(
+                                      builder: (context, center) =>
+                                          CustomScrollView(
+                                            controller: _homeScrollCtrl,
+                                            physics:
+                                                const AlwaysScrollableScrollPhysics(),
+                                            slivers:
+                                                _buildCenterOriginalSlivers(
+                                              context: context,
+                                              groups: groups,
+                                              threads: threads,
+                                              allThreads: allThreads,
+                                              stats: stats,
+                                              isDesktop: isDesktop,
+                                              centerWidth: center.maxWidth,
+                                            ),
+                                          )),
                                 ),
                               ),
                             ),
-                          ),
 
-                          // 右侧卡片栏（社区生态与监控区：独立 RepaintBoundary 隔离）
-                          if (showRight) ...[
-                            _buildSidebarSplitter(isLeft: false),
-                            RepaintBoundary(
-                              child: ValueListenableBuilder<double>(
-                                valueListenable: AppConfig.homeRightSidebarWidthNotifier,
+                            if (isDesktop)
+                              ValueListenableBuilder<double>(
+                                valueListenable:
+                                    AppConfig.homeRightSidebarWidthNotifier,
                                 builder: (context, width, _) {
-                                  return _buildCardSidebar(
-                                    context: context,
+                                  final panelWidth =
+                                      HomeLayoutMetrics.calculate(
+                                    width: availableWidth,
+                                    desktop: true,
+                                    leftEnabled: showLeft,
+                                    rightEnabled: showRight,
+                                    preferredLeft:
+                                        AppConfig.homeLeftSidebarWidth,
+                                    preferredRight: width,
+                                    minimumCenterWidth:
+                                        AppConfig.mainContentMinWidth,
+                                  ).rightWidth;
+                                  return AnimatedSidePanel(
+                                    key: const ValueKey('home-right-panel'),
+                                    expanded: showRight,
+                                    width: panelWidth,
                                     isLeft: false,
-                                    cards: rightCards,
-                                    allThreads: allThreads,
-                                    stats: stats,
-                                    width: width,
+                                    splitter:
+                                        _buildSidebarSplitter(isLeft: false),
+                                    handle: _buildCollapsedEdgeHandle(
+                                        isLeft: false),
+                                    child: _buildCardSidebar(
+                                        context: context,
+                                        isLeft: false,
+                                        cards: rightCards,
+                                        allThreads: allThreads,
+                                        stats: stats,
+                                        suppressDefaultStats:
+                                            suppressDefaultStats,
+                                        width: panelWidth),
                                   );
                                 },
                               ),
-                            ),
                           ],
-                        ],
-                      );
-                    },
-                  );
-                },
+                        );
+                      },
+                    ),
+                  ),
+                ],
               ),
-            ),
-          ],
-        ),
-      );
+            );
           },
         ),
+        floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
         floatingActionButton: CoordinatedActionFabGroup(
+          key: const ValueKey('home-action-fab-group'),
           showBackToTop: _showBackToTop,
           onBackToTop: _scrollToTop,
+          extendPrimary: isDesktop ||
+              (!_compactHomeFab &&
+                  MediaQuery.textScalerOf(context).scale(14) / 14 < 1.3),
           primaryIcon: Icons.edit_rounded,
           primaryLabel: '发帖',
-          primaryTooltip: '发布新帖 (Ctrl+N)',
+          primaryTooltip: isDesktop ? '发布新帖 (Ctrl+N)' : '发布新帖',
           onPrimaryAction: _openPost,
           heroTagPrefix: 'home',
         ),
@@ -1060,6 +1071,7 @@ class _HomePageState extends State<HomePage> {
     required List<ThreadSummary> allThreads,
     required SiteStats stats,
     required double width,
+    bool suppressDefaultStats = false,
   }) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
@@ -1087,7 +1099,8 @@ class _HomePageState extends State<HomePage> {
             padding: const EdgeInsets.symmetric(horizontal: 10),
             decoration: BoxDecoration(
               border: Border(
-                bottom: BorderSide(color: theme.dividerColor.withAlpha(25), width: 0.8),
+                bottom: BorderSide(
+                    color: theme.dividerColor.withAlpha(25), width: 0.8),
               ),
             ),
             child: Row(
@@ -1108,11 +1121,13 @@ class _HomePageState extends State<HomePage> {
                 ),
                 const Spacer(),
                 IconButton(
-                  icon: const Icon(Icons.tune_rounded, size: 15),
-                  tooltip: 'DIY 画布工坊',
+                  icon:
+                      const Icon(Icons.dashboard_customize_outlined, size: 16),
+                  tooltip: '自由画布工坊 (DIY 界面)',
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                  constraints:
+                      const BoxConstraints(minWidth: 26, minHeight: 26),
                   onPressed: () {
                     Navigator.of(context).push(
                       MaterialPageRoute(
@@ -1137,7 +1152,8 @@ class _HomePageState extends State<HomePage> {
                   tooltip: isLeft ? '收起左侧栏' : '收起右侧栏',
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                  constraints:
+                      const BoxConstraints(minWidth: 26, minHeight: 26),
                   onPressed: () {
                     HapticFeedback.lightImpact();
                     if (isLeft) {
@@ -1145,6 +1161,7 @@ class _HomePageState extends State<HomePage> {
                     } else {
                       AppConfig.setHomeShowRightCards(false);
                     }
+                    if (mounted) setState(() {});
                   },
                 ),
               ],
@@ -1174,12 +1191,26 @@ class _HomePageState extends State<HomePage> {
                           ),
                           const SizedBox(height: 8),
                           FilledButton.tonal(
-                            onPressed: () => DiyLayoutStudio.show(context, initialTab: 0),
+                            onPressed: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => VisualGridCanvas(
+                                    pageCategory: 'home',
+                                    initialLayout:
+                                        AppConfig.homeDashboardLayout,
+                                    onExit: () => Navigator.of(context).pop(),
+                                    onSave: (saved) {
+                                      setState(() {});
+                                    },
+                                  ),
+                                ),
+                              );
+                            },
                             style: FilledButton.styleFrom(
                               visualDensity: VisualDensity.compact,
                               textStyle: const TextStyle(fontSize: 11),
                             ),
-                            child: const Text('添加卡片'),
+                            child: const Text('前往自由画布添加卡片'),
                           ),
                         ],
                       ),
@@ -1191,8 +1222,10 @@ class _HomePageState extends State<HomePage> {
                     separatorBuilder: (_, __) => const SizedBox(height: 10),
                     itemBuilder: (context, index) {
                       final item = cards[index];
-                      final cardHeight = (item.rowSpan * 88.0 + (item.rowSpan - 1) * 8.0)
-                          .clamp(86.0, 380.0);
+                      final cardHeight = HomeLayoutMetrics.sidebarCardHeight(
+                          type: item.cardType,
+                          rows: item.rowSpan,
+                          width: width);
                       return SizedBox(
                         height: cardHeight,
                         child: DashboardCardFactory.buildCard(
@@ -1200,6 +1233,7 @@ class _HomePageState extends State<HomePage> {
                           isPreview: false,
                           threads: allThreads,
                           stats: stats,
+                          suppressDefaultStats: suppressDefaultStats,
                         ),
                       );
                     },
@@ -1222,10 +1256,12 @@ class _HomePageState extends State<HomePage> {
         onHorizontalDragUpdate: (details) {
           final delta = details.delta.dx;
           if (isLeft) {
-            final newWidth = (AppConfig.homeLeftSidebarWidth + delta).clamp(200.0, 480.0);
+            final newWidth =
+                (AppConfig.homeLeftSidebarWidth + delta).clamp(200.0, 480.0);
             AppConfig.updateHomeLeftSidebarWidth(newWidth);
           } else {
-            final newWidth = (AppConfig.homeRightSidebarWidth - delta).clamp(200.0, 480.0);
+            final newWidth =
+                (AppConfig.homeRightSidebarWidth - delta).clamp(200.0, 480.0);
             AppConfig.updateHomeRightSidebarWidth(newWidth);
           }
         },
@@ -1254,7 +1290,236 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// 构建中间原版论坛内容流（全自适应宽度，包括顶部公告跑马灯、版块导航、推荐轮播、帖子 Feed 流）
+  /// 响应式优雅微光骨架屏（PC 三栏比例与移动端单列流自适应，杜绝 12 列网格变形拉伸）
+  Widget _buildHomeLoadingView(BuildContext context, bool isDesktop) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final baseShimmer =
+        isDark ? Colors.white.withAlpha(12) : Colors.black.withAlpha(8);
+
+    if (isDesktop) {
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final w = constraints.maxWidth;
+          final showSidebars = w >= 900;
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (showSidebars)
+                SizedBox(
+                  width: 240,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      children: [
+                        _buildShimmerBox(
+                            height: 120, color: baseShimmer, radius: 12),
+                        const SizedBox(height: 12),
+                        _buildShimmerBox(
+                            height: 160, color: baseShimmer, radius: 12),
+                        const SizedBox(height: 12),
+                        _buildShimmerBox(
+                            height: 100, color: baseShimmer, radius: 12),
+                      ],
+                    ),
+                  ),
+                ),
+              Expanded(
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildShimmerBox(
+                          height: 180, color: baseShimmer, radius: 12),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          _buildShimmerBox(
+                              width: 80,
+                              height: 20,
+                              color: baseShimmer,
+                              radius: 6),
+                          const Spacer(),
+                          _buildShimmerBox(
+                              width: 60,
+                              height: 16,
+                              color: baseShimmer,
+                              radius: 6),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Expanded(
+                        child: GridView.builder(
+                          physics: const NeverScrollableScrollPhysics(),
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            mainAxisExtent: 156,
+                            mainAxisSpacing: 12,
+                            crossAxisSpacing: 12,
+                          ),
+                          itemCount: 6,
+                          itemBuilder: (_, __) => _buildShimmerBox(
+                            height: 138,
+                            color: baseShimmer,
+                            radius: 12,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (showSidebars && w >= 1150)
+                SizedBox(
+                  width: 260,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      children: [
+                        _buildShimmerBox(
+                            height: 150, color: baseShimmer, radius: 12),
+                        const SizedBox(height: 12),
+                        _buildShimmerBox(
+                            height: 200, color: baseShimmer, radius: 12),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildShimmerBox(height: 150, color: baseShimmer, radius: 12),
+          const SizedBox(height: 14),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: List.generate(
+              4,
+              (_) => _buildShimmerBox(
+                  width: 48, height: 48, color: baseShimmer, radius: 24),
+            ),
+          ),
+          const SizedBox(height: 16),
+          _buildShimmerBox(
+              width: 64, height: 18, color: baseShimmer, radius: 6),
+          const SizedBox(height: 12),
+          const Expanded(child: SkeletonList(itemCount: 5)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildShimmerBox(
+      {double? width,
+      required double height,
+      required Color color,
+      double radius = 8}) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(radius),
+      ),
+    );
+  }
+
+  /// 侧栏收起后的边缘展开把手（全高度停靠边缘条 + 居中高亮交互把手，点击任意区域立即重新展开对应侧栏）
+  Widget _buildCollapsedEdgeHandle({required bool isLeft}) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Tooltip(
+      message: isLeft ? '展开左侧个人工具栏 (点击重新开启)' : '展开右侧社区动态栏 (点击重新开启)',
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () {
+              HapticFeedback.mediumImpact();
+              if (isLeft) {
+                AppConfig.setHomeShowLeftCards(true);
+              } else {
+                AppConfig.setHomeShowRightCards(true);
+              }
+              if (mounted) setState(() {});
+            },
+            child: Container(
+              width: 26,
+              color: Colors.transparent,
+              child: Stack(
+                alignment:
+                    isLeft ? Alignment.centerLeft : Alignment.centerRight,
+                children: [
+                  Positioned.fill(
+                    child: Align(
+                      alignment:
+                          isLeft ? Alignment.centerRight : Alignment.centerLeft,
+                      child: Container(
+                        width: 1,
+                        color: colorScheme.outlineVariant.withAlpha(80),
+                      ),
+                    ),
+                  ),
+                  Center(
+                    child: Container(
+                      width: 22,
+                      height: 84,
+                      decoration: BoxDecoration(
+                        color: colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.only(
+                          topRight:
+                              isLeft ? const Radius.circular(10) : Radius.zero,
+                          bottomRight:
+                              isLeft ? const Radius.circular(10) : Radius.zero,
+                          topLeft:
+                              !isLeft ? const Radius.circular(10) : Radius.zero,
+                          bottomLeft:
+                              !isLeft ? const Radius.circular(10) : Radius.zero,
+                        ),
+                        border: Border.all(
+                          color: colorScheme.primary.withAlpha(150),
+                          width: 1.2,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withAlpha(30),
+                            blurRadius: 6,
+                            offset: Offset(isLeft ? 1 : -1, 1),
+                          ),
+                        ],
+                      ),
+                      child: Center(
+                        child: Icon(
+                          isLeft
+                              ? Icons.chevron_right_rounded
+                              : Icons.chevron_left_rounded,
+                          size: 18,
+                          color: colorScheme.primary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Loading and navigation remain in the page; the shared renderer uses data.
   List<Widget> _buildCenterOriginalSlivers({
     required BuildContext context,
     required List<ForumGroup> groups,
@@ -1264,283 +1529,50 @@ class _HomePageState extends State<HomePage> {
     required bool isDesktop,
     required double centerWidth,
   }) {
-    final slivers = <Widget>[];
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-
-    // 动态按用户设置的轻量模块顺序渲染各区域
-    final sections = (!isDesktop || centerWidth < 600)
-        ? AppConfig.mobileHomeSections
-        : AppConfig.defaultMobileHomeSections;
-
-    for (final sec in sections) {
-      if (sec == 'horn_banner') {
-        // 1. 原版经典全站小喇叭公告栏
-        if (AppConfig.homeModules.contains('horn_banner')) {
-          slivers.add(
-            const SliverPadding(
-              padding: EdgeInsets.fromLTRB(12, 10, 12, 4),
-              sliver: SliverToBoxAdapter(child: HornBannerWidget()),
-            ),
-          );
-        }
-      } else if (sec == 'stats') {
-        // 1.1 全站统计看板（今日 / 昨日 / 帖子 / 会员，严格与手机版原版数据对齐）
-        if (stats.totalPosts > 0 || stats.todayPosts > 0 || stats.totalMembers > 0) {
-          slivers.add(
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 6),
-              sliver: SliverToBoxAdapter(child: SiteStatsCard(stats: stats)),
-            ),
-          );
-        }
-      } else if (sec == 'forum_nav') {
-        // 2. 原版版块导航
-        if (groups.isNotEmpty) {
-          slivers.add(
-            SliverToBoxAdapter(
-              child: ForumNav(
-                groups: groups,
-                favFids: _favForums,
-                onToggleFav: _toggleFavForum,
-              ),
-            ),
-          );
-        } else {
-          slivers.add(
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Center(
-                  child: Column(
-                    children: [
-                      Icon(
-                        Icons.forum_outlined,
-                        size: 40,
-                        color: Theme.of(context).colorScheme.outlineVariant,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '暂无版块',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Theme.of(context).colorScheme.outline,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          );
-        }
-      } else if (sec == 'quick_actions') {
-        // 3. 移动端/窄屏快捷金刚区（4~8 项自由挑选，单双行自适应）
-        if (!isDesktop || centerWidth < 600) {
-          slivers.add(
-            SliverToBoxAdapter(
-              child: QuickActionsWidget(onNavigate: _onNavigateTab),
-            ),
-          );
-        }
-      } else if (sec == 'carousel') {
-        // 4. 推荐轮播（前 5 篇精华推荐）
-        if (threads.isNotEmpty) {
-          slivers.add(
-            SliverToBoxAdapter(
-              child: RepaintBoundary(
-                child: _RecommendCarousel(
-                  threads: threads.take(5).toList(),
-                  onTap: _openThread,
-                ),
-              ),
-            ),
-          );
-        }
-      }
+    final favoriteSession = DioClient.sessionKey;
+    final slivers = HomeContentSlivers.build(context,
+        groups: groups,
+        threads: allThreads,
+        recommendations: threads,
+        stats: stats,
+        isDesktop: isDesktop,
+        centerWidth: centerWidth,
+        sections: (!isDesktop || centerWidth < 600)
+            ? AppConfig.mobileHomeSections
+            : AppConfig.defaultMobileHomeSections,
+        quickActionIds: AppConfig.mobileQuickActions,
+        favoriteForumIds: _favForums,
+        announcementsEnabled: AppConfig.homeModules.contains('horn_banner'),
+        announcementContent: const HornBannerWidget(),
+        loadingMore: _loadingMore,
+        hasMore: _hasMore,
+        feed: _feed,
+        onSelectFeed: _selectFeed,
+        feedLoading: _feedState.loading,
+        feedError: _feedState.error,
+        refreshing: _refreshing,
+        outage: _activeOutage,
+        onRefresh: _reload,
+        onLoadMore: _loadMore,
+        onCustomize: () => MobileHomeCustomizer.show(context),
+        onAllForums: () => Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => ForumsPage())),
+        onOpenForum: (forum) => Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => ThreadListPage(fid: forum.fid, title: forum.name))),
+        onToggleFavorite: (forum, favorite) => _setForumFavorite(
+            forum, favorite, expectedSession: favoriteSession),
+        onOpenThread: (thread) => _openThread(thread.tid, fid: thread.fid),
+        onOpenAuthor: (thread) => Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => UserSpacePage(
+                uid: thread.uid,
+                username: thread.author.isNotEmpty ? thread.author : null))),
+        onQuickAction: _onNavigateTab);
+    if (!isDesktop) {
+      // 共享流已有80px尾距，另留48px让最后一条内容能滚到两枚悬浮按钮上方。
+      slivers.add(const SliverToBoxAdapter(
+          key: ValueKey('home-mobile-fab-bottom-space'),
+          child: SizedBox(height: 48)));
     }
-
-    // 5. 推荐分区头
-    slivers.add(
-      SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
-          child: Row(
-            children: [
-              Container(
-                width: 4,
-                height: 16,
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primary,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              const SizedBox(width: 8),
-              const Text(
-                '推荐',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                ),
-              ),
-              const Spacer(),
-              Text(
-                '下拉刷新',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant.withAlpha(180),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-
-    slivers.add(const SliverToBoxAdapter(child: SizedBox(height: 6)));
-
-    // 6. 帖子列表（按中间自适应宽度动态选择双列网格或单列列表）
-    final useGrid = centerWidth >= 620;
-    if (allThreads.isEmpty) {
-      if (_activeOutage != null) {
-        slivers.add(
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-              child: Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: isDark ? const Color(0x22EF4444) : const Color(0xFFFEF2F2),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: isDark ? const Color(0x44EF4444) : const Color(0xFFFECACA),
-                  ),
-                ),
-                child: Column(
-                  children: [
-                    Icon(
-                      Icons.cloud_off_rounded,
-                      size: 32,
-                      color: isDark ? const Color(0xFFF87171) : const Color(0xFFDC2626),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '推荐帖子暂不可用 (${_activeOutage!.statusCode} ${_activeOutage!.title})',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                        color: isDark ? const Color(0xFFF87171) : const Color(0xFFB91C1C),
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '论坛源站返回了异常响应，暂时无法拉取最新推荐列表。',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    FilledButton.icon(
-                      onPressed: _reload,
-                      icon: const Icon(Icons.refresh_rounded, size: 16),
-                      label: const Text('重试连接'),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        );
-      } else {
-        slivers.add(
-          const SliverToBoxAdapter(
-            child: Padding(
-              padding: EdgeInsets.symmetric(vertical: 36),
-              child: Center(child: Text('暂无推荐帖子')),
-            ),
-          ),
-        );
-      }
-    } else {
-      if (useGrid) {
-        slivers.add(
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            sliver: SliverGrid.builder(
-              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                maxCrossAxisExtent: 520,
-                mainAxisExtent: 138,
-                mainAxisSpacing: 12,
-                crossAxisSpacing: 12,
-              ),
-              itemCount: allThreads.length,
-              itemBuilder: (ctx, i) {
-                final t = allThreads[i];
-                return ThreadCard(
-                  thread: t,
-                  isGrid: true,
-                  onTap: () => _openThread(t.tid, fid: t.fid),
-                  onAuthorTap: t.uid == null
-                      ? null
-                      : () => Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => UserSpacePage(uid: t.uid!),
-                            ),
-                          ),
-                );
-              },
-            ),
-          ),
-        );
-      } else {
-        slivers.add(
-          SliverList.builder(
-            itemCount: allThreads.length,
-            itemBuilder: (ctx, i) {
-              final t = allThreads[i];
-              return ThreadCard(
-                thread: t,
-                onTap: () => _openThread(t.tid, fid: t.fid),
-                onAuthorTap: t.uid == null
-                    ? null
-                    : () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => UserSpacePage(uid: t.uid!),
-                          ),
-                        ),
-              );
-            },
-          ),
-        );
-      }
-
-      // 7. 加载更多
-      slivers.add(
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            child: Center(
-              child: _loadingMore
-                  ? const SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : FilledButton.tonal(
-                      onPressed: _loadMore,
-                      child: const Text('加载更多推荐'),
-                    ),
-            ),
-          ),
-        ),
-      );
-    }
-
-    // 底部留白
-    slivers.add(const SliverToBoxAdapter(child: SizedBox(height: 80)));
-
     return slivers;
   }
 
@@ -1577,7 +1609,8 @@ class _HomePageState extends State<HomePage> {
   void _openThread(int tid, {int? fid}) {
     Navigator.of(
       context,
-    ).push(MaterialPageRoute(builder: (_) => ThreadDetailPage(tid: tid, fid: fid)));
+    ).push(MaterialPageRoute(
+        builder: (_) => ThreadDetailPage(tid: tid, fid: fid)));
   }
 
   /// 切换到底部导航对应 tab（由主壳提供）或跳转对应路由
@@ -1626,7 +1659,8 @@ class _HomePageState extends State<HomePage> {
     }
     if (index == 17) {
       if (!DioClient.isLoggedIn) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先登录查看我的收藏')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('请先登录查看我的收藏')));
         return;
       }
       KlpbbsApi.getMyUid().then((uid) {
@@ -1640,7 +1674,8 @@ class _HomePageState extends State<HomePage> {
     }
     if (index == 18) {
       if (!DioClient.isLoggedIn) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先登录查看我的主题')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('请先登录查看我的主题')));
         return;
       }
       KlpbbsApi.getMyUid().then((uid) {
@@ -1660,7 +1695,8 @@ class _HomePageState extends State<HomePage> {
     }
     if (index == 19) {
       if (!DioClient.isLoggedIn) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先登录发表新帖')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('请先登录发表新帖')));
         return;
       }
       Navigator.of(
@@ -1669,916 +1705,6 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     if (_onSwitchTab != null) _onSwitchTab!(index);
-  }
-}
-
-/// 版块导航（横向滚动）
-class ForumNav extends StatefulWidget {
-  final List<ForumGroup> groups;
-  final Set<int> favFids;
-  final ValueChanged<Forum>? onToggleFav;
-
-  const ForumNav({
-    super.key,
-    required this.groups,
-    this.favFids = const {},
-    this.onToggleFav,
-  });
-
-  /// 展平后的全部版块（收藏弹层/检索用）
-  List<Forum> get allForums => groups.expand((g) => g.forums).toList();
-
-  /// 按版块名匹配图标颜色
-  static Color forumIconColor(String name) {
-    if (name.contains('资源') || name.contains('下载') || name.contains('整合')) {
-      return const Color(0xFF43A047);
-    }
-    if (name.contains('求助') || name.contains('问答') || name.contains('问题')) {
-      return const Color(0xFFFB8C00);
-    }
-    if (name.contains('讨论') || name.contains('交流') || name.contains('闲聊')) {
-      return const Color(0xFF1E88E5);
-    }
-    if (name.contains('公告') || name.contains('版务')) {
-      return const Color(0xFF8E24AA);
-    }
-    if (name.contains('作品') || name.contains('创作')) {
-      return const Color(0xFFE53935);
-    }
-    if (name.contains('交易') || name.contains('市场')) {
-      return const Color(0xFF00897B);
-    }
-    return const Color(0xFF1E88E5);
-  }
-
-  /// 按版块名匹配图标
-  static IconData forumIcon(String name) {
-    if (name.contains('资源') || name.contains('下载') || name.contains('整合')) {
-      return Icons.download_outlined;
-    }
-    if (name.contains('求助') || name.contains('问答') || name.contains('问题')) {
-      return Icons.help_outline;
-    }
-    if (name.contains('讨论') || name.contains('交流') || name.contains('闲聊')) {
-      return Icons.forum_outlined;
-    }
-    if (name.contains('公告') || name.contains('版务')) {
-      return Icons.campaign_outlined;
-    }
-    if (name.contains('新闻') || name.contains('资讯')) {
-      return Icons.article_outlined;
-    }
-    if (name.contains('作品') || name.contains('展示') || name.contains('创作')) {
-      return Icons.brush_outlined;
-    }
-    if (name.contains('交易') || name.contains('市场')) {
-      return Icons.shopping_cart_outlined;
-    }
-    return Icons.forum_outlined;
-  }
-
-  @override
-  State<ForumNav> createState() => _ForumNavState();
-}
-
-class _ForumNavState extends State<ForumNav> {
-  int _selectedGroupIdx = 0;
-  bool _expandAll = false;
-
-  void _showFavForums(BuildContext context) {
-    final seen = <int>{};
-    final favList = widget.allForums
-        .where((f) => widget.favFids.contains(f.fid) && seen.add(f.fid))
-        .toList()
-      ..sort((a, b) => a.name.compareTo(b.name));
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (_) => _FavForumsSheet(
-        forums: favList,
-        onToggleFav: widget.onToggleFav,
-        onOpen: (f) {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => ThreadListPage(fid: f.fid, title: f.name),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    if (widget.groups.isEmpty) return const SizedBox.shrink();
-
-    final allKnownForums = <int, Forum>{};
-    for (final g in widget.groups) {
-      for (final f in g.forums) {
-        allKnownForums[f.fid] = f;
-      }
-    }
-    for (final f in widget.allForums) {
-      allKnownForums[f.fid] = f;
-    }
-
-    final combinedFavs = <Forum>[];
-    final seenFids = <int>{};
-    for (final fid in widget.favFids) {
-      if (seenFids.add(fid)) {
-        final f = allKnownForums[fid] ?? Forum(fid: fid, name: '版块 $fid');
-        combinedFavs.add(f);
-      }
-    }
-    for (final g in widget.groups) {
-      if (g.gid == 0 || g.name.contains('关注')) {
-        for (final f in g.forums) {
-          if (seenFids.add(f.fid)) {
-            combinedFavs.add(f);
-          }
-        }
-      }
-    }
-    if (combinedFavs.isEmpty) {
-      const defaultFids = [41, 43, 52];
-      for (final fid in defaultFids) {
-        if (seenFids.add(fid)) {
-          final f = allKnownForums[fid] ?? Forum(fid: fid, name: '版块 $fid');
-          combinedFavs.add(f);
-        }
-      }
-    }
-
-    final effectiveGroups = <ForumGroup>[
-      ForumGroup(
-        gid: 0,
-        name: '我关注的',
-        forums: combinedFavs,
-      ),
-    ];
-
-    for (final g in widget.groups) {
-      if (g.gid != 0 && !g.name.contains('关注')) {
-        effectiveGroups.add(g);
-      }
-    }
-
-    final currentGroup = effectiveGroups[_selectedGroupIdx.clamp(0, effectiveGroups.length - 1)];
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // 分区标题栏：标题 + 展开/折叠切换 + 收藏 + 全部分区
-        Padding(
-          padding: const EdgeInsets.fromLTRB(14, 10, 14, 6),
-          child: Row(
-            children: [
-              Container(
-                width: 4,
-                height: 15,
-                decoration: BoxDecoration(
-                  color: colorScheme.primary,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              const SizedBox(width: 8),
-              const Text(
-                '论坛版块分类',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-              ),
-              const SizedBox(width: 8),
-              InkWell(
-                borderRadius: BorderRadius.circular(6),
-                onTap: () => setState(() => _expandAll = !_expandAll),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        _expandAll ? '收起分类' : '展开全部分区',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                          color: colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                      Icon(
-                        _expandAll ? Icons.expand_less : Icons.expand_more,
-                        size: 16,
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const Spacer(),
-              if (widget.favFids.isNotEmpty) ...[
-                GestureDetector(
-                  onTap: () => _showFavForums(context),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.star, size: 15, color: Color(0xFFFFB300)),
-                      const SizedBox(width: 2),
-                      Text(
-                        '收藏 ${widget.favFids.length}',
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w600,
-                          color: colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 10),
-              ],
-              InkWell(
-                borderRadius: BorderRadius.circular(6),
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => ForumsPage()),
-                  );
-                },
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  child: Row(
-                    children: [
-                      Text(
-                        '全部分区',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: colorScheme.primary,
-                        ),
-                      ),
-                      Icon(Icons.chevron_right, size: 16, color: colorScheme.primary),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        // 分区分类 Tab 栏（如果未展开全部时显示）
-        if (!_expandAll) ...[
-          SizedBox(
-            height: 38,
-            child: ListView.separated(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              scrollDirection: Axis.horizontal,
-              itemCount: effectiveGroups.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 8),
-              itemBuilder: (ctx, i) {
-                final g = effectiveGroups[i];
-                final isSelected = i == _selectedGroupIdx;
-                return ChoiceChip(
-                  label: Text(g.name),
-                  selected: isSelected,
-                  selectedColor: colorScheme.primaryContainer,
-                  labelStyle: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                    color: isSelected ? colorScheme.primary : colorScheme.onSurface,
-                  ),
-                  visualDensity: VisualDensity.compact,
-                  onSelected: (selected) {
-                    if (selected) setState(() => _selectedGroupIdx = i);
-                  },
-                );
-              },
-            ),
-          ),
-          const SizedBox(height: 8),
-          // 当前选中分区的版块网格（全宽双列自适应网格，彻底消除孤立留白）
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: LayoutBuilder(
-              builder: (ctx, constraints) {
-                final isWide = constraints.maxWidth > 600;
-                final crossCount = isWide ? 4 : 2;
-                return GridView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  padding: EdgeInsets.zero,
-                  itemCount: currentGroup.forums.length,
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: crossCount,
-                    mainAxisExtent: 52,
-                    crossAxisSpacing: 8,
-                    mainAxisSpacing: 8,
-                  ),
-                  itemBuilder: (ctx, idx) => _boardChip(context, currentGroup.forums[idx]),
-                );
-              },
-            ),
-          ),
-        ] else ...[
-          // 展开全部分区手风琴
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Column(
-              children: [
-                for (final g in effectiveGroups)
-                  Card(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    child: _CollapsibleGroup(
-                      group: g,
-                      initiallyExpanded: true,
-                      favFids: widget.favFids,
-                      onToggleFav: widget.onToggleFav,
-                      boardChip: _boardChip,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-
-  Widget _boardChip(BuildContext context, Forum f) {
-    final theme = Theme.of(context);
-    final fav = widget.favFids.contains(f.fid);
-    final threadCount = f.threadCount > 0 ? f.threadCount : 0;
-    final todayCount = f.todayCount >= 0 ? f.todayCount : -1;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withAlpha(120),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: theme.colorScheme.outlineVariant.withAlpha(50),
-          width: 0.8,
-        ),
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(10),
-          onTap: () {
-            Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => ThreadListPage(fid: f.fid, title: f.name),
-              ),
-            );
-          },
-          onLongPress: () {
-            widget.onToggleFav?.call(f);
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(fav ? '已取消收藏：${f.name}' : '已收藏版块：${f.name}'),
-              ),
-            );
-          },
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            child: Row(
-              children: [
-                if (f.iconUrl != null)
-                  CachedNetworkImage(
-                    imageUrl: f.iconUrl!,
-                    httpHeaders: AppConfig.imageHeaders,
-                    width: 26,
-                    height: 26,
-                    fit: BoxFit.contain,
-                    errorWidget: (_, __, ___) => Icon(
-                      ForumNav.forumIcon(f.name),
-                      size: 22,
-                      color: ForumNav.forumIconColor(f.name),
-                    ),
-                  )
-                else
-                  Icon(
-                    ForumNav.forumIcon(f.name),
-                    size: 22,
-                    color: ForumNav.forumIconColor(f.name),
-                  ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        f.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 12.5,
-                        ),
-                      ),
-                      if (threadCount > 0 || todayCount > 0)
-                        Text(
-                          todayCount > 0
-                              ? (threadCount > 0
-                                  ? '今日 $todayCount · 帖数 ${threadCount > 9999 ? "${(threadCount / 10000).toStringAsFixed(1)}w" : threadCount}'
-                                  : '今日 $todayCount')
-                              : (threadCount > 9999
-                                  ? '帖数 ${(threadCount / 10000).toStringAsFixed(1)}w'
-                                  : '帖数 $threadCount'),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            fontSize: 9.5,
-                            color: todayCount > 0
-                                ? theme.colorScheme.primary
-                                : theme.colorScheme.onSurfaceVariant.withAlpha(200),
-                            fontWeight: todayCount > 0 ? FontWeight.w600 : FontWeight.normal,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-                if (fav)
-                  const Icon(Icons.star, size: 14, color: Color(0xFFFFB300)),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 可折叠的版块分组（点击标题展开/收起）
-class _CollapsibleGroup extends StatefulWidget {
-  final ForumGroup group;
-  final bool initiallyExpanded;
-  final Set<int> favFids;
-  final ValueChanged<Forum>? onToggleFav;
-  final Widget Function(BuildContext, Forum) boardChip;
-
-  const _CollapsibleGroup({
-    required this.group,
-    required this.initiallyExpanded,
-    required this.favFids,
-    this.onToggleFav,
-    required this.boardChip,
-  });
-
-  @override
-  State<_CollapsibleGroup> createState() => _CollapsibleGroupState();
-}
-
-class _CollapsibleGroupState extends State<_CollapsibleGroup> {
-  late bool _expanded;
-
-  @override
-  void initState() {
-    super.initState();
-    _expanded = widget.initiallyExpanded;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        InkWell(
-          onTap: () => setState(() => _expanded = !_expanded),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    widget.group.name,
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-                Icon(
-                  _expanded ? Icons.expand_less : Icons.expand_more,
-                  size: 18,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (_expanded)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14),
-            child: LayoutBuilder(
-              builder: (ctx, c) {
-                return GridView(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 180,
-                    mainAxisExtent: 48,
-                    mainAxisSpacing: 8,
-                    crossAxisSpacing: 8,
-                  ),
-                  children: [
-                    for (final f in widget.group.forums)
-                      widget.boardChip(context, f),
-                  ],
-                );
-              },
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-/// 收藏版块底部弹层（搜索 + 移除 + 跳转）
-class _FavForumsSheet extends StatefulWidget {
-  final List<Forum> forums;
-  final ValueChanged<Forum>? onToggleFav;
-  final ValueChanged<Forum> onOpen;
-
-  const _FavForumsSheet({
-    required this.forums,
-    required this.onToggleFav,
-    required this.onOpen,
-  });
-
-  @override
-  State<_FavForumsSheet> createState() => _FavForumsSheetState();
-}
-
-class _FavForumsSheetState extends State<_FavForumsSheet> {
-  String _kw = '';
-
-  /// 名称关键词高亮
-  TextSpan _highlightName(String text, String kw) {
-    if (kw.isEmpty) return TextSpan(text: text);
-    final scheme = Theme.of(context).colorScheme;
-    final spans = <TextSpan>[];
-    var start = 0;
-    while (start < text.length) {
-      final idx = text.indexOf(kw, start);
-      if (idx < 0) {
-        spans.add(TextSpan(text: text.substring(start)));
-        break;
-      }
-      if (idx > start) spans.add(TextSpan(text: text.substring(start, idx)));
-      spans.add(
-        TextSpan(
-          text: text.substring(idx, idx + kw.length),
-          style: TextStyle(color: scheme.primary, fontWeight: FontWeight.bold),
-        ),
-      );
-      start = idx + kw.length;
-      if (kw.isEmpty) break;
-    }
-    return TextSpan(children: spans);
-  }
-
-  bool _editMode = false;
-  final Set<int> _selected = {};
-
-  @override
-  Widget build(BuildContext context) {
-    final favList = widget.forums;
-    return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-            child: Text(
-              '收藏版块（${favList.length}）',
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-            child: TextField(
-              onChanged: (v) => setState(() => _kw = v.trim()),
-              decoration: InputDecoration(
-                hintText: '搜索收藏版块',
-                prefixIcon: const Icon(Icons.search, size: 18),
-                suffixIcon: _kw.isEmpty
-                    ? null
-                    : IconButton(
-                        icon: const Icon(Icons.clear, size: 16),
-                        onPressed: () => setState(() => _kw = ''),
-                      ),
-                isDense: true,
-                filled: true,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide.none,
-                ),
-                contentPadding: EdgeInsets.zero,
-              ),
-            ),
-          ),
-          const Divider(height: 1),
-          if (favList.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Text('暂无收藏版块（长按版块收藏）'),
-            )
-          else
-            ...favList
-                .where((f) => _kw.isEmpty || f.name.contains(_kw))
-                .map(
-                  (f) => Dismissible(
-                    key: ValueKey('fav_${f.fid}'),
-                    direction: DismissDirection.endToStart,
-                    background: Container(
-                      alignment: Alignment.centerRight,
-                      padding: const EdgeInsets.only(right: 20),
-                      color: Theme.of(context).colorScheme.errorContainer,
-                      child: Icon(
-                        Icons.delete_outline,
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    ),
-                    onDismissed: (_) {
-                      widget.onToggleFav?.call(f);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('已取消收藏：${f.name}')),
-                      );
-                    },
-                    child: ListTile(
-                      leading: _editMode
-                          ? Checkbox(
-                              value: _selected.contains(f.fid),
-                              onChanged: (_) => setState(() {
-                                _selected.contains(f.fid)
-                                    ? _selected.remove(f.fid)
-                                    : _selected.add(f.fid);
-                              }),
-                            )
-                          : Icon(
-                              ForumNav.forumIcon(f.name),
-                              color: Theme.of(context).colorScheme.primary,
-                            ),
-                      title: _kw.isEmpty
-                          ? Text(f.name)
-                          : Text.rich(_highlightName(f.name, _kw)),
-                      trailing: _editMode
-                          ? null
-                          : Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  icon: const Icon(Icons.close, size: 16),
-                                  tooltip: '移除收藏',
-                                  onPressed: () {
-                                    widget.onToggleFav?.call(f);
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text('已取消收藏：${f.name}'),
-                                      ),
-                                    );
-                                  },
-                                ),
-                                const Icon(Icons.chevron_right, size: 18),
-                              ],
-                            ),
-                      onTap: () {
-                        if (_editMode) {
-                          setState(() {
-                            _selected.contains(f.fid)
-                                ? _selected.remove(f.fid)
-                                : _selected.add(f.fid);
-                          });
-                          return;
-                        }
-                        Navigator.of(context).pop();
-                        widget.onOpen(f);
-                      },
-                    ),
-                  ),
-                ),
-          if (_editMode)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surface,
-                border: Border(
-                  top: BorderSide(
-                    color: Theme.of(context).colorScheme.outlineVariant,
-                    width: 0.5,
-                  ),
-                ),
-              ),
-              child: Row(
-                children: [
-                  TextButton.icon(
-                    icon: const Icon(Icons.select_all, size: 18),
-                    label: Text('全选'),
-                    onPressed: () => setState(() {
-                      _selected.isEmpty
-                          ? _selected.addAll(widget.forums.map((f) => f.fid))
-                          : _selected.clear();
-                    }),
-                  ),
-                  const Spacer(),
-                  TextButton.icon(
-                    icon: const Icon(Icons.delete_outline, size: 18),
-                    label: Text('移除 (${_selected.length})'),
-                    onPressed: _selected.isEmpty
-                        ? null
-                        : () async {
-                            for (final fid in _selected.toList()) {
-                              final f = widget.forums
-                                  .where((x) => x.fid == fid)
-                                  .firstOrNull;
-                              if (f != null) {
-                                widget.onToggleFav?.call(f);
-                              }
-                            }
-                            if (mounted) {
-                              setState(() {
-                                _editMode = false;
-                                _selected.clear();
-                              });
-                            }
-                          },
-                  ),
-                ],
-              ),
-            )
-          else
-            const SizedBox(height: 8),
-        ],
-      ),
-    );
-  }
-}
-
-class QuickActionsWidget extends StatelessWidget {
-  final ValueChanged<int> onNavigate;
-
-  const QuickActionsWidget({super.key, required this.onNavigate});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    // 根据 AppConfig.mobileQuickActions 动态映射功能列表
-    final selectedIds = AppConfig.mobileQuickActions;
-    final allMetaMap = {
-      for (final meta in MobileHomeCustomizer.allQuickActions) meta.id: meta,
-    };
-
-    final items = <(IconData, String, Color, int)>[];
-    for (final id in selectedIds) {
-      final meta = allMetaMap[id];
-      if (meta != null) {
-        items.add((meta.icon, meta.label, meta.color, meta.tabIndex));
-      }
-    }
-
-    // 保底至少 4 个
-    if (items.isEmpty) {
-      for (final meta in MobileHomeCustomizer.allQuickActions.take(4)) {
-        items.add((meta.icon, meta.label, meta.color, meta.tabIndex));
-      }
-    }
-
-    final isSingleRow = items.length <= 4;
-    final row1Count = isSingleRow ? items.length : 4;
-    final row2Count = isSingleRow ? 0 : (items.length - 4);
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 标题与自定义入口
-          Padding(
-            padding: const EdgeInsets.only(left: 2, right: 2, bottom: 6),
-            child: Row(
-              children: [
-                Text(
-                  '常用功能',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: colorScheme.onSurfaceVariant.withAlpha(190),
-                  ),
-                ),
-                const Spacer(),
-                InkWell(
-                  borderRadius: BorderRadius.circular(8),
-                  onTap: () => MobileHomeCustomizer.show(context),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.tune_rounded,
-                          size: 13,
-                          color: colorScheme.primary,
-                        ),
-                        const SizedBox(width: 3),
-                        Text(
-                          '自定义',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: colorScheme.primary,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          // 第一行
-          Row(
-            children: [
-              for (var i = 0; i < row1Count; i++)
-                Expanded(
-                  child: _buildItem(context, theme, items[i]),
-                ),
-              if (isSingleRow && items.length < 4)
-                for (var i = items.length; i < 4; i++)
-                  const Expanded(child: SizedBox.shrink()),
-            ],
-          ),
-          // 第二行（如果多于 4 项）
-          if (!isSingleRow) ...[
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                for (var i = 4; i < 4 + row2Count; i++)
-                  Expanded(
-                    child: _buildItem(context, theme, items[i]),
-                  ),
-                if (row2Count < 4)
-                  for (var i = row2Count; i < 4; i++)
-                    const Expanded(child: SizedBox.shrink()),
-              ],
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildItem(
-    BuildContext context,
-    ThemeData theme,
-    (IconData, String, Color, int) item,
-  ) {
-    final (icon, label, color, tabIndex) = item;
-    return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: () {
-        HapticFeedback.lightImpact();
-        onNavigate(tabIndex);
-      },
-      onLongPress: () {
-        HapticFeedback.mediumImpact();
-        MobileHomeCustomizer.show(context);
-      },
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 46,
-              height: 46,
-              decoration: BoxDecoration(
-                color: color.withAlpha(24),
-                borderRadius: BorderRadius.circular(14),
-                boxShadow: [
-                  BoxShadow(
-                    color: color.withAlpha(16),
-                    blurRadius: 6,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Icon(icon, color: color, size: 22),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              label,
-              style: theme.textTheme.bodySmall?.copyWith(
-                fontSize: 11.5,
-                fontWeight: FontWeight.w500,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }
 
@@ -2594,10 +1720,17 @@ class _ErrorView extends StatelessWidget {
   });
 
   String _friendlyMessage(String raw) {
-    if (raw.contains('523') || raw.contains('522') || raw.contains('521') || raw.contains('502') || raw.contains('503') || raw.contains('504')) {
+    if (raw.contains('523') ||
+        raw.contains('522') ||
+        raw.contains('521') ||
+        raw.contains('502') ||
+        raw.contains('503') ||
+        raw.contains('504')) {
       return '论坛服务器暂时繁忙或连接超时，请点击下方按钮重试';
     }
-    if (raw.contains('SocketException') || raw.contains('connection refused') || raw.contains('Network is unreachable')) {
+    if (raw.contains('SocketException') ||
+        raw.contains('connection refused') ||
+        raw.contains('Network is unreachable')) {
       return '网络连接失败，请检查网络设置或稍后重试';
     }
     if (raw.contains('timeout')) {
@@ -2659,222 +1792,6 @@ class _ErrorView extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-/// 首页推荐轮播（横幅卡片 + 自动播放 + 指示点）
-class _RecommendCarousel extends StatefulWidget {
-  final List<ThreadSummary> threads;
-  final ValueChanged<int> onTap;
-
-  const _RecommendCarousel({required this.threads, required this.onTap});
-
-  @override
-  State<_RecommendCarousel> createState() => _RecommendCarouselState();
-}
-
-class _RecommendCarouselState extends State<_RecommendCarousel> {
-  final _ctrl = PageController();
-  Timer? _timer;
-  int _index = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _timer = Timer.periodic(const Duration(seconds: 4), (_) {
-      if (!mounted || widget.threads.length <= 1 || !_ctrl.hasClients) return;
-      final next = (_index + 1) % widget.threads.length;
-      _ctrl.animateToPage(
-        next,
-        duration: const Duration(milliseconds: 400),
-        curve: Curves.easeOut,
-      );
-    });
-  }
-
-  void _pauseAuto() {
-    _timer?.cancel();
-    _timer = null;
-  }
-
-  void _resumeAuto() {
-    if (_timer != null) return;
-    _timer = Timer.periodic(const Duration(seconds: 4), (_) {
-      if (!mounted || widget.threads.length <= 1 || !_ctrl.hasClients) return;
-      final next = (_index + 1) % widget.threads.length;
-      _ctrl.animateToPage(
-        next,
-        duration: const Duration(milliseconds: 400),
-        curve: Curves.easeOut,
-      );
-    });
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Column(
-      children: [
-        SizedBox(
-          height: 110,
-          child: NotificationListener<ScrollNotification>(
-            onNotification: (n) {
-              if (n is ScrollStartNotification) {
-                _pauseAuto();
-              } else if (n is ScrollEndNotification) {
-                _resumeAuto();
-              }
-              return false;
-            },
-            child: PageView.builder(
-              key: const PageStorageKey('rec_carousel'),
-              controller: _ctrl,
-              itemCount: widget.threads.length,
-              onPageChanged: (i) => setState(() => _index = i),
-              itemBuilder: (context, i) {
-                final t = widget.threads[i];
-                return Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-                  child: GestureDetector(
-                    onTap: () => widget.onTap(t.tid),
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: scheme.outlineVariant.withAlpha(50),
-                          width: 0.8,
-                        ),
-                      ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: [
-                                scheme.primaryContainer,
-                                scheme.secondaryContainer,
-                              ],
-                            ),
-                          ),
-                          child: Stack(
-                            fit: StackFit.expand,
-                            children: [
-                              // 帖子封面（有图时背景，配深色渐变保证文字可读）
-                              if (t.coverUrl != null && t.coverUrl!.isNotEmpty) ...[
-                                RetryImage(
-                                  imageUrl: t.coverUrl!,
-                                  fit: BoxFit.cover,
-                                  alignment: Alignment.center,
-                                  filterQuality: FilterQuality.low,
-                                  memCacheWidth: 720,
-                                  errorWidget: (_, __, ___) => const SizedBox.shrink(),
-                                ),
-                                const DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    gradient: LinearGradient(
-                                      begin: Alignment.topCenter,
-                                      end: Alignment.bottomCenter,
-                                      colors: [
-                                        Color(0x20000000),
-                                        Color(0xCC000000),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                              Padding(
-                                padding: const EdgeInsets.all(14),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 6,
-                                        vertical: 2,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: scheme.primary,
-                                        borderRadius: BorderRadius.circular(4),
-                                      ),
-                                      child: Text(
-                                        '推荐',
-                                        style: TextStyle(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.bold,
-                                          color: scheme.onPrimary,
-                                        ),
-                                      ),
-                                    ),
-                                    const Spacer(),
-                                    Text(
-                                      t.title,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 15,
-                                        color: t.coverUrl != null && t.coverUrl!.isNotEmpty
-                                            ? Colors.white
-                                            : scheme.onSurface,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      (t.author.isNotEmpty || (t.timeText != null && t.timeText!.isNotEmpty))
-                                          ? [
-                                              if (t.author.isNotEmpty) t.author,
-                                              if (t.timeText != null && t.timeText!.isNotEmpty) t.timeText!,
-                                            ].join(' · ')
-                                          : (t.forumName ?? ''),
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w500,
-                                        color: t.coverUrl != null && t.coverUrl!.isNotEmpty
-                                            ? Colors.white.withAlpha(220)
-                                            : scheme.onSurfaceVariant,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            for (var i = 0; i < widget.threads.length; i++)
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                margin: const EdgeInsets.symmetric(horizontal: 2),
-                width: i == _index ? 14 : 5,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: i == _index ? scheme.primary : scheme.outlineVariant,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-          ],
-        ),
-      ],
     );
   }
 }

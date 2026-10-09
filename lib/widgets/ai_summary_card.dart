@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -157,7 +158,7 @@ class _AiSummaryCardState extends State<AiSummaryCard> {
                   child: SizedBox(
                     width: 24,
                     height: 24,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    child: AppLoadingIndicator(strokeWidth: 2),
                   ),
                 ),
               )
@@ -308,7 +309,7 @@ class _AiSummaryCardState extends State<AiSummaryCard> {
                 ? const SizedBox(
                     width: 14,
                     height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    child: AppLoadingIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.refresh_rounded, size: 17),
             tooltip: '重新生成总结',

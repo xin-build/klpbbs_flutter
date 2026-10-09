@@ -169,12 +169,15 @@ class ThreadSummary {
     'favid': favid,
   };
 
-  factory ThreadSummary.fromJson(Map<String, dynamic> json) => ThreadSummary(
-    tid: (json['tid'] as num).toInt(),
-    fid: (json['fid'] as num?)?.toInt(),
-    uid: (json['uid'] as num?)?.toInt(),
-    author: json['author'] as String? ?? '',
-    title: json['title'] as String? ?? '',
+  factory ThreadSummary.fromJson(Map<String, dynamic> json) {
+    final rawAuthor = json['author'] as String? ?? '';
+    final cleanAuthor = rawAuthor.contains('***') ? '' : rawAuthor;
+    return ThreadSummary(
+      tid: (json['tid'] as num).toInt(),
+      fid: (json['fid'] as num?)?.toInt(),
+      uid: (json['uid'] as num?)?.toInt(),
+      author: cleanAuthor,
+      title: json['title'] as String? ?? '',
     badge: json['badge'] as String?,
     excerpt: json['excerpt'] as String?,
     coverUrl: json['coverUrl'] as String?,
@@ -195,5 +198,6 @@ class ThreadSummary {
     faceUrl: json['faceUrl'] as String?,
     favid: (json['favid'] as num?)?.toInt(),
   );
+}
 }
 

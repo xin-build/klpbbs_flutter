@@ -1,343 +1,12 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../api/comiis_parser.dart';
-import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
-import '../core/cache_manager.dart';
 import '../models/thread_summary.dart';
-import 'facemall_frame_widget.dart';
 import 'retry_image.dart';
+import 'user_avatar_widget.dart';
 
-/// 自定义形状头像组件
-class UserAvatarWidget extends StatelessWidget {
-  final int? uid;
-  final String author;
-  final String? avatarUrl;
-  final double size;
-
-  /// 头像挂件（sunju_facemall）URL，空表示无
-  final String? faceUrl;
-
-  /// 是否在线
-  final bool? isOnline;
-
-  /// 是否显示在线状态角标（默认 false）
-  final bool showOnlineBadge;
-
-  /// 点击回调
-  final VoidCallback? onTap;
-
-  const UserAvatarWidget({
-    super.key,
-    this.uid,
-    this.author = '',
-    this.avatarUrl,
-    this.size = 20,
-    this.faceUrl,
-    this.isOnline,
-    this.showOnlineBadge = false,
-    this.onTap,
-  });
-
-  /// 规范化与清洗挂件 URL（自动处理 ##SJ## 分隔符、相对路径并映射到原站真实附件路径，且严禁将用户头像作为挂件渲染）
-  static String? sanitizeFaceUrl(String? rawUrl) {
-    if (rawUrl == null || rawUrl.trim().isEmpty) return null;
-    var url = rawUrl.trim();
-    if (url.isEmpty || url == 'none' || url == '0' || url == 'null' || url == 'false') return null;
-
-    // 1. 优先提取 ##SJ## 挂件分隔符后方内容（Discuz sunju_facemall 插件规范：avatar_middle.jpg##SJ##fm_1.png）
-    if (url.contains('##SJ##')) {
-      final parts = url.split('##SJ##');
-      if (parts.length > 1 && parts[1].trim().isNotEmpty) {
-        url = parts[1].trim();
-      } else {
-        return null;
-      }
-    }
-    if (url.isEmpty || url == 'none' || url == '0' || url == 'null' || url == 'false') return null;
-
-    // 2. 挂件安全过滤：用户纯头像 URL（avatar/noavatar/jpg/jpeg/avatar.php）绝不是挂件！
-    if (url.contains('/avatar/') ||
-        url.contains('noavatar') ||
-        url.contains('_avatar_') ||
-        url.contains('avatar.php') ||
-        url.toLowerCase().endsWith('.jpg') ||
-        url.toLowerCase().endsWith('.jpeg')) {
-      return null;
-    }
-
-    // 3. 智能映射：苦力怕论坛 sunju_facemall 挂件真实存储路径为 data/attachment/sunju_facemall/...
-    if (url.contains('keishi_klp_') || url.contains('sunju_facemall/')) {
-      if (!url.startsWith('http://') && !url.startsWith('https://')) {
-        final base = AppConfig.baseUrl.endsWith('/') ? AppConfig.baseUrl : '${AppConfig.baseUrl}/';
-        return '$base${url.startsWith('/') ? url.substring(1) : url}';
-      }
-      return url;
-    }
-
-    // 4. 支持纯数字 ID（如 '1', '2'）或 fm_{id}（如 'fm_1', 'fm_1.png'）
-    final numMatch = RegExp(r'^(?:template/img/|img/|fm_)?(\d+)(?:\.png)?$', caseSensitive: false).firstMatch(url);
-    if (numMatch != null) {
-      final id = numMatch.group(1)!;
-      return '${AppConfig.baseUrl}data/attachment/sunju_facemall/fm_$id.png';
-    }
-
-    // 5. 支持内置官方挂件名称标识（供 FacemallFrameWidget 矢量直接绘制）
-    final lower = url.toLowerCase();
-    if (lower.contains('killer_seven') ||
-        lower.contains('seven') ||
-        lower.contains('yotsuba') ||
-        lower.contains('christmas') ||
-        lower.contains('xueba') ||
-        lower.contains('aotu') ||
-        lower.contains('brother_take') ||
-        lower.contains('girls_frontline') ||
-        lower.contains('experiment_family') ||
-        lower.contains('haruhara') ||
-        lower.contains('melon') ||
-        lower.contains('creeper') ||
-        lower.contains('myanee') ||
-        lower.contains('diamond') ||
-        lower.contains('dragon') ||
-        lower.contains('netherite') ||
-        lower.contains('wither') ||
-        lower.contains('klee') ||
-        lower.contains('cat') ||
-        lower.contains('galaxy') ||
-        lower.contains('刺客伍六七') ||
-        lower.contains('中野四叶') ||
-        lower.contains('圣诞节快乐') ||
-        lower.contains('圣诞') ||
-        lower.contains('学霸') ||
-        lower.contains('凹凸世界') ||
-        lower.contains('快把我哥带走') ||
-        lower.contains('少女前线') ||
-        lower.contains('实验品家庭') ||
-        lower.contains('春原庄') ||
-        lower.contains('吃瓜') ||
-        lower.contains('苦力怕') ||
-        lower.contains('喵内') ||
-        lower.contains('钻石剑') ||
-        lower.contains('末影龙') ||
-        lower.contains('下界合金') ||
-        lower.contains('凋灵') ||
-        lower.contains('可莉') ||
-        lower.contains('猫耳') ||
-        lower.contains('星空')) {
-      return url;
-    }
-
-    // 6. 仅当包含 attachment 或 facemall 且以 .png 结尾时才允许作为自定义挂件
-    if ((url.contains('attachment') || url.contains('facemall')) && url.toLowerCase().endsWith('.png')) {
-      if (!url.startsWith('http://') && !url.startsWith('https://')) {
-        final base = AppConfig.baseUrl.endsWith('/') ? AppConfig.baseUrl : '${AppConfig.baseUrl}/';
-        return '$base${url.startsWith('/') ? url.substring(1) : url}';
-      }
-      return url;
-    }
-
-    if ((url.startsWith('http://') || url.startsWith('https://')) && url.toLowerCase().endsWith('.png')) {
-      return url;
-    }
-
-    return null;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final initial = author.isNotEmpty ? author.characters.first : '?';
-    final effectiveUid = (uid != null && uid! > 0) ? uid : KlpbbsApi.getCachedAuthorUid(author);
-    final hasUid = effectiveUid != null && effectiveUid > 0;
-    final resolvedUrl = (avatarUrl != null && avatarUrl!.isNotEmpty)
-        ? avatarUrl
-        : (hasUid ? AppConfig.avatarUrl(effectiveUid, size: size >= 32 ? 'middle' : 'small') : null);
-
-    Widget imageContent;
-    if (resolvedUrl != null && AppConfig.imageQuality != ImageQuality.noImage) {
-      final avatarMemSize = (size * 2.5).clamp(48, 256).toInt();
-      imageContent = CachedNetworkImage(
-        imageUrl: resolvedUrl,
-        cacheManager: KlpbbsCacheManager.instance,
-        httpHeaders: AppConfig.imageHeaders,
-        width: size,
-        height: size,
-        fit: BoxFit.cover,
-        filterQuality: FilterQuality.low,
-        memCacheWidth: avatarMemSize,
-        memCacheHeight: avatarMemSize,
-        placeholder: (_, __) => Container(
-          color: theme.colorScheme.surfaceContainerHighest,
-          child: Center(
-            child: Text(
-              initial,
-              style: TextStyle(
-                fontSize: size * 0.45,
-                fontWeight: FontWeight.bold,
-                color: theme.colorScheme.primary,
-              ),
-            ),
-          ),
-        ),
-        errorWidget: (_, __, ___) => Container(
-          color: theme.colorScheme.surfaceContainerHighest,
-          child: Center(
-            child: Text(
-              initial,
-              style: TextStyle(
-                fontSize: size * 0.45,
-                fontWeight: FontWeight.bold,
-                color: theme.colorScheme.primary,
-              ),
-            ),
-          ),
-        ),
-      );
-    } else {
-      imageContent = Container(
-        color: theme.colorScheme.primaryContainer,
-        width: size,
-        height: size,
-        child: Center(
-          child: Text(
-            initial,
-            style: TextStyle(
-              fontSize: size * 0.45,
-              fontWeight: FontWeight.bold,
-              color: theme.colorScheme.onPrimaryContainer,
-            ),
-          ),
-        ),
-      );
-    }
-
-    final clipMode = size <= 28 ? Clip.hardEdge : Clip.antiAlias;
-    Widget avatar;
-    switch (AppConfig.avatarShape) {
-      case AvatarShape.circle:
-        avatar = ClipOval(clipBehavior: clipMode, child: imageContent);
-        break;
-      case AvatarShape.roundedRect:
-        avatar = ClipRRect(
-          clipBehavior: clipMode,
-          borderRadius: BorderRadius.circular(size * 0.25),
-          child: imageContent,
-        );
-        break;
-      case AvatarShape.hexagon:
-        avatar = ClipRRect(
-          clipBehavior: clipMode,
-          borderRadius: BorderRadius.circular(size * 0.35),
-          child: imageContent,
-        );
-        break;
-    }
-
-    // 解析挂件有效 URL（若组件未直接传入且为当前登录用户，则自动使用全局设置的挂件）
-    final myUid = KlpbbsApi.currentCachedMyUid;
-    final myUsername = KlpbbsApi.currentCachedMyUsername;
-    final isMe = author == '我' ||
-        (uid != null && uid! > 0 && myUid != null && uid == myUid) ||
-        (author.isNotEmpty && myUsername != null && author == myUsername);
-
-    final rawFace = (faceUrl != null && faceUrl!.isNotEmpty)
-        ? faceUrl
-        : (isMe ? (AppConfig.myFaceUrl ?? KlpbbsApi.cachedSpace?.faceUrl) : null);
-
-    final cleanUrl = sanitizeFaceUrl(rawFace);
-
-    final Widget? onlineBadge = (showOnlineBadge && isOnline == true)
-        ? Positioned(
-            right: 0,
-            bottom: 0,
-            child: Container(
-              width: size >= 36 ? 10.5 : (size >= 24 ? 8.5 : 7.0),
-              height: size >= 36 ? 10.5 : (size >= 24 ? 8.5 : 7.0),
-              decoration: BoxDecoration(
-                color: const Color(0xFF4CAF50),
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: theme.scaffoldBackgroundColor,
-                  width: size >= 36 ? 2.0 : 1.5,
-                ),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x33000000),
-                    blurRadius: 2,
-                    offset: Offset(0, 1),
-                  ),
-                ],
-              ),
-            ),
-          )
-        : null;
-
-    final hasDecoration =
-        (cleanUrl != null && cleanUrl.isNotEmpty) || onlineBadge != null;
-
-    Widget result;
-    // 头像挂件（sunju_facemall）与在线状态角标
-    if (hasDecoration) {
-      final faceSize = size * 1.75;
-      Widget? pendantWidget;
-      if (cleanUrl != null && cleanUrl.isNotEmpty) {
-        if (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')) {
-          final pendantMemSize = (faceSize * 2.5).clamp(32, 256).toInt();
-          pendantWidget = CachedNetworkImage(
-            imageUrl: cleanUrl,
-            cacheManager: KlpbbsCacheManager.instance,
-            httpHeaders: AppConfig.imageHeaders,
-            width: faceSize,
-            height: faceSize,
-            fit: BoxFit.contain,
-            memCacheWidth: pendantMemSize,
-            memCacheHeight: pendantMemSize,
-            placeholder: (_, __) => FacemallFrameWidget(
-              frameIdOrUrl: cleanUrl,
-              size: faceSize,
-            ),
-            errorWidget: (_, __, ___) => FacemallFrameWidget(
-              frameIdOrUrl: cleanUrl,
-              size: faceSize,
-            ),
-          );
-        } else {
-          pendantWidget = FacemallFrameWidget(
-            frameIdOrUrl: cleanUrl,
-            size: faceSize,
-          );
-        }
-      }
-
-      result = SizedBox(
-        width: size,
-        height: size,
-        child: Stack(
-          clipBehavior: Clip.none,
-          alignment: Alignment.center,
-          children: [
-            avatar,
-            if (pendantWidget != null)
-              Positioned(
-                width: faceSize,
-                height: faceSize,
-                child: IgnorePointer(child: pendantWidget),
-              ),
-            if (onlineBadge != null) onlineBadge,
-          ],
-        ),
-      );
-    } else {
-      result = avatar;
-    }
-
-    if (onTap != null) {
-      return GestureDetector(onTap: onTap, child: result);
-    }
-    return result;
-  }
-}
+export 'user_avatar_widget.dart';
 
 /// 帖子卡片（支持 16:9 大图流、紧凑图文行与网格卡片 3 种排版）
 class ThreadCard extends StatefulWidget {
@@ -345,6 +14,10 @@ class ThreadCard extends StatefulWidget {
   final VoidCallback? onTap;
   final VoidCallback? onAuthorTap;
   final bool isGrid;
+  final bool adaptiveHeight;
+  final int? rankIndex;
+  final CardStyle? cardStyle;
+  final EdgeInsetsGeometry? margin;
 
   const ThreadCard({
     super.key,
@@ -352,6 +25,10 @@ class ThreadCard extends StatefulWidget {
     this.onTap,
     this.onAuthorTap,
     this.isGrid = false,
+    this.adaptiveHeight = false,
+    this.rankIndex,
+    this.cardStyle,
+    this.margin,
   });
 
   @override
@@ -360,61 +37,66 @@ class ThreadCard extends StatefulWidget {
 
 class _ThreadCardState extends State<ThreadCard> {
   String? _resolvedForum;
-  List<(String, Color, Color)>? _cachedTags;
-  int? _cachedTagsTid;
-  String? _cachedTagsForum;
-  Brightness? _cachedTagsBrightness;
+  bool get _fixedGrid => widget.isGrid && !widget.adaptiveHeight;
+
+  ThreadSummary get _currentThread {
+    final t = widget.thread;
+    if (t.excerpt != null && t.excerpt!.isNotEmpty) {
+      var cleaned = ComiisParser.cleanTextSnippet(t.excerpt!, maxLen: 120);
+      if (cleaned.contains('审核通过') ||
+          (cleaned.contains('由') && cleaned.contains('审核'))) {
+        cleaned = cleaned
+            .replaceAll(ComiisParser.auditNoticeRegExp, '')
+            .replaceAll(ComiisParser.auditNoticeGeneralRegExp, '')
+            .trim();
+      }
+      final puncOnly = RegExp(r'^[\s.。,，!！?？:：;；~～\-_—…]+$');
+      if (puncOnly.hasMatch(cleaned)) {
+        cleaned = '';
+      }
+      if (cleaned != t.excerpt) {
+        return t.copyWith(excerpt: cleaned.isNotEmpty ? cleaned : null);
+      }
+    }
+    return t;
+  }
 
   static final _tagUnicodeRegExp = RegExp(
     r'[\uE000-\uF8FF\uFFF0-\uFFFF\u{F0000}-\u{10FFFF}]',
     unicode: true,
   );
   static final _tagBracketRegExp = RegExp(r'^[\[【\s]+|[\]】\s]+$');
-
   @override
   void initState() {
     super.initState();
-    _checkAndResolveForum();
+    _resolveForumFromList();
   }
 
   @override
   void didUpdateWidget(covariant ThreadCard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.thread.tid != widget.thread.tid ||
-        oldWidget.thread.fid != widget.thread.fid ||
-        oldWidget.thread.forumName != widget.thread.forumName) {
-      _checkAndResolveForum();
+    if (!identical(oldWidget.thread, widget.thread)) {
+      _resolveForumFromList();
     }
   }
 
-  void _checkAndResolveForum() {
+  // 列表中的脱敏作者、零计数和缺失封面均保留网页原值。
+  // 卡片只查询已有版块映射；详情请求由用户打开帖子时触发。
+  void _resolveForumFromList() {
     _resolvedForum = ComiisParser.resolveForumName(
       tid: widget.thread.tid,
       fid: widget.thread.fid,
       rawForumName: widget.thread.forumName,
-      title: widget.thread.title,
-      typeName: widget.thread.typeName,
     );
-    if (_resolvedForum == null &&
-        widget.thread.tid > 0 &&
-        (widget.thread.forumName == null || widget.thread.forumName!.isEmpty)) {
-      // 方案 C：异步轻量补全版块（仅在真正缺失且未推断时触发）
-      KlpbbsApi.resolveThreadForumAsync(widget.thread.tid).then((res) {
-        if (mounted && res != null && res.isNotEmpty && res != _resolvedForum) {
-          setState(() {
-            _resolvedForum = res;
-          });
-        }
-      });
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final thread = widget.thread;
-    final cardStyle = widget.isGrid ? CardStyle.grid : AppConfig.cardStyle;
+    final thread = _currentThread;
+    final cardStyle =
+        widget.cardStyle ?? (_fixedGrid ? CardStyle.grid : AppConfig.cardStyle);
 
     // 检查是否有屏蔽词或屏蔽UID
     if (AppConfig.blockedUids.contains(thread.uid)) {
@@ -427,27 +109,34 @@ class _ThreadCardState extends State<ThreadCard> {
       }
     }
 
+    final isDark = theme.brightness == Brightness.dark;
+    final cardColor = colorScheme.surfaceContainerLow;
+    final borderColor = colorScheme.outlineVariant.withAlpha(isDark ? 45 : 55);
+
     final cardWidget = Card(
-      margin: widget.isGrid
-          ? EdgeInsets.zero
-          : const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-      color: colorScheme.surfaceContainerLowest,
+      margin: widget.margin ??
+          (widget.isGrid
+              ? EdgeInsets.zero
+              : const EdgeInsets.symmetric(horizontal: 12, vertical: 5)),
+      color: cardColor,
       elevation: 0,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(22),
         side: BorderSide(
-          color: colorScheme.outlineVariant.withAlpha(45),
-          width: 0.8,
+          color: borderColor,
+          width: 0.6,
         ),
       ),
+      clipBehavior: Clip.none,
       child: InkWell(
         onTap: widget.onTap,
-        borderRadius: BorderRadius.circular(14),
-        hoverColor: colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(22),
+        hoverColor: colorScheme.surfaceContainerHigh.withAlpha(120),
         splashColor: colorScheme.primary.withAlpha(25),
         highlightColor: colorScheme.primary.withAlpha(12),
         child: Padding(
-          padding: const EdgeInsets.all(12),
+          padding: EdgeInsets.symmetric(
+              horizontal: 16, vertical: _fixedGrid ? 11 : 15),
           child: _buildCardContent(context, cardStyle),
         ),
       ),
@@ -464,6 +153,10 @@ class _ThreadCardState extends State<ThreadCard> {
         return _buildGridLayout(context);
       case CardStyle.largeCover:
         return _buildLargeCoverLayout(context);
+      case CardStyle.guideMultimodal:
+        return _buildGuideMultimodalLayout(context);
+      case CardStyle.forumClassic:
+        return _buildForumClassicLayout(context);
       case CardStyle.minimal:
         return _buildMinimalLayout(context);
       case CardStyle.magazine:
@@ -474,19 +167,26 @@ class _ThreadCardState extends State<ThreadCard> {
   }
 
   List<String> get _cardImages {
-    if (!AppConfig.showThreadListImages || AppConfig.imageQuality == ImageQuality.noImage) {
+    if (!AppConfig.showThreadListImages ||
+        AppConfig.imageQuality == ImageQuality.noImage) {
       return const [];
     }
+    final t = _currentThread;
     final list = <String>[];
-    for (final url in widget.thread.imageUrls) {
+    for (final url in t.imageUrls) {
       final trimmed = url.trim();
-      if (trimmed.isNotEmpty && !list.contains(trimmed)) {
+      if (trimmed.isNotEmpty &&
+          !ComiisParser.isDividerImage(trimmed) &&
+          !list.contains(trimmed)) {
         list.add(trimmed);
       }
       if (list.length >= 3) break;
     }
-    if (list.isEmpty && widget.thread.coverUrl != null && widget.thread.coverUrl!.trim().isNotEmpty) {
-      list.add(widget.thread.coverUrl!.trim());
+    if (list.isEmpty &&
+        t.coverUrl != null &&
+        t.coverUrl!.trim().isNotEmpty &&
+        !ComiisParser.isDividerImage(t.coverUrl)) {
+      list.add(t.coverUrl!.trim());
     }
     return list;
   }
@@ -494,163 +194,190 @@ class _ThreadCardState extends State<ThreadCard> {
   Widget _buildImagesPreview(BuildContext context, ColorScheme colorScheme) {
     final images = _cardImages;
     if (images.isEmpty) return const SizedBox.shrink();
-
-    if (images.length == 1) {
-      return Padding(
-        padding: const EdgeInsets.only(top: 8),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: AspectRatio(
-            aspectRatio: 16 / 9,
-            child: RetryImage(
-              imageUrl: images[0],
-              fit: BoxFit.cover,
-              alignment: Alignment.center,
-              filterQuality: FilterQuality.low,
-              memCacheWidth: 720,
-              placeholder: (_, __) => Container(
-                color: colorScheme.surfaceContainerHighest.withAlpha(80),
-                child: const Center(
-                  child: SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-              ),
-              errorWidget: (_, __, ___) => Container(
-                color: colorScheme.surfaceContainerHighest.withAlpha(80),
-                child: Center(
-                  child: Icon(
-                    Icons.image_outlined,
-                    color: colorScheme.outlineVariant.withAlpha(120),
-                    size: 28,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
-    if (images.length == 2) {
-      return Padding(
-        padding: const EdgeInsets.only(top: 8),
-        child: Row(
-          children: [
-            Expanded(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: AspectRatio(
-                  aspectRatio: 1,
-                  child: RetryImage(
-                    imageUrl: images[0],
-                    fit: BoxFit.cover,
-                    alignment: Alignment.center,
-                    filterQuality: FilterQuality.low,
-                    memCacheWidth: 400,
-                    placeholder: (_, __) => Container(
-                      color: colorScheme.surfaceContainerHighest.withAlpha(80),
-                    ),
-                    errorWidget: (_, __, ___) => Container(
-                      color: colorScheme.surfaceContainerHighest.withAlpha(80),
-                      child: Center(
-                        child: Icon(
-                          Icons.image_outlined,
-                          color: colorScheme.outlineVariant.withAlpha(120),
-                          size: 24,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 6),
-            Expanded(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: AspectRatio(
-                  aspectRatio: 1,
-                  child: RetryImage(
-                    imageUrl: images[1],
-                    fit: BoxFit.cover,
-                    alignment: Alignment.center,
-                    filterQuality: FilterQuality.low,
-                    memCacheWidth: 400,
-                    placeholder: (_, __) => Container(
-                      color: colorScheme.surfaceContainerHighest.withAlpha(80),
-                    ),
-                    errorWidget: (_, __, ___) => Container(
-                      color: colorScheme.surfaceContainerHighest.withAlpha(80),
-                      child: Center(
-                        child: Icon(
-                          Icons.image_outlined,
-                          color: colorScheme.outlineVariant.withAlpha(120),
-                          size: 24,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
     return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: Row(
-        children: [
-          for (int i = 0; i < 3; i++) ...[
-            if (i > 0) const SizedBox(width: 6),
-            Expanded(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: AspectRatio(
-                  aspectRatio: 1,
-                  child: RetryImage(
-                    imageUrl: images[i],
-                    fit: BoxFit.cover,
-                    alignment: Alignment.center,
-                    filterQuality: FilterQuality.low,
-                    memCacheWidth: 320,
-                    placeholder: (_, __) => Container(
-                      color: colorScheme.surfaceContainerHighest.withAlpha(80),
-                    ),
-                    errorWidget: (_, __, ___) => Container(
-                      color: colorScheme.surfaceContainerHighest.withAlpha(80),
-                      child: Center(
-                        child: Icon(
-                          Icons.image_outlined,
-                          color: colorScheme.outlineVariant.withAlpha(120),
-                          size: 20,
-                        ),
+      padding: const EdgeInsets.only(top: 10),
+      child: LayoutBuilder(builder: (context, constraints) {
+        const gap = 6.0;
+        final width = constraints.maxWidth;
+        final imageWidth = (width - (images.length - 1) * gap) / images.length;
+        final height = images.length == 1
+            ? (width / 2.1).clamp(90.0, 180.0)
+            : imageWidth.clamp(68.0, 120.0);
+        return SizedBox(
+          key: ValueKey('thread-images-preview-${widget.thread.tid}'),
+          height: height,
+          child: Row(children: [
+            for (var i = 0; i < images.length; i++) ...[
+              if (i > 0) const SizedBox(width: gap),
+              Expanded(
+                child: Semantics(
+                  image: true,
+                  label: '帖子预览图片 ${i + 1}',
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: RetryImage(
+                      imageUrl: images[i],
+                      width: imageWidth,
+                      height: height,
+                      fit: BoxFit.cover,
+                      filterQuality: FilterQuality.low,
+                      memCacheWidth:
+                          (imageWidth * MediaQuery.devicePixelRatioOf(context))
+                              .round()
+                              .clamp(120, 900),
+                      placeholder: (_, __) => ColoredBox(
+                        color: colorScheme.surfaceContainerHighest,
+                        child: Center(
+                            child: Icon(Icons.image_outlined,
+                                color: colorScheme.outlineVariant, size: 24)),
+                      ),
+                      errorWidget: (_, __, ___) => ColoredBox(
+                        color: colorScheme.surfaceContainerHighest,
+                        child: Center(
+                            child: Icon(Icons.broken_image_outlined,
+                                color: colorScheme.onSurfaceVariant, size: 24)),
                       ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ],
-        ],
-      ),
+            ],
+          ]),
+        );
+      }),
     );
   }
 
-  /// 16:9 大图流 / 标准卡片布局
   Widget _buildLargeCoverLayout(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final thread = widget.thread;
+    final thread = _currentThread;
+    final hasAuthor = thread.author.isNotEmpty;
+    final rank = widget.rankIndex;
+    final showMedal = rank != null && rank >= 1 && rank <= 3;
+    final forumToDisplay = _resolvedForum ??
+        ComiisParser.resolveForumName(
+          tid: widget.thread.tid,
+          fid: widget.thread.fid,
+          rawForumName: widget.thread.forumName,
+          title: widget.thread.title,
+          typeName: widget.thread.typeName,
+        );
+
+    final showHeader = hasAuthor ||
+        showMedal ||
+        (forumToDisplay != null && forumToDisplay.isNotEmpty);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildTitle(theme),
+        if (showHeader) ...[
+          Row(
+            children: [
+              if (hasAuthor) ...[
+                UserAvatarWidget(
+                  reserveFrameSpace: true,
+                  uid: thread.uid,
+                  author: thread.author,
+                  size: 26,
+                  faceUrl: thread.faceUrl,
+                  onTap: widget.onAuthorTap,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      InkWell(
+                        onTap: widget.onAuthorTap,
+                        borderRadius: BorderRadius.circular(4),
+                        child: Text(
+                          thread.author,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: colorScheme.onSurface,
+                          ),
+                        ),
+                      ),
+                      if (thread.timeText != null &&
+                          thread.timeText!.isNotEmpty)
+                        Text(
+                          formatThreadTime(thread.timeText!),
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            color: colorScheme.outline,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ] else ...[
+                // 未返回独立作者时，展示轻微骨架，等待异步详情填充真实作者，绝不再生硬显示“社区精选”
+                Container(
+                  width: 26,
+                  height: 26,
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainerHighest.withAlpha(120),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 58,
+                        height: 12,
+                        decoration: BoxDecoration(
+                          color: colorScheme.surfaceContainerHighest
+                              .withAlpha(140),
+                          borderRadius: BorderRadius.circular(3),
+                        ),
+                      ),
+                      if (thread.timeText != null &&
+                          thread.timeText!.isNotEmpty) ...[
+                        const SizedBox(height: 3),
+                        Text(
+                          formatThreadTime(thread.timeText!),
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            color: colorScheme.outline,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+              if (showMedal) ...[
+                _buildMedalBadge(rank),
+                const SizedBox(width: 6),
+              ],
+              if (forumToDisplay != null && forumToDisplay.isNotEmpty)
+                _buildForumPill(context, forumToDisplay),
+            ],
+          ),
+          const SizedBox(height: 8),
+        ],
+
+        // 标题（顶部已清晰标明版块与高光勋牌，标题区避免标签堆叠，大幅提升阅读节奏）
+        ConstrainedBox(
+          constraints: BoxConstraints(minHeight: _fixedGrid ? 38 : 0),
+          child: _buildTitle(
+            theme,
+            includeForumTag: false,
+            includeRankTag: false,
+            includeHotTag: false,
+            maxLines: 2,
+          ),
+        ),
+
         if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
           const SizedBox(height: 5),
           Text(
@@ -660,13 +387,16 @@ class _ThreadCardState extends State<ThreadCard> {
             style: theme.textTheme.bodyMedium?.copyWith(
               color: colorScheme.onSurfaceVariant.withAlpha(220),
               height: 1.38,
-              fontSize: 13,
+              fontSize: 12.5,
             ),
           ),
         ],
+
         _buildImagesPreview(context, colorScheme),
-        const SizedBox(height: 8),
-        _buildFooter(theme),
+
+        if (_fixedGrid) const Spacer() else const SizedBox(height: 10),
+
+        _buildStatFooter(theme, showTime: false),
       ],
     );
   }
@@ -675,7 +405,7 @@ class _ThreadCardState extends State<ThreadCard> {
   Widget _buildCompactLayout(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final thread = widget.thread;
+    final thread = _currentThread;
     final images = _cardImages;
     final hasThumbnail = images.isNotEmpty;
 
@@ -686,7 +416,7 @@ class _ThreadCardState extends State<ThreadCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildTitle(theme),
+              _buildTitle(theme, maxLines: 2),
               if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
                 const SizedBox(height: 4),
                 Text(
@@ -699,7 +429,7 @@ class _ThreadCardState extends State<ThreadCard> {
                   ),
                 ),
               ],
-              const SizedBox(height: 6),
+              const SizedBox(height: 8),
               _buildFooter(theme),
             ],
           ),
@@ -747,14 +477,228 @@ class _ThreadCardState extends State<ThreadCard> {
     );
   }
 
+  /// 版块经典风布局（左侧标签+标题+摘要+作者统计，右侧规整缩略图，纯正论坛体验）
+  Widget _buildForumClassicLayout(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final thread = _currentThread;
+    final images = _cardImages;
+    final hasThumbnail = images.isNotEmpty;
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 左侧主要信息区
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildTitle(theme,
+                  maxLines: 2, includeForumTag: true, includeRankTag: true),
+              if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
+                const SizedBox(height: 5),
+                Text(
+                  thread.excerpt!,
+                  maxLines: hasThumbnail ? 1 : 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant.withAlpha(200),
+                    fontSize: 12,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 8),
+              _buildFooter(theme),
+            ],
+          ),
+        ),
+        // 右侧缩略图
+        if (hasThumbnail) ...[
+          const SizedBox(width: 12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: SizedBox(
+              width: 96,
+              height: 70,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  RetryImage(
+                    imageUrl: images.first,
+                    width: 96,
+                    height: 70,
+                    fit: BoxFit.cover,
+                    alignment: Alignment.center,
+                    filterQuality: FilterQuality.low,
+                    memCacheWidth: 280,
+                    placeholder: (_, __) => Container(
+                      color: colorScheme.surfaceContainerHighest.withAlpha(60),
+                      child: Center(
+                        child: Icon(
+                          Icons.image_outlined,
+                          color: colorScheme.outlineVariant.withAlpha(120),
+                          size: 20,
+                        ),
+                      ),
+                    ),
+                    errorWidget: (_, __, ___) => Container(
+                      color: colorScheme.surfaceContainerHighest.withAlpha(60),
+                      child: Center(
+                        child: Icon(
+                          Icons.image_outlined,
+                          color: colorScheme.outlineVariant.withAlpha(120),
+                          size: 20,
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (images.length > 1)
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 4, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withAlpha(160),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.photo_library_outlined,
+                                size: 10, color: Colors.white),
+                            const SizedBox(width: 2),
+                            Text(
+                              '${images.length}',
+                              style: const TextStyle(
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// 导读画廊风布局（全景多图画廊、顶部作者徽章栏、醒目标题与综合互动栏）
+  Widget _buildGuideMultimodalLayout(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final thread = _currentThread;
+    final hasAuthor = thread.author.isNotEmpty;
+    final forumToDisplay = _resolvedForum ??
+        ComiisParser.resolveForumName(
+          tid: widget.thread.tid,
+          fid: widget.thread.fid,
+          rawForumName: widget.thread.forumName,
+          title: widget.thread.title,
+          typeName: widget.thread.typeName,
+        );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 1. 顶部作者与版块胶囊行
+        Row(
+          children: [
+            if (hasAuthor) ...[
+              UserAvatarWidget(
+                reserveFrameSpace: true,
+                uid: thread.uid,
+                author: thread.author,
+                size: 34,
+                faceUrl: thread.faceUrl,
+                onTap: widget.onAuthorTap,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    InkWell(
+                      onTap: widget.onAuthorTap,
+                      borderRadius: BorderRadius.circular(4),
+                      child: Text(
+                        thread.author,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: colorScheme.onSurface,
+                        ),
+                      ),
+                    ),
+                    if (thread.timeText != null && thread.timeText!.isNotEmpty)
+                      Text(
+                        formatThreadTime(thread.timeText!),
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ] else ...[
+              const Spacer(),
+            ],
+            if (forumToDisplay != null && forumToDisplay.isNotEmpty) ...[
+              _buildForumPill(context, forumToDisplay),
+            ],
+          ],
+        ),
+        const SizedBox(height: 12),
+
+        // 2. 标题
+        _buildTitle(theme, maxLines: 2, includeForumTag: false),
+
+        // 3. 摘要文本
+        if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(
+            thread.excerpt!,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: colorScheme.onSurfaceVariant.withAlpha(210),
+              fontSize: 13,
+              height: 1.45,
+            ),
+          ),
+        ],
+
+        // 4. 多图画廊区域（1图大图、2图双列、3图三列画廊）
+        _buildImagesPreview(context, colorScheme),
+
+        const SizedBox(height: 10),
+
+        // 5. 底部综合互动栏
+        _buildStatFooter(theme, showTime: !hasAuthor),
+      ],
+    );
+  }
+
   /// 网格/桌面卡片布局（优化排版：信息强制对齐置底，规整严谨，移除高开销 LayoutBuilder 避免布局嵌套延迟）
   Widget _buildGridLayout(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final thread = widget.thread;
+    final thread = _currentThread;
     final images = _cardImages;
     final hasCover = images.isNotEmpty;
-    final hasBoundedHeight = widget.isGrid;
+    final hasBoundedHeight = _fixedGrid;
 
     return Row(
       crossAxisAlignment: hasBoundedHeight
@@ -837,7 +781,7 @@ class _ThreadCardState extends State<ThreadCard> {
   Widget _buildMinimalLayout(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final thread = widget.thread;
+    final thread = _currentThread;
     final images = _cardImages;
     final hasThumbnail = images.isNotEmpty;
 
@@ -848,21 +792,27 @@ class _ThreadCardState extends State<ThreadCard> {
         Row(
           children: [
             UserAvatarWidget(
+              reserveFrameSpace: true,
               uid: thread.uid,
               author: thread.author,
               size: 18,
               faceUrl: thread.faceUrl,
+              onTap: widget.onAuthorTap,
             ),
             const SizedBox(width: 6),
             Expanded(
-              child: Text(
-                thread.author,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  fontSize: 11.5,
-                  color: colorScheme.onSurfaceVariant,
+              child: InkWell(
+                onTap: widget.onAuthorTap,
+                borderRadius: BorderRadius.circular(4),
+                child: Text(
+                  thread.author,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 11.5,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
             ),
@@ -921,23 +871,42 @@ class _ThreadCardState extends State<ThreadCard> {
         ),
         const SizedBox(height: 8),
 
-        // 极简底部状态：点赞、浏览与回复
+        // 极简底部状态：热度、浏览、回复与点赞
         Row(
           children: [
-            if (thread.views > 0) ...[
-              Icon(Icons.visibility_outlined, size: 12, color: colorScheme.outline),
-              const SizedBox(width: 3),
-              Text('${thread.views}', style: TextStyle(fontSize: 10.5, color: colorScheme.outline)),
+            if (thread.heatCount > 0 || thread.isHot) ...[
+              const Icon(Icons.local_fire_department_rounded,
+                  size: 12, color: Colors.deepOrangeAccent),
+              const SizedBox(width: 2),
+              Text(
+                thread.heatCount > 0 ? '${thread.heatCount}' : '热门',
+                style: const TextStyle(
+                    fontSize: 10.5,
+                    color: Colors.deepOrangeAccent,
+                    fontWeight: FontWeight.bold),
+              ),
               const SizedBox(width: 10),
             ],
-            Icon(Icons.chat_bubble_outline_rounded, size: 11.5, color: colorScheme.outline),
+            if (thread.views > 0) ...[
+              Icon(Icons.visibility_outlined,
+                  size: 12, color: colorScheme.outline),
+              const SizedBox(width: 3),
+              Text('${thread.views}',
+                  style: TextStyle(fontSize: 10.5, color: colorScheme.outline)),
+              const SizedBox(width: 10),
+            ],
+            Icon(Icons.chat_bubble_outline_rounded,
+                size: 11.5, color: colorScheme.outline),
             const SizedBox(width: 3),
-            Text('${thread.replies}', style: TextStyle(fontSize: 10.5, color: colorScheme.outline)),
+            Text('${thread.replies}',
+                style: TextStyle(fontSize: 10.5, color: colorScheme.outline)),
             if (thread.recommendCount > 0) ...[
               const SizedBox(width: 10),
-              Icon(Icons.thumb_up_outlined, size: 11.5, color: colorScheme.outline),
+              Icon(Icons.thumb_up_outlined,
+                  size: 11.5, color: colorScheme.outline),
               const SizedBox(width: 3),
-              Text('${thread.recommendCount}', style: TextStyle(fontSize: 10.5, color: colorScheme.outline)),
+              Text('${thread.recommendCount}',
+                  style: TextStyle(fontSize: 10.5, color: colorScheme.outline)),
             ],
           ],
         ),
@@ -949,7 +918,7 @@ class _ThreadCardState extends State<ThreadCard> {
   Widget _buildMagazineLayout(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final thread = widget.thread;
+    final thread = _currentThread;
     final images = _cardImages;
     final hasCover = images.isNotEmpty;
 
@@ -958,40 +927,44 @@ class _ThreadCardState extends State<ThreadCard> {
       children: [
         if (hasCover) ...[
           // 杂志全景头图 + 悬浮类型胶囊
-          Stack(
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: AspectRatio(
-                  aspectRatio: 2.1,
-                  child: RetryImage(
-                    imageUrl: images.first,
-                    fit: BoxFit.cover,
-                    memCacheWidth: 800,
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 240),
+            child: Stack(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: AspectRatio(
+                    aspectRatio: 2.1,
+                    child: RetryImage(
+                      imageUrl: images.first,
+                      fit: BoxFit.cover,
+                      memCacheWidth: 800,
+                    ),
                   ),
                 ),
-              ),
-              if (_getTags(theme).isNotEmpty)
-                Positioned(
-                  top: 8,
-                  left: 8,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withAlpha(160),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      _getTags(theme).first.$1,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 10.5,
-                        fontWeight: FontWeight.bold,
+                if (_getTags(theme).isNotEmpty)
+                  Positioned(
+                    top: 8,
+                    left: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withAlpha(160),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        _getTags(theme).first.$1,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
           const SizedBox(height: 10),
         ],
@@ -1028,15 +1001,22 @@ class _ThreadCardState extends State<ThreadCard> {
         Row(
           children: [
             UserAvatarWidget(
+              reserveFrameSpace: true,
               uid: thread.uid,
               author: thread.author,
               size: 24,
               faceUrl: thread.faceUrl,
+              onTap: widget.onAuthorTap,
             ),
             const SizedBox(width: 8),
-            Text(
-              thread.author,
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+            InkWell(
+              onTap: widget.onAuthorTap,
+              borderRadius: BorderRadius.circular(4),
+              child: Text(
+                thread.author,
+                style:
+                    const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+              ),
             ),
             if (thread.timeText != null && thread.timeText!.isNotEmpty) ...[
               Text(' · ', style: TextStyle(color: colorScheme.outline)),
@@ -1055,7 +1035,8 @@ class _ThreadCardState extends State<ThreadCard> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.chat_bubble_rounded, size: 11, color: colorScheme.primary),
+                  Icon(Icons.chat_bubble_rounded,
+                      size: 11, color: colorScheme.primary),
                   const SizedBox(width: 3),
                   Text(
                     '${thread.replies}',
@@ -1078,86 +1059,122 @@ class _ThreadCardState extends State<ThreadCard> {
   Widget _buildModernCardLayout(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final thread = widget.thread;
+    final thread = _currentThread;
     final images = _cardImages;
 
-    return IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 左侧彩色指示条
-          Container(
-            width: 3.5,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  thread.isSticky ? Colors.red : colorScheme.primary,
-                  thread.isDigest ? Colors.amber.shade700 : colorScheme.secondary,
-                ],
-              ),
-              borderRadius: BorderRadius.circular(2),
+    // Let the message column determine height once. IntrinsicHeight cannot
+    // measure the responsive image strip and also doubles list layout work.
+    return Stack(
+      children: [
+        // 左侧彩色指示条
+        Positioned(
+          top: 0,
+          bottom: 0,
+          left: 0,
+          width: 3.5,
+          child: DecoratedBox(
+              decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                thread.isSticky ? Colors.red : colorScheme.primary,
+                thread.isDigest ? Colors.amber.shade700 : colorScheme.secondary,
+              ],
             ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // 作者信息与版块
-                Row(
-                  children: [
-                    UserAvatarWidget(
-                      uid: thread.uid,
-                      author: thread.author,
-                      size: 20,
-                      faceUrl: thread.faceUrl,
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
+            borderRadius: BorderRadius.circular(2),
+          )),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(left: 13.5),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 作者信息与版块
+              Row(
+                children: [
+                  UserAvatarWidget(
+                    reserveFrameSpace: true,
+                    uid: thread.uid,
+                    author: thread.author,
+                    size: 20,
+                    faceUrl: thread.faceUrl,
+                    onTap: widget.onAuthorTap,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: InkWell(
+                      onTap: widget.onAuthorTap,
+                      borderRadius: BorderRadius.circular(4),
                       child: Text(
                         thread.author,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                        style: const TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w600),
                       ),
-                    ),
-                    if (thread.timeText != null)
-                      Text(
-                        formatThreadTime(thread.timeText!),
-                        style: TextStyle(fontSize: 10.5, color: colorScheme.outline),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-
-                _buildTitle(theme, maxLines: 2),
-
-                if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    thread.excerpt!,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: colorScheme.onSurfaceVariant.withAlpha(200),
-                      fontSize: 12,
                     ),
                   ),
+                  if (thread.timeText != null)
+                    Text(
+                      formatThreadTime(thread.timeText!),
+                      style:
+                          TextStyle(fontSize: 10.5, color: colorScheme.outline),
+                    ),
                 ],
+              ),
+              const SizedBox(height: 6),
 
-                if (images.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  _buildImagesPreview(context, colorScheme),
-                ],
+              _buildTitle(theme,
+                  maxLines: 2, includeForumTag: false, includeRankTag: false),
 
-                const SizedBox(height: 8),
-                // 现代胶囊状态
-                Row(
-                  children: [
+              if (thread.excerpt != null && thread.excerpt!.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  thread.excerpt!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant.withAlpha(200),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+
+              if (images.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                _buildImagesPreview(context, colorScheme),
+              ],
+
+              const SizedBox(height: 8),
+              // 现代胶囊状态
+              Row(
+                children: [
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHigh,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.comment_outlined,
+                            size: 11, color: colorScheme.onSurfaceVariant),
+                        const SizedBox(width: 3),
+                        Text('${thread.replies}',
+                            style: TextStyle(
+                                fontSize: 10.5,
+                                color: colorScheme.onSurfaceVariant)),
+                      ],
+                    ),
+                  ),
+                  if (thread.views > 0) ...[
+                    const SizedBox(width: 6),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
                         color: colorScheme.surfaceContainerHigh,
                         borderRadius: BorderRadius.circular(4),
@@ -1165,59 +1182,85 @@ class _ThreadCardState extends State<ThreadCard> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.comment_outlined, size: 11, color: colorScheme.onSurfaceVariant),
+                          Icon(Icons.visibility_outlined,
+                              size: 11, color: colorScheme.onSurfaceVariant),
                           const SizedBox(width: 3),
-                          Text('${thread.replies}', style: TextStyle(fontSize: 10.5, color: colorScheme.onSurfaceVariant)),
+                          Text('${thread.views}',
+                              style: TextStyle(
+                                  fontSize: 10.5,
+                                  color: colorScheme.onSurfaceVariant)),
                         ],
                       ),
                     ),
-                    if (thread.views > 0) ...[
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: colorScheme.surfaceContainerHigh,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.visibility_outlined, size: 11, color: colorScheme.onSurfaceVariant),
-                            const SizedBox(width: 3),
-                            Text('${thread.views}', style: TextStyle(fontSize: 10.5, color: colorScheme.onSurfaceVariant)),
-                          ],
-                        ),
-                      ),
-                    ],
-                    if (thread.recommendCount > 0) ...[
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Colors.orange.withAlpha(25),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.thumb_up_rounded, size: 10.5, color: Colors.orange.shade800),
-                            const SizedBox(width: 3),
-                            Text('${thread.recommendCount}', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.orange.shade800)),
-                          ],
-                        ),
-                      ),
-                    ],
                   ],
-                ),
-              ],
-            ),
+                  if (thread.heatCount > 0 || thread.isHot) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.deepOrange.withAlpha(25),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.local_fire_department_rounded,
+                              size: 10.5, color: Colors.deepOrangeAccent),
+                          const SizedBox(width: 3),
+                          Text(
+                            thread.heatCount > 0 ? '${thread.heatCount}' : '热门',
+                            style: const TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.deepOrangeAccent),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  if (thread.recommendCount > 0) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: colorScheme.surfaceContainerHigh,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.thumb_up_outlined,
+                              size: 10.5, color: colorScheme.onSurfaceVariant),
+                          const SizedBox(width: 3),
+                          Text(
+                            '${thread.recommendCount}',
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w500,
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
-  List<(String, Color, Color)> _getTags(ThemeData theme) {
+  List<(String, Color, Color)> _getTags(
+    ThemeData theme, {
+    bool includeForumTag = true,
+    bool includeRankTag = false,
+    bool includeHotTag = true,
+  }) {
     final forumToDisplay = _resolvedForum ??
         ComiisParser.resolveForumName(
           tid: widget.thread.tid,
@@ -1227,15 +1270,8 @@ class _ThreadCardState extends State<ThreadCard> {
           typeName: widget.thread.typeName,
         );
 
-    if (_cachedTags != null &&
-        _cachedTagsTid == widget.thread.tid &&
-        _cachedTagsForum == forumToDisplay &&
-        _cachedTagsBrightness == theme.brightness) {
-      return _cachedTags!;
-    }
-
     final colorScheme = theme.colorScheme;
-    final thread = widget.thread;
+    final thread = _currentThread;
     final tags = <(String, Color, Color)>[];
     final seenTexts = <String>{};
 
@@ -1279,23 +1315,31 @@ class _ThreadCardState extends State<ThreadCard> {
     if (thread.isDigest) {
       addTag('精', Colors.white, const Color(0xFFD97706));
     }
-    if (thread.isRecommend) {
-      addTag(
-        thread.recommendCount > 0 ? '荐${thread.recommendCount}' : '荐',
-        Colors.white,
-        const Color(0xFFEA580C),
-      );
-    }
-    if (thread.isHot) {
+    if (includeHotTag && thread.isHot) {
       addTag('热', Colors.white, const Color(0xFFF97316));
     }
 
-    if (forumToDisplay != null && forumToDisplay.isNotEmpty) {
+    // 仅在未于 CardHeader 展示版块时添加版块标签，避免重复堆叠
+    if (includeForumTag &&
+        forumToDisplay != null &&
+        forumToDisplay.isNotEmpty) {
       addTag(
         forumToDisplay,
         colorScheme.primary,
         colorScheme.primaryContainer.withAlpha(160),
       );
+    } else if (!includeForumTag &&
+        forumToDisplay != null &&
+        forumToDisplay.isNotEmpty) {
+      final cleanForum = forumToDisplay
+          .replaceAll(_tagUnicodeRegExp, '')
+          .replaceAll(_tagBracketRegExp, '')
+          .replaceAll('来自', '')
+          .trim()
+          .toLowerCase();
+      if (cleanForum.isNotEmpty) {
+        seenTexts.add(cleanForum);
+      }
     }
 
     if (thread.typeName != null && thread.typeName!.isNotEmpty) {
@@ -1314,16 +1358,164 @@ class _ThreadCardState extends State<ThreadCard> {
       );
     }
 
-    _cachedTags = tags;
-    _cachedTagsTid = thread.tid;
-    _cachedTagsForum = forumToDisplay;
-    _cachedTagsBrightness = theme.brightness;
+    // 严选高光：仅前 3 名显示尊贵 TOP 勋标，拒绝全民 No.68 噪点堆叠
+    if (includeRankTag &&
+        widget.rankIndex != null &&
+        widget.rankIndex! > 0 &&
+        widget.rankIndex! <= 3) {
+      final rank = widget.rankIndex!;
+      final label = 'TOP $rank';
+      final bg = rank == 1
+          ? const Color(0xFFFFA000)
+          : (rank == 2 ? const Color(0xFF78909C) : const Color(0xFFE65100));
+      tags.insert(0, (label, Colors.white, bg));
+    }
+
     return tags;
   }
 
-  Widget _buildTitle(ThemeData theme, {int maxLines = 2}) {
-    final thread = widget.thread;
-    final tags = _getTags(theme);
+  Widget _buildMedalBadge(int rank) {
+    final (String icon, String label, Color c1, Color c2) = switch (rank) {
+      1 => ('🥇', 'TOP 1', const Color(0xFFFFB300), const Color(0xFFFF6F00)),
+      2 => ('🥈', 'TOP 2', const Color(0xFF90A4AE), const Color(0xFF546E7A)),
+      3 => ('🥉', 'TOP 3', const Color(0xFFFF8A65), const Color(0xFFD84315)),
+      _ => ('', 'TOP $rank', const Color(0xFF78909C), const Color(0xFF455A64)),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(colors: [c1, c2]),
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: c2.withAlpha(70),
+            blurRadius: 4,
+            offset: const Offset(0, 1.5),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon.isNotEmpty) ...[
+            Text(icon, style: const TextStyle(fontSize: 10)),
+            const SizedBox(width: 3),
+          ],
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+              letterSpacing: 0.3,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildForumPill(BuildContext context, String forumName) {
+    final scheme = Theme.of(context).colorScheme;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 140),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+            color: scheme.secondaryContainer.withAlpha(120),
+            borderRadius: BorderRadius.circular(20)),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          child: Text(forumName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: scheme.onSecondaryContainer)),
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildCounters(ThemeData theme) {
+    final thread = _currentThread;
+    Widget counter(IconData icon, String label, String description,
+        {Color? color}) {
+      final foreground = color ?? theme.colorScheme.onSurfaceVariant;
+      return Tooltip(
+        message: '$description：$label',
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: foreground),
+            const SizedBox(width: 3),
+            Text(label, style: TextStyle(fontSize: 12, color: foreground)),
+          ],
+        ),
+      );
+    }
+
+    return [
+      if (thread.views >= 0)
+        counter(
+          Icons.visibility_outlined,
+          thread.views > 9999
+              ? '${(thread.views / 10000).toStringAsFixed(1)}w'
+              : thread.views.toString(),
+          '浏览',
+        ),
+      if (thread.replies >= 0)
+        counter(
+            Icons.chat_bubble_outline_rounded, thread.replies.toString(), '回复'),
+      if (thread.recommendCount > 0)
+        counter(
+            Icons.thumb_up_outlined, thread.recommendCount.toString(), '推荐'),
+      if (thread.heatCount > 0 || thread.isHot)
+        counter(
+          Icons.local_fire_department_rounded,
+          thread.heatCount > 0 ? thread.heatCount.toString() : '热门',
+          '热度',
+          color: Colors.deepOrangeAccent,
+        ),
+    ];
+  }
+
+  Widget _buildStatFooter(ThemeData theme, {bool showTime = true}) {
+    final thread = _currentThread;
+    return Row(
+      children: [
+        Expanded(
+          child: Wrap(
+            spacing: 10,
+            runSpacing: 4,
+            children: _buildCounters(theme),
+          ),
+        ),
+        if (showTime && thread.timeText?.isNotEmpty == true) ...[
+          const SizedBox(width: 8),
+          Flexible(child: _footerTime(theme)),
+        ],
+        const SizedBox(width: 6),
+        Icon(Icons.chevron_right_rounded,
+            size: 14, color: theme.colorScheme.outline),
+      ],
+    );
+  }
+
+  Widget _buildTitle(
+    ThemeData theme, {
+    int maxLines = 2,
+    bool includeForumTag = true,
+    bool includeRankTag = false,
+    bool includeHotTag = true,
+  }) {
+    final thread = _currentThread;
+    final tags = _getTags(
+      theme,
+      includeForumTag: includeForumTag,
+      includeRankTag: includeRankTag,
+      includeHotTag: includeHotTag,
+    );
 
     return Text.rich(
       TextSpan(
@@ -1333,7 +1525,8 @@ class _ThreadCardState extends State<ThreadCard> {
               alignment: PlaceholderAlignment.middle,
               child: Container(
                 margin: const EdgeInsets.only(right: 5),
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
                 decoration: BoxDecoration(
                   color: bg,
                   borderRadius: BorderRadius.circular(4),
@@ -1353,8 +1546,8 @@ class _ThreadCardState extends State<ThreadCard> {
             text: thread.title,
             style: theme.textTheme.titleMedium?.copyWith(
               fontWeight: FontWeight.w600,
-              fontSize: 14.5,
-              height: 1.35,
+              fontSize: _fixedGrid ? 14.5 : 16,
+              height: 1.45,
               color: theme.colorScheme.onSurface,
             ),
           ),
@@ -1365,104 +1558,104 @@ class _ThreadCardState extends State<ThreadCard> {
     );
   }
 
-  Widget _buildFooter(ThemeData theme) {
-    final colorScheme = theme.colorScheme;
-    final thread = widget.thread;
-    final hasAuthor = thread.author.isNotEmpty;
-    final hasStats = thread.views > 0 || thread.replies > 0 || (thread.timeText != null && thread.timeText!.isNotEmpty);
+  Widget _footerTime(ThemeData theme) {
+    final time = _currentThread.timeText ?? '';
+    return Tooltip(
+      message: time,
+      child: Text(
+        formatThreadTime(time),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(fontSize: 10.5, color: theme.colorScheme.outline),
+      ),
+    );
+  }
 
-    if (!hasAuthor && !hasStats) {
+  Widget _buildFooter(ThemeData theme) {
+    final thread = _currentThread;
+    final counters = _buildCounters(theme);
+    final hasTime = thread.timeText?.isNotEmpty == true;
+    final hasAuthor = thread.author.isNotEmpty;
+    final forum = thread.forumName;
+    if (!hasAuthor &&
+        forum?.isNotEmpty != true &&
+        !hasTime &&
+        counters.isEmpty) {
       return const SizedBox.shrink();
     }
 
-    return Row(
-      children: [
-        if (hasAuthor) ...[
-          UserAvatarWidget(
-            uid: thread.uid,
-            author: thread.author,
-            size: 18,
-            faceUrl: thread.faceUrl,
-          ),
-          const SizedBox(width: 6),
+    Widget identity({required bool showTime}) {
+      return Row(
+        children: [
+          if (hasAuthor) ...[
+            UserAvatarWidget(
+              reserveFrameSpace: true,
+              uid: thread.uid,
+              author: thread.author,
+              size: 18,
+              faceUrl: thread.faceUrl,
+              onTap: widget.onAuthorTap,
+            ),
+            const SizedBox(width: 6),
+          ],
           Expanded(
             child: InkWell(
-              onTap: widget.onAuthorTap,
+              onTap: hasAuthor ? widget.onAuthorTap : null,
               borderRadius: BorderRadius.circular(4),
               child: Text(
-                thread.author,
+                hasAuthor ? thread.author : (forum ?? ''),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: theme.textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
+                  color: theme.colorScheme.onSurfaceVariant,
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ),
           ),
-        ] else ...[
-          const Spacer(),
+          if (showTime && hasTime) ...[
+            const SizedBox(width: 6),
+            Flexible(child: _footerTime(theme)),
+          ],
         ],
-        if (thread.views > 0) ...[
-          Icon(
-            Icons.visibility_outlined,
-            size: 13,
-            color: colorScheme.onSurfaceVariant.withAlpha(180),
-          ),
-          const SizedBox(width: 3),
-          Text(
-            thread.views > 9999
-                ? '${(thread.views / 10000).toStringAsFixed(1)}w'
-                : '${thread.views}',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurfaceVariant.withAlpha(200),
-              fontSize: 11.5,
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 280) {
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              identity(showTime: true),
+              if (counters.isNotEmpty) ...[
+                const SizedBox(height: 5),
+                Wrap(spacing: 10, runSpacing: 3, children: counters),
+              ],
+            ],
+          );
+        }
+        return Row(
+          children: [
+            Expanded(child: identity(showTime: false)),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Wrap(
+                spacing: 10,
+                runSpacing: 3,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                alignment: WrapAlignment.end,
+                children: [
+                  ...counters,
+                  if (hasTime) _footerTime(theme),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(width: 8),
-        ],
-        if (thread.replies > 0) ...[
-          Icon(
-            Icons.chat_bubble_outline_rounded,
-            size: 12,
-            color: colorScheme.onSurfaceVariant.withAlpha(180),
-          ),
-          const SizedBox(width: 3),
-          Text(
-            '${thread.replies}',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurfaceVariant.withAlpha(200),
-              fontSize: 11.5,
-            ),
-          ),
-          const SizedBox(width: 8),
-        ],
-        if (thread.recommendCount > 0) ...[
-          Icon(
-            Icons.thumb_up_outlined,
-            size: 12,
-            color: colorScheme.onSurfaceVariant.withAlpha(180),
-          ),
-          const SizedBox(width: 3),
-          Text(
-            '${thread.recommendCount}',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurfaceVariant.withAlpha(200),
-              fontSize: 11.5,
-            ),
-          ),
-          const SizedBox(width: 8),
-        ],
-        if (thread.timeText != null && thread.timeText!.isNotEmpty)
-          Text(
-            formatThreadTime(thread.timeText!),
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurfaceVariant.withAlpha(200),
-              fontSize: 11.5,
-            ),
-          ),
-      ],
+          ],
+        );
+      },
     );
   }
 
@@ -1478,7 +1671,9 @@ class _ThreadCardState extends State<ThreadCard> {
     }
     final now = DateTime.now();
     // 1. 匹配类似 2026-2-21 或 2026-02-21 或 2026-2-21 15:30
-    final fullMatch = RegExp(r'^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}:\d{2}))?').firstMatch(trimmed);
+    final fullMatch =
+        RegExp(r'^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}:\d{2}))?')
+            .firstMatch(trimmed);
     if (fullMatch != null) {
       final y = int.tryParse(fullMatch.group(1)!) ?? 0;
       final m = int.tryParse(fullMatch.group(2)!) ?? 0;
@@ -1502,7 +1697,8 @@ class _ThreadCardState extends State<ThreadCard> {
       return hm != null ? '$y-$m-$d $hm' : '$y-$m-$d';
     }
     // 2. 匹配短格式 11-4 或 11-04 15:30
-    final shortMatch = RegExp(r'^(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}:\d{2}))?$').firstMatch(trimmed);
+    final shortMatch = RegExp(r'^(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}:\d{2}))?$')
+        .firstMatch(trimmed);
     if (shortMatch != null) {
       final m = int.tryParse(shortMatch.group(1)!) ?? 0;
       final d = int.tryParse(shortMatch.group(2)!) ?? 0;
@@ -1518,7 +1714,9 @@ class _ThreadCardState extends State<ThreadCard> {
       return hm != null ? '$m月$d日 $hm' : '$m月$d日';
     }
     // 3. 匹配中文格式 11月4日 或 2026年11月4日
-    final cnMatch = RegExp(r'^(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日(?:\s+(\d{1,2}:\d{2}))?').firstMatch(trimmed);
+    final cnMatch =
+        RegExp(r'^(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日(?:\s+(\d{1,2}:\d{2}))?')
+            .firstMatch(trimmed);
     if (cnMatch != null) {
       final y = int.tryParse(cnMatch.group(1) ?? '') ?? now.year;
       final m = int.tryParse(cnMatch.group(2)!) ?? 0;

@@ -43,7 +43,7 @@ class Win32Window {
   void Destroy();
 
   // Inserts |content| into the window tree.
-  void SetChildContent(HWND content);
+  void SetChildContent(HWND content, bool activate = true);
 
   // Returns the backing Window handle to enable clients to set icon and other
   // window properties. Returns nullptr if the window has been destroyed.
@@ -89,6 +89,7 @@ class Win32Window {
 
   // Update the window frame's theme to match the system theme.
   static void UpdateTheme(HWND const window);
+  static void UpdateIcons(HWND window, UINT dpi);
 
   bool quit_on_close_ = false;
 

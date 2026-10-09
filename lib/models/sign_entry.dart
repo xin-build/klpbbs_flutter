@@ -48,8 +48,16 @@ class SignEntry {
 
 /// 签到页面头部统计与个人实时数据模型（1:1 对齐官方 k_misign 页面）
 class SignHeaderInfo {
+  final bool isRecognized;
+  final bool hasPersonalState;
+  final bool hasTodaySignCount;
+  final bool hasPersonalStats;
+  final bool hasContinuousDays;
+  final bool hasTotalDays;
   final String starUsername;
   final int? starUid;
+  final String? starAvatarUrl;
+  final String? starFaceUrl;
   final int highestCount;
   final int todaySignCount;
   final bool isSignedToday;
@@ -65,8 +73,16 @@ class SignHeaderInfo {
   final String retroSignTip;
 
   const SignHeaderInfo({
+    this.isRecognized = false,
+    this.hasPersonalState = false,
+    this.hasTodaySignCount = false,
+    this.hasPersonalStats = false,
+    this.hasContinuousDays = false,
+    this.hasTotalDays = false,
     this.starUsername = '',
     this.starUid,
+    this.starAvatarUrl,
+    this.starFaceUrl,
     this.highestCount = 0,
     this.todaySignCount = 0,
     this.isSignedToday = false,
@@ -83,12 +99,22 @@ class SignHeaderInfo {
   });
 
   SignHeaderInfo copyWith({
+    bool? isRecognized,
+    bool? hasPersonalState,
+    bool? hasTodaySignCount,
+    bool? hasPersonalStats,
+    bool? hasContinuousDays,
+    bool? hasTotalDays,
     String? starUsername,
     int? starUid,
+    String? starAvatarUrl,
+    String? starFaceUrl,
+    bool clearStarIdentity = false,
     int? highestCount,
     int? todaySignCount,
     bool? isSignedToday,
     int? mySignRank,
+    bool clearMySignRank = false,
     String? username,
     int? uid,
     int? continuousDays,
@@ -99,13 +125,23 @@ class SignHeaderInfo {
     int? retroSignDays,
     String? retroSignTip,
   }) {
+    final resetStar = clearStarIdentity ||
+        (starUsername != null && starUsername != this.starUsername);
     return SignHeaderInfo(
+      isRecognized: isRecognized ?? this.isRecognized,
+      hasPersonalState: hasPersonalState ?? this.hasPersonalState,
+      hasTodaySignCount: hasTodaySignCount ?? this.hasTodaySignCount,
+      hasPersonalStats: hasPersonalStats ?? this.hasPersonalStats,
+      hasContinuousDays: hasContinuousDays ?? this.hasContinuousDays,
+      hasTotalDays: hasTotalDays ?? this.hasTotalDays,
       starUsername: starUsername ?? this.starUsername,
-      starUid: starUid ?? this.starUid,
+      starUid: starUid ?? (resetStar ? null : this.starUid),
+      starAvatarUrl: starAvatarUrl ?? (resetStar ? null : this.starAvatarUrl),
+      starFaceUrl: starFaceUrl ?? (resetStar ? null : this.starFaceUrl),
       highestCount: highestCount ?? this.highestCount,
       todaySignCount: todaySignCount ?? this.todaySignCount,
       isSignedToday: isSignedToday ?? this.isSignedToday,
-      mySignRank: mySignRank ?? this.mySignRank,
+      mySignRank: clearMySignRank ? null : mySignRank ?? this.mySignRank,
       username: username ?? this.username,
       uid: uid ?? this.uid,
       continuousDays: continuousDays ?? this.continuousDays,
@@ -118,4 +154,3 @@ class SignHeaderInfo {
     );
   }
 }
-

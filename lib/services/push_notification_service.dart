@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/dio_client.dart';
+import '../core/notification_backlog.dart';
 import 'tray_service.dart';
 
 /// 应用内浮动横幅通知数据模型
@@ -63,9 +64,12 @@ class PushNotificationService extends ChangeNotifier {
   int _unreadPm = 0;
   Timer? _timer;
   bool _isChecking = false;
+  bool _hasUnreadNotices = false, _hasUnreadPm = false;
+  String? _countsSession;
+  int _countsRevision = 0;
 
-  final StreamController<InAppNotificationMessage> _notificationStreamController =
-      StreamController<InAppNotificationMessage>.broadcast();
+  final NotificationBacklog<InAppNotificationMessage>
+      _notificationStreamController = NotificationBacklog();
 
   /// 应用内浮动通知流（全平台可用）
   Stream<InAppNotificationMessage> get onNotificationReceived =>
@@ -74,6 +78,10 @@ class PushNotificationService extends ChangeNotifier {
   int get unreadNotices => _unreadNotices;
   int get unreadPm => _unreadPm;
   int get unreadCount => _unreadNotices + _unreadPm;
+  bool get hasKnownNotices =>
+      _countsSession == DioClient.sessionKey && _hasUnreadNotices;
+  bool get hasKnownPm => _countsSession == DioClient.sessionKey && _hasUnreadPm;
+  bool get hasKnownCounts => hasKnownNotices && hasKnownPm;
   bool get isEnabled => _enabled;
   bool get isSoundEnabled => _sound;
   PollingInterval get interval => _interval;
@@ -82,6 +90,9 @@ class PushNotificationService extends ChangeNotifier {
 
   /// 清除通知未读数
   void clearNotices() {
+    _countsRevision++;
+    _countsSession = DioClient.sessionKey;
+    _hasUnreadNotices = true;
     _unreadNotices = 0;
     _lastUnreadCount = _unreadPm;
     notifyListeners();
@@ -89,13 +100,21 @@ class PushNotificationService extends ChangeNotifier {
 
   /// 清除私信未读数
   void clearPm() {
+    _countsRevision++;
+    _countsSession = DioClient.sessionKey;
+    _hasUnreadPm = true;
     _unreadPm = 0;
     _lastUnreadCount = _unreadNotices;
     notifyListeners();
   }
 
-  /// 清除全部未读计数（在点击全部已读后调用）
+  /// 切号或退出时清除身份相关计数，未读取的新账号不宣称零未读。
   void clearUnread() {
+    _countsRevision++;
+    _countsSession = null;
+    _hasUnreadNotices = false;
+    _hasUnreadPm = false;
+    _notificationStreamController.clear();
     _unreadNotices = 0;
     _unreadPm = 0;
     _lastUnreadCount = 0;
@@ -111,7 +130,8 @@ class PushNotificationService extends ChangeNotifier {
       _sound = sp.getBool(_keySound) ?? true;
 
       // 初始化桌面端系统通知接口 (Windows, Linux, macOS)
-      if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+      if (!kIsWeb &&
+          (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
         try {
           await localNotifier.setup(
             appName: '苦力怕论坛',
@@ -188,13 +208,27 @@ class PushNotificationService extends ChangeNotifier {
   /// 执行低功耗增量检查（仅探测未读通知与短消息计数，不消耗大量流量，不强制置为已读）
   Future<int> checkNewMessages() async {
     if (_isChecking || !DioClient.isLoggedIn) return unreadCount;
+    final session = DioClient.sessionKey, revision = _countsRevision;
     _isChecking = true;
 
     try {
       final summary = await KlpbbsApi.getUnreadSummary();
-      final hasChanged = _unreadNotices != summary.unreadNotices || _unreadPm != summary.unreadPm;
-      _unreadNotices = summary.unreadNotices;
-      _unreadPm = summary.unreadPm;
+      if (session != DioClient.sessionKey || revision != _countsRevision) {
+        return unreadCount;
+      }
+      final hasChanged = (summary.unreadNotices != null &&
+              (!hasKnownNotices || _unreadNotices != summary.unreadNotices)) ||
+          (summary.unreadPm != null &&
+              (!hasKnownPm || _unreadPm != summary.unreadPm));
+      _countsSession = session;
+      if (summary.unreadNotices != null) {
+        _unreadNotices = summary.unreadNotices!;
+        _hasUnreadNotices = true;
+      }
+      if (summary.unreadPm != null) {
+        _unreadPm = summary.unreadPm!;
+        _hasUnreadPm = true;
+      }
       final currentTotal = _unreadNotices + _unreadPm;
       if (hasChanged) {
         notifyListeners();
@@ -218,6 +252,7 @@ class PushNotificationService extends ChangeNotifier {
           title: '苦力怕论坛 · 新消息提醒',
           body: body,
           count: currentTotal,
+          expectedSession: session,
         );
       }
       _lastUnreadCount = currentTotal;
@@ -234,6 +269,7 @@ class PushNotificationService extends ChangeNotifier {
     required String title,
     required String body,
     required int count,
+    String? expectedSession,
   }) async {
     // 1. 声音与触觉反馈
     if (_sound) {
@@ -245,6 +281,9 @@ class PushNotificationService extends ChangeNotifier {
       } catch (_) {}
     }
 
+    if (expectedSession != null && expectedSession != DioClient.sessionKey) {
+      return;
+    }
     // 2. 发送应用内浮动横幅（全平台支持：Android, iOS, Web, Windows, macOS, Linux）
     _notificationStreamController.add(
       InAppNotificationMessage(
@@ -258,7 +297,8 @@ class PushNotificationService extends ChangeNotifier {
     );
 
     // 3. 桌面端系统原生 Toast 通知（Windows, macOS, Linux）
-    if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
       try {
         final notification = LocalNotification(
           title: title,
@@ -309,7 +349,8 @@ class PushNotificationService extends ChangeNotifier {
       ),
     );
 
-    if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
       try {
         final notification = LocalNotification(
           title: title,

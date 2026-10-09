@@ -1,3 +1,4 @@
+import '../widgets/app_motion.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -226,7 +227,7 @@ class _DownloadTaskCard extends StatelessWidget {
             const SizedBox(height: 10),
             ClipRRect(
               borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
+              child: AppLoadingBar(
                 value: task.totalBytes > 0 ? task.progress : null,
                 minHeight: 5,
                 backgroundColor: colorScheme.surfaceContainerHighest,

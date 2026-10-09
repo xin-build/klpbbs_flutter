@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -82,6 +83,7 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
 
   late final AnimationController _rotateController;
   late final AnimationController _waveController;
+  bool _motionAllowed = false;
   StreamSubscription? _subPlaying;
   StreamSubscription? _subCompleted;
   StreamSubscription? _subPosition;
@@ -123,10 +125,24 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
       _volume = existing.state.volume;
       _speed = existing.state.rate;
       _attachPlayer(existing);
-      if (_playing) {
-        if (!_rotateController.isAnimating) _rotateController.repeat();
-        if (!_waveController.isAnimating) _waveController.repeat(reverse: true);
-      }
+      _syncVisualAnimation();
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _motionAllowed = AppMotion.enabled(context) && TickerMode.of(context);
+    _syncVisualAnimation();
+  }
+
+  void _syncVisualAnimation() {
+    if (_playing && _motionAllowed) {
+      if (!_rotateController.isAnimating) _rotateController.repeat();
+      if (!_waveController.isAnimating) _waveController.repeat(reverse: true);
+    } else {
+      _rotateController.stop();
+      _waveController.stop();
     }
   }
 
@@ -144,13 +160,7 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
         _volume = _player!.state.volume;
         _speed = _player!.state.rate;
         _attachPlayer(_player!);
-        if (_playing) {
-          if (!_rotateController.isAnimating) _rotateController.repeat();
-          if (!_waveController.isAnimating) _waveController.repeat(reverse: true);
-        } else {
-          _rotateController.stop();
-          _waveController.stop();
-        }
+        _syncVisualAnimation();
       } else {
         _playing = false;
         _rotateController.stop();
@@ -186,13 +196,7 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
     _subPlaying = p.stream.playing.listen((playing) {
       if (mounted) {
         setState(() => _playing = playing);
-        if (playing) {
-          if (!_rotateController.isAnimating) _rotateController.repeat();
-          if (!_waveController.isAnimating) _waveController.repeat(reverse: true);
-        } else {
-          _rotateController.stop();
-          _waveController.stop();
-        }
+        _syncVisualAnimation();
       }
     });
     _subCompleted = p.stream.completed.listen((completed) {
@@ -236,12 +240,11 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
     final hasAnyTranslation = lyrics != null &&
         lyrics.any((l) => l.translation != null && l.translation!.isNotEmpty);
     final itemHeight = hasAnyTranslation ? 42.0 : 32.0;
-    final containerHeight = _largeLyrics
-        ? 200.0
-        : (hasAnyTranslation ? 64.0 : 52.0);
+    final containerHeight =
+        _largeLyrics ? 200.0 : (hasAnyTranslation ? 64.0 : 52.0);
     // 将当前激活行垂直精准居中
-    final targetOffset =
-        (_activeLyricIndex * itemHeight) - (containerHeight / 2 - itemHeight / 2);
+    final targetOffset = (_activeLyricIndex * itemHeight) -
+        (containerHeight / 2 - itemHeight / 2);
     final maxScroll = _lyricScrollController.position.maxScrollExtent;
     final clamped = targetOffset.clamp(0.0, maxScroll);
     _lyricScrollController.animateTo(
@@ -327,8 +330,7 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
           final album = s['album'];
           String cover = '';
           if (album is Map) {
-            cover =
-                (album['picUrl'] ?? album['blurPicUrl'])?.toString() ?? '';
+            cover = (album['picUrl'] ?? album['blurPicUrl'])?.toString() ?? '';
           }
           if (cover.startsWith('http://')) {
             cover = cover.replaceFirst('http://', 'https://');
@@ -518,8 +520,7 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
         final ms = int.tryParse(msStr) ?? 0;
         final totalMs = min * 60000 + sec * 1000 + ms;
         final key = (totalMs / 100).round();
-        final trans =
-            transMap[key] ?? transMap[key - 1] ?? transMap[key + 1];
+        final trans = transMap[key] ?? transMap[key - 1] ?? transMap[key + 1];
         list.add(LyricLine(
           time: Duration(milliseconds: totalMs),
           text: text,
@@ -553,7 +554,8 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
     if (p == null) return;
     final cur = p.state.position;
     final dur = p.state.duration;
-    final targetMs = (cur.inMilliseconds + seconds * 1000).clamp(0, dur.inMilliseconds > 0 ? dur.inMilliseconds : 1);
+    final targetMs = (cur.inMilliseconds + seconds * 1000)
+        .clamp(0, dur.inMilliseconds > 0 ? dur.inMilliseconds : 1);
     await p.seek(Duration(milliseconds: targetMs));
   }
 
@@ -590,7 +592,7 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
           httpHeaders: {
             'User-Agent':
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                    '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Referer': 'https://music.163.com',
           },
         ),
@@ -607,8 +609,7 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
         _player = p;
         _playing = true;
       });
-      _rotateController.repeat();
-      _waveController.repeat(reverse: true);
+      _syncVisualAnimation();
     } catch (e) {
       setState(() => _error = '播放失败：$e');
     } finally {
@@ -803,9 +804,9 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
                     const SizedBox(height: 3),
                     Row(
                       children: [
-                        AnimatedSize(
-                          duration: const Duration(milliseconds: 200),
-                          curve: Curves.easeInOut,
+                        AppAnimatedSize(
+                          duration: AppMotion.duration(context, 200),
+                          curve: AppMotion.emphasized,
                           child: _playing
                               ? Row(
                                   mainAxisSize: MainAxisSize.min,
@@ -818,7 +819,9 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
                         ),
                         Expanded(
                           child: Text(
-                            _artist.isNotEmpty ? _artist : '歌曲 ID: ${widget.songId}',
+                            _artist.isNotEmpty
+                                ? _artist
+                                : '歌曲 ID: ${widget.songId}',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: theme.textTheme.bodySmall?.copyWith(
@@ -849,7 +852,7 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
                     ? const SizedBox(
                         width: 20,
                         height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                        child: AppLoadingIndicator(strokeWidth: 2),
                       )
                     : AnimatedSwitcher(
                         duration: const Duration(milliseconds: 220),
@@ -897,8 +900,7 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
                 tooltip: '在浏览器打开',
                 visualDensity: VisualDensity.compact,
                 padding: const EdgeInsets.all(6),
-                constraints:
-                    const BoxConstraints(minWidth: 32, minHeight: 32),
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                 onPressed: _openExternal,
                 icon: Icon(
                   Icons.open_in_new_rounded,
@@ -921,13 +923,12 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
     final lyrics = _lyrics;
     final hasAnyTranslation = lyrics != null &&
         lyrics.any((l) => l.translation != null && l.translation!.isNotEmpty);
-    final containerHeight = _largeLyrics
-        ? 200.0
-        : (hasAnyTranslation ? 64.0 : 52.0);
+    final containerHeight =
+        _largeLyrics ? 200.0 : (hasAnyTranslation ? 64.0 : 52.0);
 
-    return AnimatedSize(
-      duration: const Duration(milliseconds: 250),
-      curve: Curves.easeInOutCubic,
+    return AppAnimatedSize(
+      duration: AppMotion.duration(context, 250),
+      curve: AppMotion.emphasized,
       child: _showLyrics
           ? Column(
               mainAxisSize: MainAxisSize.min,
@@ -953,7 +954,8 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
                           });
                         },
                         child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 2),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
@@ -1026,7 +1028,7 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
             SizedBox(
               width: 12,
               height: 12,
-              child: CircularProgressIndicator(
+              child: AppLoadingIndicator(
                 strokeWidth: 1.5,
                 color: colorScheme.primary,
               ),
@@ -1106,8 +1108,9 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               fontSize: isActive ? 12.5 : 11,
-                              fontWeight:
-                                  isActive ? FontWeight.w600 : FontWeight.normal,
+                              fontWeight: isActive
+                                  ? FontWeight.w600
+                                  : FontWeight.normal,
                               color: isActive
                                   ? colorScheme.primary
                                   : colorScheme.onSurfaceVariant.withAlpha(150),
@@ -1174,10 +1177,13 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
                     child: SliderTheme(
                       data: SliderTheme.of(ctx).copyWith(
                         trackHeight: 2.5,
-                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 4.5),
-                        overlayShape: const RoundSliderOverlayShape(overlayRadius: 10),
+                        thumbShape: const RoundSliderThumbShape(
+                            enabledThumbRadius: 4.5),
+                        overlayShape:
+                            const RoundSliderOverlayShape(overlayRadius: 10),
                         activeTrackColor: theme.colorScheme.primary,
-                        inactiveTrackColor: theme.colorScheme.outlineVariant.withAlpha(80),
+                        inactiveTrackColor:
+                            theme.colorScheme.outlineVariant.withAlpha(80),
                         thumbColor: theme.colorScheme.primary,
                       ),
                       child: Slider(
@@ -1221,8 +1227,10 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
                       iconSize: 18,
                       visualDensity: VisualDensity.compact,
                       padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
-                      icon: Icon(Icons.replay_5_rounded, color: theme.colorScheme.onSurfaceVariant),
+                      constraints:
+                          const BoxConstraints(minWidth: 26, minHeight: 26),
+                      icon: Icon(Icons.replay_5_rounded,
+                          color: theme.colorScheme.onSurfaceVariant),
                       onPressed: () => _seekRelative(-5),
                     ),
                     IconButton(
@@ -1230,8 +1238,10 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
                       iconSize: 18,
                       visualDensity: VisualDensity.compact,
                       padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
-                      icon: Icon(Icons.forward_5_rounded, color: theme.colorScheme.onSurfaceVariant),
+                      constraints:
+                          const BoxConstraints(minWidth: 26, minHeight: 26),
+                      icon: Icon(Icons.forward_5_rounded,
+                          color: theme.colorScheme.onSurfaceVariant),
                       onPressed: () => _seekRelative(5),
                     ),
                     const SizedBox(width: 4),
@@ -1239,13 +1249,16 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
                       borderRadius: BorderRadius.circular(4),
                       onTap: _changeSpeed,
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 5, vertical: 2),
                         child: Text(
                           '${_speed == 1.0 ? "1.0" : _speed}x',
                           style: TextStyle(
                             fontSize: 10.5,
                             fontWeight: FontWeight.bold,
-                            color: _speed != 1.0 ? theme.colorScheme.primary : theme.colorScheme.outline,
+                            color: _speed != 1.0
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.outline,
                           ),
                         ),
                       ),
@@ -1286,7 +1299,9 @@ class _NetEaseMusicPlayerState extends State<NetEaseMusicPlayer>
             icon: Icon(
               _muted || effectiveVol == 0
                   ? Icons.volume_off_rounded
-                  : (effectiveVol < 50 ? Icons.volume_down_rounded : Icons.volume_up_rounded),
+                  : (effectiveVol < 50
+                      ? Icons.volume_down_rounded
+                      : Icons.volume_up_rounded),
               size: 17,
               color: _muted ? colorScheme.error : colorScheme.onSurfaceVariant,
             ),

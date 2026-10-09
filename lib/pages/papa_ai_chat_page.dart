@@ -1,3 +1,4 @@
+import '../widgets/app_motion.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -626,7 +627,7 @@ class _PapaAiChatPageState extends State<PapaAiChatPage> {
                 children: [
                   Expanded(
                     child: _loading
-                        ? Center(child: CircularProgressIndicator(color: pal.primaryStrong))
+                        ? Center(child: AppLoadingIndicator(color: pal.primaryStrong))
                         : (_currentReportType != null
                             ? _buildReportView(context, pal)
                             : _buildChatView(context, pal)),
@@ -1810,7 +1811,7 @@ class _PapaAiChatPageState extends State<PapaAiChatPage> {
             ),
             child: Column(
               children: [
-                CircularProgressIndicator(color: pal.primaryStrong),
+                AppLoadingIndicator(color: pal.primaryStrong),
                 const SizedBox(height: 16),
                 Text(
                   '帕帕正在阅览全站并生成今日$name...',

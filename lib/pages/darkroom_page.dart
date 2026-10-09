@@ -1,3 +1,4 @@
+import '../widgets/app_motion.dart';
 import 'package:flutter/material.dart';
 
 import '../widgets/global_app_drawer.dart';
@@ -6,6 +7,8 @@ import '../widgets/thread_card.dart';
 
 import '../api/klpbbs_api.dart';
 import '../models/darkroom_entry.dart';
+import '../models/server_outage_info.dart';
+import '../widgets/server_outage_view.dart';
 import 'user_space_page.dart';
 
 /// 小黑屋（违规公示，只读）
@@ -23,6 +26,7 @@ class _DarkroomPageState extends State<DarkroomPage> {
   List<DarkroomEntry> _entries = [];
   bool _loading = true;
   String? _error;
+  Object? _rawError;
   bool _isSearching = false;
   final TextEditingController _searchCtrl = TextEditingController();
 
@@ -43,6 +47,7 @@ class _DarkroomPageState extends State<DarkroomPage> {
     setState(() {
       _loading = true;
       _error = null;
+      _rawError = null;
     });
 
     try {
@@ -63,6 +68,7 @@ class _DarkroomPageState extends State<DarkroomPage> {
       setState(() {
         _loading = false;
         _error = e.toString();
+        _rawError = e;
       });
     }
   }
@@ -188,23 +194,28 @@ class _DarkroomPageState extends State<DarkroomPage> {
         ),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: AppLoadingIndicator())
           : _error != null
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.error_outline_rounded, size: 48, color: theme.colorScheme.error),
-                        const SizedBox(height: 12),
-                        Text('加载失败：$_error', textAlign: TextAlign.center),
-                        const SizedBox(height: 16),
-                        FilledButton(onPressed: _reload, child: const Text('重新加载')),
-                      ],
-                    ),
-                  ),
-                )
+              ? (ServerOutageInfo.tryParse(_rawError ?? _error) != null
+                  ? ServerOutageView(
+                      outage: ServerOutageInfo.tryParse(_rawError ?? _error)!,
+                      onRetry: _reload,
+                    )
+                  : Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.error_outline_rounded, size: 48, color: theme.colorScheme.error),
+                            const SizedBox(height: 12),
+                            Text('加载失败：$_error', textAlign: TextAlign.center),
+                            const SizedBox(height: 16),
+                            FilledButton(onPressed: _reload, child: const Text('重新加载')),
+                          ],
+                        ),
+                      ),
+                    ))
               : displayedEntries.isEmpty
                   ? Center(
                       child: Column(
@@ -218,160 +229,199 @@ class _DarkroomPageState extends State<DarkroomPage> {
                     )
                   : RefreshIndicator(
                       onRefresh: () async => _loadPage(1),
-                      child: ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 32),
-                        itemCount: displayedEntries.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 10),
-                        itemBuilder: (context, i) {
-                          final e = displayedEntries[i];
-                          final isBanAccess = e.action.contains('禁止访问');
-                          final actionColor = isBanAccess
-                              ? theme.colorScheme.error
-                              : (theme.brightness == Brightness.dark ? Colors.orange.shade300 : Colors.orange.shade800);
-
-                          return Card(
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              side: BorderSide(
-                                color: theme.colorScheme.outlineVariant.withAlpha(60),
-                                width: 0.8,
-                              ),
-                            ),
-                            child: InkWell(
-                              onTap: e.uid > 0
-                                  ? () => Navigator.of(context).push(
-                                        MaterialPageRoute(
-                                          builder: (_) => UserSpacePage(
-                                            uid: e.uid,
-                                          ),
-                                        ),
-                                      )
-                                  : null,
-                              borderRadius: BorderRadius.circular(12),
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        UserAvatarWidget(
-                                          uid: e.uid,
-                                          author: e.username,
-                                          size: 36,
-                                        ),
-                                        const SizedBox(width: 10),
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Text(
-                                                e.username,
-                                                style: theme.textTheme.bodyMedium?.copyWith(
-                                                  fontWeight: FontWeight.bold,
-                                                  fontSize: 14.5,
-                                                ),
-                                              ),
-                                              if (e.uid > 0)
-                                                Text(
-                                                  'UID: ${e.uid}',
-                                                  style: TextStyle(
-                                                    fontSize: 11.5,
-                                                    color: theme.colorScheme.outline,
-                                                  ),
-                                                ),
-                                            ],
-                                          ),
-                                        ),
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 10,
-                                            vertical: 4,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: actionColor.withAlpha(24),
-                                            borderRadius: BorderRadius.circular(8),
-                                            border: Border.all(
-                                              color: actionColor.withAlpha(60),
-                                              width: 0.6,
-                                            ),
-                                          ),
-                                          child: Text(
-                                            e.action,
-                                            style: TextStyle(
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.bold,
-                                              color: actionColor,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 10),
-                                    if (e.reason.isNotEmpty)
-                                      Container(
-                                        width: double.infinity,
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 12,
-                                          vertical: 8,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: theme.colorScheme.surfaceContainerHighest
-                                              .withAlpha(90),
-                                          borderRadius: BorderRadius.circular(8),
-                                        ),
-                                        child: Text(
-                                          '处理理由：${e.reason}',
-                                          style: TextStyle(
-                                            fontSize: 13,
-                                            height: 1.35,
-                                            color: theme.colorScheme.onSurfaceVariant,
-                                          ),
-                                        ),
-                                      ),
-                                    if (e.dateline.isNotEmpty || e.expiry != null) ...[
-                                      const SizedBox(height: 8),
-                                      Row(
-                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          if (e.dateline.isNotEmpty)
-                                            Text(
-                                              '封禁时间：${e.dateline}',
-                                              style: TextStyle(
-                                                fontSize: 11.5,
-                                                color: theme.colorScheme.outline,
-                                              ),
-                                            ),
-                                          if (e.expiry != null)
-                                            Row(
-                                              children: [
-                                                Icon(
-                                                  Icons.timer_outlined,
-                                                  size: 13,
-                                                  color: theme.colorScheme.outline,
-                                                ),
-                                                const SizedBox(width: 4),
-                                                Text(
-                                                  '到期：${e.expiry ?? '永久'}',
-                                                  style: TextStyle(
-                                                    fontSize: 11.5,
-                                                    color: theme.colorScheme.outline,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                        ],
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                              ),
-                            ),
-                          );
-                        },
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 1080),
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              final isDesktop = constraints.maxWidth >= 720;
+                              if (isDesktop) {
+                                return GridView.builder(
+                                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+                                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 2,
+                                    crossAxisSpacing: 14,
+                                    mainAxisSpacing: 14,
+                                    mainAxisExtent: 172,
+                                  ),
+                                  itemCount: displayedEntries.length,
+                                  itemBuilder: (context, i) =>
+                                      _buildEntryCard(displayedEntries[i], theme),
+                                );
+                              }
+                              return ListView.separated(
+                                padding: const EdgeInsets.fromLTRB(12, 12, 12, 32),
+                                itemCount: displayedEntries.length,
+                                separatorBuilder: (_, __) => const SizedBox(height: 10),
+                                itemBuilder: (context, i) =>
+                                    _buildEntryCard(displayedEntries[i], theme),
+                              );
+                            },
+                          ),
+                        ),
                       ),
                     ),
+    );
+  }
+
+  Widget _buildEntryCard(DarkroomEntry e, ThemeData theme) {
+    final isBanAccess = e.action.contains('禁止访问');
+    final actionColor = isBanAccess
+        ? theme.colorScheme.error
+        : (theme.brightness == Brightness.dark
+            ? Colors.orange.shade300
+            : Colors.orange.shade800);
+
+    return Card(
+      elevation: 0,
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: theme.colorScheme.outlineVariant.withAlpha(60),
+          width: 0.8,
+        ),
+      ),
+      child: InkWell(
+        onTap: e.uid > 0
+            ? () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => UserSpacePage(
+                      uid: e.uid,
+                    ),
+                  ),
+                )
+            : null,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  UserAvatarWidget(
+                    reserveFrameSpace: true,
+                    uid: e.uid,
+                    author: e.username,
+                    size: 36,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          e.username,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14.5,
+                          ),
+                        ),
+                        if (e.uid > 0)
+                          Text(
+                            'UID: ${e.uid}',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              color: theme.colorScheme.outline,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: actionColor.withAlpha(24),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: actionColor.withAlpha(60),
+                        width: 0.6,
+                      ),
+                    ),
+                    child: Text(
+                      e.action,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: actionColor,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              if (e.reason.isNotEmpty)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest.withAlpha(90),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '处理理由：${e.reason}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      height: 1.35,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              if (e.dateline.isNotEmpty || e.expiry != null) ...[
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    if (e.dateline.isNotEmpty)
+                      Flexible(
+                        child: Text(
+                          '封禁时间：${e.dateline}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: theme.colorScheme.outline,
+                          ),
+                        ),
+                      ),
+                    if (e.expiry != null)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.timer_outlined,
+                            size: 13,
+                            color: theme.colorScheme.outline,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            '到期：${e.expiry ?? '永久'}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: theme.colorScheme.outline,
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

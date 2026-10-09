@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import '../../api/klpbbs_api.dart';
+import '../../core/dio_client.dart';
 import '../../models/dashboard_card_model.dart';
+import '../../pages/func_list_page.dart';
 import '../../pages/task_page.dart';
-import '../../services/auto_sign_service.dart';
 import 'dashboard_card_frame.dart';
 
-/// 8. 每日任务中心卡片（对接真实任务列表，动态响应打卡完成状态，自适应行数与进度）
+/// 当前账号的实际任务分类；读取失败、站点关闭与确认空列表分开显示。
 class TaskDashboardCard extends StatefulWidget {
   final DashboardGridItem item;
   final bool isPreview;
@@ -22,14 +23,48 @@ class TaskDashboardCard extends StatefulWidget {
 
 class _TaskDashboardCardState extends State<TaskDashboardCard> {
   List<({int id, String name, String reward})>? _tasks;
-  bool _isSignedToday = false;
+  String? _error;
+  bool _loading = false;
+  int _generation = 0;
+
+  String get _item {
+    final value = widget.item.customParams['item'] as String? ?? 'doing';
+    return const {'new', 'doing', 'done', 'failed'}.contains(value)
+        ? value
+        : 'doing';
+  }
+
+  void _readCache() {
+    _tasks = KlpbbsApi.cachedTasks(_item, ignoreExpired: widget.isPreview);
+    _error = DioClient.isLoggedIn ? null : '登录后查看任务';
+  }
+
+  Future<void> _openTask({int? id, String? title}) async {
+    await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => id == null
+            ? TaskPage(initialItem: _item)
+            : FuncListPage(
+                title: title ?? '任务详情',
+                path: 'home.php?mod=task&do=view&id=$id&mobile=no')));
+    if (mounted && !widget.isPreview) _loadTasks(forceRefresh: true);
+  }
+
+  void _onAccountChanged() {
+    if (!mounted) return;
+    _generation++;
+    setState(() {
+      _loading = false;
+      _readCache();
+    });
+    if (!widget.isPreview) _loadTasks();
+  }
 
   @override
   void initState() {
     super.initState();
-    _isSignedToday = AutoSignService.instance.isSignedToday();
+    _readCache();
     if (!widget.isPreview) {
-      AutoSignService.instance.addListener(_onAutoSignChanged);
+      DioClient.sessionChanges.addListener(_onAccountChanged);
       _loadTasks();
     }
   }
@@ -37,31 +72,53 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
   @override
   void dispose() {
     if (!widget.isPreview) {
-      AutoSignService.instance.removeListener(_onAutoSignChanged);
+      DioClient.sessionChanges.removeListener(_onAccountChanged);
     }
     super.dispose();
   }
 
-  void _onAutoSignChanged() {
-    if (!mounted || widget.isPreview) return;
-    final nowSigned = AutoSignService.instance.isSignedToday();
-    if (nowSigned != _isSignedToday) {
-      setState(() {
-        _isSignedToday = nowSigned;
-      });
+  @override
+  void didUpdateWidget(covariant TaskDashboardCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.item.customParams['item'] !=
+        widget.item.customParams['item']) {
+      _generation++;
+      _readCache();
+      if (!widget.isPreview) _loadTasks();
     }
   }
 
-  Future<void> _loadTasks() async {
+  Future<void> _loadTasks({bool forceRefresh = false}) async {
+    if (!DioClient.isLoggedIn || widget.isPreview) return;
+    final session = DioClient.sessionKey;
+    final generation = ++_generation;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
-      final list = await KlpbbsApi.getTasks();
-      if (mounted) {
+      final list =
+          await KlpbbsApi.getTasks(item: _item, forceRefresh: forceRefresh);
+      if (mounted &&
+          session == DioClient.sessionKey &&
+          generation == _generation) {
         setState(() {
           _tasks = list;
-          _isSignedToday = AutoSignService.instance.isSignedToday();
         });
       }
-    } catch (_) {}
+    } catch (error) {
+      if (mounted &&
+          session == DioClient.sessionKey &&
+          generation == _generation) {
+        setState(() => _error = '$error');
+      }
+    } finally {
+      if (mounted &&
+          session == DioClient.sessionKey &&
+          generation == _generation) {
+        setState(() => _loading = false);
+      }
+    }
   }
 
   @override
@@ -69,7 +126,9 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
     final isCompact = widget.item.rowSpan <= 1;
     final isNarrow = widget.item.colSpan <= 2;
     final customTitle = widget.item.customParams['customTitle'] as String?;
-    final title = (customTitle != null && customTitle.isNotEmpty) ? customTitle : '成长与每日任务';
+    final title = (customTitle != null && customTitle.isNotEmpty)
+        ? customTitle
+        : '成长与每日任务';
 
     final taskList = _tasks ?? const [];
 
@@ -77,7 +136,7 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
       child: DashboardCardFrame(
         item: widget.item,
         padding: const EdgeInsets.all(12),
-        onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const TaskPage())),
+        onTap: _openTask,
         child: (isCompact || isNarrow)
             ? _buildCompact(context, title, taskList)
             : _buildExpanded(context, title, taskList),
@@ -85,12 +144,14 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
     );
   }
 
-  Widget _buildCompact(BuildContext context, String title, List<({int id, String name, String reward})> tasks) {
+  Widget _buildCompact(BuildContext context, String title,
+      List<({int id, String name, String reward})> tasks) {
     final colorScheme = Theme.of(context).colorScheme;
-    final totalCount = tasks.isNotEmpty ? tasks.length : 3;
-    final completedCount = _isSignedToday ? 1 : 0;
-    final progress = (completedCount / totalCount).clamp(0.0, 1.0);
-    final countText = _isSignedToday ? '今日已签到' : '$totalCount 个任务';
+    final countText = _error != null
+        ? (DioClient.isLoggedIn ? '暂不可用' : '需登录')
+        : _tasks == null
+            ? (_loading ? '加载中' : '待确认')
+            : (tasks.isEmpty ? '暂无任务' : '${tasks.length} 个任务');
 
     final accent = DashboardCardTheme.of(context).accentColor;
 
@@ -106,7 +167,7 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
             ),
           ),
           child: Icon(
-            _isSignedToday ? Icons.task_alt_rounded : Icons.checklist_rounded,
+            _item == 'done' ? Icons.task_alt_rounded : Icons.checklist_rounded,
             size: 18,
             color: Colors.white,
           ),
@@ -121,18 +182,15 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
                 title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                style:
+                    const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 3),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: LinearProgressIndicator(
-                  value: _isSignedToday ? progress.clamp(0.33, 1.0) : 0.15,
-                  minHeight: 4,
-                  backgroundColor: colorScheme.outlineVariant.withAlpha(50),
-                  color: _isSignedToday ? Colors.green : accent,
-                ),
-              ),
+              Text('以任务中心的进度和奖励为准',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 10, color: colorScheme.onSurfaceVariant)),
             ],
           ),
         ),
@@ -140,7 +198,7 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
           decoration: BoxDecoration(
-            color: (_isSignedToday ? Colors.green : accent).withAlpha(30),
+            color: accent.withAlpha(30),
             borderRadius: BorderRadius.circular(6),
           ),
           child: Text(
@@ -148,7 +206,7 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
             style: TextStyle(
               fontSize: 10,
               fontWeight: FontWeight.bold,
-              color: _isSignedToday ? Colors.green.shade800 : accent,
+              color: accent,
             ),
           ),
         ),
@@ -156,68 +214,49 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
     );
   }
 
-  Widget _buildExpanded(BuildContext context, String title, List<({int id, String name, String reward})> tasks) {
+  Widget _buildExpanded(BuildContext context, String title,
+      List<({int id, String name, String reward})> tasks) {
     final colorScheme = Theme.of(context).colorScheme;
     final accent = DashboardCardTheme.of(context).accentColor;
     final maxCount = widget.item.rowSpan >= 3 ? 5 : 3;
 
-    // 构建整合任务列表（注入打卡、回帖、点赞等真实任务项与状态）
-    final items = <({String name, String reward, Color color, bool isCompleted, VoidCallback? onTap})>[];
+    // 只显示任务接口返回的任务；签到状态不能代替任务完成状态。
+    final items = <({
+      String name,
+      String reward,
+      Color color,
+      bool isCompleted,
+      VoidCallback? onTap
+    })>[];
 
     if (tasks.isNotEmpty) {
       for (final t in tasks.take(maxCount)) {
-        final isSignTask = t.name.contains('签到') || t.name.contains('打卡') || t.name.contains('登录');
-        final isCompleted = isSignTask && _isSignedToday;
         items.add((
           name: t.name,
-          reward: isCompleted ? '已完成' : (t.reward.isNotEmpty ? t.reward : '奖励加成'),
-          color: isCompleted ? Colors.green : accent,
-          isCompleted: isCompleted,
-          onTap: isSignTask && !_isSignedToday ? _quickSignIn : null,
+          reward: t.reward.isNotEmpty ? t.reward : '查看任务',
+          color: accent,
+          isCompleted: _item == 'done',
+          onTap: () => _openTask(id: t.id, title: t.name),
         ));
       }
     }
 
     if (items.isEmpty) {
       items.add((
-        name: '每日登录打卡',
-        reward: _isSignedToday ? '已打卡' : '领 20 铁粒',
-        color: Colors.green,
-        isCompleted: _isSignedToday,
-        onTap: !_isSignedToday ? _quickSignIn : null,
-      ));
-      items.add((
-        name: '回帖互动交流',
-        reward: '奖 30 经验',
-        color: Colors.cyan,
+        name: _error != null
+            ? (!DioClient.isLoggedIn
+                ? '登录后查看任务'
+                : _error!.contains('任务关闭')
+                    ? '站点任务已关闭'
+                    : '任务暂不可用')
+            : _tasks == null
+                ? (_loading ? '正在读取任务' : '任务状态待确认')
+                : '当前分类暂无任务',
+        reward: _error == null ? '任务中心' : '查看详情',
+        color: colorScheme.onSurfaceVariant,
         isCompleted: false,
-        onTap: null,
+        onTap: _openTask,
       ));
-      items.add((
-        name: '点赞打赏他人',
-        reward: '每日成长',
-        color: Colors.orange,
-        isCompleted: false,
-        onTap: null,
-      ));
-      if (maxCount >= 4) {
-        items.add((
-          name: '浏览热门资源',
-          reward: '活跃度 +10',
-          color: Colors.purple,
-          isCompleted: false,
-          onTap: null,
-        ));
-      }
-      if (maxCount >= 5) {
-        items.add((
-          name: '分享优质内容',
-          reward: '贡献加成',
-          color: Colors.indigo,
-          isCompleted: false,
-          onTap: null,
-        ));
-      }
     }
 
     return Column(
@@ -225,18 +264,22 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
       children: [
         Row(
           children: [
-            Icon(Icons.checklist_rounded, size: 17, color: Colors.cyan.shade700),
+            Icon(Icons.checklist_rounded,
+                size: 17, color: Colors.cyan.shade700),
             const SizedBox(width: 6),
-            Text(
+            Expanded(
+                child: Text(
               title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.bold,
                 color: colorScheme.onSurface,
               ),
-            ),
-            const Spacer(),
-            Text('任务中心 >', style: TextStyle(fontSize: 11, color: colorScheme.primary)),
+            )),
+            Text('任务中心 >',
+                style: TextStyle(fontSize: 11, color: colorScheme.primary)),
           ],
         ),
         const SizedBox(height: 6),
@@ -245,7 +288,8 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               for (final it in items)
-                _buildTaskItem(it.name, it.reward, it.color, it.isCompleted, it.onTap),
+                _buildTaskItem(
+                    it.name, it.reward, it.color, it.isCompleted, it.onTap),
             ],
           ),
         ),
@@ -253,7 +297,8 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
     );
   }
 
-  Widget _buildTaskItem(String name, String reward, Color color, bool isCompleted, VoidCallback? onTap) {
+  Widget _buildTaskItem(String name, String reward, Color color,
+      bool isCompleted, VoidCallback? onTap) {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(6),
@@ -262,7 +307,9 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
         child: Row(
           children: [
             Icon(
-              isCompleted ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+              isCompleted
+                  ? Icons.check_circle_rounded
+                  : Icons.radio_button_unchecked_rounded,
               size: 14,
               color: isCompleted ? Colors.green : color,
             ),
@@ -281,57 +328,29 @@ class _TaskDashboardCardState extends State<TaskDashboardCard> {
               ),
             ),
             const SizedBox(width: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-              decoration: BoxDecoration(
-                color: (isCompleted ? Colors.green : color).withAlpha(25),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                reward,
-                maxLines: 1,
-                style: TextStyle(
-                  fontSize: 9.5,
-                  fontWeight: FontWeight.bold,
-                  color: isCompleted ? Colors.green.shade800 : color,
-                ),
-              ),
-            ),
+            ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 112),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: (isCompleted ? Colors.green : color).withAlpha(25),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    reward,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 9.5,
+                      fontWeight: FontWeight.bold,
+                      color: isCompleted ? Colors.green.shade800 : color,
+                    ),
+                  ),
+                )),
           ],
         ),
       ),
     );
-  }
-
-  void _quickSignIn() async {
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(
-      const SnackBar(
-        content: Text('正在执行每日签到打卡...'),
-        behavior: SnackBarBehavior.floating,
-        duration: Duration(seconds: 1),
-      ),
-    );
-    try {
-      await AutoSignService.instance.signIn();
-      if (mounted) {
-        final isSigned = AutoSignService.instance.isSignedToday();
-        messenger.showSnackBar(
-          SnackBar(
-            content: Text(isSigned ? '签到打卡成功！' : AutoSignService.instance.statusMessage),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        messenger.showSnackBar(
-          SnackBar(
-            content: Text('签到打卡失败: $e'),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
-    }
   }
 }

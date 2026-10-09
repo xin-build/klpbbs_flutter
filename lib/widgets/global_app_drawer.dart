@@ -7,6 +7,7 @@ import '../core/main_tab_controller.dart';
 import '../core/preload_service.dart';
 import '../models/user_space.dart';
 import '../pages/credit_page.dart';
+import '../pages/membership_page.dart';
 import '../pages/darkroom_page.dart';
 import '../pages/favorite_hub_page.dart';
 import '../pages/guide_page.dart';
@@ -26,9 +27,9 @@ import '../pages/user_space_page.dart';
 import '../pages/user_threads_page.dart';
 import '../pages/web_login_page.dart';
 import '../services/push_notification_service.dart';
-import 'package:cached_network_image/cached_network_image.dart';
-import '../core/cache_manager.dart';
+import 'user_avatar_widget.dart';
 import 'responsive_layout.dart';
+import 'app_motion.dart';
 
 /// 全站统一左侧边栏抽屉组件
 /// 拥有精致的现代卡片式头部、全站核心版块直达、个人互动中心与系统设置
@@ -45,6 +46,7 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
   int? _myUid;
   String? _myUsername;
   DiscuzUserRole? _userRole;
+  int _userGeneration = 0;
 
   @override
   void initState() {
@@ -60,28 +62,73 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
         _myUsername = cachedSpace.username;
       }
     }
+    DioClient.sessionChanges.addListener(_onSessionChanged);
+    KlpbbsApi.profileChanges.addListener(_onProfileChanged);
     _loadUser();
   }
 
-  Future<void> _loadUser() async {
-    final uid = await KlpbbsApi.getMyUid();
-    if (!mounted) return;
-    if (uid != null && uid > 0) {
-      String? name;
-      final cachedSpace = PreloadService.instance.get<UserSpace>(
-        'user_space_$uid',
-        ignoreExpired: true,
-      );
-      if (cachedSpace != null && cachedSpace.username.isNotEmpty) {
-        name = cachedSpace.username;
+  @override
+  void dispose() {
+    DioClient.sessionChanges.removeListener(_onSessionChanged);
+    KlpbbsApi.profileChanges.removeListener(_onProfileChanged);
+    super.dispose();
+  }
+
+  void _onSessionChanged() {
+    setState(() {
+      _myUid = null;
+      _myUsername = null;
+      _userRole = null;
+    });
+    _loadUser();
+  }
+
+  void _onProfileChanged() {
+    if (mounted) _loadUser(forceRefresh: true);
+  }
+
+  Future<void> _loadUser({bool forceRefresh = false}) async {
+    final generation = ++_userGeneration;
+    final session = DioClient.sessionKey;
+    try {
+      final uid = await KlpbbsApi.getMyUid();
+      if (!mounted ||
+          session != DioClient.sessionKey ||
+          generation != _userGeneration) {
+        return;
       }
-      final role = await KlpbbsApi.getMyRole();
-      if (!mounted) return;
-      setState(() {
-        _myUid = uid;
-        _myUsername = name;
-        _userRole = role;
-      });
+      if (uid != null && uid > 0) {
+        String? name = KlpbbsApi.currentCachedMyUsername;
+        final cachedSpace = forceRefresh
+            ? await KlpbbsApi.getUserSpace(uid, forceRefresh: true)
+            : PreloadService.instance.get<UserSpace>(
+                'user_space_$uid',
+                ignoreExpired: true,
+              );
+        if (!mounted ||
+            session != DioClient.sessionKey ||
+            generation != _userGeneration) {
+          return;
+        }
+        if (cachedSpace != null &&
+            cachedSpace.uid == uid &&
+            cachedSpace.username.isNotEmpty) {
+          name = cachedSpace.username;
+        }
+        final role = await KlpbbsApi.getMyRole();
+        if (!mounted ||
+            session != DioClient.sessionKey ||
+            generation != _userGeneration) {
+          return;
+        }
+        setState(() {
+          _myUid = uid;
+          _myUsername = name;
+          _userRole = role;
+        });
+      }
+    } catch (_) {
+      // Keep the session-checked cached identity when a background read fails.
     }
   }
 
@@ -113,7 +160,8 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
 
   Future<T?> _pushPage<T>(Widget page) {
     _closeDrawer();
-    return Navigator.of(context).push<T>(MaterialPageRoute(builder: (_) => page));
+    return Navigator.of(context)
+        .push<T>(MaterialPageRoute(builder: (_) => page));
   }
 
   @override
@@ -124,195 +172,105 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
     final curIdx = widget.currentTabIndex ?? mainTabIndex.value;
 
     return Drawer(
-      backgroundColor: colorScheme.surface,
+      backgroundColor: colorScheme.surfaceContainerLow,
       child: SafeArea(
         top: false,
         child: Column(
           children: [
-            // 1. 顶部用户信息卡片
-            Container(
-              width: double.infinity,
+            Padding(
               padding: EdgeInsets.fromLTRB(
-                16,
-                MediaQuery.of(context).padding.top + 16,
-                16,
-                16,
-              ),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    colorScheme.primary,
-                    colorScheme.secondary,
-                  ],
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: colorScheme.shadow.withAlpha(40),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: isLoggedIn
-                  ? InkWell(
-                      borderRadius: BorderRadius.circular(12),
-                      onTap: () {
-                        _pushPage(UserSpacePage(uid: _myUid!, isMe: true));
-                      },
-                      child: Column(
+                  12, MediaQuery.paddingOf(context).top + 12, 12, 8),
+              child: Material(
+                color: colorScheme.primaryContainer,
+                borderRadius: BorderRadius.circular(24),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: () => isLoggedIn
+                      ? _pushPage(UserSpacePage(uid: _myUid!, isMe: true))
+                      : _pushPage(const LoginPage()),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Row(
-                            children: [
-                              Container(
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  border: Border.all(color: Colors.white, width: 2),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.black.withAlpha(40),
-                                      blurRadius: 6,
-                                    ),
-                                  ],
-                                ),
-                                 child: ClipOval(
-                                   child: CachedNetworkImage(
-                                     imageUrl: AppConfig.avatarUrl(_myUid!, size: 'middle'),
-                                     cacheManager: KlpbbsCacheManager.instance,
-                                     httpHeaders: AppConfig.imageHeaders,
-                                     width: 52,
-                                     height: 52,
-                                     fit: BoxFit.cover,
-                                     errorWidget: (_, __, ___) => const CircleAvatar(
-                                       radius: 26,
-                                       child: Icon(Icons.person, size: 28),
-                                     ),
-                                   ),
-                                 ),
-                               ),
-                              const SizedBox(width: 14),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      _myUsername ?? '苦力怕居民',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 16.5,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    const SizedBox(height: 3),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
-                                      decoration: BoxDecoration(
-                                        color: Colors.white.withAlpha(45),
-                                        borderRadius: BorderRadius.circular(10),
-                                      ),
-                                      child: Text(
-                                        'UID: $_myUid  点击进入空间 >',
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 11,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 22),
-                                tooltip: '关闭侧边栏',
-                                visualDensity: VisualDensity.compact,
-                                padding: const EdgeInsets.all(4),
-                                constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-                                onPressed: _closeDrawer,
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          // 快捷入口小芯片
-                          Row(
-                            children: [
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (isLoggedIn)
+                                  UserAvatarWidget(
+                                      uid: _myUid,
+                                      author: _myUsername ?? '',
+                                      reserveFrameSpace: true,
+                                      size: 52)
+                                else
+                                  CircleAvatar(
+                                      radius: 26,
+                                      backgroundColor:
+                                          colorScheme.surfaceContainer,
+                                      child: Icon(Icons.person_outline_rounded,
+                                          color: colorScheme.primary,
+                                          size: 30)),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                    child: Text(
+                                        isLoggedIn
+                                            ? _myUsername ?? '论坛账号'
+                                            : '登录论坛',
+                                        key: const ValueKey(
+                                            'drawer-account-name'),
+                                        softWrap: true,
+                                        style: TextStyle(
+                                            color:
+                                                colorScheme.onPrimaryContainer,
+                                            fontSize: 17,
+                                            fontWeight: FontWeight.w600))),
+                                IconButton(
+                                    key: const ValueKey('drawer-close'),
+                                    onPressed: _closeDrawer,
+                                    tooltip: '关闭侧边栏',
+                                    color: colorScheme.onPrimaryContainer,
+                                    style: IconButton.styleFrom(
+                                        minimumSize: const Size(48, 48)),
+                                    icon: const Icon(Icons.close_rounded,
+                                        size: 20)),
+                              ]),
+                          const SizedBox(height: 10),
+                          Text(isLoggedIn ? 'UID $_myUid · 个人空间' : '查看消息与我的收藏',
+                              key: const ValueKey('drawer-account-uid'),
+                              softWrap: true,
+                              style: TextStyle(
+                                  color: colorScheme.onPrimaryContainer
+                                      .withAlpha(190),
+                                  fontSize: 12.5)),
+                          if (isLoggedIn) ...[
+                            const SizedBox(height: 14),
+                            Row(children: [
                               _buildHeaderChip(
-                                icon: Icons.military_tech_rounded,
-                                label: '勋章',
-                                onTap: () => _switchRootTab(3),
-                              ),
-                              const SizedBox(width: 8),
+                                  icon: Icons.military_tech_outlined,
+                                  label: '勋章',
+                                  onTap: () => _switchRootTab(3)),
+                              const SizedBox(width: 6),
                               _buildHeaderChip(
-                                icon: Icons.account_balance_wallet_rounded,
-                                label: '积分',
-                                onTap: () => _pushPage(const CreditPage()),
-                              ),
-                              const SizedBox(width: 8),
+                                  icon: Icons.account_balance_wallet_outlined,
+                                  label: '积分',
+                                  onTap: () => _pushPage(const CreditPage())),
+                              const SizedBox(width: 6),
                               _buildHeaderChip(
-                                icon: Icons.auto_fix_high_rounded,
-                                label: '道具',
-                                onTap: () => _pushPage(const MagicPage()),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    )
-                  : InkWell(
-                      borderRadius: BorderRadius.circular(12),
-                      onTap: () {
-                        _pushPage(const LoginPage());
-                      },
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        child: Row(
-                          children: [
-                            CircleAvatar(
-                              radius: 26,
-                              backgroundColor: Colors.white.withAlpha(50),
-                              child: const Icon(Icons.person_outline_rounded, color: Colors.white, size: 30),
-                            ),
-                            const SizedBox(width: 14),
-                            const Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    '点击登录账号',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 17,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  SizedBox(height: 2),
-                                  Text(
-                                    '登录体验苦力怕论坛全功能',
-                                    style: TextStyle(color: Colors.white70, fontSize: 12),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 22),
-                              tooltip: '关闭侧边栏',
-                              visualDensity: VisualDensity.compact,
-                              padding: const EdgeInsets.all(4),
-                              constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-                              onPressed: _closeDrawer,
-                            ),
+                                  icon: Icons.auto_fix_high_outlined,
+                                  label: '道具',
+                                  onTap: () => _pushPage(const MagicPage())),
+                            ]),
                           ],
-                        ),
-                      ),
-                    ),
+                        ]),
+                  ),
+                ),
+              ),
             ),
 
             // 2. 抽屉导航列表
             Expanded(
               child: ListView(
+                key: const ValueKey('drawer-navigation-list'),
                 padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
                 children: [
                   _buildSectionHeader('全站导航'),
@@ -372,22 +330,28 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
                   _buildNavItem(
                     icon: Icons.leaderboard_outlined,
                     selectedIcon: Icons.leaderboard_rounded,
-                    title: '综合排行榜',
+                    title: '排行榜',
                     onTap: () => _pushPage(const RanklistPage()),
                   ),
                   _buildNavItem(
                     icon: Icons.gavel_outlined,
                     selectedIcon: Icons.gavel_rounded,
-                    title: '封神榜 (小黑屋)',
+                    title: '封神榜 (违规公示)',
                     onTap: () => _pushPage(const DarkroomPage()),
                   ),
-
+                  const Divider(height: 16),
+                  _buildNavItem(
+                      icon: Icons.workspace_premium_outlined,
+                      selectedIcon: Icons.workspace_premium_rounded,
+                      title: '用户组与会员',
+                      onTap: () => _pushPage(const MembershipPage())),
                   const Divider(height: 16),
                   _buildSectionHeader('互动与个人'),
                   ListenableBuilder(
                     listenable: PushNotificationService.instance,
                     builder: (context, _) {
-                      final unreadNotices = PushNotificationService.instance.unreadNotices;
+                      final unreadNotices =
+                          PushNotificationService.instance.unreadNotices;
                       return _buildNavItem(
                         icon: Icons.notifications_outlined,
                         selectedIcon: Icons.notifications_rounded,
@@ -400,7 +364,8 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
                   ListenableBuilder(
                     listenable: PushNotificationService.instance,
                     builder: (context, _) {
-                      final unreadPm = PushNotificationService.instance.unreadPm;
+                      final unreadPm =
+                          PushNotificationService.instance.unreadPm;
                       return _buildNavItem(
                         icon: Icons.mail_outline_rounded,
                         selectedIcon: Icons.mail_rounded,
@@ -415,7 +380,8 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
                       icon: Icons.article_outlined,
                       selectedIcon: Icons.article_rounded,
                       title: '我的帖子',
-                      onTap: () => _pushPage(UserThreadsPage(uid: _myUid!, type: 'thread', title: '我的帖子')),
+                      onTap: () => _pushPage(UserThreadsPage(
+                          uid: _myUid!, type: 'thread', title: '我的帖子')),
                     ),
                     _buildNavItem(
                       icon: Icons.star_border_rounded,
@@ -447,7 +413,6 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
                       onTap: () => _pushPage(const ModCpPage()),
                     ),
                   ],
-
                   const Divider(height: 16),
                   _buildSectionHeader('系统与设置'),
                   _buildNavItem(
@@ -508,7 +473,8 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
               ),
               child: Row(
                 children: [
-                  Icon(Icons.terminal_rounded, size: 16, color: colorScheme.outline),
+                  Icon(Icons.terminal_rounded,
+                      size: 16, color: colorScheme.outline),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -530,50 +496,45 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
     );
   }
 
-  Widget _buildHeaderChip({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-  }) {
+  Widget _buildHeaderChip(
+      {required IconData icon,
+      required String label,
+      required VoidCallback onTap}) {
+    final scheme = Theme.of(context).colorScheme;
     return Expanded(
-      child: Material(
-        color: Colors.white.withAlpha(40),
-        borderRadius: BorderRadius.circular(8),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(icon, size: 15, color: Colors.white),
-                const SizedBox(width: 4),
-                Text(
-                  label,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+        child: FilledButton.tonal(
+      key: ValueKey('drawer-shortcut-$label'),
+      onPressed: onTap,
+      style: FilledButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        backgroundColor: scheme.surfaceContainerLow.withAlpha(170),
+        foregroundColor: scheme.onPrimaryContainer,
+        shape: const StadiumBorder(),
+        minimumSize: const Size(0, 44),
       ),
-    );
+      child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Icon(icon, size: 18),
+            const SizedBox(width: 4),
+            Flexible(
+                child: Text(label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 13))),
+          ])),
+    ));
   }
 
   Widget _buildSectionHeader(String title) {
     final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
       child: Text(
         title,
         style: TextStyle(
-          fontSize: 11.5,
-          fontWeight: FontWeight.bold,
+          fontSize: 12.5,
+          fontWeight: FontWeight.w600,
           color: theme.colorScheme.primary,
           letterSpacing: 0.4,
         ),
@@ -592,29 +553,44 @@ class _GlobalAppDrawerState extends State<GlobalAppDrawer> {
   }) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final itemColor = color ?? (isSelected ? colorScheme.primary : colorScheme.onSurface);
+    final itemColor = color ??
+        (isSelected ? colorScheme.onSecondaryContainer : colorScheme.onSurface);
 
-    return ListTile(
-      dense: true,
-      visualDensity: const VisualDensity(horizontal: 0, vertical: -1.5),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      selected: isSelected,
-      selectedTileColor: colorScheme.primaryContainer.withAlpha(90),
-      leading: badgeCount > 0
-          ? Badge(
-              label: Text('$badgeCount'),
-              child: Icon(isSelected ? selectedIcon : icon, color: itemColor, size: 22),
-            )
-          : Icon(isSelected ? selectedIcon : icon, color: itemColor, size: 22),
-      title: Text(
-        title,
-        style: TextStyle(
-          fontSize: 13.5,
-          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-          color: itemColor,
-        ),
-      ),
-      onTap: onTap,
-    );
+    return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Material(
+            key: ValueKey('drawer-item-$title'),
+            color: isSelected
+                ? colorScheme.secondaryContainer
+                : Colors.transparent,
+            animationDuration: AppMotion.duration(context, 160),
+            borderRadius: BorderRadius.circular(28),
+            clipBehavior: Clip.antiAlias,
+            child: ListTile(
+              minTileHeight: 48,
+              minLeadingWidth: 24,
+              horizontalTitleGap: 16,
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+              shape: const StadiumBorder(),
+              selected: isSelected,
+              leading: badgeCount > 0
+                  ? Badge(
+                      label: Text('$badgeCount'),
+                      child: Icon(isSelected ? selectedIcon : icon,
+                          color: itemColor, size: 24),
+                    )
+                  : Icon(isSelected ? selectedIcon : icon,
+                      color: itemColor, size: 24),
+              title: Text(
+                title,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                  color: itemColor,
+                ),
+              ),
+              onTap: onTap,
+            )));
   }
 }

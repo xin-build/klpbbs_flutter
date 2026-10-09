@@ -16,10 +16,11 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.1.1+13
+version: 1.1.2+14
 
 environment:
-  sdk: '>=3.5.0 <4.0.0'
+  sdk: '>=3.8.0 <4.0.0'
+  flutter: '>=3.35.0'
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -30,12 +31,16 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   dio: ^5.11.0
   html: ^0.15.6
+  image: 4.9.2
+  xml: 6.6.1
   file_picker: ^11.0.3
   cached_network_image: ^3.4.1
   flutter_cache_manager: ^3.4.1
@@ -55,7 +60,13 @@ dependencies:
   dynamic_color: 1.7.0
   flutter_inappwebview: ^6.1.5
   flutter_svg: ^2.0.17
+  qr_flutter: ^4.1.0
 
+  http: any
+dependency_overrides:
+  # Keep the verified Windows shutdown fix local to this project.
+  flutter_inappwebview_windows:
+    path: third_party/flutter_inappwebview_windows
 dev_dependencies:
   flutter_test:
     sdk: flutter

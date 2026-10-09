@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
@@ -135,7 +136,7 @@ class _CreditLogCardState extends State<CreditLogCard> {
                         ? const SizedBox(
                             width: 14,
                             height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2),
+                            child: AppLoadingIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.refresh_rounded, size: 18),
                     tooltip: '刷新积分',
@@ -222,7 +223,7 @@ class _CreditLogCardState extends State<CreditLogCard> {
                   child: SizedBox(
                     width: 22,
                     height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    child: AppLoadingIndicator(strokeWidth: 2),
                   ),
                 ),
               ),

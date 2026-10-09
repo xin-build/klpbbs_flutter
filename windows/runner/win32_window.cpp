@@ -144,6 +144,7 @@ bool Win32Window::Create(const std::wstring& title,
     return false;
   }
 
+  UpdateIcons(window, dpi);
   UpdateTheme(window);
 
   return OnCreate();
@@ -188,6 +189,7 @@ Win32Window::MessageHandler(HWND hwnd,
       return 0;
 
     case WM_DPICHANGED: {
+      UpdateIcons(hwnd, HIWORD(wparam));
       auto newRectSize = reinterpret_cast<RECT*>(lparam);
       LONG newWidth = newRectSize->right - newRectSize->left;
       LONG newHeight = newRectSize->bottom - newRectSize->top;
@@ -196,6 +198,17 @@ Win32Window::MessageHandler(HWND hwnd,
                    newHeight, SWP_NOZORDER | SWP_NOACTIVATE);
 
       return 0;
+    }
+    case WM_GETICON: {
+      // The taskbar asks for a per-window icon, including ICON_SMALL2. Merely
+      // registering hIcon on the class is insufficient for every shell path.
+      const auto icon = DefWindowProc(hwnd, message, wparam, lparam);
+      if (icon != 0) return icon;
+      const auto class_icon = GetClassLongPtr(
+          hwnd, wparam == ICON_BIG ? GCLP_HICON : GCLP_HICONSM);
+      if (class_icon != 0) return class_icon;
+      return reinterpret_cast<LRESULT>(LoadIcon(
+          GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON)));
     }
     case WM_SIZE: {
       RECT rect = GetClientArea();
@@ -238,7 +251,7 @@ Win32Window* Win32Window::GetThisFromHandle(HWND const window) noexcept {
       GetWindowLongPtr(window, GWLP_USERDATA));
 }
 
-void Win32Window::SetChildContent(HWND content) {
+void Win32Window::SetChildContent(HWND content, bool activate) {
   child_content_ = content;
   SetParent(content, window_handle_);
   RECT frame = GetClientArea();
@@ -246,7 +259,7 @@ void Win32Window::SetChildContent(HWND content) {
   MoveWindow(content, frame.left, frame.top, frame.right - frame.left,
              frame.bottom - frame.top, true);
 
-  SetFocus(child_content_);
+  if (activate) SetFocus(child_content_);
 }
 
 RECT Win32Window::GetClientArea() {
@@ -284,5 +297,25 @@ void Win32Window::UpdateTheme(HWND const window) {
     BOOL enable_dark_mode = light_mode == 0;
     DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
                           &enable_dark_mode, sizeof(enable_dark_mode));
+  }
+}
+
+void Win32Window::UpdateIcons(HWND window, UINT dpi) {
+  const auto instance = GetModuleHandle(nullptr);
+  const auto load = [instance, dpi](int x_metric, int y_metric) {
+    return reinterpret_cast<HICON>(LoadImage(
+        instance, MAKEINTRESOURCE(IDI_APP_ICON), IMAGE_ICON,
+        GetSystemMetricsForDpi(x_metric, dpi),
+        GetSystemMetricsForDpi(y_metric, dpi), LR_SHARED));
+  };
+  const auto small_icon = load(SM_CXSMICON, SM_CYSMICON);
+  const auto big_icon = load(SM_CXICON, SM_CYICON);
+  if (small_icon) {
+    SendMessage(window, WM_SETICON, ICON_SMALL,
+                reinterpret_cast<LPARAM>(small_icon));
+  }
+  if (big_icon) {
+    SendMessage(window, WM_SETICON, ICON_BIG,
+                reinterpret_cast<LPARAM>(big_icon));
   }
 }

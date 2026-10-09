@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import '../core/app_config.dart';
+import 'app_motion.dart';
+import 'responsive_layout.dart';
 
-/// 优雅流光骨架屏（带平滑动效的加载占位）
-class SkeletonList extends StatefulWidget {
+/// A single pulse covers the group; its shape follows the actual feed cards.
+class SkeletonList extends StatelessWidget {
   final int itemCount;
   final bool withThumbnail;
   final bool? isGrid;
-
   const SkeletonList({
     super.key,
     this.itemCount = 6,
@@ -15,273 +16,118 @@ class SkeletonList extends StatefulWidget {
   });
 
   @override
-  State<SkeletonList> createState() => _SkeletonListState();
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return AppSkeletonPulse(
+      child: LayoutBuilder(builder: (context, constraints) {
+        final grid = isGrid ??
+            (ResponsiveBreakpoints.isDesktop(context) &&
+                constraints.maxWidth >= 640);
+        Widget column(int start, int step) => Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var i = start; i < itemCount; i += step)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _card(scheme),
+                  ),
+              ],
+            );
+        final content = Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: grid
+              ? Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Expanded(child: column(0, 2)),
+                  const SizedBox(width: 12),
+                  Expanded(child: column(1, 2)),
+                ])
+              : column(0, 1),
+        );
+        // Home, search and notifications give their placeholder a viewport;
+        // thread lists place it in a sliver with unbounded height instead.
+        // Keep both layouts valid without building an overflowing Column.
+        return constraints.hasBoundedHeight
+            ? SingleChildScrollView(
+                primary: false,
+                physics: const NeverScrollableScrollPhysics(),
+                child: content,
+              )
+            : content;
+      }),
+    );
+  }
+
+  Widget _card(ColorScheme scheme) {
+    final bone = scheme.surfaceContainerHighest;
+    Widget bar(double width, double height) => FractionallySizedBox(
+          alignment: Alignment.centerLeft,
+          widthFactor: width,
+          child: Container(
+              height: height,
+              decoration: BoxDecoration(
+                  color: bone, borderRadius: BorderRadius.circular(6))),
+        );
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: scheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: scheme.outlineVariant.withAlpha(65))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(color: bone, shape: BoxShape.circle)),
+          const SizedBox(width: 10),
+          Expanded(
+              child: Column(children: [
+            bar(.45, 12),
+            const SizedBox(height: 6),
+            bar(.3, 9),
+          ])),
+        ]),
+        const SizedBox(height: 16),
+        bar(.96, 15),
+        const SizedBox(height: 8),
+        bar(.7, 12),
+        if (withThumbnail) ...[
+          const SizedBox(height: 14),
+          Row(children: [
+            for (var i = 0; i < 3; i++) ...[
+              if (i > 0) const SizedBox(width: 6),
+              Expanded(
+                  child: Container(
+                      height: 100,
+                      decoration: BoxDecoration(
+                          color: bone,
+                          borderRadius: BorderRadius.circular(14)))),
+            ],
+          ]),
+        ],
+        const SizedBox(height: 16),
+        bar(.4, 10),
+      ]),
+    );
+  }
 }
 
-class _SkeletonListState extends State<SkeletonList>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _animCtrl;
-  late final Animation<double> _opacity;
+/// Image placeholder that respects the common motion and offstage settings.
+class PulsePlaceholder extends StatelessWidget {
+  final double? width, height;
+  final BorderRadius? radius;
+  const PulsePlaceholder({super.key, this.width, this.height, this.radius});
 
   @override
-  void initState() {
-    super.initState();
-    _animCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 950),
-    )..repeat(reverse: true);
-    _opacity = Tween<double>(begin: 0.45, end: 0.92).animate(
-      CurvedAnimation(parent: _animCtrl, curve: Curves.easeInOut),
-    );
-  }
-
-  @override
-  void dispose() {
-    _animCtrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    final boneColor = isDark
-        ? theme.colorScheme.surfaceContainerHighest.withAlpha(140)
-        : theme.colorScheme.surfaceContainerHighest.withAlpha(180);
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final useGrid = widget.isGrid ?? (constraints.maxWidth >= 640);
-        return RepaintBoundary(
-          child: FadeTransition(
-            opacity: _opacity,
-            child: useGrid ? _buildGrid(theme, boneColor) : _buildList(theme, boneColor),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildGrid(ThemeData theme, Color boneColor) {
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 520,
-        mainAxisExtent: 138,
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-      ),
-      itemCount: widget.itemCount,
-      itemBuilder: (_, __) => Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: theme.colorScheme.outlineVariant.withAlpha(45),
-            width: 0.8,
-          ),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: double.infinity,
-                    height: 16,
-                    decoration: BoxDecoration(
-                      color: boneColor,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    width: 140,
-                    height: 11,
-                    decoration: BoxDecoration(
-                      color: boneColor,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                  ),
-                  const Spacer(),
-                  Row(
-                    children: [
-                      Container(
-                        width: 20,
-                        height: 20,
-                        decoration: BoxDecoration(
-                          color: boneColor,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Container(
-                        width: 60,
-                        height: 10,
-                        decoration: BoxDecoration(
-                          color: boneColor,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      ),
-                      const Spacer(),
-                      Container(
-                        width: 36,
-                        height: 10,
-                        decoration: BoxDecoration(
-                          color: boneColor,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            if (widget.withThumbnail) ...[
-              const SizedBox(width: 12),
-              Container(
-                width: 88,
-                height: 64,
-                decoration: BoxDecoration(
-                  color: boneColor,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildList(ThemeData theme, Color boneColor) {
-    return ListView.separated(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: widget.itemCount,
-      separatorBuilder: (_, __) => const Divider(height: 1),
-      itemBuilder: (_, __) => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (widget.withThumbnail) ...[
-              Container(
-                width: 100,
-                height: 63,
-                decoration: BoxDecoration(
-                  color: boneColor,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-              const SizedBox(width: 12),
-            ],
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _bar(boneColor, width: 0.9),
-                  const SizedBox(height: 8),
-                  _bar(boneColor, width: 0.6, height: 10),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Container(
-                        width: 16,
-                        height: 16,
-                        decoration: BoxDecoration(
-                          color: boneColor,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      _bar(boneColor, width: 0.25, height: 10),
-                      const Spacer(),
-                      _bar(boneColor, width: 0.15, height: 10),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _bar(
-    Color color, {
-    double? width,
-    double height = 14,
-  }) {
-    return LayoutBuilder(
-      builder: (context, c) {
-        final parentW = c.maxWidth.isFinite ? c.maxWidth : 300.0;
-        return Container(
-          width: parentW * (width ?? 1.0),
+  Widget build(BuildContext context) => AppSkeletonPulse(
+        child: Container(
+          width: width,
           height: height,
           decoration: BoxDecoration(
-            color: color,
-            borderRadius: BorderRadius.circular(4),
-          ),
-        );
-      },
-    );
-  }
-}
-
-/// 呼吸占位块（图片加载中动效）
-class PulsePlaceholder extends StatefulWidget {
-  final double? width;
-  final double? height;
-  final BorderRadius? radius;
-
-  const PulsePlaceholder({
-    super.key,
-    this.width,
-    this.height,
-    this.radius,
-  });
-
-  @override
-  State<PulsePlaceholder> createState() => _PulsePlaceholderState();
-}
-
-class _PulsePlaceholderState extends State<PulsePlaceholder>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 900),
-  )..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final base = Theme.of(context).colorScheme.surfaceContainerHighest;
-    return FadeTransition(
-      opacity: Tween(begin: 0.45, end: 0.95).animate(
-        CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut),
-      ),
-      child: Container(
-        width: widget.width,
-        height: widget.height,
-        decoration: BoxDecoration(
-          color: base,
-          borderRadius: widget.radius ?? BorderRadius.circular(8),
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: radius ?? BorderRadius.circular(14)),
         ),
-      ),
-    );
-  }
+      );
 }
 
 /// 版块列表流光骨架屏（横向分区标签 + 版块卡片网格占位）
@@ -303,10 +149,22 @@ class _ForumSkeletonState extends State<ForumSkeleton>
     _animCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 950),
-    )..repeat(reverse: true);
+    );
     _opacity = Tween<double>(begin: 0.45, end: 0.92).animate(
       CurvedAnimation(parent: _animCtrl, curve: Curves.easeInOut),
     );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (AppMotion.enabled(context, MotionScope.loading) &&
+        TickerMode.of(context)) {
+      if (!_animCtrl.isAnimating) _animCtrl.repeat(reverse: true);
+    } else {
+      _animCtrl.stop();
+      _animCtrl.value = 1;
+    }
   }
 
   @override
@@ -333,18 +191,22 @@ class _ForumSkeletonState extends State<ForumSkeleton>
             Container(
               height: 44,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Row(
-                children: [
-                  for (final w in [72.0, 84.0, 96.0, 68.0])
-                    Container(
-                      width: w,
-                      margin: const EdgeInsets.only(right: 8),
-                      decoration: BoxDecoration(
-                        color: boneColor,
-                        borderRadius: BorderRadius.circular(16),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                physics: const NeverScrollableScrollPhysics(),
+                child: Row(
+                  children: [
+                    for (final w in [72.0, 84.0, 96.0, 68.0])
+                      Container(
+                        width: w,
+                        margin: const EdgeInsets.only(right: 8),
+                        decoration: BoxDecoration(
+                          color: boneColor,
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
             ),
             const Divider(height: 1),
@@ -357,7 +219,8 @@ class _ForumSkeletonState extends State<ForumSkeleton>
                     return GridView.builder(
                       physics: const NeverScrollableScrollPhysics(),
                       padding: const EdgeInsets.all(12),
-                      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                      gridDelegate:
+                          const SliverGridDelegateWithMaxCrossAxisExtent(
                         maxCrossAxisExtent: 380,
                         mainAxisExtent: 78,
                         crossAxisSpacing: 10,
@@ -370,7 +233,8 @@ class _ForumSkeletonState extends State<ForumSkeleton>
                           color: theme.colorScheme.surfaceContainerLow,
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(
-                            color: theme.colorScheme.outlineVariant.withAlpha(40),
+                            color:
+                                theme.colorScheme.outlineVariant.withAlpha(40),
                             width: 0.8,
                           ),
                         ),
@@ -489,7 +353,8 @@ class ForumThreadListSkeleton extends StatefulWidget {
   });
 
   @override
-  State<ForumThreadListSkeleton> createState() => _ForumThreadListSkeletonState();
+  State<ForumThreadListSkeleton> createState() =>
+      _ForumThreadListSkeletonState();
 }
 
 class _ForumThreadListSkeletonState extends State<ForumThreadListSkeleton>
@@ -503,10 +368,22 @@ class _ForumThreadListSkeletonState extends State<ForumThreadListSkeleton>
     _animCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 950),
-    )..repeat(reverse: true);
+    );
     _opacity = Tween<double>(begin: 0.45, end: 0.92).animate(
       CurvedAnimation(parent: _animCtrl, curve: Curves.easeInOut),
     );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (AppMotion.enabled(context, MotionScope.loading) &&
+        TickerMode.of(context)) {
+      if (!_animCtrl.isAnimating) _animCtrl.repeat(reverse: true);
+    } else {
+      _animCtrl.stop();
+      _animCtrl.value = 1;
+    }
   }
 
   @override
@@ -561,13 +438,28 @@ class _ForumThreadListSkeletonState extends State<ForumThreadListSkeleton>
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Container(width: 110, height: 16, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(4))),
+                            Container(
+                                width: 110,
+                                height: 16,
+                                decoration: BoxDecoration(
+                                    color: boneColor,
+                                    borderRadius: BorderRadius.circular(4))),
                             const SizedBox(height: 5),
-                            Container(width: 70, height: 10, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(3))),
+                            Container(
+                                width: 70,
+                                height: 10,
+                                decoration: BoxDecoration(
+                                    color: boneColor,
+                                    borderRadius: BorderRadius.circular(3))),
                           ],
                         ),
                         const Spacer(),
-                        Container(width: 50, height: 22, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(12))),
+                        Container(
+                            width: 50,
+                            height: 22,
+                            decoration: BoxDecoration(
+                                color: boneColor,
+                                borderRadius: BorderRadius.circular(12))),
                       ],
                     ),
                     const Spacer(),
@@ -575,7 +467,12 @@ class _ForumThreadListSkeletonState extends State<ForumThreadListSkeleton>
                     Row(
                       children: [
                         for (int i = 0; i < 3; i++) ...[
-                          Container(width: 48, height: 12, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(4))),
+                          Container(
+                              width: 48,
+                              height: 12,
+                              decoration: BoxDecoration(
+                                  color: boneColor,
+                                  borderRadius: BorderRadius.circular(4))),
                           if (i < 2) const SizedBox(width: 12),
                         ],
                       ],
@@ -594,14 +491,25 @@ class _ForumThreadListSkeletonState extends State<ForumThreadListSkeleton>
                       decoration: BoxDecoration(
                         color: theme.colorScheme.surfaceContainerLow,
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(35)),
+                        border: Border.all(
+                            color:
+                                theme.colorScheme.outlineVariant.withAlpha(35)),
                       ),
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                       child: Row(
                         children: [
-                          Container(width: 16, height: 16, decoration: BoxDecoration(color: boneColor, shape: BoxShape.circle)),
+                          Container(
+                              width: 16,
+                              height: 16,
+                              decoration: BoxDecoration(
+                                  color: boneColor, shape: BoxShape.circle)),
                           const SizedBox(width: 6),
-                          Container(width: 60, height: 11, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(3))),
+                          Container(
+                              width: 60,
+                              height: 11,
+                              decoration: BoxDecoration(
+                                  color: boneColor,
+                                  borderRadius: BorderRadius.circular(3))),
                         ],
                       ),
                     ),
@@ -613,14 +521,25 @@ class _ForumThreadListSkeletonState extends State<ForumThreadListSkeleton>
                       decoration: BoxDecoration(
                         color: theme.colorScheme.surfaceContainerLow,
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(35)),
+                        border: Border.all(
+                            color:
+                                theme.colorScheme.outlineVariant.withAlpha(35)),
                       ),
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                       child: Row(
                         children: [
-                          Container(width: 16, height: 16, decoration: BoxDecoration(color: boneColor, shape: BoxShape.circle)),
+                          Container(
+                              width: 16,
+                              height: 16,
+                              decoration: BoxDecoration(
+                                  color: boneColor, shape: BoxShape.circle)),
                           const SizedBox(width: 6),
-                          Container(width: 60, height: 11, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(3))),
+                          Container(
+                              width: 60,
+                              height: 11,
+                              decoration: BoxDecoration(
+                                  color: boneColor,
+                                  borderRadius: BorderRadius.circular(3))),
                         ],
                       ),
                     ),
@@ -636,14 +555,25 @@ class _ForumThreadListSkeletonState extends State<ForumThreadListSkeleton>
                       decoration: BoxDecoration(
                         color: theme.colorScheme.surfaceContainerLow,
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(35)),
+                        border: Border.all(
+                            color:
+                                theme.colorScheme.outlineVariant.withAlpha(35)),
                       ),
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                       child: Row(
                         children: [
-                          Container(width: 16, height: 16, decoration: BoxDecoration(color: boneColor, shape: BoxShape.circle)),
+                          Container(
+                              width: 16,
+                              height: 16,
+                              decoration: BoxDecoration(
+                                  color: boneColor, shape: BoxShape.circle)),
                           const SizedBox(width: 6),
-                          Container(width: 60, height: 11, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(3))),
+                          Container(
+                              width: 60,
+                              height: 11,
+                              decoration: BoxDecoration(
+                                  color: boneColor,
+                                  borderRadius: BorderRadius.circular(3))),
                         ],
                       ),
                     ),
@@ -655,14 +585,25 @@ class _ForumThreadListSkeletonState extends State<ForumThreadListSkeleton>
                       decoration: BoxDecoration(
                         color: theme.colorScheme.surfaceContainerLow,
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(35)),
+                        border: Border.all(
+                            color:
+                                theme.colorScheme.outlineVariant.withAlpha(35)),
                       ),
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                       child: Row(
                         children: [
-                          Container(width: 16, height: 16, decoration: BoxDecoration(color: boneColor, shape: BoxShape.circle)),
+                          Container(
+                              width: 16,
+                              height: 16,
+                              decoration: BoxDecoration(
+                                  color: boneColor, shape: BoxShape.circle)),
                           const SizedBox(width: 6),
-                          Container(width: 60, height: 11, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(3))),
+                          Container(
+                              width: 60,
+                              height: 11,
+                              decoration: BoxDecoration(
+                                  color: boneColor,
+                                  borderRadius: BorderRadius.circular(3))),
                         ],
                       ),
                     ),
@@ -696,11 +637,26 @@ class _ForumThreadListSkeletonState extends State<ForumThreadListSkeleton>
               // 4. 排序与筛选选项 (Order Chips)
               Row(
                 children: [
-                  Container(width: 64, height: 24, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(6))),
+                  Container(
+                      width: 64,
+                      height: 24,
+                      decoration: BoxDecoration(
+                          color: boneColor,
+                          borderRadius: BorderRadius.circular(6))),
                   const SizedBox(width: 6),
-                  Container(width: 64, height: 24, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(6))),
+                  Container(
+                      width: 64,
+                      height: 24,
+                      decoration: BoxDecoration(
+                          color: boneColor,
+                          borderRadius: BorderRadius.circular(6))),
                   const Spacer(),
-                  Container(width: 24, height: 24, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(6))),
+                  Container(
+                      width: 24,
+                      height: 24,
+                      decoration: BoxDecoration(
+                          color: boneColor,
+                          borderRadius: BorderRadius.circular(6))),
                 ],
               ),
               const SizedBox(height: 10),
@@ -711,7 +667,8 @@ class _ForumThreadListSkeletonState extends State<ForumThreadListSkeleton>
                 decoration: BoxDecoration(
                   color: theme.colorScheme.surfaceContainerLow,
                   borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(40)),
+                  border: Border.all(
+                      color: theme.colorScheme.outlineVariant.withAlpha(40)),
                 ),
                 child: Row(
                   children: [
@@ -727,7 +684,9 @@ class _ForumThreadListSkeletonState extends State<ForumThreadListSkeleton>
                     Expanded(
                       child: Container(
                         height: 13,
-                        decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(3)),
+                        decoration: BoxDecoration(
+                            color: boneColor,
+                            borderRadius: BorderRadius.circular(3)),
                       ),
                     ),
                   ],
@@ -753,23 +712,52 @@ class _ForumThreadListSkeletonState extends State<ForumThreadListSkeleton>
                     children: [
                       Row(
                         children: [
-                          Container(width: 32, height: 16, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(4))),
+                          Container(
+                              width: 32,
+                              height: 16,
+                              decoration: BoxDecoration(
+                                  color: boneColor,
+                                  borderRadius: BorderRadius.circular(4))),
                           const SizedBox(width: 6),
                           Expanded(
-                            child: Container(width: double.infinity, height: 14, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(4))),
+                            child: Container(
+                                width: double.infinity,
+                                height: 14,
+                                decoration: BoxDecoration(
+                                    color: boneColor,
+                                    borderRadius: BorderRadius.circular(4))),
                           ),
                         ],
                       ),
                       const SizedBox(height: 6),
-                      Container(width: 140, height: 11, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(3))),
+                      Container(
+                          width: 140,
+                          height: 11,
+                          decoration: BoxDecoration(
+                              color: boneColor,
+                              borderRadius: BorderRadius.circular(3))),
                       const SizedBox(height: 10),
                       Row(
                         children: [
-                          Container(width: 18, height: 18, decoration: BoxDecoration(color: boneColor, shape: BoxShape.circle)),
+                          Container(
+                              width: 18,
+                              height: 18,
+                              decoration: BoxDecoration(
+                                  color: boneColor, shape: BoxShape.circle)),
                           const SizedBox(width: 6),
-                          Container(width: 60, height: 10, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(3))),
+                          Container(
+                              width: 60,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                  color: boneColor,
+                                  borderRadius: BorderRadius.circular(3))),
                           const Spacer(),
-                          Container(width: 44, height: 10, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(3))),
+                          Container(
+                              width: 44,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                  color: boneColor,
+                                  borderRadius: BorderRadius.circular(3))),
                         ],
                       ),
                     ],
@@ -803,10 +791,22 @@ class _ThreadDetailSkeletonState extends State<ThreadDetailSkeleton>
     _animCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 950),
-    )..repeat(reverse: true);
+    );
     _opacity = Tween<double>(begin: 0.45, end: 0.92).animate(
       CurvedAnimation(parent: _animCtrl, curve: Curves.easeInOut),
     );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (AppMotion.enabled(context, MotionScope.loading) &&
+        TickerMode.of(context)) {
+      if (!_animCtrl.isAnimating) _animCtrl.repeat(reverse: true);
+    } else {
+      _animCtrl.stop();
+      _animCtrl.value = 1;
+    }
   }
 
   @override
@@ -829,9 +829,9 @@ class _ThreadDetailSkeletonState extends State<ThreadDetailSkeleton>
         return RepaintBoundary(
           child: FadeTransition(
             opacity: _opacity,
-            child: width >= 1080
+            child: ResponsiveBreakpoints.isDesktop(context) && width >= 1080
                 ? _buildDesktopSkeleton(theme, boneColor, width)
-                : width >= 640
+                : ResponsiveBreakpoints.isDesktop(context) && width >= 640
                     ? _buildTabletSkeleton(theme, boneColor)
                     : _buildMobileSkeleton(theme, boneColor),
           ),
@@ -840,7 +840,8 @@ class _ThreadDetailSkeletonState extends State<ThreadDetailSkeleton>
     );
   }
 
-  Widget _buildDesktopSkeleton(ThemeData theme, Color boneColor, double totalWidth) {
+  Widget _buildDesktopSkeleton(
+      ThemeData theme, Color boneColor, double totalWidth) {
     final showRightSidebar = totalWidth >= 960 && AppConfig.threadRightEnabled;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -852,8 +853,10 @@ class _ThreadDetailSkeletonState extends State<ThreadDetailSkeleton>
             padding: const EdgeInsets.fromLTRB(36, 24, 36, 96),
             child: Center(
               child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: AppConfig.threadContentMaxWidth),
-                child: _buildPostContentBones(theme, boneColor, isDesktop: true),
+                constraints:
+                    BoxConstraints(maxWidth: AppConfig.threadContentMaxWidth),
+                child:
+                    _buildPostContentBones(theme, boneColor, isDesktop: true),
               ),
             ),
           ),
@@ -877,9 +880,19 @@ class _ThreadDetailSkeletonState extends State<ThreadDetailSkeleton>
                 children: [
                   Row(
                     children: [
-                      Container(width: 80, height: 15, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(4))),
+                      Container(
+                          width: 80,
+                          height: 15,
+                          decoration: BoxDecoration(
+                              color: boneColor,
+                              borderRadius: BorderRadius.circular(4))),
                       const Spacer(),
-                      Container(width: 20, height: 15, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(4))),
+                      Container(
+                          width: 20,
+                          height: 15,
+                          decoration: BoxDecoration(
+                              color: boneColor,
+                              borderRadius: BorderRadius.circular(4))),
                     ],
                   ),
                   const SizedBox(height: 14),
@@ -890,20 +903,36 @@ class _ThreadDetailSkeletonState extends State<ThreadDetailSkeleton>
                     decoration: BoxDecoration(
                       color: theme.colorScheme.surfaceContainerLow,
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(40)),
+                      border: Border.all(
+                          color:
+                              theme.colorScheme.outlineVariant.withAlpha(40)),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
                           children: [
-                            Container(width: 16, height: 16, decoration: BoxDecoration(color: boneColor, shape: BoxShape.circle)),
+                            Container(
+                                width: 16,
+                                height: 16,
+                                decoration: BoxDecoration(
+                                    color: boneColor, shape: BoxShape.circle)),
                             const SizedBox(width: 6),
-                            Container(width: 70, height: 12, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(3))),
+                            Container(
+                                width: 70,
+                                height: 12,
+                                decoration: BoxDecoration(
+                                    color: boneColor,
+                                    borderRadius: BorderRadius.circular(3))),
                           ],
                         ),
                         const SizedBox(height: 10),
-                        Container(width: double.infinity, height: 26, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(6))),
+                        Container(
+                            width: double.infinity,
+                            height: 26,
+                            decoration: BoxDecoration(
+                                color: boneColor,
+                                borderRadius: BorderRadius.circular(6))),
                       ],
                     ),
                   ),
@@ -915,14 +944,25 @@ class _ThreadDetailSkeletonState extends State<ThreadDetailSkeleton>
                     decoration: BoxDecoration(
                       color: theme.colorScheme.surfaceContainerLow,
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(40)),
+                      border: Border.all(
+                          color:
+                              theme.colorScheme.outlineVariant.withAlpha(40)),
                     ),
                     padding: const EdgeInsets.symmetric(horizontal: 10),
                     child: Row(
                       children: [
-                        Container(width: 16, height: 16, decoration: BoxDecoration(color: boneColor, shape: BoxShape.circle)),
+                        Container(
+                            width: 16,
+                            height: 16,
+                            decoration: BoxDecoration(
+                                color: boneColor, shape: BoxShape.circle)),
                         const SizedBox(width: 8),
-                        Container(width: 90, height: 11, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(3))),
+                        Container(
+                            width: 90,
+                            height: 11,
+                            decoration: BoxDecoration(
+                                color: boneColor,
+                                borderRadius: BorderRadius.circular(3))),
                       ],
                     ),
                   ),
@@ -934,16 +974,27 @@ class _ThreadDetailSkeletonState extends State<ThreadDetailSkeleton>
                     decoration: BoxDecoration(
                       color: theme.colorScheme.surfaceContainerLow,
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(40)),
+                      border: Border.all(
+                          color:
+                              theme.colorScheme.outlineVariant.withAlpha(40)),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
                           children: [
-                            Container(width: 16, height: 16, decoration: BoxDecoration(color: boneColor, shape: BoxShape.circle)),
+                            Container(
+                                width: 16,
+                                height: 16,
+                                decoration: BoxDecoration(
+                                    color: boneColor, shape: BoxShape.circle)),
                             const SizedBox(width: 6),
-                            Container(width: 64, height: 12, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(3))),
+                            Container(
+                                width: 64,
+                                height: 12,
+                                decoration: BoxDecoration(
+                                    color: boneColor,
+                                    borderRadius: BorderRadius.circular(3))),
                           ],
                         ),
                         const SizedBox(height: 12),
@@ -951,7 +1002,12 @@ class _ThreadDetailSkeletonState extends State<ThreadDetailSkeleton>
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
                             for (int i = 0; i < 5; i++)
-                              Container(width: 28, height: 38, decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(6))),
+                              Container(
+                                  width: 28,
+                                  height: 38,
+                                  decoration: BoxDecoration(
+                                      color: boneColor,
+                                      borderRadius: BorderRadius.circular(6))),
                           ],
                         ),
                       ],
@@ -996,7 +1052,10 @@ class _ThreadDetailSkeletonState extends State<ThreadDetailSkeleton>
             padding: const EdgeInsets.symmetric(horizontal: 16),
             decoration: BoxDecoration(
               color: theme.colorScheme.surface,
-              border: Border(top: BorderSide(color: theme.colorScheme.outlineVariant.withAlpha(60), width: 0.8)),
+              border: Border(
+                  top: BorderSide(
+                      color: theme.colorScheme.outlineVariant.withAlpha(60),
+                      width: 0.8)),
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -1005,7 +1064,9 @@ class _ThreadDetailSkeletonState extends State<ThreadDetailSkeleton>
                   Container(
                     width: 54,
                     height: 22,
-                    decoration: BoxDecoration(color: boneColor, borderRadius: BorderRadius.circular(6)),
+                    decoration: BoxDecoration(
+                        color: boneColor,
+                        borderRadius: BorderRadius.circular(6)),
                   ),
               ],
             ),
@@ -1015,7 +1076,8 @@ class _ThreadDetailSkeletonState extends State<ThreadDetailSkeleton>
     );
   }
 
-  Widget _buildPostContentBones(ThemeData theme, Color boneColor, {required bool isDesktop}) {
+  Widget _buildPostContentBones(ThemeData theme, Color boneColor,
+      {required bool isDesktop}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1075,7 +1137,8 @@ class _ThreadDetailSkeletonState extends State<ThreadDetailSkeleton>
           ],
         ),
         const SizedBox(height: 20),
-        Divider(height: 1, color: theme.colorScheme.outlineVariant.withAlpha(50)),
+        Divider(
+            height: 1, color: theme.colorScheme.outlineVariant.withAlpha(50)),
         const SizedBox(height: 18),
         // 正文文本段落骨架
         for (final w in [1.0, 0.94, 0.88, 0.98, 0.75]) ...[
@@ -1141,7 +1204,7 @@ class AppLoadingView extends StatelessWidget {
           SizedBox(
             width: size,
             height: size,
-            child: CircularProgressIndicator(
+            child: AppLoadingIndicator(
               strokeWidth: 2.5,
               color: theme.colorScheme.primary,
               backgroundColor: theme.colorScheme.primary.withAlpha(40),

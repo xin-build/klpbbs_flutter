@@ -12,16 +12,33 @@ library;
 
 import '../api/comiis_parser.dart';
 import '../models/smiley.dart';
+import 'app_config.dart';
 
-String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
+String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys, bool escapeHtml = true}) {
   if (input.isEmpty) return '';
   var s = input;
 
-  // 1. 转义 HTML 特殊字符（BBCode 用 []，不受影响）
-  s = s
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;');
+  // 0. 保护 [code] 代码块，避免代码块内部的 BBCode / 表情 / 换行被二次篡改
+  final codeBlocks = <String>[];
+  s = s.replaceAllMapped(
+    RegExp(r'\[code(?:=([^\]]*))?\]([\s\S]*?)\[/code\]', caseSensitive: false),
+    (m) {
+      final lang = m[1]?.replaceAll(RegExp(r'''['"]'''), '').trim() ?? '';
+      final content = m[2] ?? '';
+      final idx = codeBlocks.length;
+      final classAttr = lang.isNotEmpty ? ' class="language-$lang"' : '';
+      codeBlocks.add('<pre><code$classAttr>$content</code></pre>');
+      return '__DISCUZ_CODE_BLOCK_${idx}__';
+    },
+  );
+
+  // 1. 转义 HTML 特殊字符（仅在纯文本且指定 escapeHtml 时转义，防止破坏已有 HTML 结构）
+  if (escapeHtml) {
+    s = s
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
+  }
 
   // 1.5 表情短码与 Discuz 标准表情代码转换 (如 [贴吧_滑稽], [哔哩_doge], {:12_292:}, {:6_178:} 等)
   if (s.contains('[') || s.contains('{:')) {
@@ -81,6 +98,70 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
     (m) => '<p>${m[1]}</p>',
   );
 
+  // 3.5 快捷对齐标签 [center] / [left] / [right] / [justify]
+  s = s.replaceAllMapped(
+    RegExp(r'\[center\]([\s\S]*?)\[/center\]', caseSensitive: false),
+    (m) => '<div style="text-align:center">${m[1]}</div>',
+  );
+  s = s.replaceAllMapped(
+    RegExp(r'\[left\]([\s\S]*?)\[/left\]', caseSensitive: false),
+    (m) => '<div style="text-align:left">${m[1]}</div>',
+  );
+  s = s.replaceAllMapped(
+    RegExp(r'\[right\]([\s\S]*?)\[/right\]', caseSensitive: false),
+    (m) => '<div style="text-align:right">${m[1]}</div>',
+  );
+  s = s.replaceAllMapped(
+    RegExp(r'\[justify\]([\s\S]*?)\[/justify\]', caseSensitive: false),
+    (m) => '<div style="text-align:justify">${m[1]}</div>',
+  );
+
+  // 3.8 提示与说明卡片 [box=标题]...[/box] / [tip] / [notice] / [warning] / [alert] / [info] / [success] / [danger]
+  s = s.replaceAllMapped(
+    RegExp(r'\[(box|tip|notice|warning|alert|info|success|danger)(?:=([^\]]*))?\]([\s\S]*?)\[/\1\]', caseSensitive: false),
+    (m) {
+      final type = (m[1] ?? 'box').toLowerCase();
+      final param = m[2]?.replaceAll(RegExp(r'''['"]'''), '').trim() ?? '';
+      final content = m[3] ?? '';
+      String borderColor = '#1976D2';
+      String bgColor = '#f0f4f8';
+      String icon = 'ℹ️';
+      if (type == 'warning' || type == 'alert') {
+        borderColor = '#FFA000';
+        bgColor = '#fff8e1';
+        icon = '⚠️';
+      } else if (type == 'danger') {
+        borderColor = '#E53935';
+        bgColor = '#ffebee';
+        icon = '🚫';
+      } else if (type == 'success') {
+        borderColor = '#43A047';
+        bgColor = '#e8f5e9';
+        icon = '✅';
+      } else if (type == 'tip' || type == 'notice') {
+        borderColor = '#00ACC1';
+        bgColor = '#e0f7fa';
+        icon = '💡';
+      }
+      final titleText = param.isNotEmpty ? param : (type == 'warning' ? '警告' : (type == 'danger' ? '危险' : (type == 'tip' ? '提示' : '')));
+      return '<div class="discuz_box discuz_$type" style="padding:10px 14px;margin:8px 0;background-color:$bgColor;border-left:4px solid $borderColor;border-radius:4px;">'
+          '${titleText.isNotEmpty ? '<div style="font-weight:bold;margin-bottom:4px;color:$borderColor;">$icon $titleText</div>' : ''}'
+          '$content</div>';
+    },
+  );
+
+  // 3.9 键盘按键 [kbd]...[/kbd] / [keyboard]...[/keyboard]
+  s = s.replaceAllMapped(
+    RegExp(r'\[(?:kbd|keyboard)\]([\s\S]*?)\[/(?:kbd|keyboard)\]', caseSensitive: false),
+    (m) => '<kbd style="background:#eee;border:1px solid #ccc;border-radius:3px;box-shadow:0 1px 0 rgba(0,0,0,0.2);color:#333;display:inline-block;font-size:0.85em;font-family:monospace;padding:1px 5px;margin:0 2px;">${m[1]}</kbd>',
+  );
+
+  // 3.10 匿名内容 [anonymouse]...[/anonymouse]
+  s = s.replaceAllMapped(
+    RegExp(r'\[anonymouse\]([\s\S]*?)\[/anonymouse\]', caseSensitive: false),
+    (m) => '<div class="discuz_anonymouse" style="font-style:italic;color:#666;">🕶️ 匿名内容：${m[1]}</div>',
+  );
+
   // 4. 基础文本修饰标签
   void replacePair(String open, String close, String tag) {
     final re = RegExp(
@@ -104,42 +185,84 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
   replacePair('[highlight]', '[/highlight]', '<mark>');
   replacePair('[mark]', '[/mark]', '<mark>');
 
-  // [size=1..7] 或 [size=12px]...[/size]
+  // [mask]...[/mask] 与 [heimu]...[/heimu]（黑幕 / 刮刮乐 / 防剧透）
   s = s.replaceAllMapped(
-    RegExp(r'\[size=([0-9]+(?:px|pt)?)\]([\s\S]*?)\[/size\]', caseSensitive: false),
-    (m) {
-      final val = m[1]!;
-      final numVal = int.tryParse(val);
-      if (numVal != null && numVal <= 7) {
-        return '<font size="$numVal">${m[2]}</font>';
-      }
-      return '<span style="font-size:${val.endsWith('px') || val.endsWith('pt') ? val : '${val}px'}">${m[2]}</span>';
-    },
+    RegExp(r'\[(?:mask|heimu)\]([\s\S]*?)\[/(?:mask|heimu)\]', caseSensitive: false),
+    (m) => '<span class="heimu" style="background-color:black;color:black;">${m[1]}</span>',
   );
 
-  // [font=字体名]...[/font] → <font face="...">...</font>
+  // [color=black][backcolor=black]...[/backcolor][/color] 与反序嵌套（论坛常用经典黑幕语法）
   s = s.replaceAllMapped(
-    RegExp(r'\[font=([^\]]+)\]([\s\S]*?)\[/font\]', caseSensitive: false),
-    (m) => '<font face="${m[1]}">${m[2]}</font>',
+    RegExp(
+      r'\[color=["\x27]?(?:black|#000|#000000|rgb\(0,0,0\))["\x27]?\]\s*\[(?:backcolor|bg|bgcolor)=["\x27]?(?:black|#000|#000000|rgb\(0,0,0\))["\x27]?\]([\s\S]*?)\[/(?:backcolor|bg|bgcolor)\]\s*\[/color\]',
+      caseSensitive: false,
+    ),
+    (m) => '<span class="heimu" style="background-color:black;color:black;">${m[1]}</span>',
+  );
+  s = s.replaceAllMapped(
+    RegExp(
+      r'\[(?:backcolor|bg|bgcolor)=["\x27]?(?:black|#000|#000000|rgb\(0,0,0\))["\x27]?\]\s*\[color=["\x27]?(?:black|#000|#000000|rgb\(0,0,0\))["\x27]?\]([\s\S]*?)\[/color\]\s*\[/(?:backcolor|bg|bgcolor)\]',
+      caseSensitive: false,
+    ),
+    (m) => '<span class="heimu" style="background-color:black;color:black;">${m[1]}</span>',
   );
 
-  // [backcolor=颜色] / [bg=颜色] / [bgcolor=颜色]...[/backcolor] → <span style="background-color:...">...</span>
-  s = s.replaceAllMapped(
-    RegExp(r'\[(?:backcolor|bg|bgcolor)=([^\]]+)\]([\s\S]*?)\[/(?:backcolor|bg|bgcolor)\]', caseSensitive: false),
-    (m) {
-      final color = (m[1] ?? '').replaceAll(RegExp(r'''["']'''), '').trim();
-      return '<span style="background-color:$color">${m[2]}</span>';
-    },
-  );
+  // [size=1..7] 或 [size=12px] / [size="5"]...[/size]（循环展开多层嵌套）
+  for (var round = 0; round < 3; round++) {
+    final prev = s;
+    s = s.replaceAllMapped(
+      RegExp(r'\[size=["\x27]?([0-9]+(?:px|pt)?|\+[1-7]|-[1-7])["\x27]?\]((?:(?!\[size)[\s\S])*?)\[/size\]', caseSensitive: false),
+      (m) {
+        final val = m[1]!;
+        final numVal = int.tryParse(val);
+        if (numVal != null && numVal >= 1 && numVal <= 7) {
+          return '<font size="$numVal">${m[2]}</font>';
+        }
+        final cleanVal = val.startsWith('+') ? val.substring(1) : val;
+        return '<span style="font-size:${cleanVal.endsWith('px') || cleanVal.endsWith('pt') ? cleanVal : '${cleanVal}px'}">${m[2]}</span>';
+      },
+    );
+    if (s == prev) break;
+  }
 
-  // [color=xxx]...[/color]
-  s = s.replaceAllMapped(
-    RegExp(r'\[color=([^\]]+)\]([\s\S]*?)\[/color\]', caseSensitive: false),
-    (m) {
-      final color = (m[1] ?? '').replaceAll(RegExp(r'''["']'''), '').trim();
-      return '<font color="$color">${m[2]}</font>';
-    },
-  );
+  // [font=字体名] / [font="微软雅黑"]...[/font] → <font face="...">...</font>（循环展开多层嵌套）
+  for (var round = 0; round < 3; round++) {
+    final prev = s;
+    s = s.replaceAllMapped(
+      RegExp(r'\[font=["\x27]?([^\]"\x27]+)["\x27]?\]((?:(?!\[font)[\s\S])*?)\[/font\]', caseSensitive: false),
+      (m) => '<font face="${m[1]}">${m[2]}</font>',
+    );
+    if (s == prev) break;
+  }
+
+  // [backcolor=颜色] / [bg=颜色] / [bgcolor=颜色]...[/backcolor]（循环展开多层嵌套，黑幕自动识别）
+  for (var round = 0; round < 3; round++) {
+    final prev = s;
+    s = s.replaceAllMapped(
+      RegExp(r'\[(?:backcolor|bg|bgcolor)=["\x27]?([^\]"\x27]+)["\x27]?\]((?:(?!\[(?:backcolor|bg|bgcolor))[\s\S])*?)\[/(?:backcolor|bg|bgcolor)\]', caseSensitive: false),
+      (m) {
+        final color = (m[1] ?? '').trim();
+        final clean = color.toLowerCase();
+        final isBlack = clean == 'black' || clean == '#000' || clean == '#000000' || clean == 'rgb(0,0,0)';
+        final classAttr = isBlack ? ' class="heimu"' : '';
+        return '<span$classAttr style="background-color:$color">${m[2]}</span>';
+      },
+    );
+    if (s == prev) break;
+  }
+
+  // [color=xxx] / [color="#ff0000"]...[/color]（循环展开多层嵌套）
+  for (var round = 0; round < 3; round++) {
+    final prev = s;
+    s = s.replaceAllMapped(
+      RegExp(r'\[color=["\x27]?([^\]"\x27]+)["\x27]?\]((?:(?!\[color)[\s\S])*?)\[/color\]', caseSensitive: false),
+      (m) {
+        final color = (m[1] ?? '').trim();
+        return '<font color="$color">${m[2]}</font>';
+      },
+    );
+    if (s == prev) break;
+  }
 
   // [url=xxx]...[/url] 与 [url]...[/url]
   s = s.replaceAllMapped(
@@ -163,33 +286,49 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
 
   // [img]...[/img] 与 [img=w,h]...[/img]
   s = s.replaceAllMapped(
-    RegExp(r'\[img(?:=[^\]]*)?\]([\s\S]*?)\[/img\]', caseSensitive: false),
-    (m) => '<img src="${(m[1] ?? '').trim()}" />',
-  );
-
-  // [code=lang]...[/code] 与 [code]...[/code]
-  s = s.replaceAllMapped(
-    RegExp(r'\[code(?:=([^\]]*))?\]([\s\S]*?)\[/code\]', caseSensitive: false),
-    (m) => '<pre><code class="language-${m[1] ?? ''}">${m[2]}</code></pre>',
-  );
-
-  // [quote]...[/quote] 与 [quote=author,...]...[/quote]
-  s = s.replaceAllMapped(
-    RegExp(r'\[quote(?:=([^\]]*))?\]([\s\S]*?)\[/quote\]', caseSensitive: false),
+    RegExp(r'\[img(?:=([0-9]+)\s*,\s*([0-9]+))?\]([\s\S]*?)\[/img\]', caseSensitive: false),
     (m) {
-      final authorParam = m[1]?.trim() ?? '';
-      final inner = m[2] ?? '';
-      if (authorParam.isNotEmpty) {
-        final author = authorParam.split(',').first.trim();
-        return '<div class="quote"><blockquote><font size="2"><font color="#999999">$author 发表于：</font></font><br />$inner</blockquote></div>';
-      }
-      return '<div class="quote"><blockquote>$inner</blockquote></div>';
+      final w = m[1];
+      final h = m[2];
+      final src = (m[3] ?? '').trim();
+      final sizeAttrs = (w != null && h != null) ? ' width="$w" height="$h"' : '';
+      return '<img src="$src"$sizeAttrs />';
     },
   );
 
-  // [spoiler=标题]...[/spoiler] / [collapse] / [fold]
+  // [quote]...[/quote] 与 [quote=author,...]...[/quote]（支持最多 4 层嵌套引用解析）
+  for (var round = 0; round < 4; round++) {
+    final prev = s;
+    s = s.replaceAllMapped(
+      RegExp(r'\[quote(?:=([^\]]*))?\]((?:(?!\[quote)[\s\S])*?)\[/quote\]', caseSensitive: false),
+      (m) {
+        final authorParam = m[1]?.replaceAll(RegExp(r'''['"]'''), '').trim() ?? '';
+        final inner = m[2] ?? '';
+        if (authorParam.isNotEmpty) {
+          final author = authorParam.split(',').first.trim();
+          return '<div class="quote"><blockquote><font size="2"><font color="#999999">$author 发表于：</font></font><br />$inner</blockquote></div>';
+        }
+        return '<div class="quote"><blockquote>$inner</blockquote></div>';
+      },
+    );
+    if (s == prev) break;
+  }
+
+  // [spoiler=标题]...[/spoiler]（带标题折叠）与 [spoiler]...[/spoiler]（行内防剧透黑幕）
   s = s.replaceAllMapped(
-    RegExp(r'\[(?:spoiler|collapse|fold)(?:=([^\]]*))?\]([\s\S]*?)\[/(?:spoiler|collapse|fold)\]', caseSensitive: false),
+    RegExp(r'\[spoiler(?:=([^\]]*))?\]([\s\S]*?)\[/spoiler\]', caseSensitive: false),
+    (m) {
+      final title = m[1]?.trim();
+      if (title != null && title.isNotEmpty) {
+        return '<details class="spoiler"><summary>$title</summary>${m[2]}</details>';
+      }
+      return '<span class="heimu" style="background-color:black;color:black;">${m[2]}</span>';
+    },
+  );
+
+  // [collapse] / [fold]（折叠块）
+  s = s.replaceAllMapped(
+    RegExp(r'\[(?:collapse|fold)(?:=([^\]]*))?\]([\s\S]*?)\[/(?:collapse|fold)\]', caseSensitive: false),
     (m) => '<details class="spoiler"><summary>${m[1]?.trim().isNotEmpty == true ? m[1]!.trim() : '折叠内容（点击展开）'}</summary>${m[2]}</details>',
   );
 
@@ -198,6 +337,51 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
     RegExp(r'\[(?:hide|reply)(?:=([^\]]*))?\]([\s\S]*?)\[/(?:hide|reply)\]', caseSensitive: false),
     (m) =>
         '<div class="locked_hide" style="padding:10px;margin:8px 0;background-color:#fff3cd;border:1px dashed #ffeeba;border-radius:6px;color:#856404;">🔒 <b>隐藏内容</b>（需回复或达到${m[1] != null && m[1]!.isNotEmpty ? '${m[1]}积分' : ''}可见）</div>',
+  );
+
+  // [price=N]...[/price]（Discuz 3.4 售价主题/付费可见）
+  s = s.replaceAllMapped(
+    RegExp(r'\[price=([^\]]+)\]([\s\S]*?)\[/price\]', caseSensitive: false),
+    (m) =>
+        '<div class="locked_hide discuz_price" style="padding:10px;margin:8px 0;background-color:#fff3cd;border:1px dashed #ffeeba;border-radius:6px;color:#856404;">💰 <b>付费主题内容</b>（售价 ${m[1]} 积分/金粒，购买后可见）<br />${m[2]}</div>',
+  );
+
+  // [pay]...[/pay]（Discuz 付费内容）
+  s = s.replaceAllMapped(
+    RegExp(r'\[pay\]([\s\S]*?)\[/pay\]', caseSensitive: false),
+    (m) =>
+        '<div class="discuz_pay" style="padding:8px 12px;margin:8px 0;background-color:#e8f4fd;border:1px solid #b8daff;border-radius:6px;color:#004085;">💎 <b>付费专属内容：</b>${m[1]}</div>',
+  );
+
+  // [video=w,h]...[/video] 与 [video]...[/video] / [mp4]...[/mp4]（原生视频与 B 站智能识别）
+  s = s.replaceAllMapped(
+    RegExp(r'\[(?:video|mp4)(?:=[^\]]*)?\]([\s\S]*?)\[/(?:video|mp4)\]', caseSensitive: false),
+    (m) {
+      final text = m[1]?.trim() ?? '';
+      final bvMatch = RegExp(r'(BV[a-zA-Z0-9]{10})', caseSensitive: false).firstMatch(text);
+      if (bvMatch != null) {
+        final bvid = bvMatch.group(1)!;
+        return '<iframe src="https://player.bilibili.com/player.html?bvid=$bvid" data-bvid="$bvid"></iframe>';
+      }
+      final avMatch = RegExp(r'(?:av|aid=?)(\d+)', caseSensitive: false).firstMatch(text);
+      if (avMatch != null) {
+        final aid = avMatch.group(1)!;
+        return '<iframe src="https://player.bilibili.com/player.html?aid=$aid" data-aid="$aid"></iframe>';
+      }
+      return '<video src="$text" controls></video>';
+    },
+  );
+
+  // [qq]...[/qq]（Discuz QQ 联系）
+  s = s.replaceAllMapped(
+    RegExp(r'\[qq\](\d+)\[/qq\]', caseSensitive: false),
+    (m) => '<a href="https://wpa.qq.com/msgrd?v=3&uin=${m[1]}&site=qq&menu=yes" class="discuz_qq">🐧 QQ联系：${m[1]}</a>',
+  );
+
+  // [index]...[/index]（Discuz 3.4 楼层目录索引）
+  s = s.replaceAllMapped(
+    RegExp(r'\[index\]([\s\S]*?)\[/index\]', caseSensitive: false),
+    (m) => '<div class="discuz_index" style="padding:8px 12px;margin:6px 0;border-left:3px solid #4CAF50;background:#f9f9f9;border-radius:4px;">📑 <b>楼层目录索引：</b><br />${m[1]}</div>',
   );
 
   // [password=密码]...[/password]
@@ -223,7 +407,10 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
   // [media=x,w,h]...[/media] 与 [flash=w,h]...[/flash] / [swf]...[/swf]
   s = s.replaceAllMapped(
     RegExp(r'\[(?:media|flash|swf)(?:=[^\]]*)?\]([\s\S]*?)\[/(?:media|flash|swf)\]', caseSensitive: false),
-    (m) => '<a class="discuz_media" href="${m[1]?.trim()}">🎬 查看视频/多媒体：${m[1]?.trim()}</a>',
+    (m) {
+      final url = m[1]?.trim() ?? '';
+      return '<iframe class="discuz_media" src="$url"></iframe>';
+    },
   );
 
   // [bilibili]...[/bilibili] 或 [bili]...[/bili]（自动智能提取 BV / AV / AID）
@@ -266,14 +453,14 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
   // [free]...[/free]（免费内容）
   s = s.replaceAllMapped(RegExp(r'\[free\]([\s\S]*?)\[/free\]', caseSensitive: false), (m) => m[1]!);
 
-  // [attachimg]aid[/attachimg] / [attach]aid[/attach]
+  // [attachimg]aid[/attachimg] / [attach]aid[/attach]（智能转换为官方附件与图片真实下载节点）
   s = s.replaceAllMapped(
     RegExp(r'\[attachimg\](\d+)\[/attachimg\]', caseSensitive: false),
-    (m) => '<span>[附件图片 aid=${m[1]}]</span>',
+    (m) => '<img src="${AppConfig.baseUrl}forum.php?mod=attachment&aid=${m[1]}&noupdate=yes" alt="附件图片 ${m[1]}" />',
   );
   s = s.replaceAllMapped(
     RegExp(r'\[attach\](\d+)\[/attach\]', caseSensitive: false),
-    (m) => '<span>[附件 aid=${m[1]}]</span>',
+    (m) => '<a href="${AppConfig.baseUrl}forum.php?mod=attachment&aid=${m[1]}" class="discuz_attach">📎 附件下载 (AID: ${m[1]})</a>',
   );
 
   // 5. 表格标签（依据官方 Discuz 规范优先解析外层与内层 table，支持多层嵌套展开与管道符快捷语法）
@@ -373,7 +560,7 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
     },
   );
   s = s.replaceAll(RegExp(r'\[/td\]', caseSensitive: false), '</td>');
-  s = s.replaceAll(RegExp(r'\[hr\]', caseSensitive: false), '<hr>');
+  s = s.replaceAll(RegExp(r'\[hr(?:\s*/)?(?:=[^\]]*)?\]', caseSensitive: false), '<hr class="solidline">');
 
   // 6. 对齐与浮动标签（循环展开多层嵌套 align）
   for (var round = 0; round < 4; round++) {
@@ -445,6 +632,11 @@ String bbcodeToHtml(String input, {List<SmileyCategory>? customSmileys}) {
   s = s.replaceAll('<br></table>', '</table>');
   s = s.replaceAllMapped(RegExp(r'(<table[^>]*>)<br>'), (m) => m[1]!);
   s = s.replaceAllMapped(RegExp(r'(<tr[^>]*>)<br>'), (m) => m[1]!);
+
+  // 8. 还原受保护的代码块
+  for (var i = 0; i < codeBlocks.length; i++) {
+    s = s.replaceAll('__DISCUZ_CODE_BLOCK_${i}__', codeBlocks[i]);
+  }
 
   return s;
 }

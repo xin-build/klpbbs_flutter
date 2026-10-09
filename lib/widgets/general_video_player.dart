@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'dart:async';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -380,7 +381,7 @@ class _GeneralVideoPlayerState extends State<GeneralVideoPlayer> {
                   width: 90,
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(3),
-                    child: LinearProgressIndicator(
+                    child: AppLoadingBar(
                       value: effectiveVol / 100.0,
                       backgroundColor: Colors.white24,
                       valueColor: AlwaysStoppedAnimation<Color>(primary),
@@ -565,7 +566,7 @@ class _GeneralVideoPlayerState extends State<GeneralVideoPlayer> {
                 // 3. 加载中指示器
                 if (_loading || _buffering)
                   const Center(
-                    child: CircularProgressIndicator(
+                    child: AppLoadingIndicator(
                       color: Colors.white,
                       strokeWidth: 3,
                     ),
@@ -1054,7 +1055,7 @@ class _FullscreenGeneralVideoPlayerState extends State<_FullscreenGeneralVideoPl
                   width: 110,
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(3),
-                    child: LinearProgressIndicator(
+                    child: AppLoadingBar(
                       value: effectiveVol / 100.0,
                       backgroundColor: Colors.white24,
                       valueColor: AlwaysStoppedAnimation<Color>(primary),

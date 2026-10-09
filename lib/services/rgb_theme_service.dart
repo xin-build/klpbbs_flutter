@@ -2,17 +2,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// RGB 运行模式
-enum RgbMode {
-  flow('流光幻彩', '色相平滑旋转流动，优雅自然'),
-  strobe('超频迪斯科', '高频跳变爆闪，电竞狂暴光污染');
+import '../core/app_config.dart';
+import '../core/rgb_theme_policy.dart';
 
-  final String label;
-  final String description;
-  const RgbMode(this.label, this.description);
-}
+export '../core/rgb_theme_policy.dart' show RgbMode, RgbQuality;
 
-/// 隐藏 RGB 动态炫彩主题服务（高性能优化版：零动态计算 + 360°颜色表缓存 + 双模式）
+/// Configuration changes and hue updates have separate notification paths.
+/// Only the local Theme scope and color preview listen to the hue clock.
 class RgbThemeService extends ChangeNotifier with WidgetsBindingObserver {
   static final RgbThemeService instance = RgbThemeService._();
   RgbThemeService._();
@@ -21,153 +17,202 @@ class RgbThemeService extends ChangeNotifier with WidgetsBindingObserver {
   static const String _keyEnabled = 'rgb_theme_enabled';
   static const String _keySpeed = 'rgb_theme_speed';
   static const String _keyMode = 'rgb_theme_mode';
+  static const String _keyQuality = 'rgb_theme_quality';
+  static const int paletteAnchorCount = 24;
 
-  // 1. 预计算 360 度 HSV 颜色表（零浮点运算与零对象分配）
-  static final List<Color> _hsvColors = List.generate(
-    360,
-    (h) => HSVColor.fromAHSV(1.0, h.toDouble(), 0.75, 0.95).toColor(),
-    growable: false,
-  );
+  final hueNotifier = ValueNotifier<int>(0);
+  final _lightSchemes =
+      BoundedValueCache<int, ColorScheme>(capacity: paletteAnchorCount);
+  final _darkSchemes =
+      BoundedValueCache<int, ColorScheme>(capacity: paletteAnchorCount);
+  final _oledSchemes =
+      BoundedValueCache<int, ColorScheme>(capacity: paletteAnchorCount);
+  final _clock = Stopwatch();
 
-  // 2. 渐变缓存池（360 个槽位，按需惰性生成并永久复用）
-  static final List<LinearGradient?> _gradientCache = List.filled(360, null);
-
-  // 3. ColorScheme 缓存池（360 个槽位，按需惰性生成并永久复用，避免循环调用昂贵的 Cam16 算法）
-  static final List<ColorScheme?> _lightSchemeCache = List.filled(360, null);
-  static final List<ColorScheme?> _darkBaseSchemeCache = List.filled(360, null);
-  static final List<ColorScheme?> _darkNormalSchemeCache = List.filled(360, null);
-  static final List<ColorScheme?> _darkOledSchemeCache = List.filled(360, null);
-
+  bool _initialized = false;
   bool _isUnlocked = false;
   bool _isEnabled = false;
-  bool _isSuspended = false;
-  double _speed = 1.0; // 0.5 ~ 3.0
+  bool _manuallyPaused = false;
+  bool _lifecycleVisible = true;
+  bool _reducedMotion = false;
+  double _speed = 1.0;
+  double _phaseHue = 0;
   RgbMode _mode = RgbMode.flow;
-  int _currentHueIndex = 0; // 0 ~ 359
+  RgbQuality _quality = RgbQuality.balanced;
   Timer? _timer;
+  Duration? _timerInterval;
+  LinearGradient? _lastGradient;
+  int? _gradientHue;
+  ColorScheme? _lastLight;
+  int? _lightHue;
+  ColorScheme? _lastDark;
+  int? _darkHue;
+  bool? _darkOled;
 
   bool get isUnlocked => _isUnlocked;
   bool get isEnabled => _isEnabled;
+  bool get isAnimating => _timer?.isActive ?? false;
+  bool get isSuspended =>
+      !_lifecycleVisible || _manuallyPaused || _reducedMotion;
+  bool get reducedMotion => _reducedMotion;
   double get speed => _speed;
   RgbMode get mode => _mode;
-  double get currentHue => _currentHueIndex.toDouble();
-  int get currentHueIndex => _currentHueIndex;
+  RgbQuality get quality => _quality;
+  Duration get refreshInterval => _quality.interval;
+  double get currentHue => currentHueIndex.toDouble();
+  int get currentHueIndex => hueNotifier.value;
+  int get schemeCacheEntries =>
+      _lightSchemes.length + _darkSchemes.length + _oledSchemes.length;
 
-  Color get currentColor => _hsvColors[_currentHueIndex];
+  String get statusDescription {
+    if (!_isEnabled) return '炫彩已关闭';
+    if (_reducedMotion) return '减少动画已开启，保留当前静态颜色';
+    if (!_lifecycleVisible || _manuallyPaused) return '窗口在后台，颜色更新已暂停';
+    return _quality.description;
+  }
 
-  Color get secondaryColor => _hsvColors[(_currentHueIndex + 60) % 360];
+  static Color _hueColor(double hue) =>
+      HSVColor.fromAHSV(1, hue, .75, .95).toColor();
 
-  LinearGradient get rainbowGradient =>
-      _gradientCache[_currentHueIndex] ??= LinearGradient(
+  Color get currentColor => _hueColor(currentHue);
+  Color get secondaryColor => _hueColor((currentHue + 60) % 360);
+
+  LinearGradient get rainbowGradient {
+    if (_lastGradient == null || _gradientHue != currentHueIndex) {
+      _gradientHue = currentHueIndex;
+      _lastGradient = LinearGradient(
         colors: [
-          _hsvColors[_currentHueIndex],
-          _hsvColors[(_currentHueIndex + 60) % 360],
-          _hsvColors[(_currentHueIndex + 120) % 360],
-          _hsvColors[(_currentHueIndex + 180) % 360],
+          currentColor,
+          secondaryColor,
+          _hueColor((currentHue + 120) % 360),
+          _hueColor((currentHue + 180) % 360),
         ],
         begin: Alignment.topLeft,
         end: Alignment.bottomRight,
       );
-
-  /// 获取经过缓存的浅色 ColorScheme（零 CPU 消耗）
-  ColorScheme getLightColorScheme() {
-    return _lightSchemeCache[_currentHueIndex] ??= ColorScheme.fromSeed(
-      seedColor: _hsvColors[_currentHueIndex],
-      brightness: Brightness.light,
-    );
+    }
+    return _lastGradient!;
   }
 
-  /// 获取经过缓存的暗色/OLED ColorScheme（零 CPU 消耗）
-  ColorScheme getDarkColorScheme({required bool isOled}) {
-    if (isOled) {
-      return _darkOledSchemeCache[_currentHueIndex] ??= () {
-        final base = _darkBaseSchemeCache[_currentHueIndex] ??=
-            ColorScheme.fromSeed(
-          seedColor: _hsvColors[_currentHueIndex],
-          brightness: Brightness.dark,
-        );
-        return base.copyWith(
-          surface: Colors.black,
-          surfaceContainerLowest: Colors.black,
-          surfaceContainerLow: const Color(0xFF0C0E0D),
-          surfaceContainer: const Color(0xFF141715),
-          surfaceContainerHigh: const Color(0xFF1C201E),
-          surfaceContainerHighest: const Color(0xFF242927),
-          outlineVariant: const Color(0xFF323A35),
-        );
-      }();
-    } else {
-      return _darkNormalSchemeCache[_currentHueIndex] ??= () {
-        final base = _darkBaseSchemeCache[_currentHueIndex] ??=
-            ColorScheme.fromSeed(
-          seedColor: _hsvColors[_currentHueIndex],
-          brightness: Brightness.dark,
-        );
-        return base.copyWith(
-          surface: const Color(0xFF151917),
-          surfaceContainerLowest: const Color(0xFF101312),
-          surfaceContainerLow: const Color(0xFF171B19),
-          surfaceContainer: const Color(0xFF1E2320),
-          surfaceContainerHigh: const Color(0xFF252B28),
-          surfaceContainerHighest: const Color(0xFF2D3430),
-          outlineVariant: const Color(0xFF3A443E),
-        );
-      }();
+  ColorScheme _interpolatedScheme(BoundedValueCache<int, ColorScheme> cache,
+      ColorScheme Function(Color seed) create) {
+    const anchorDegrees = 360 / paletteAnchorCount;
+    final position = currentHue / anchorDegrees;
+    final lower = position.floor();
+    final upper = (lower + 1) % paletteAnchorCount;
+    ColorScheme anchor(int index) => cache.getOrCreate(
+        index, () => create(_hueColor(index * anchorDegrees)));
+    return ColorScheme.lerp(anchor(lower), anchor(upper), position - lower);
+  }
+
+  /// CAM16 seed calculations occur only at 24 reusable palette anchors.
+  ColorScheme getLightColorScheme() {
+    if (_lastLight == null || _lightHue != currentHueIndex) {
+      _lightHue = currentHueIndex;
+      _lastLight = _interpolatedScheme(
+          _lightSchemes,
+          (seed) => ColorScheme.fromSeed(
+              seedColor: seed, brightness: Brightness.light));
     }
+    return _lastLight!;
+  }
+
+  ColorScheme getDarkColorScheme({required bool isOled}) {
+    if (_lastDark == null ||
+        _darkHue != currentHueIndex ||
+        _darkOled != isOled) {
+      _darkHue = currentHueIndex;
+      _darkOled = isOled;
+      _lastDark =
+          _interpolatedScheme(isOled ? _oledSchemes : _darkSchemes, (seed) {
+        final base =
+            ColorScheme.fromSeed(seedColor: seed, brightness: Brightness.dark);
+        return base.copyWith(
+          surface: isOled ? Colors.black : const Color(0xFF151917),
+          surfaceContainerLowest:
+              isOled ? Colors.black : const Color(0xFF101312),
+          surfaceContainerLow:
+              isOled ? const Color(0xFF0C0E0D) : const Color(0xFF171B19),
+          surfaceContainer:
+              isOled ? const Color(0xFF141715) : const Color(0xFF1E2320),
+          surfaceContainerHigh:
+              isOled ? const Color(0xFF1C201E) : const Color(0xFF252B28),
+          surfaceContainerHighest:
+              isOled ? const Color(0xFF242927) : const Color(0xFF2D3430),
+          outlineVariant:
+              isOled ? const Color(0xFF323A35) : const Color(0xFF3A443E),
+        );
+      });
+    }
+    return _lastDark!;
   }
 
   Future<void> init() async {
+    if (_initialized) return;
+    _initialized = true;
+    WidgetsBinding.instance.addObserver(this);
+    AppConfig.instance.addListener(_syncMotionPreference);
+    _lifecycleVisible = WidgetsBinding.instance.lifecycleState == null ||
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
     try {
       final sp = await SharedPreferences.getInstance();
       _isUnlocked = sp.getBool(_keyUnlocked) ?? false;
       _isEnabled = sp.getBool(_keyEnabled) ?? false;
-      _speed = sp.getDouble(_keySpeed) ?? 1.0;
-      final modeStr = sp.getString(_keyMode);
-      if (modeStr != null) {
-        _mode = RgbMode.values.firstWhere(
-          (m) => m.name == modeStr,
-          orElse: () => RgbMode.flow,
-        );
-      }
-
-      // 注册系统生命周期监听，后台或息屏时挂起定时器
-      WidgetsBinding.instance.addObserver(this);
-
-      if (_isEnabled) {
-        _startTimer();
-      }
+      _speed = RgbThemePolicy.validSpeed(sp.getDouble(_keySpeed) ?? 1.0);
+      final modeName = sp.getString(_keyMode);
+      _mode = RgbMode.values.firstWhere((mode) => mode.name == modeName,
+          orElse: () => RgbMode.flow);
+      final qualityName = sp.getString(_keyQuality);
+      _quality = RgbQuality.values.firstWhere(
+          (quality) => quality.name == qualityName,
+          orElse: () => RgbQuality.balanced);
     } catch (_) {}
+    _syncMotionPreference();
+    _updateTimer();
+    notifyListeners();
+  }
+
+  void _syncMotionPreference() {
+    final reduced = AppConfig.reduceMotion ||
+        WidgetsBinding.instance.platformDispatcher.accessibilityFeatures
+            .disableAnimations;
+    if (_reducedMotion == reduced) return;
+    _reducedMotion = reduced;
+    _updateTimer();
+    notifyListeners();
   }
 
   @override
+  void didChangeAccessibilityFeatures() => _syncMotionPreference();
+
+  @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
-      pause();
-    } else if (state == AppLifecycleState.resumed) {
-      resume();
-    }
+    final visible = state == AppLifecycleState.resumed;
+    if (_lifecycleVisible == visible) return;
+    _lifecycleVisible = visible;
+    _updateTimer();
+    notifyListeners();
   }
 
-  /// 挂起 RGB 定时器（用于窗口最小化、托盘隐藏或处于后台时，实现 0% CPU 占用）
+  /// The tray/window pause cannot be cleared by enabling or changing a mode.
   void pause() {
-    if (_isSuspended) return;
-    _isSuspended = true;
-    _stopTimer();
+    if (_manuallyPaused) return;
+    _manuallyPaused = true;
+    _updateTimer();
+    notifyListeners();
   }
 
-  /// 恢复 RGB 定时器
   void resume() {
-    _isSuspended = false;
-    if (_isEnabled) {
-      _startTimer();
-    }
+    if (!_manuallyPaused) return;
+    _manuallyPaused = false;
+    _updateTimer();
+    notifyListeners();
   }
 
   Future<void> unlock() async {
     _isUnlocked = true;
     _isEnabled = true;
-    _isSuspended = false;
-    _startTimer();
+    _updateTimer();
     notifyListeners();
     try {
       final sp = await SharedPreferences.getInstance();
@@ -177,13 +222,9 @@ class RgbThemeService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> setEnabled(bool enabled) async {
+    if (_isEnabled == enabled) return;
     _isEnabled = enabled;
-    if (_isEnabled) {
-      _isSuspended = false;
-      _startTimer();
-    } else {
-      _stopTimer();
-    }
+    _updateTimer();
     notifyListeners();
     try {
       final sp = await SharedPreferences.getInstance();
@@ -191,63 +232,93 @@ class RgbThemeService extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {}
   }
 
+  void _capturePhase() {
+    if (_clock.isRunning) _tick();
+    _phaseHue = currentHue;
+    _clock.reset();
+  }
+
   Future<void> setMode(RgbMode mode) async {
+    if (_mode == mode) return;
+    _capturePhase();
     _mode = mode;
-    if (_isEnabled && !_isSuspended) {
-      _startTimer();
-    }
+    _updateTimer();
     notifyListeners();
     try {
       final sp = await SharedPreferences.getInstance();
-      await sp.setString(_keyMode, _mode.name);
+      await sp.setString(_keyMode, mode.name);
     } catch (_) {}
   }
 
   Future<void> setSpeed(double speed) async {
-    _speed = speed.clamp(0.2, 3.0);
-    if (_isEnabled && !_isSuspended) {
-      _startTimer();
-    }
+    final value = RgbThemePolicy.validSpeed(speed);
+    if (_speed == value) return;
+    _capturePhase();
+    _speed = value;
     notifyListeners();
     try {
       final sp = await SharedPreferences.getInstance();
-      await sp.setDouble(_keySpeed, _speed);
+      await sp.setDouble(_keySpeed, value);
     } catch (_) {}
   }
 
-  void _startTimer() {
-    _stopTimer();
-    if (!_isEnabled || _isSuspended) return;
-
-    if (_mode == RgbMode.strobe) {
-      // 超频迪斯科模式：高频闪烁跳变（80ms 刷新周期，每次跳变 137° 黄金角色彩，产生极致震撼的爆闪视觉）
-      final intervalMs = (100 / _speed).round().clamp(40, 200);
-      _timer = Timer.periodic(Duration(milliseconds: intervalMs), (_) {
-        _currentHueIndex = (_currentHueIndex + 137) % 360;
-        notifyListeners();
-      });
-    } else {
-      // 流光幻彩模式：平滑色相旋转流动（60ms 刷新周期，平滑步进）
-      final intervalMs = (60 / _speed).round().clamp(30, 150);
-      const step = 2;
-      _timer = Timer.periodic(Duration(milliseconds: intervalMs), (_) {
-        _currentHueIndex = (_currentHueIndex + step) % 360;
-        notifyListeners();
-      });
-    }
+  Future<void> setQuality(RgbQuality quality) async {
+    if (_quality == quality) return;
+    _quality = quality;
+    _updateTimer();
+    notifyListeners();
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(_keyQuality, quality.name);
+    } catch (_) {}
   }
 
-  void stopTimer() => _stopTimer();
+  bool get _shouldAnimate => RgbThemePolicy.shouldAnimate(
+      enabled: _isEnabled,
+      visible: _lifecycleVisible,
+      manuallyPaused: _manuallyPaused,
+      reduceMotion: _reducedMotion);
+
+  void _updateTimer() {
+    if (!_shouldAnimate) {
+      _stopTimer();
+      return;
+    }
+    if (_timer?.isActive == true && _timerInterval == refreshInterval) return;
+    _timer?.cancel();
+    _timerInterval = refreshInterval;
+    _clock.start();
+    _timer = Timer.periodic(refreshInterval, (_) => _tick());
+  }
+
+  void _tick() {
+    if (!_shouldAnimate) {
+      _stopTimer();
+      return;
+    }
+    final hue = RgbThemePolicy.hueAt(
+        startHue: _phaseHue,
+        elapsed: _clock.elapsed,
+        speed: _speed,
+        mode: _mode);
+    if (hue != currentHueIndex) hueNotifier.value = hue;
+  }
+
+  void stopTimer() => pause();
 
   void _stopTimer() {
     _timer?.cancel();
     _timer = null;
+    _timerInterval = null;
+    _clock.stop();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    AppConfig.instance.removeListener(_syncMotionPreference);
     _stopTimer();
+    hueNotifier.dispose();
     super.dispose();
   }
 }

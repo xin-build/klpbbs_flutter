@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'dart:async';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -372,7 +373,7 @@ class _GeneralAudioPlayerState extends State<GeneralAudioPlayer>
                         ? SizedBox(
                             width: 18,
                             height: 18,
-                            child: CircularProgressIndicator(
+                            child: AppLoadingIndicator(
                               strokeWidth: 2,
                               color: _playing ? Colors.white : colorScheme.primary,
                             ),

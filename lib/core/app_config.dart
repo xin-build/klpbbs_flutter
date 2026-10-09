@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/dashboard_card_model.dart';
 import '../services/rgb_theme_service.dart';
+import 'mobile_home_preferences.dart';
 
 /// 界面风格（预设主题配色）
 enum AppStyle {
@@ -42,6 +43,8 @@ enum NavLayout {
 /// 帖子卡片样式
 enum CardStyle {
   largeCover('大图流卡片 (16:9 封面)'),
+  guideMultimodal('导读画廊风 (全景封面与多图画廊)'),
+  forumClassic('版块经典风 (标签行与右侧缩略图)'),
   compact('紧凑图文行（高信息密度）'),
   grid('瀑布流网格卡片'),
   minimal('极简风 · 纯净通透（去繁就简）'),
@@ -56,10 +59,17 @@ enum CardStyle {
 enum AvatarShape {
   circle('圆形'),
   roundedRect('圆角矩形'),
-  hexagon('六边形');
+  squircle('饱满圆角方形');
 
   final String label;
   const AvatarShape(this.label);
+
+  // Keep old saved preferences and callers compatible without showing a
+  // geometric hexagon in the display options.
+  static const hexagon = squircle;
+  static AvatarShape fromStoredName(String? value) => value == 'hexagon'
+      ? squircle
+      : values.firstWhere((shape) => shape.name == value, orElse: () => circle);
 }
 
 /// 图片质量与省流策略
@@ -91,6 +101,16 @@ enum AppDensity {
         return const VisualDensity(horizontal: 1.0, vertical: 1.0);
     }
   }
+}
+
+enum MotionPace {
+  snappy('轻快', 0.85),
+  standard('标准', 1.0),
+  relaxed('舒缓', 1.2);
+
+  final String label;
+  final double factor;
+  const MotionPace(this.label, this.factor);
 }
 
 /// 轻量全局主题更新通知器（专供 MaterialApp 根构建监听，解耦布局调节与拖拽重绘）
@@ -127,8 +147,8 @@ class AppConfig extends ChangeNotifier {
       ValueNotifier<double>(1.6);
 
   // ================= 应用版本信息 =================
-  static const String appVersion = '1.1.1';
-  static const String buildNumber = '13';
+  static const String appVersion = '1.1.2';
+  static const String buildNumber = '14';
   static const String versionDisplay = 'v$appVersion (Build $buildNumber)';
 
   // ================= 论坛环境与网络 =================
@@ -153,6 +173,8 @@ class AppConfig extends ChangeNotifier {
 
   /// 获取会话 Cookie 请求头回调（解耦 DioClient 避免循环依赖）
   static String Function()? getCookieHeader;
+  static String Function(String url)? getCookieHeaderForUrl;
+  static VoidCallback? onForumChanged;
 
   /// 根据图片 URL 动态生成防盗链与 UA 标头（针对 B站、Wiki、Loli计数器与第三方图床智能分流）
   static Map<String, String> imageHeadersFor(String url) {
@@ -163,10 +185,13 @@ class AppConfig extends ChangeNotifier {
       } catch (_) {}
     }
     final host = uri?.host.toLowerCase() ?? '';
-    const imageAccept = 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8';
+    const imageAccept =
+        'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8';
 
     // 1. 哔哩哔哩图床
-    if (host.endsWith('bilibili.com') || host.endsWith('hdslb.com') || host.endsWith('bilivideo.com')) {
+    if (host.endsWith('bilibili.com') ||
+        host.endsWith('hdslb.com') ||
+        host.endsWith('bilivideo.com')) {
       return {
         'Referer': 'https://www.bilibili.com/',
         'User-Agent': pcUserAgent,
@@ -187,13 +212,21 @@ class AppConfig extends ChangeNotifier {
       };
     }
     // 3. Moe-Counter 等萌系计数器与论坛内部图片
-    if (host.endsWith('count.getloli.com') || host.endsWith('getloli.com') || host.endsWith('klpbbs.com') || host == 'localhost' || host == '127.0.0.1' || host.isEmpty) {
+    final forumUri = Uri.parse(baseUrl);
+    final isForumImage = host.isEmpty ||
+        host == forumUri.host ||
+        host.endsWith('.${forumUri.host}');
+    if (isForumImage ||
+        host == 'getloli.com' ||
+        host.endsWith('.getloli.com')) {
       final headers = <String, String>{
-        'Referer': 'https://klpbbs.com/',
+        'Referer': baseUrl,
         'User-Agent': pcUserAgent,
         'Accept': imageAccept,
       };
-      final cookies = getCookieHeader?.call();
+      final cookies = isForumImage
+          ? getCookieHeaderForUrl?.call(forumUri.resolve(url).toString())
+          : null;
       if (cookies != null && cookies.isNotEmpty) {
         headers['Cookie'] = cookies;
       }
@@ -230,16 +263,30 @@ class AppConfig extends ChangeNotifier {
     }
 
     // 2. 去除 Discuz 缩略图后缀，彻底避免拉伸缩略图（双后缀与单后缀均自动还原为原始高清原图）
-    clean = clean.replaceAll(RegExp(r'(\.(?:jpg|png|webp|jpeg|gif))\.thumb\.(?:jpg|png|webp|jpeg)$', caseSensitive: false), r'$1');
-    clean = clean.replaceAll(RegExp(r'(\.(?:jpg|png|webp|jpeg|gif))\.(?:small|middle)\.(?:jpg|png|webp|jpeg)$', caseSensitive: false), r'$1');
-    clean = clean.replaceAll(RegExp(r'_(?:thumb|small|middle)\.(?:jpg|png|webp|jpeg)$', caseSensitive: false), '.jpg');
-    clean = clean.replaceAll(RegExp(r'\.thumb\.(?:jpg|jpeg)$', caseSensitive: false), '.jpg');
-    clean = clean.replaceAll(RegExp(r'\.thumb\.(?:png)$', caseSensitive: false), '.png');
-    clean = clean.replaceAll(RegExp(r'\.thumb\.(?:webp)$', caseSensitive: false), '.webp');
+    clean = clean.replaceAll(
+        RegExp(r'(\.(?:jpg|png|webp|jpeg|gif))\.thumb\.(?:jpg|png|webp|jpeg)$',
+            caseSensitive: false),
+        r'$1');
+    clean = clean.replaceAll(
+        RegExp(
+            r'(\.(?:jpg|png|webp|jpeg|gif))\.(?:small|middle)\.(?:jpg|png|webp|jpeg)$',
+            caseSensitive: false),
+        r'$1');
+    clean = clean.replaceAll(
+        RegExp(r'_(?:thumb|small|middle)\.(?:jpg|png|webp|jpeg)$',
+            caseSensitive: false),
+        '.jpg');
+    clean = clean.replaceAll(
+        RegExp(r'\.thumb\.(?:jpg|jpeg)$', caseSensitive: false), '.jpg');
+    clean = clean.replaceAll(
+        RegExp(r'\.thumb\.(?:png)$', caseSensitive: false), '.png');
+    clean = clean.replaceAll(
+        RegExp(r'\.thumb\.(?:webp)$', caseSensitive: false), '.webp');
 
     // 3. 去除 URL query 中的 thumb 参数：&thumb=yes, &thumb=1, &thumb=2
     if (clean.contains('thumb=')) {
-      clean = clean.replaceAll(RegExp(r'[?&]thumb=(?:yes|1|2|true)', caseSensitive: false), '');
+      clean = clean.replaceAll(
+          RegExp(r'[?&]thumb=(?:yes|1|2|true)', caseSensitive: false), '');
       if (clean.contains('?') && !clean.contains('=')) {
         clean = clean.replaceAll('?', '');
       }
@@ -259,9 +306,14 @@ class AppConfig extends ChangeNotifier {
     return clean;
   }
 
+  /// 获取官方版块特色横幅 Banner（默认苦力怕论坛官方经典横幅）
+  static String forumBannerUrl(int fid) {
+    return 'https://klpbbs.com/template/the_c_style/images/banner.jpg';
+  }
+
   /// 浏览器 UA（可切换 PC/手机）
   static const String mobileUserAgent =
-      'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
+      'Mozilla/5.0 (Linux; Android 13; K) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
   static const String pcUserAgent =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -275,14 +327,18 @@ class AppConfig extends ChangeNotifier {
   /// 请求超时
   static const Duration timeout = Duration(seconds: 20);
 
+  /// 是否遵循系统代理网络（默认 false，即默认直连论坛，不走系统代理/VPN，规避代理节点拦截与 523 报错）
+  static bool useSystemProxy = false;
+
   /// 真实模式下请求最小间隔
   static const Duration realModeMinInterval = Duration(milliseconds: 800);
 
   /// 当前是否真实论坛模式
-  static bool get isRealMode => baseUrl.startsWith('https://klpbbs.com');
+  static bool get isRealMode => Uri.parse(baseUrl).host == 'klpbbs.com';
 
   /// 当前是否本地测试模式
-  static bool get isLocalTestMode => baseUrl.startsWith('http://127.0.0.1');
+  static bool get isLocalTestMode =>
+      const {'localhost', '127.0.0.1'}.contains(Uri.parse(baseUrl).host);
 
   /// 写操作是否允许。
   ///
@@ -310,7 +366,7 @@ class AppConfig extends ChangeNotifier {
   static int desktopGridColumns = 0; // 0 = 自动根据窗口宽度计算，2/3/4 = 固定列数
   static bool isMasterDetailEnabled = true;
 
-  static CardStyle cardStyle = CardStyle.largeCover;
+  static CardStyle cardStyle = CardStyle.guideMultimodal;
   static AppDensity density = AppDensity.comfortable;
   static double fontScale = 1.0;
   static AvatarShape avatarShape = AvatarShape.circle;
@@ -325,8 +381,15 @@ class AppConfig extends ChangeNotifier {
   static bool gpuAcceleration = true;
   static bool highRefreshRate = true;
   static ImageQuality imageQuality = ImageQuality.original;
-  static int imageCacheMaxMb = 128;
+  static int imageCacheMaxMb = 256;
   static bool smoothScrollPhysics = true;
+  static bool reduceMotion = false;
+  static MotionPace motionPace = MotionPace.snappy;
+  static bool animatePageTransitions = true;
+  static bool animatePanels = true;
+  static bool animateLists = true;
+  static bool animateLoading = true;
+  static bool bannerAutoPlay = true;
   static bool enableMultiThreadParsing = true;
   static bool enableGpuAcceleratedRendering = true;
 
@@ -334,7 +397,7 @@ class AppConfig extends ChangeNotifier {
   static bool showFloorSignature = true;
   static bool showThreadListImages = true;
   static bool useSystemMonet = false;
-  static bool autoCheckin = true;
+  static bool autoCheckin = false;
   static bool fastWriteMode = false;
   static int defaultStartTab = 0;
   static List<String> blockedKeywords = [];
@@ -424,11 +487,12 @@ class AppConfig extends ChangeNotifier {
 
   // ================= 自由网格工作台与画布系统配置 =================
   /// 首页网格仪表盘布局项
-  static List<DashboardGridItem> homeDashboardLayout = CardRegistry.getDefaultHomeLayout();
+  static List<DashboardGridItem> homeDashboardLayout =
+      CardRegistry.getDefaultHomeLayout();
 
-  /// 首页左右卡片栏折叠与展开状态（宽屏默认展开，自适应收起）
-  static bool homeShowLeftCards = true;
-  static bool homeShowRightCards = true;
+  /// 首页左右卡片栏折叠与展开状态（默认收起，保持经典清爽主页）
+  static bool homeShowLeftCards = false;
+  static bool homeShowRightCards = false;
 
   /// 首页左右侧边栏可拖动调节的宽度（支持用户拖拽微调）
   static double homeLeftSidebarWidth = 270.0;
@@ -452,26 +516,22 @@ class AppConfig extends ChangeNotifier {
   // ================= 移动端首页轻量自定义系统 =================
   /// 默认移动端首页组件排序与启闭（轻量、克制、美观）
   static const List<String> defaultMobileHomeSections = [
-    'horn_banner',   // 全站小喇叭公告
-    'stats',         // 站点统计看板
+    'horn_banner', // 全站小喇叭公告
+    'stats', // 站点统计看板
+    'carousel', // 精华推荐轮播优先于快捷功能
     'quick_actions', // 快捷金刚区
-    'forum_nav',     // 原版版块导航
-    'carousel',      // 精华推荐轮播
+    'forum_nav', // 原版版块导航
   ];
 
   /// 移动端首页当前启用的组件列表（有序）
   static List<String> mobileHomeSections = List.from(defaultMobileHomeSections);
 
-  /// 默认移动端快捷功能（8 个核心功能）
+  /// 默认只放四个补充功能，其他入口由导航和分类菜单提供。
   static const List<String> defaultMobileQuickActions = [
     'papa_ai',
-    'forum_nav',
-    'checkin',
-    'medals',
     'guide',
-    'search',
+    'favorites',
     'rank_god',
-    'rank_board',
   ];
 
   /// 移动端快捷功能当前启用的功能项（4 ~ 8 项）
@@ -563,10 +623,7 @@ class AppConfig extends ChangeNotifier {
 
       final avatarShapeStr = sp.getString('avatar_shape');
       if (avatarShapeStr != null) {
-        avatarShape = AvatarShape.values.firstWhere(
-          (a) => a.name == avatarShapeStr,
-          orElse: () => AvatarShape.circle,
-        );
+        avatarShape = AvatarShape.fromStoredName(avatarShapeStr);
       }
 
       // 性能
@@ -579,17 +636,32 @@ class AppConfig extends ChangeNotifier {
           orElse: () => ImageQuality.original,
         );
       }
-      imageCacheMaxMb = sp.getInt('image_cache_max_mb') ?? 128;
-      PaintingBinding.instance.imageCache.maximumSizeBytes = imageCacheMaxMb << 20;
+      imageCacheMaxMb = sp.getInt('image_cache_max_mb') ?? 256;
+      PaintingBinding.instance.imageCache.maximumSizeBytes =
+          imageCacheMaxMb << 20;
       smoothScrollPhysics = sp.getBool('smooth_scroll_physics') ?? true;
-      enableMultiThreadParsing = sp.getBool('enable_multithread_parsing') ?? true;
-      enableGpuAcceleratedRendering = sp.getBool('enable_gpu_rendering') ?? true;
+      reduceMotion = sp.getBool('reduce_motion') ?? false;
+      motionPace = MotionPace.values.firstWhere(
+        (pace) => pace.name == sp.getString('motion_pace'),
+        orElse: () => MotionPace.snappy,
+      );
+      animatePageTransitions = sp.getBool('animate_pages') ?? true;
+      animatePanels = sp.getBool('animate_panels') ?? true;
+      animateLists = sp.getBool('animate_lists') ?? true;
+      animateLoading = sp.getBool('animate_loading') ?? true;
+      bannerAutoPlay = sp.getBool('banner_auto_play') ?? true;
+      enableMultiThreadParsing =
+          sp.getBool('enable_multithread_parsing') ?? true;
+      enableGpuAcceleratedRendering =
+          sp.getBool('enable_gpu_rendering') ?? true;
 
       // 论坛功能
       showFloorSignature = sp.getBool('show_floor_signature') ?? true;
       showThreadListImages = sp.getBool('show_thread_list_images') ?? true;
       useSystemMonet = sp.getBool('use_system_monet') ?? false;
-      autoCheckin = sp.getBool('auto_checkin') ?? sp.getBool('auto_sign_on_launch') ?? true;
+      autoCheckin = sp.getBool('auto_checkin') ??
+          sp.getBool('auto_sign_on_launch') ??
+          false;
       fastWriteMode = sp.getBool('fast_write_mode') ?? false;
       defaultStartTab = sp.getInt('default_start_tab') ?? 0;
       blockedKeywords = sp.getStringList('blocked_keywords') ?? [];
@@ -600,8 +672,10 @@ class AppConfig extends ChangeNotifier {
 
       // 剪贴板跳转
       clipboardJumpEnabled = sp.getBool('clipboard_jump_enabled') ?? true;
-      clipboardJumpThreadEnabled = sp.getBool('clipboard_jump_thread_enabled') ?? true;
-      clipboardJumpSearchEnabled = sp.getBool('clipboard_jump_search_enabled') ?? true;
+      clipboardJumpThreadEnabled =
+          sp.getBool('clipboard_jump_thread_enabled') ?? true;
+      clipboardJumpSearchEnabled =
+          sp.getBool('clipboard_jump_search_enabled') ?? true;
       clipboardJumpConfirm = sp.getBool('clipboard_jump_confirm') ?? true;
 
       // 下载与存储管理
@@ -624,6 +698,8 @@ class AppConfig extends ChangeNotifier {
         baseUrl = savedBaseUrl;
       }
 
+      useSystemProxy = sp.getBool('use_system_proxy') ?? false;
+
       // DIY 模块化配置
       final loadedHomeModules = sp.getStringList('diy_home_modules');
       if (loadedHomeModules != null && loadedHomeModules.isNotEmpty) {
@@ -643,7 +719,6 @@ class AppConfig extends ChangeNotifier {
       } else {
         threadRightModules = List.from(defaultThreadRightModules);
       }
-      threadRightModules.remove('forum_list');
 
       final loadedForumModules = sp.getStringList('diy_forum_modules');
       if (loadedForumModules != null && loadedForumModules.isNotEmpty) {
@@ -653,39 +728,48 @@ class AppConfig extends ChangeNotifier {
       }
       threadLeftWidth = sp.getDouble('diy_thread_left_width') ?? 300.0;
       threadRightWidth = sp.getDouble('diy_thread_right_width') ?? 320.0;
-      threadContentMaxWidth = sp.getDouble('diy_thread_content_max_width') ?? 960.0;
+      threadContentMaxWidth =
+          sp.getDouble('diy_thread_content_max_width') ?? 960.0;
       threadLeftEnabled = sp.getBool('diy_thread_left_enabled') ?? true;
       threadRightEnabled = sp.getBool('diy_thread_right_enabled') ?? true;
-      threadReaderFontSize = sp.getDouble('diy_thread_reader_font_size') ?? 15.0;
-      threadReaderLineHeight = sp.getDouble('diy_thread_reader_line_height') ?? 1.6;
+      threadReaderFontSize =
+          sp.getDouble('diy_thread_reader_font_size') ?? 15.0;
+      threadReaderLineHeight =
+          sp.getDouble('diy_thread_reader_line_height') ?? 1.6;
 
       // 自由网格仪表盘配置
       final homeGridJson = sp.getString('home_dashboard_layout_v2');
       if (homeGridJson != null && homeGridJson.isNotEmpty) {
         try {
           final list = jsonDecode(homeGridJson) as List;
-          homeDashboardLayout = list.map((e) => DashboardGridItem.fromJson(e as Map<String, dynamic>)).toList();
+          homeDashboardLayout = list
+              .map((e) => DashboardGridItem.fromJson(e as Map<String, dynamic>))
+              .toList();
         } catch (_) {}
       }
       // 移除积分流水（credit_log）与小喇叭卡片，确保小喇叭使用原版经典样式、杜绝冗余
       homeModules.remove('credit_log');
-      homeDashboardLayout.removeWhere((item) => item.cardType == 'credit_log' || item.cardType == 'horn_banner');
+      homeDashboardLayout.removeWhere((item) =>
+          item.cardType == 'credit_log' || item.cardType == 'horn_banner');
 
       // 确保首页左右两边平衡支持：如果历史旧数据中左侧卡片缺失，自动补全官方推荐的左侧卡片
-      final hasLeftCards = homeDashboardLayout.any((c) => (c.col + c.colSpan / 2.0) < 6);
+      final hasLeftCards =
+          homeDashboardLayout.any((c) => (c.col + c.colSpan / 2.0) < 6);
       if (homeDashboardLayout.isEmpty || !hasLeftCards) {
         homeDashboardLayout = CardRegistry.getDefaultHomeLayout();
       }
 
-      homeShowLeftCards = sp.getBool('home_show_left_cards_v3') ?? true;
-      homeShowRightCards = sp.getBool('home_show_right_cards_v3') ?? true;
+      homeShowLeftCards = sp.getBool('home_show_left_cards_v4') ?? true;
+      homeShowRightCards = sp.getBool('home_show_right_cards_v4') ?? true;
       homeLeftSidebarWidth = sp.getDouble('home_left_sidebar_width') ?? 270.0;
       homeRightSidebarWidth = sp.getDouble('home_right_sidebar_width') ?? 285.0;
-      threadForumSidebarWidth = sp.getDouble('thread_forum_sidebar_width') ?? 380.0;
+      threadForumSidebarWidth =
+          sp.getDouble('thread_forum_sidebar_width') ?? 380.0;
 
       if (!homeDashboardLayout.any((e) => e.cardType == 'server_status')) {
         int maxRow = 0;
-        for (final item in homeDashboardLayout.where((c) => (c.col + c.colSpan / 2.0) >= 6)) {
+        for (final item in homeDashboardLayout
+            .where((c) => (c.col + c.colSpan / 2.0) >= 6)) {
           final bottom = item.row + item.rowSpan;
           if (bottom > maxRow) maxRow = bottom;
         }
@@ -704,14 +788,17 @@ class AppConfig extends ChangeNotifier {
       if (threadGridJson != null && threadGridJson.isNotEmpty) {
         try {
           final list = jsonDecode(threadGridJson) as List;
-          threadDashboardLayout = list.map((e) => DashboardGridItem.fromJson(e as Map<String, dynamic>)).toList();
+          threadDashboardLayout = list
+              .map((e) => DashboardGridItem.fromJson(e as Map<String, dynamic>))
+              .toList();
         } catch (_) {}
       }
       // 强力对齐 threadDashboardLayout 与 threadRightModules：彻底清除不属于帖子的 cardType（如 user_profile）、左侧错位卡片，并与 threadRightModules 保持 1:1 双向同步
       final validRight = threadRightModules;
       final existingMap = <String, DashboardGridItem>{};
       for (final item in threadDashboardLayout) {
-        if (item.cardType != 'user_profile' && validRight.contains(item.cardType)) {
+        if (item.cardType != 'user_profile' &&
+            validRight.contains(item.cardType)) {
           existingMap[item.cardType] = item;
         }
       }
@@ -720,14 +807,15 @@ class AppConfig extends ChangeNotifier {
         final existing = existingMap[id];
         final def = CardRegistry.definitions[id];
         final span = existing?.rowSpan ?? def?.defaultRowSpan ?? 2;
-        final item = DashboardGridItem(
-          id: existing?.id ?? 'th_$id',
-          cardType: id,
-          col: 8,
-          row: curRow,
-          colSpan: 4,
-          rowSpan: span,
-        );
+        final item = existing?.copyWith(col: 8, row: curRow, colSpan: 4) ??
+            DashboardGridItem(
+              id: 'th_$id',
+              cardType: id,
+              col: 8,
+              row: curRow,
+              colSpan: 4,
+              rowSpan: span,
+            );
         curRow += span;
         return item;
       }).toList();
@@ -735,28 +823,23 @@ class AppConfig extends ChangeNotifier {
       if (guideGridJson != null && guideGridJson.isNotEmpty) {
         try {
           final list = jsonDecode(guideGridJson) as List;
-          guideDashboardLayout = list.map((e) => DashboardGridItem.fromJson(e as Map<String, dynamic>)).toList();
+          guideDashboardLayout = list
+              .map((e) => DashboardGridItem.fromJson(e as Map<String, dynamic>))
+              .toList();
         } catch (_) {}
       }
       if (guideDashboardLayout.isEmpty) {
         guideDashboardLayout = CardRegistry.getDefaultGuideLayout();
       }
       // 移动端轻量首页配置
-      final loadedMobileSections = sp.getStringList('mobile_home_sections');
-      if (loadedMobileSections != null && loadedMobileSections.isNotEmpty) {
-        mobileHomeSections = List.from(loadedMobileSections);
-      } else {
-        mobileHomeSections = List.from(defaultMobileHomeSections);
-      }
-      final loadedMobileActions = sp.getStringList('mobile_quick_actions');
-      if (loadedMobileActions != null && loadedMobileActions.isNotEmpty) {
-        mobileQuickActions = List.from(loadedMobileActions);
-      } else {
-        mobileQuickActions = List.from(defaultMobileQuickActions);
-      }
+      mobileHomeSections = MobileHomePreferences.normalizeSections(
+          sp.getStringList('mobile_home_sections'));
+      mobileQuickActions = MobileHomePreferences.normalizeActions(
+          sp.getStringList('mobile_quick_actions'));
 
       mainContentMinWidth = sp.getDouble('main_content_min_width') ?? 620.0;
-      dashboardSidebarPosition = sp.getString('dashboard_sidebar_position') ?? 'top';
+      dashboardSidebarPosition =
+          sp.getString('dashboard_sidebar_position') ?? 'top';
 
       threadForumSidebarWidthNotifier.value = threadForumSidebarWidth;
       threadRightWidthNotifier.value = threadRightWidth;
@@ -770,6 +853,13 @@ class AppConfig extends ChangeNotifier {
   }
 
   // ================= 更新与持久化方法 =================
+  /// 读取资料时仅更新已确认的挂件 URL，保留佩戴标识；持久化由会话保护的调用方负责。
+  static void updateCachedFaceUrl(String url) {
+    if (url.isEmpty || myFaceUrl == url) return;
+    myFaceUrl = url;
+    instance.notifyListeners();
+  }
+
   static Future<void> setMyFaceUrl(String? url, {String? frameId}) async {
     myFaceUrl = url;
     myEquippedFrameId = frameId;
@@ -808,9 +898,28 @@ class AppConfig extends ChangeNotifier {
   }
 
   static Future<void> setBaseUrl(String url) async {
-    baseUrl = url;
+    final uri = Uri.tryParse(url.trim());
+    if (uri == null ||
+        uri.host.isEmpty ||
+        !const {'http', 'https'}.contains(uri.scheme)) {
+      throw ArgumentError('论坛地址必须是有效的 HTTP 或 HTTPS 地址');
+    }
+    baseUrl = uri
+        .replace(
+            path: uri.path.endsWith('/') ? uri.path : '${uri.path}/',
+            query: '',
+            fragment: '')
+        .toString();
+    onForumChanged?.call();
     final sp = await SharedPreferences.getInstance();
-    await sp.setString('base_url', url);
+    await sp.setString('base_url', baseUrl);
+    instance.notifyListeners();
+  }
+
+  static Future<void> setUseSystemProxy(bool value) async {
+    useSystemProxy = value;
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool('use_system_proxy', value);
     instance.notifyListeners();
   }
 
@@ -952,6 +1061,44 @@ class AppConfig extends ChangeNotifier {
     final sp = await SharedPreferences.getInstance();
     await sp.setBool('smooth_scroll_physics', enable);
     instance.notifyListeners();
+  }
+
+  static Future<void> setReduceMotion(bool enabled) async {
+    reduceMotion = enabled;
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool('reduce_motion', enabled);
+    instance.notifyListeners();
+    // MaterialApp 的 MediaQuery 与主题过渡也读取此设置，需同步根部状态。
+    themeNotifier.notifyThemeChanged();
+  }
+
+  static Future<void> setMotionPace(MotionPace pace) async {
+    motionPace = pace;
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString('motion_pace', pace.name);
+    instance.notifyListeners();
+    themeNotifier.notifyThemeChanged();
+  }
+
+  static Future<void> setMotionOption(String key, bool enabled) async {
+    switch (key) {
+      case 'animate_pages':
+        animatePageTransitions = enabled;
+      case 'animate_panels':
+        animatePanels = enabled;
+      case 'animate_lists':
+        animateLists = enabled;
+      case 'animate_loading':
+        animateLoading = enabled;
+      case 'banner_auto_play':
+        bannerAutoPlay = enabled;
+      default:
+        throw ArgumentError.value(key, 'key');
+    }
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool(key, enabled);
+    instance.notifyListeners();
+    themeNotifier.notifyThemeChanged();
   }
 
   static Future<void> setMultiThreadParsing(bool enable) async {
@@ -1130,14 +1277,15 @@ class AppConfig extends ChangeNotifier {
       final existing = existingMap[id];
       final def = CardRegistry.get(id);
       final span = existing?.rowSpan ?? def.defaultRowSpan;
-      final item = DashboardGridItem(
-        id: existing?.id ?? 'th_$id',
-        cardType: id,
-        col: 8,
-        row: r,
-        colSpan: 4,
-        rowSpan: span,
-      );
+      final item = existing?.copyWith(col: 8, row: r, colSpan: 4) ??
+          DashboardGridItem(
+            id: 'th_$id',
+            cardType: id,
+            col: 8,
+            row: r,
+            colSpan: 4,
+            rowSpan: span,
+          );
       r += span;
       return item;
     }).toList();
@@ -1145,7 +1293,8 @@ class AppConfig extends ChangeNotifier {
     try {
       final sp = await SharedPreferences.getInstance();
       await sp.setStringList('diy_thread_right_modules', threadRightModules);
-      final jsonStr = jsonEncode(threadDashboardLayout.map((e) => e.toJson()).toList());
+      final jsonStr =
+          jsonEncode(threadDashboardLayout.map((e) => e.toJson()).toList());
       await sp.setString('thread_dashboard_layout_v2', jsonStr);
     } catch (_) {}
   }
@@ -1257,7 +1406,8 @@ class AppConfig extends ChangeNotifier {
     instance.notifyListeners();
     try {
       final sp = await SharedPreferences.getInstance();
-      await sp.setDouble('diy_thread_reader_line_height', threadReaderLineHeight);
+      await sp.setDouble(
+          'diy_thread_reader_line_height', threadReaderLineHeight);
     } catch (_) {}
   }
 
@@ -1306,14 +1456,82 @@ class AppConfig extends ChangeNotifier {
     } catch (_) {}
   }
 
-  static Future<void> setHomeDashboardLayout(List<DashboardGridItem> items) async {
+  static Future<void> setHomeDashboardLayout(
+      List<DashboardGridItem> items) async {
     homeDashboardLayout = List.from(items);
     instance.notifyListeners();
     try {
       final sp = await SharedPreferences.getInstance();
-      final jsonStr = jsonEncode(homeDashboardLayout.map((e) => e.toJson()).toList());
+      final jsonStr =
+          jsonEncode(homeDashboardLayout.map((e) => e.toJson()).toList());
       await sp.setString('home_dashboard_layout_v2', jsonStr);
     } catch (_) {}
+  }
+
+  /// 画布保存完成后再通知页面，避免提前退出或重新启用用户隐藏的侧栏。
+  static Future<void> saveCanvasLayout(
+    String page,
+    List<DashboardGridItem> items, {
+    required bool showLeft,
+    required bool showRight,
+  }) async {
+    if (!const {'home', 'thread', 'guide'}.contains(page)) {
+      throw ArgumentError.value(page, 'page');
+    }
+    final sorted = items.map((item) => item.copyWith()).toList()
+      ..sort((a, b) =>
+          a.row != b.row ? a.row.compareTo(b.row) : a.col.compareTo(b.col));
+    final ids = <String>{};
+    for (final item in sorted) {
+      if (!ids.add(item.id) ||
+          item.col < 0 ||
+          item.row < 0 ||
+          item.colSpan < 1 ||
+          item.rowSpan < 1 ||
+          item.col + item.colSpan > 12) {
+        throw StateError('布局存在重复卡片或越界，请整理后保存');
+      }
+    }
+    if (page != 'home') {
+      var row = 0;
+      for (var i = 0; i < sorted.length; i++) {
+        sorted[i] = sorted[i].copyWith(col: 8, colSpan: 4, row: row);
+        row += sorted[i].rowSpan;
+      }
+    }
+    final sp = await SharedPreferences.getInstance();
+    final key = page == 'home'
+        ? 'home_dashboard_layout_v2'
+        : page == 'thread'
+            ? 'thread_dashboard_layout_v2'
+            : 'guide_dashboard_layout_v1';
+    if (!await sp.setString(
+        key, jsonEncode(sorted.map((item) => item.toJson()).toList()))) {
+      throw StateError('布局未能保存，请重试');
+    }
+    if (page == 'home') {
+      if (!await sp.setBool('home_show_left_cards_v4', showLeft) ||
+          !await sp.setBool('home_show_right_cards_v4', showRight)) {
+        throw StateError('侧栏显示设置未能保存，请重试');
+      }
+      homeDashboardLayout = sorted;
+      homeShowLeftCards = showLeft;
+      homeShowRightCards = showRight;
+    } else if (page == 'thread') {
+      final modules = sorted.map((item) => item.cardType).toSet().toList();
+      if (!await sp.setStringList('diy_thread_right_modules', modules) ||
+          !await sp.setBool('diy_thread_left_enabled', showLeft) ||
+          !await sp.setBool('diy_thread_right_enabled', showRight)) {
+        throw StateError('帖子工作区设置未能保存，请重试');
+      }
+      threadDashboardLayout = sorted;
+      threadRightModules = modules;
+      threadLeftEnabled = showLeft;
+      threadRightEnabled = showRight;
+    } else {
+      guideDashboardLayout = sorted;
+    }
+    instance.notifyListeners();
   }
 
   static Future<void> setHomeShowLeftCards(bool val) async {
@@ -1321,8 +1539,7 @@ class AppConfig extends ChangeNotifier {
     instance.notifyListeners();
     try {
       final sp = await SharedPreferences.getInstance();
-      await sp.setBool('home_show_left_cards_v3', val);
-      await sp.setBool('home_show_left_cards', val);
+      await sp.setBool('home_show_left_cards_v4', val);
     } catch (_) {}
   }
 
@@ -1331,8 +1548,7 @@ class AppConfig extends ChangeNotifier {
     instance.notifyListeners();
     try {
       final sp = await SharedPreferences.getInstance();
-      await sp.setBool('home_show_right_cards_v3', val);
-      await sp.setBool('home_show_right_cards', val);
+      await sp.setBool('home_show_right_cards_v4', val);
     } catch (_) {}
   }
 
@@ -1388,7 +1604,8 @@ class AppConfig extends ChangeNotifier {
   }
 
   static void ensureServerStatusInHomeLayout() {
-    final hasLeft = homeDashboardLayout.any((c) => (c.col + c.colSpan / 2.0) < 6);
+    final hasLeft =
+        homeDashboardLayout.any((c) => (c.col + c.colSpan / 2.0) < 6);
     if (homeDashboardLayout.isEmpty || !hasLeft) {
       homeDashboardLayout = CardRegistry.getDefaultHomeLayout();
       setHomeDashboardLayout(homeDashboardLayout);
@@ -1396,7 +1613,8 @@ class AppConfig extends ChangeNotifier {
     }
     if (!homeDashboardLayout.any((e) => e.cardType == 'server_status')) {
       int maxRow = 0;
-      for (final item in homeDashboardLayout.where((c) => (c.col + c.colSpan / 2.0) >= 6)) {
+      for (final item
+          in homeDashboardLayout.where((c) => (c.col + c.colSpan / 2.0) >= 6)) {
         final bottom = item.row + item.rowSpan;
         if (bottom > maxRow) maxRow = bottom;
       }
@@ -1423,18 +1641,22 @@ class AppConfig extends ChangeNotifier {
     } catch (_) {}
   }
 
-  static Future<void> setThreadDashboardLayout(List<DashboardGridItem> items) async {
+  static Future<void> setThreadDashboardLayout(
+      List<DashboardGridItem> items) async {
     final sorted = List<DashboardGridItem>.from(items)
       ..sort((a, b) => a.row.compareTo(b.row));
-    threadDashboardLayout = sorted.where((e) => e.cardType != 'user_profile').map((e) {
+    threadDashboardLayout =
+        sorted.where((e) => e.cardType != 'user_profile').map((e) {
       return e.copyWith(col: 8, colSpan: 4);
     }).toList();
-    final moduleIds = threadDashboardLayout.map((e) => e.cardType).toSet().toList();
+    final moduleIds =
+        threadDashboardLayout.map((e) => e.cardType).toSet().toList();
     threadRightModules = List.from(moduleIds);
     instance.notifyListeners();
     try {
       final sp = await SharedPreferences.getInstance();
-      final jsonStr = jsonEncode(threadDashboardLayout.map((e) => e.toJson()).toList());
+      final jsonStr =
+          jsonEncode(threadDashboardLayout.map((e) => e.toJson()).toList());
       await sp.setString('thread_dashboard_layout_v2', jsonStr);
       await sp.setStringList('diy_thread_right_modules', threadRightModules);
     } catch (_) {}
@@ -1449,7 +1671,8 @@ class AppConfig extends ChangeNotifier {
     } catch (_) {}
   }
 
-  static Future<void> setGuideDashboardLayout(List<DashboardGridItem> items) async {
+  static Future<void> setGuideDashboardLayout(
+      List<DashboardGridItem> items) async {
     int curRow = 0;
     guideDashboardLayout = items.map((e) {
       final span = e.rowSpan;
@@ -1460,7 +1683,8 @@ class AppConfig extends ChangeNotifier {
     instance.notifyListeners();
     try {
       final sp = await SharedPreferences.getInstance();
-      final jsonStr = jsonEncode(guideDashboardLayout.map((e) => e.toJson()).toList());
+      final jsonStr =
+          jsonEncode(guideDashboardLayout.map((e) => e.toJson()).toList());
       await sp.setString('guide_dashboard_layout_v1', jsonStr);
     } catch (_) {}
   }
@@ -1511,7 +1735,8 @@ class AppConfig extends ChangeNotifier {
     instance.notifyListeners();
     try {
       final sp = await SharedPreferences.getInstance();
-      final jsonStr = jsonEncode(homeDashboardLayout.map((e) => e.toJson()).toList());
+      final jsonStr =
+          jsonEncode(homeDashboardLayout.map((e) => e.toJson()).toList());
       await sp.setString('home_dashboard_layout_v2', jsonStr);
     } catch (_) {}
   }
@@ -1526,7 +1751,7 @@ class AppConfig extends ChangeNotifier {
 
   // ================= 移动端首页轻量自定义控制 =================
   static Future<void> setMobileHomeSections(List<String> sections) async {
-    mobileHomeSections = List.from(sections);
+    mobileHomeSections = MobileHomePreferences.normalizeSections(sections);
     instance.notifyListeners();
     try {
       final sp = await SharedPreferences.getInstance();
@@ -1535,7 +1760,7 @@ class AppConfig extends ChangeNotifier {
   }
 
   static Future<void> setMobileQuickActions(List<String> actions) async {
-    mobileQuickActions = List.from(actions);
+    mobileQuickActions = MobileHomePreferences.normalizeActions(actions);
     instance.notifyListeners();
     try {
       final sp = await SharedPreferences.getInstance();

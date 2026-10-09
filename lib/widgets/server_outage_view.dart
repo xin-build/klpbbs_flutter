@@ -37,13 +37,15 @@ class ServerOutageView extends StatelessWidget {
         final screenHeight = MediaQuery.sizeOf(ctx).height;
         return Dialog(
           backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
           child: ConstrainedBox(
             constraints: BoxConstraints(
               maxWidth: 620,
               maxHeight: screenHeight * 0.88,
             ),
             child: ServerOutageView(
+              key: const ValueKey('server-outage-diagnostic-view'),
               outage: outage,
               onRetry: () {
                 Navigator.of(ctx).pop();
@@ -185,28 +187,43 @@ class ServerOutageView extends StatelessWidget {
                           controller: scrollController,
                           padding: const EdgeInsets.all(16),
                           children: [
-                            _buildMetaRow('HTTP 状态码', '${outage.statusCode} ${outage.statusMessage}', colorScheme),
+                            _buildMetaRow(
+                                'HTTP 状态码',
+                                '${outage.statusCode} ${outage.statusMessage}',
+                                colorScheme),
                             if (outage.requestUrl != null)
-                              _buildMetaRow('请求地址 (URL)', outage.requestUrl!, colorScheme),
-                            _buildMetaRow('Request / Ray ID', outage.requestId, colorScheme),
+                              _buildMetaRow('请求地址 (URL)', outage.requestUrl!,
+                                  colorScheme),
+                            _buildMetaRow('Request / Ray ID', outage.requestId,
+                                colorScheme),
                             if (outage.datacenter != null)
-                              _buildMetaRow('Cloudflare 数据中心', outage.datacenter!, colorScheme),
+                              _buildMetaRow('Cloudflare 数据中心',
+                                  outage.datacenter!, colorScheme),
                             if (outage.serverEngine != null)
-                              _buildMetaRow('网关服务器', outage.serverEngine!, colorScheme),
-                            _buildMetaRow('客户端真实 IP', outage.clientIp, colorScheme),
-                            _buildMetaRow('捕获时间', outage.timestamp.toLocal().toString(), colorScheme),
+                              _buildMetaRow(
+                                  '网关服务器', outage.serverEngine!, colorScheme),
+                            _buildMetaRow(
+                                '客户端真实 IP', outage.clientIp, colorScheme),
+                            _buildMetaRow(
+                                '捕获时间',
+                                outage.timestamp.toLocal().toString(),
+                                colorScheme),
                             const SizedBox(height: 12),
                             const Text(
                               'HTTP 响应头 (Headers):',
-                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                              style: TextStyle(
+                                  fontWeight: FontWeight.bold, fontSize: 13),
                             ),
                             const SizedBox(height: 6),
-                            if (outage.headers != null && outage.headers!.isNotEmpty)
+                            if (outage.headers != null &&
+                                outage.headers!.isNotEmpty)
                               ...outage.headers!.entries.map(
                                 (e) => Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 2),
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 2),
                                   child: Row(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
                                       Text(
                                         '${e.key}: ',
@@ -231,7 +248,9 @@ class ServerOutageView extends StatelessWidget {
                                 ),
                               )
                             else
-                              const Text('无响应头数据', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                              const Text('无响应头数据',
+                                  style: TextStyle(
+                                      fontSize: 12, color: Colors.grey)),
                           ],
                         ),
                       ],
@@ -285,9 +304,8 @@ class ServerOutageView extends StatelessWidget {
     final colorScheme = theme.colorScheme;
 
     // 贴近应用原生调色板（契合苦力怕深色/浅色卡片与设计规范）
-    final cardBg = isDark
-        ? colorScheme.surfaceContainerHigh
-        : colorScheme.surface;
+    final cardBg =
+        isDark ? colorScheme.surfaceContainerHigh : colorScheme.surface;
     final cardBorder = colorScheme.outlineVariant.withAlpha(isDark ? 65 : 120);
     final topologyBg = isDark
         ? colorScheme.surfaceContainer
@@ -328,7 +346,10 @@ class ServerOutageView extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       // 1. 顶部状态胶囊标签 + 节点 + 应用身份标识 + 关闭按钮
-                      Row(
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           Container(
                             padding: const EdgeInsets.symmetric(
@@ -359,47 +380,54 @@ class ServerOutageView extends StatelessWidget {
                                   ),
                                 ),
                                 const SizedBox(width: 6),
-                                Text(
-                                  outage.badgeText,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                    letterSpacing: 0.8,
-                                    color: isDark
-                                        ? const Color(0xFFF87171)
-                                        : const Color(0xFFB91C1C),
+                                Flexible(
+                                  child: Text(
+                                    outage.badgeText,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      letterSpacing: 0.8,
+                                      color: isDark
+                                          ? const Color(0xFFF87171)
+                                          : const Color(0xFFB91C1C),
+                                    ),
                                   ),
                                 ),
                               ],
                             ),
                           ),
-                          if (outage.datacenter != null && outage.datacenter!.isNotEmpty) ...[
+                          if (outage.datacenter != null &&
+                              outage.datacenter!.isNotEmpty) ...[
                             const SizedBox(width: 8),
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
                               decoration: BoxDecoration(
                                 color: topologyBg,
                                 borderRadius: BorderRadius.circular(100),
-                                border: Border.all(color: cardBorder, width: 0.8),
+                                border:
+                                    Border.all(color: cardBorder, width: 0.8),
                               ),
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Icon(Icons.location_on_outlined, size: 12, color: textMuted),
+                                  Icon(Icons.location_on_outlined,
+                                      size: 12, color: textMuted),
                                   const SizedBox(width: 4),
-                                  Text(
-                                    '节点: ${outage.datacenter}',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w600,
-                                      color: textMid,
+                                  Flexible(
+                                    child: Text(
+                                      '节点: ${outage.datacenter}',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                        color: textMid,
+                                      ),
                                     ),
                                   ),
                                 ],
                               ),
                             ),
                           ],
-                          const Spacer(),
                           Text(
                             '苦力怕论坛 · 服务端异常',
                             style: TextStyle(
@@ -411,9 +439,12 @@ class ServerOutageView extends StatelessWidget {
                           if (onClose != null) ...[
                             const SizedBox(width: 8),
                             IconButton(
+                              key: const ValueKey(
+                                  'server-outage-diagnostic-close'),
                               icon: const Icon(Icons.close_rounded, size: 18),
                               padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                              constraints: const BoxConstraints(
+                                  minWidth: 28, minHeight: 28),
                               tooltip: '关闭',
                               onPressed: onClose,
                             ),
@@ -431,7 +462,9 @@ class ServerOutageView extends StatelessWidget {
                             style: TextStyle(
                               fontSize: 54,
                               fontWeight: FontWeight.w900,
-                              color: isDark ? const Color(0xFFF87171) : const Color(0xFFDC2626),
+                              color: isDark
+                                  ? const Color(0xFFF87171)
+                                  : const Color(0xFFDC2626),
                               height: 1.0,
                               letterSpacing: -1.0,
                             ),
@@ -465,10 +498,12 @@ class ServerOutageView extends StatelessWidget {
                       ),
 
                       // 2.1 实时请求 URL（如果可用）
-                      if (outage.requestUrl != null && outage.requestUrl!.isNotEmpty) ...[
+                      if (outage.requestUrl != null &&
+                          outage.requestUrl!.isNotEmpty) ...[
                         const SizedBox(height: 12),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
                           decoration: BoxDecoration(
                             color: topologyBg,
                             borderRadius: BorderRadius.circular(8),
@@ -476,7 +511,8 @@ class ServerOutageView extends StatelessWidget {
                           ),
                           child: Row(
                             children: [
-                              Icon(Icons.link_rounded, size: 14, color: textMuted),
+                              Icon(Icons.link_rounded,
+                                  size: 14, color: textMuted),
                               const SizedBox(width: 6),
                               Expanded(
                                 child: Text(
@@ -543,9 +579,13 @@ class ServerOutageView extends StatelessWidget {
                         child: Column(
                           children: [
                             // 标题栏
-                            Row(
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
-                                Icon(Icons.hub_rounded, size: 16, color: colorScheme.primary),
+                                Icon(Icons.hub_rounded,
+                                    size: 16, color: colorScheme.primary),
                                 const SizedBox(width: 6),
                                 Text(
                                   '网络链路诊断拓扑',
@@ -555,10 +595,10 @@ class ServerOutageView extends StatelessWidget {
                                     color: textDark,
                                   ),
                                 ),
-                                const Spacer(),
                                 Text(
                                   '实时网关状态',
-                                  style: TextStyle(fontSize: 11, color: textMuted),
+                                  style:
+                                      TextStyle(fontSize: 11, color: textMuted),
                                 ),
                               ],
                             ),
@@ -667,7 +707,8 @@ class ServerOutageView extends StatelessWidget {
                           // 服务监控 ( status.klpz.net )
                           OutlinedButton.icon(
                             onPressed: () => _openServerStatus(context),
-                            icon: const Icon(Icons.monitor_heart_outlined, size: 16),
+                            icon: const Icon(Icons.monitor_heart_outlined,
+                                size: 16),
                             label: const Text('服务监控'),
                             style: OutlinedButton.styleFrom(
                               side: BorderSide(color: cardBorder),
@@ -682,7 +723,8 @@ class ServerOutageView extends StatelessWidget {
                           ),
 
                           // 查看源站原始网页 / 源码 (Raw HTML)
-                          if (outage.rawHtml != null && outage.rawHtml!.isNotEmpty)
+                          if (outage.rawHtml != null &&
+                              outage.rawHtml!.isNotEmpty)
                             OutlinedButton.icon(
                               onPressed: () => _showRawResponse(context),
                               icon: const Icon(Icons.code_rounded, size: 16),
@@ -703,7 +745,8 @@ class ServerOutageView extends StatelessWidget {
                           if (onViewCache != null)
                             TextButton.icon(
                               onPressed: onViewCache,
-                              icon: const Icon(Icons.archive_outlined, size: 16),
+                              icon:
+                                  const Icon(Icons.archive_outlined, size: 16),
                               label: const Text('浏览离线缓存'),
                               style: TextButton.styleFrom(
                                 foregroundColor: colorScheme.primary,
@@ -728,7 +771,8 @@ class ServerOutageView extends StatelessWidget {
                   ),
                   child: Row(
                     children: [
-                      Icon(Icons.fingerprint_rounded, size: 16, color: textMuted),
+                      Icon(Icons.fingerprint_rounded,
+                          size: 16, color: textMuted),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
@@ -746,7 +790,8 @@ class ServerOutageView extends StatelessWidget {
                       OutlinedButton.icon(
                         onPressed: () => _copyDiagnostics(context),
                         icon: const Icon(Icons.copy_rounded, size: 13),
-                        label: const Text('复制诊断报告', style: TextStyle(fontSize: 11.5)),
+                        label: const Text('复制诊断报告',
+                            style: TextStyle(fontSize: 11.5)),
                         style: OutlinedButton.styleFrom(
                           foregroundColor: textMid,
                           side: BorderSide(color: cardBorder),
@@ -794,13 +839,10 @@ class ServerOutageView extends StatelessWidget {
           alignment: Alignment.center,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: isGreen
-                ? const Color(0x2210B981)
-                : const Color(0x22EF4444),
+            color: isGreen ? const Color(0x2210B981) : const Color(0x22EF4444),
             border: Border.all(
-              color: isGreen
-                  ? const Color(0x4410B981)
-                  : const Color(0x44EF4444),
+              color:
+                  isGreen ? const Color(0x4410B981) : const Color(0x44EF4444),
             ),
           ),
           child: Icon(
@@ -817,7 +859,10 @@ class ServerOutageView extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Row(
+              Wrap(
+                spacing: 6,
+                runSpacing: 2,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   Text(
                     titleZh,
@@ -919,111 +964,107 @@ class ServerOutageBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-
-    final bannerBg = isDark
-        ? const Color(0xFF261815)
-        : const Color(0xFFFFF1F0);
-    final bannerBorder = isDark
-        ? const Color(0xFF6B2721)
-        : const Color(0xFFFFA39E);
-    final textPrimary = isDark
-        ? const Color(0xFFFFCCC7)
-        : const Color(0xFFCF1322);
+    final colors = theme.colorScheme;
+    final bannerBorder = colors.error.withValues(alpha: 0.35);
+    final textPrimary = colors.onErrorContainer;
+    final title = Text(
+      '论坛服务暂时不可用 (${outage.statusCode} ${outage.title})',
+      style: theme.textTheme.titleSmall?.copyWith(
+        fontWeight: FontWeight.bold,
+        color: textPrimary,
+      ),
+    );
+    final description = Text(
+      '当前显示上次成功加载的内容。在线互动与最新内容暂不可用。',
+      style: theme.textTheme.bodySmall?.copyWith(color: textPrimary),
+    );
+    final heading = Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            color: colors.error.withValues(alpha: 0.12),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(Icons.cloud_off_rounded, size: 20, color: colors.error),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [title, const SizedBox(height: 4), description],
+          ),
+        ),
+        if (onDismiss != null)
+          IconButton(
+            icon: const Icon(Icons.close_rounded, size: 20),
+            style: IconButton.styleFrom(foregroundColor: textPrimary),
+            onPressed: onDismiss,
+            tooltip: '关闭提示',
+          ),
+      ],
+    );
+    final actions = Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        OutlinedButton(
+          key: const ValueKey('server-outage-diagnostic-open'),
+          onPressed: onViewDetails,
+          style: OutlinedButton.styleFrom(
+            minimumSize: const Size(48, 44),
+            foregroundColor: textPrimary,
+            side: BorderSide(color: bannerBorder),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          ),
+          child: const Text('详细诊断'),
+        ),
+        FilledButton(
+          onPressed: onRetry,
+          style: FilledButton.styleFrom(
+            minimumSize: const Size(48, 44),
+            backgroundColor: colors.error,
+            foregroundColor: colors.onError,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          ),
+          child: const Text('重试'),
+        ),
+      ],
+    );
 
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: bannerBg,
-        borderRadius: BorderRadius.circular(10),
+        color: colors.errorContainer,
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: bannerBorder, width: 1.0),
       ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(6),
-            decoration: BoxDecoration(
-              color: const Color(0xFFEF4444).withOpacity(0.18),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(
-              Icons.cloud_off_rounded,
-              size: 18,
-              color: Color(0xFFEF4444),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final textScale = MediaQuery.textScalerOf(context).scale(14) / 14;
+          if (constraints.maxWidth / textScale >= 760) {
+            return Row(
               crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
               children: [
-                Row(
-                  children: [
-                    Text(
-                      '论坛源站网关异常 (${outage.statusCode} ${outage.title})',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
-                        color: textPrimary,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  '当前正为您展示本地离线缓存数据，在线互动与最新内容暂不可用。',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    color: textPrimary.withOpacity(0.85),
-                  ),
+                Expanded(child: heading),
+                const SizedBox(width: 16),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 280),
+                  child: actions,
                 ),
               ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          OutlinedButton(
-            onPressed: onViewDetails,
-            style: OutlinedButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-              foregroundColor: textPrimary,
-              side: BorderSide(color: bannerBorder),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(6),
-              ),
-            ),
-            child: const Text('详细诊断', style: TextStyle(fontSize: 11.5)),
-          ),
-          const SizedBox(width: 6),
-          FilledButton(
-            onPressed: onRetry,
-            style: FilledButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-              backgroundColor: const Color(0xFFEF4444),
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(6),
-              ),
-            ),
-            child: const Text('重试', style: TextStyle(fontSize: 11.5)),
-          ),
-          if (onDismiss != null) ...[
-            const SizedBox(width: 4),
-            IconButton(
-              icon: Icon(Icons.close, size: 16, color: textPrimary.withOpacity(0.7)),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-              onPressed: onDismiss,
-              tooltip: '关闭提示',
-            ),
-          ],
-        ],
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [heading, const SizedBox(height: 12), actions],
+          );
+        },
       ),
     );
   }

@@ -1,6 +1,8 @@
+import '../app_motion.dart';
 import 'package:flutter/material.dart';
 import '../../api/klpbbs_api.dart';
 import '../../core/dio_client.dart';
+import '../../core/preload_service.dart';
 import '../../models/dashboard_card_model.dart';
 import '../../models/forum.dart';
 import '../../pages/login_page.dart';
@@ -28,22 +30,20 @@ class QuickPostDashboardCard extends StatefulWidget {
 class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
   late TextEditingController _titleCtrl;
   late TextEditingController _contentCtrl;
-  int _selectedFid = 41; // 默认闲聊讨论
+  int _selectedFid = 0;
   bool _submitting = false;
   List<Forum> _dynamicForums = const [];
 
-  static const List<({int fid, String name})> _defaultForums = [
-    (fid: 41, name: '闲聊讨论'),
-    (fid: 52, name: 'BE附加包'),
-    (fid: 140, name: 'JE模组'),
-    (fid: 51, name: 'BE地图'),
-    (fid: 53, name: 'BE材质光影'),
-    (fid: 68, name: '悬赏问答'),
-    (fid: 44, name: '编程分享'),
-    (fid: 111, name: '周边创作'),
+  static const List<String> _quickSmileys = [
+    '😊',
+    '👍',
+    '🔥',
+    '🎉',
+    '👏',
+    '⛏️',
+    '💎',
+    '❤️'
   ];
-
-  static const List<String> _quickSmileys = ['😊', '👍', '🔥', '🎉', '👏', '⛏️', '💎', '❤️'];
 
   @override
   void initState() {
@@ -57,12 +57,29 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
     _loadForums();
   }
 
+  void _applyForums(List<Forum> forums) {
+    final seen = <int>{};
+    _dynamicForums = forums
+        .where((forum) =>
+            forum.fid > 0 && forum.name.isNotEmpty && seen.add(forum.fid))
+        .toList();
+    if (_dynamicForums.isNotEmpty &&
+        !_dynamicForums.any((forum) => forum.fid == _selectedFid)) {
+      _selectedFid = _dynamicForums.first.fid;
+    }
+  }
+
   void _loadForums() {
+    final groups = PreloadService.instance
+        .get<List<ForumGroup>>('forum_groups', ignoreExpired: true);
+    if (groups != null) {
+      _applyForums(groups.expand((group) => group.forums).toList());
+    }
+    if (widget.isPreview) return;
+    final session = DioClient.sessionKey;
     KlpbbsApi.getForums().then((forums) {
-      if (mounted && forums.isNotEmpty) {
-        setState(() {
-          _dynamicForums = forums.where((f) => f.fid > 0 && f.name.isNotEmpty).toList();
-        });
+      if (mounted && session == DioClient.sessionKey) {
+        setState(() => _applyForums(forums));
       }
     }).catchError((_) {});
   }
@@ -89,13 +106,15 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
   }
 
   void _openFullEditor() {
+    if (widget.isPreview || _selectedFid <= 0) return;
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => PostPage(
           fid: _selectedFid,
           editSubject: _titleCtrl.text.isNotEmpty ? _titleCtrl.text : null,
-          initialMessage: _contentCtrl.text.isNotEmpty ? _contentCtrl.text : null,
+          initialMessage:
+              _contentCtrl.text.isNotEmpty ? _contentCtrl.text : null,
         ),
       ),
     );
@@ -104,11 +123,18 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
   Future<void> _submit() async {
     if (widget.isPreview) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('当前为编辑预览模式，固定数据已展示')),
+        const SnackBar(content: Text('布局预览中不会提交内容')),
       );
       return;
     }
 
+    if (!widget.isReplyMode &&
+        (_selectedFid <= 0 ||
+            !_dynamicForums.any((forum) => forum.fid == _selectedFid))) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('请先选择可用版块')));
+      return;
+    }
     if (!DioClient.isLoggedIn) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -137,7 +163,8 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
     try {
       if (widget.isReplyMode) {
         // 回复模式 (若关联了 tid)
-        final targetTid = (widget.item.customParams['targetTid'] as num?)?.toInt() ?? 0;
+        final targetTid =
+            (widget.item.customParams['targetTid'] as num?)?.toInt() ?? 0;
         if (targetTid > 0) {
           final success = await KlpbbsApi.replyThread(targetTid, content);
           if (mounted) {
@@ -149,7 +176,8 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
                         label: '查看帖子',
                         onPressed: () => Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (_) => ThreadDetailPage(tid: targetTid)),
+                          MaterialPageRoute(
+                              builder: (_) => ThreadDetailPage(tid: targetTid)),
                         ),
                       )
                     : null,
@@ -190,7 +218,8 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
                       label: '查看帖子',
                       onPressed: () => Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => ThreadDetailPage(tid: newTid)),
+                        MaterialPageRoute(
+                            builder: (_) => ThreadDetailPage(tid: newTid)),
                       ),
                     )
                   : null,
@@ -233,7 +262,9 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  widget.isReplyMode ? Icons.reply_rounded : Icons.post_add_rounded,
+                  widget.isReplyMode
+                      ? Icons.reply_rounded
+                      : Icons.post_add_rounded,
                   size: 26,
                   color: colorScheme.primary.withAlpha(180),
                 ),
@@ -246,8 +277,10 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
                 FilledButton.tonal(
                   style: FilledButton.styleFrom(
                     visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(6)),
                   ),
                   onPressed: () => Navigator.push(
                     context,
@@ -271,7 +304,8 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
           builder: (context, constraints) {
             final maxHeight = constraints.maxHeight;
             final isCompact = maxHeight < 80 || widget.item.rowSpan <= 1;
-            final isNarrow = constraints.maxWidth < 280 || widget.item.colSpan <= 3;
+            final isNarrow =
+                constraints.maxWidth < 280 || widget.item.colSpan <= 3;
 
             return Padding(
               padding: EdgeInsets.symmetric(
@@ -310,13 +344,13 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
             style: const TextStyle(fontSize: 12),
             decoration: InputDecoration(
               isDense: true,
-              hintText: widget.isPreview
-                  ? '预览：输入内容一键互动...'
-                  : (widget.isReplyMode ? '快捷发表回复...' : '快捷发布动态 (回车直接发)...'),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              hintText: widget.isReplyMode ? '输入回复内容...' : '输入帖子内容，回车发送...',
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
-                borderSide: BorderSide(color: colorScheme.outlineVariant.withAlpha(60)),
+                borderSide:
+                    BorderSide(color: colorScheme.outlineVariant.withAlpha(60)),
               ),
             ),
             onSubmitted: (_) => _submit(),
@@ -326,7 +360,8 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
           const SizedBox(width: 4),
           IconButton(
             tooltip: '打开完整发帖编辑器',
-            icon: Icon(Icons.open_in_new_rounded, size: 16, color: colorScheme.outline),
+            icon: Icon(Icons.open_in_new_rounded,
+                size: 16, color: colorScheme.outline),
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
             onPressed: _openFullEditor,
@@ -337,11 +372,15 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
           style: FilledButton.styleFrom(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             visualDensity: VisualDensity.compact,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           ),
           onPressed: _submitting ? null : _submit,
           child: _submitting
-              ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
+              ? const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: AppLoadingIndicator(strokeWidth: 2))
               : const Text('发送', style: TextStyle(fontSize: 11.5)),
         ),
       ],
@@ -359,14 +398,11 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
     final isTight = availableHeight < 210;
 
     // 提取版块选项（优先动态版块，其次默认版块）
-    final forumItems = _dynamicForums.isNotEmpty
-        ? _dynamicForums.map((f) => (fid: f.fid, name: f.name)).toList()
-        : _defaultForums;
+    final forumItems =
+        _dynamicForums.map((f) => (fid: f.fid, name: f.name)).toList();
 
     final currentFidValid = forumItems.any((f) => f.fid == _selectedFid);
-    final effectiveFid = currentFidValid
-        ? _selectedFid
-        : (forumItems.isNotEmpty ? forumItems.first.fid : 41);
+    final effectiveFid = currentFidValid ? _selectedFid : null;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -401,24 +437,29 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
                   child: DropdownButton<int>(
                     value: effectiveFid,
                     isDense: true,
-                    style: TextStyle(fontSize: 11, color: colorScheme.onSurface),
-                    items: forumItems.take(15).map((f) {
+                    style:
+                        TextStyle(fontSize: 11, color: colorScheme.onSurface),
+                    items: forumItems.map((f) {
                       return DropdownMenuItem(
                         value: f.fid,
                         child: Text(
-                          f.name.length > 7 ? '${f.name.substring(0, 7)}...' : f.name,
+                          f.name.length > 7
+                              ? '${f.name.substring(0, 7)}...'
+                              : f.name,
                           style: const TextStyle(fontSize: 11),
                         ),
                       );
                     }).toList(),
-                    onChanged: (v) => v != null ? setState(() => _selectedFid = v) : null,
+                    onChanged: (v) =>
+                        v != null ? setState(() => _selectedFid = v) : null,
                   ),
                 ),
               ),
               const SizedBox(width: 4),
               IconButton(
                 tooltip: '打开完整发帖编辑器',
-                icon: Icon(Icons.open_in_new_rounded, size: 15, color: colorScheme.outline),
+                icon: Icon(Icons.open_in_new_rounded,
+                    size: 15, color: colorScheme.outline),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
                 onPressed: _openFullEditor,
@@ -436,13 +477,16 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
               controller: _titleCtrl,
               style: const TextStyle(fontSize: 12),
               decoration: InputDecoration(
-                hintText: widget.isPreview ? '固定演示：苦力怕论坛自由网格工作台体验' : '输入帖子标题 (可留空自动提取)...',
-                hintStyle: TextStyle(fontSize: 11, color: colorScheme.outline.withAlpha(160)),
+                hintText: '输入帖子标题 (可留空自动提取)...',
+                hintStyle: TextStyle(
+                    fontSize: 11, color: colorScheme.outline.withAlpha(160)),
                 isDense: true,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(6),
-                  borderSide: BorderSide(color: colorScheme.outlineVariant.withAlpha(60)),
+                  borderSide: BorderSide(
+                      color: colorScheme.outlineVariant.withAlpha(60)),
                 ),
               ),
             ),
@@ -459,15 +503,15 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
             textAlignVertical: TextAlignVertical.top,
             style: const TextStyle(fontSize: 12),
             decoration: InputDecoration(
-              hintText: widget.isPreview
-                  ? '固定演示：已启用 GPU 光栅化渲染与全自适应网格画布，点击发送可测试联动！'
-                  : '随时记录您的想法、灵感或问题...',
-              hintStyle: TextStyle(fontSize: 11, color: colorScheme.outline.withAlpha(160)),
+              hintText: '随时记录您的想法、灵感或问题...',
+              hintStyle: TextStyle(
+                  fontSize: 11, color: colorScheme.outline.withAlpha(160)),
               isDense: true,
               contentPadding: const EdgeInsets.all(8),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(6),
-                borderSide: BorderSide(color: colorScheme.outlineVariant.withAlpha(60)),
+                borderSide:
+                    BorderSide(color: colorScheme.outlineVariant.withAlpha(60)),
               ),
             ),
           ),
@@ -489,7 +533,8 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
                         onTap: () => _insertSmiley(sm),
                         borderRadius: BorderRadius.circular(4),
                         child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 3, vertical: 2),
                           child: Text(sm, style: const TextStyle(fontSize: 15)),
                         ),
                       ),
@@ -500,15 +545,21 @@ class _QuickPostDashboardCardState extends State<QuickPostDashboardCard> {
             const SizedBox(width: 6),
             FilledButton.icon(
               style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 visualDensity: VisualDensity.compact,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(6)),
               ),
               onPressed: _submitting ? null : _submit,
               icon: _submitting
-                  ? const SizedBox(width: 10, height: 10, child: CircularProgressIndicator(strokeWidth: 2))
+                  ? const SizedBox(
+                      width: 10,
+                      height: 10,
+                      child: AppLoadingIndicator(strokeWidth: 2))
                   : const Icon(Icons.send_rounded, size: 13),
-              label: Text(_submitting ? '发布中' : '发布', style: const TextStyle(fontSize: 11.5)),
+              label: Text(_submitting ? '发布中' : '发布',
+                  style: const TextStyle(fontSize: 11.5)),
             ),
           ],
         ),

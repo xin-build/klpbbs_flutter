@@ -1,3 +1,4 @@
+import '../widgets/app_motion.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -135,7 +136,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                   ),
                 )
               : !_ready
-                  ? const CircularProgressIndicator(color: Colors.white)
+                  ? const AppLoadingIndicator(color: Colors.white)
                   : Stack(
                       fit: StackFit.expand,
                       children: [

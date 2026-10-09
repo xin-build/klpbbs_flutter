@@ -3,12 +3,12 @@ import '../../models/dashboard_card_model.dart';
 
 /// 卡片质感风格预设
 enum DashboardCardStyle {
-  modern('现代立体', Icons.auto_awesome_rounded, '精致微阴影与主题彩带'),
-  gradient('极光流光', Icons.gradient_rounded, '沉浸式流光渐变背景'),
-  glass('晶透毛玻璃', Icons.blur_on_rounded, '半透明拟物高斯模糊'),
-  creeper('苦力怕工坊', Icons.grid_view_rounded, '经典黑曜石与荧光绿'),
-  minimal('极简无界', Icons.crop_square_rounded, '高信息密度纯净线条'),
-  elevated('悬浮高光', Icons.layers_rounded, '深邃弥散外发光微阴影');
+  modern('Material 柔和', Icons.auto_awesome_rounded, '柔和的主题容器与圆角'),
+  gradient('主题渐变', Icons.gradient_rounded, '轻柔的双色渐变背景'),
+  glass('半透明层次', Icons.opacity_rounded, '半透明的主题底色'),
+  creeper('苦力怕工坊', Icons.grid_view_rounded, '绿色强调与清晰轮廓'),
+  minimal('简洁描边', Icons.crop_square_rounded, '纯净底色与细描边'),
+  elevated('悬浮层次', Icons.layers_rounded, '适度阴影的高层级卡片');
 
   final String label;
   final IconData icon;
@@ -45,7 +45,9 @@ enum DashboardCardAccent {
 
   Color resolve(BuildContext context, {Color? fallback}) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    if (this == DashboardCardAccent.auto || colorLight == null || colorDark == null) {
+    if (this == DashboardCardAccent.auto ||
+        colorLight == null ||
+        colorDark == null) {
       return fallback ?? Theme.of(context).colorScheme.primary;
     }
     return isDark ? colorDark! : colorLight!;
@@ -84,7 +86,8 @@ class DashboardCardTheme extends InheritedWidget {
   });
 
   static DashboardCardThemeData of(BuildContext context) {
-    final inherited = context.dependOnInheritedWidgetOfExactType<DashboardCardTheme>();
+    final inherited =
+        context.dependOnInheritedWidgetOfExactType<DashboardCardTheme>();
     if (inherited != null) return inherited.data;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return DashboardCardThemeData(
@@ -95,11 +98,14 @@ class DashboardCardTheme extends InheritedWidget {
   }
 
   @override
-  bool updateShouldNotify(DashboardCardTheme oldWidget) => data != oldWidget.data;
+  bool updateShouldNotify(DashboardCardTheme oldWidget) =>
+      data.style != oldWidget.data.style ||
+      data.accentColor != oldWidget.data.accentColor ||
+      data.isDark != oldWidget.data.isDark;
 }
 
 /// 全站统一网格仪表盘卡片外框容器
-/// 统一承载卡片风格、阴影、微质感渐变、毛玻璃与强调色，彻底消除卡片样式单一和边框冲突问题
+/// 风格预设在首页与画布中共用，不为半透明效果引入逐帧背景模糊。
 class DashboardCardFrame extends StatelessWidget {
   final DashboardGridItem item;
   final Widget child;
@@ -113,12 +119,12 @@ class DashboardCardFrame extends StatelessWidget {
     required this.item,
     required this.child,
     this.padding = const EdgeInsets.all(12),
-    this.borderRadius = 14.0,
+    this.borderRadius = 24,
     this.showAccentIndicator = true,
     this.onTap,
   });
 
-  /// 根据卡片分类推断自然契合的默认强调色（深度与全站动态风格保持色彩学共鸣）
+  /// 使用主题色对应卡片分类。
   static Color getNaturalCategoryAccent(String cardType, BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
@@ -156,26 +162,61 @@ class DashboardCardFrame extends StatelessWidget {
       isDark: isDark,
     );
 
-    // 回退渲染风格：采用干净纯粹的标准 Material / 论坛原生卡片质感
+    final base = switch (style) {
+      DashboardCardStyle.glass => colorScheme.surfaceContainer.withAlpha(210),
+      DashboardCardStyle.creeper => Color.alphaBlend(
+          const Color(0xFF4CAF50).withAlpha(isDark ? 15 : 9),
+          colorScheme.surfaceContainerLow),
+      DashboardCardStyle.minimal => colorScheme.surface,
+      DashboardCardStyle.elevated => colorScheme.surfaceContainerHigh,
+      _ => colorScheme.surfaceContainerLow,
+    };
+    final border = switch (style) {
+      DashboardCardStyle.minimal => colorScheme.outlineVariant.withAlpha(160),
+      DashboardCardStyle.creeper => const Color(0xFF4CAF50).withAlpha(75),
+      DashboardCardStyle.glass => colorScheme.outlineVariant.withAlpha(65),
+      _ => Colors.transparent,
+    };
     final decoration = BoxDecoration(
       borderRadius: BorderRadius.circular(borderRadius),
-      color: colorScheme.surfaceContainerLowest,
-      border: Border.all(
-        color: colorScheme.outlineVariant.withAlpha(isDark ? 55 : 45),
-        width: 0.8,
-      ),
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black.withAlpha(isDark ? 20 : 6),
-          blurRadius: 4,
-          offset: const Offset(0, 1.5),
-        ),
-      ],
+      color: base,
+      gradient: style == DashboardCardStyle.gradient
+          ? LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                  Color.alphaBlend(accentColor.withAlpha(28), base),
+                  Color.alphaBlend(colorScheme.tertiary.withAlpha(14), base),
+                ])
+          : null,
+      border: Border.all(color: border, width: .8),
+      boxShadow: style == DashboardCardStyle.elevated
+          ? [
+              BoxShadow(
+                  color: Colors.black.withAlpha(isDark ? 36 : 16),
+                  blurRadius: 20,
+                  offset: const Offset(0, 5))
+            ]
+          : null,
     );
 
-    final Widget content = Padding(
-      padding: padding,
-      child: child,
+    final Widget content = Stack(
+      fit: StackFit.passthrough,
+      children: [
+        Padding(padding: padding, child: child),
+        if (showAccentIndicator && style != DashboardCardStyle.minimal)
+          Positioned(
+            left: borderRadius,
+            top: 0,
+            width: 32,
+            height: 3,
+            child: DecoratedBox(
+                decoration: BoxDecoration(
+                    color: accentColor.withAlpha(180),
+                    borderRadius: const BorderRadius.vertical(
+                        bottom: Radius.circular(3)))),
+          ),
+      ],
     );
 
     final Widget cardWidget = Container(

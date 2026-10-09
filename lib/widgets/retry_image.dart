@@ -40,7 +40,6 @@ class RetryImage extends StatefulWidget {
 
 class _RetryImageState extends State<RetryImage> {
   int _attempt = 0;
-  bool _failed = false;
 
   static String _sanitize(String raw) {
     var url = raw.trim();
@@ -63,24 +62,12 @@ class _RetryImageState extends State<RetryImage> {
         lower.contains('badgen.net');
   }
 
+  static final Set<String> _cleanedCacheKeys = <String>{};
+
   @override
   Widget build(BuildContext context) {
     final rawUrl = AppConfig.toHighResImageUrl(widget.imageUrl) ?? widget.imageUrl;
     final effectiveUrl = _sanitize(rawUrl);
-
-    if (_failed) {
-      return widget.errorWidget?.call(context, effectiveUrl, 'error') ??
-          Container(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            child: Center(
-              child: Icon(
-                Icons.image_outlined,
-                size: 24,
-                color: Theme.of(context).colorScheme.outlineVariant,
-              ),
-            ),
-          );
-    }
 
     // 针对 SVG 格式或 Moe-Counter 计数器使用 SvgPicture 渲染
     if (_isSvg(effectiveUrl)) {
@@ -117,9 +104,12 @@ class _RetryImageState extends State<RetryImage> {
                 ? (widget.height! * dpr * 1.5).clamp(48, 1080).toInt()
                 : (960 * dpr).clamp(480, 1080).toInt()));
 
+    final normCacheKey = KlpbbsCacheManager.normalizeCacheKey(effectiveUrl);
+
     return CachedNetworkImage(
-      key: ValueKey('$effectiveUrl#$_attempt'),
+      key: ValueKey('$normCacheKey#$_attempt'),
       imageUrl: effectiveUrl,
+      cacheKey: normCacheKey.isNotEmpty ? normCacheKey : effectiveUrl,
       cacheManager: KlpbbsCacheManager.instance,
       httpHeaders: AppConfig.imageHeadersFor(effectiveUrl),
       width: widget.width,
@@ -140,18 +130,30 @@ class _RetryImageState extends State<RetryImage> {
                 ),
               ),
       errorWidget: (ctx, url, err) {
-        // 关键自愈：只要图片解码或加载发生错误，立即从缓存管理器中剔除该 URL 对应的本地损坏/空文件，
-        // 杜绝 0 字节或坏块长期盘踞本地导致后续所有重试均反复读取脏缓存！
-        KlpbbsCacheManager.instance.removeFile(effectiveUrl).catchError((_) {});
-        DefaultCacheManager().removeFile(effectiveUrl).catchError((_) {});
+        if (!_cleanedCacheKeys.contains(normCacheKey)) {
+          _cleanedCacheKeys.add(normCacheKey);
+          _cleanedCacheKeys.add(effectiveUrl);
+          KlpbbsCacheManager.instance.removeFile(normCacheKey).catchError((_) {});
+          KlpbbsCacheManager.instance.removeFile(effectiveUrl).catchError((_) {});
+          DefaultCacheManager().removeFile(effectiveUrl).catchError((_) {});
+        }
 
-        if (_attempt < widget.maxAttempts) {
-          Future.delayed(Duration(milliseconds: 350 * (_attempt + 1)), () {
+        final errStr = err.toString().toLowerCase();
+        final isPermanent = errStr.contains('404') ||
+            errStr.contains('521') ||
+            errStr.contains('502') ||
+            errStr.contains('500') ||
+            errStr.contains('503') ||
+            errStr.contains('not found') ||
+            effectiveUrl.contains('nb-data.klpbbs.com');
+
+        if (!isPermanent && _attempt < widget.maxAttempts) {
+          Future.delayed(Duration(milliseconds: 400 * (_attempt + 1)), () {
             if (mounted) setState(() => _attempt++);
           });
           return widget.placeholder?.call(ctx, url) ??
               Container(
-                color: Theme.of(ctx).colorScheme.surfaceContainerHighest.withAlpha(80),
+                color: Theme.of(ctx).colorScheme.surfaceContainerHighest.withAlpha(60),
                 child: Center(
                   child: Icon(
                     Icons.image_outlined,
@@ -161,17 +163,14 @@ class _RetryImageState extends State<RetryImage> {
                 ),
               );
         }
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && !_failed) setState(() => _failed = true);
-        });
         return widget.errorWidget?.call(ctx, url, err) ??
             Container(
-              color: Theme.of(ctx).colorScheme.surfaceContainerHighest,
+              color: Theme.of(ctx).colorScheme.surfaceContainerHighest.withAlpha(60),
               child: Center(
                 child: Icon(
                   Icons.image_outlined,
                   size: 24,
-                  color: Theme.of(ctx).colorScheme.outlineVariant,
+                  color: Theme.of(ctx).colorScheme.outlineVariant.withAlpha(140),
                 ),
               ),
             );

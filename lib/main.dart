@@ -1,3 +1,4 @@
+import 'widgets/app_motion.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:dynamic_color/dynamic_color.dart';
@@ -6,13 +7,16 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:media_kit/media_kit.dart';
 
 import 'api/klpbbs_api.dart';
 import 'core/app_config.dart';
+import 'core/app_theme.dart';
 import 'core/cache_manager.dart';
 import 'core/dio_client.dart';
 import 'core/main_tab_controller.dart';
+import 'core/rgb_theme_policy.dart';
 import 'pages/darkroom_page.dart';
 import 'pages/forums_page.dart';
 import 'pages/guide_page.dart';
@@ -40,20 +44,22 @@ import 'widgets/fade_indexed_stack.dart';
 import 'widgets/global_app_drawer.dart';
 import 'widgets/in_app_notification_overlay.dart';
 import 'widgets/responsive_layout.dart';
+import 'widgets/desktop_page_transitions.dart';
+import 'widgets/rgb_theme_scope.dart';
 
 final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 WebViewEnvironment? appWebViewEnvironment;
+// 隔离预览工具可提供独立目录，正常入口使用应用目录。
+String? webViewUserDataFolderOverride;
 bool isWebView2Available = false;
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+Future<void>? _webViewInitialization;
 
-  // 全局防御：拦截局部 Widget 渲染异常，防止 Release 模式下显示 0xF0C0C0C0 灰色大方块遮盖界面
-  ErrorWidget.builder = (FlutterErrorDetails details) {
-    debugPrint('全局 Widget 渲染异常捕获: ${details.exception}');
-    return const SizedBox.shrink();
-  };
+/// 原生页面不需要浏览器；首次打开官方登录时才准备 WebView2。
+Future<void> ensureAppWebViewEnvironment() =>
+    _webViewInitialization ??= _initializeWebViewEnvironment();
 
+Future<void> _initializeWebViewEnvironment() async {
   // 初始化 Windows 平台 WebView2 环境（设定独立可写用户数据目录，避免黑屏与权限异常）
   if (!kIsWeb && Platform.isWindows) {
     try {
@@ -61,7 +67,8 @@ void main() async {
       if (availableVersion != null && availableVersion.isNotEmpty) {
         isWebView2Available = true;
         final appSupport = await getApplicationSupportDirectory();
-        final userDataFolder = '${appSupport.path}\\webview2_userdata';
+        final userDataFolder = webViewUserDataFolderOverride ??
+            '${appSupport.path}\\webview2_userdata';
         final dir = Directory(userDataFolder);
         if (!dir.existsSync()) {
           dir.createSync(recursive: true);
@@ -71,14 +78,52 @@ void main() async {
         );
       }
     } catch (e) {
-      debugPrint('WebView2 初始化失败: $e');
+      debugPrint('WebView2 初始化失败: ${e.runtimeType}');
     }
   }
+}
+
+/// 全局底层 HTTP 策略覆盖：默认不走系统代理/VPN，直接连接论坛服务器（规避代理节点拦截与 523 报错）
+class AppHttpOverrides extends HttpOverrides {
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    final client = super.createHttpClient(context);
+    if (!AppConfig.useSystemProxy) {
+      client.findProxy = (uri) => 'DIRECT';
+    }
+    return client;
+  }
+}
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  if (!kIsWeb) {
+    HttpOverrides.global = AppHttpOverrides();
+  }
+
+  // 全局防御：拦截局部 Widget 渲染异常，防止 Release 模式下显示 0xF0C0C0C0 灰色大方块遮盖界面
+  ErrorWidget.builder = (FlutterErrorDetails details) {
+    debugPrint('全局 Widget 渲染异常捕获: ${details.exception}');
+    return const Directionality(
+      textDirection: TextDirection.ltr,
+      child: ColoredBox(
+        color: Color(0xFFF3F0F4),
+        child: Padding(
+          padding: EdgeInsets.all(12),
+          child: Text('此区域加载异常，请刷新页面',
+              style: TextStyle(color: Color(0xFF49454F), fontSize: 13)),
+        ),
+      ),
+    );
+  };
 
   // 优化图片内存缓存上限（避免长期持有数千张解码位图导致内存膨胀 2GB+ 以及显存/WDDM 频繁换页卡顿）
-  final isDesktop = !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+  final isDesktop =
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
   final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
-  PaintingBinding.instance.imageCache.maximumSize = isDesktop ? 300 : (isMobile ? 200 : 150);
+  PaintingBinding.instance.imageCache.maximumSize =
+      isDesktop ? 300 : (isMobile ? 200 : 150);
   PaintingBinding.instance.imageCache.maximumSizeBytes = isDesktop
       ? 128 * 1024 * 1024
       : (isMobile ? 64 * 1024 * 1024 : 32 * 1024 * 1024);
@@ -89,7 +134,12 @@ void main() async {
   DioClient.onSessionCleared = () async {
     await KlpbbsApi.clearUserProfileCache();
     try {
-      final cookieManager = (!kIsWeb && Platform.isWindows && appWebViewEnvironment != null)
+      if (!kIsWeb && Platform.isWindows && appWebViewEnvironment == null) {
+        return;
+      }
+      final cookieManager = (!kIsWeb &&
+              Platform.isWindows &&
+              appWebViewEnvironment != null)
           ? CookieManager.instance(webViewEnvironment: appWebViewEnvironment)
           : CookieManager.instance();
       await cookieManager.deleteAllCookies();
@@ -100,12 +150,7 @@ void main() async {
   await KlpbbsApi.initUserProfileCache();
   await KlpbbsApi.sanitizeFavoriteCache();
   unawaited(KlpbbsCacheManager.purgeCorruptedCache());
-  await DownloadManager.instance.init();
   await RgbThemeService.instance.init();
-  await PushNotificationService.instance.init();
-  await TrayService.instance.init();
-  await AutoSignService.instance.init();
-  await ClipboardJumpService.instance.init();
 
   PushNotificationService.instance.onOpenNoticeCallback = () {
     TrayService.instance.showWindow();
@@ -118,8 +163,32 @@ void main() async {
   await KlpbbsApi.primeHomeCache();
 
   runApp(const KlpbbsApp());
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(_initializeBackgroundServices());
+  });
 
   AutoTestScreenshotService.maybeTriggerTestingRoutine(appNavigatorKey);
+}
+
+Future<void> _initializeBackgroundServices() async {
+  Future<void> initialize(Future<void> Function() start) async {
+    try {
+      await start();
+    } catch (error) {
+      debugPrint('后台服务初始化未完成: ${error.runtimeType}');
+    }
+  }
+
+  await Future.wait([
+    initialize(DownloadManager.instance.init),
+    initialize(PushNotificationService.instance.init),
+    initialize(TrayService.instance.init),
+    initialize(AutoSignService.instance.init),
+    initialize(ClipboardJumpService.instance.init),
+  ]);
+  if (DioClient.isLoggedIn) {
+    await initialize(AutoSignService.instance.checkOnAppLaunch);
+  }
 }
 
 /// klpbbs 客户端（全功能重构 + PC 桌面与移动端双排版 + 高级自定义）
@@ -131,12 +200,19 @@ class KlpbbsApp extends StatelessWidget {
     return DynamicColorBuilder(
       builder: (ColorScheme? lightDynamic, ColorScheme? darkDynamic) {
         return ListenableBuilder(
-          listenable: Listenable.merge([AppConfig.themeNotifier, RgbThemeService.instance]),
+          listenable: Listenable.merge(
+              [AppConfig.themeNotifier, RgbThemeService.instance]),
           builder: (context, _) {
-            final isAndroid = !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
-            final useDynamic = isAndroid && AppConfig.useSystemMonet && lightDynamic != null;
+            final isAndroid =
+                !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+            final useDynamic =
+                isAndroid && AppConfig.useSystemMonet && lightDynamic != null;
 
-            final seed = AppConfig.seedColor;
+            // Hue changes belong to RgbThemeScope below MaterialApp. Keep its
+            // Navigator, routes, shortcuts and static themes on the saved seed.
+            final seed = AppConfig.style == AppStyle.custom
+                ? Color(AppConfig.customSeedColorValue)
+                : AppConfig.style.seed;
             final density = AppConfig.density.toVisualDensity;
             final isOled = AppConfig.isOledDark;
 
@@ -145,12 +221,9 @@ class KlpbbsApp extends StatelessWidget {
             final ColorScheme darkColorScheme;
             final int themeCacheKey;
 
-            if (isRgb) {
-              themeCacheKey = RgbThemeService.instance.currentHueIndex;
-              lightColorScheme = RgbThemeService.instance.getLightColorScheme();
-              darkColorScheme = RgbThemeService.instance.getDarkColorScheme(isOled: isOled);
-            } else if (useDynamic) {
-              themeCacheKey = 0x10000000 | (lightDynamic.primary.toARGB32() & 0x00FFFFFF);
+            if (useDynamic) {
+              themeCacheKey =
+                  0x10000000 | (lightDynamic.primary.toARGB32() & 0x00FFFFFF);
               lightColorScheme = lightDynamic;
               final baseDark = darkDynamic ??
                   ColorScheme.fromSeed(
@@ -167,15 +240,7 @@ class KlpbbsApp extends StatelessWidget {
                       surfaceContainerHighest: const Color(0xFF242927),
                       outlineVariant: const Color(0xFF323A35),
                     )
-                  : baseDark.copyWith(
-                      surface: const Color(0xFF151917),
-                      surfaceContainerLowest: const Color(0xFF101312),
-                      surfaceContainerLow: const Color(0xFF171B19),
-                      surfaceContainer: const Color(0xFF1E2320),
-                      surfaceContainerHigh: const Color(0xFF252B28),
-                      surfaceContainerHighest: const Color(0xFF2D3430),
-                      outlineVariant: const Color(0xFF3A443E),
-                    );
+                  : baseDark;
             } else {
               themeCacheKey = seed.toARGB32();
               lightColorScheme = ColorScheme.fromSeed(
@@ -196,15 +261,7 @@ class KlpbbsApp extends StatelessWidget {
                       surfaceContainerHighest: const Color(0xFF242927),
                       outlineVariant: const Color(0xFF323A35),
                     )
-                  : baseDark.copyWith(
-                      surface: const Color(0xFF151917),
-                      surfaceContainerLowest: const Color(0xFF101312),
-                      surfaceContainerLow: const Color(0xFF171B19),
-                      surfaceContainer: const Color(0xFF1E2320),
-                      surfaceContainerHigh: const Color(0xFF252B28),
-                      surfaceContainerHighest: const Color(0xFF2D3430),
-                      outlineVariant: const Color(0xFF3A443E),
-                    );
+                  : baseDark;
             }
 
             final lightTheme = _AppThemeDataCache.getLight(
@@ -225,33 +282,42 @@ class KlpbbsApp extends StatelessWidget {
             return MaterialApp(
               navigatorKey: appNavigatorKey,
               title: '苦力怕论坛',
+              locale: const Locale('zh', 'CN'),
+              supportedLocales: const [Locale('zh', 'CN')],
+              localizationsDelegates: GlobalMaterialLocalizations.delegates,
               debugShowCheckedModeBanner: false,
               color: const Color(0xFFF6F8F7),
               theme: lightTheme,
               darkTheme: darkTheme,
               themeMode: AppConfig.themeMode,
-              themeAnimationDuration: isRgb ? Duration.zero : kThemeAnimationDuration,
+              themeAnimationDuration: isRgb || AppConfig.reduceMotion
+                  ? Duration.zero
+                  : kThemeAnimationDuration,
               builder: (context, child) {
                 final theme = Theme.of(context);
                 final globalShortcuts = <ShortcutActivator, VoidCallback>{
                   // Ctrl+N / Cmd+N: 新建发帖
-                  const SingleActivator(LogicalKeyboardKey.keyN, control: true): () {
+                  const SingleActivator(LogicalKeyboardKey.keyN, control: true):
+                      () {
                     appNavigatorKey.currentState?.push(
                       MaterialPageRoute(builder: (_) => const PostPage()),
                     );
                   },
-                  const SingleActivator(LogicalKeyboardKey.keyN, meta: true): () {
+                  const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
+                      () {
                     appNavigatorKey.currentState?.push(
                       MaterialPageRoute(builder: (_) => const PostPage()),
                     );
                   },
                   // Ctrl+F / Cmd+F: 全局搜索
-                  const SingleActivator(LogicalKeyboardKey.keyF, control: true): () {
+                  const SingleActivator(LogicalKeyboardKey.keyF, control: true):
+                      () {
                     appNavigatorKey.currentState?.push(
                       MaterialPageRoute(builder: (_) => const SearchPage()),
                     );
                   },
-                  const SingleActivator(LogicalKeyboardKey.keyF, meta: true): () {
+                  const SingleActivator(LogicalKeyboardKey.keyF, meta: true):
+                      () {
                     appNavigatorKey.currentState?.push(
                       MaterialPageRoute(builder: (_) => const SearchPage()),
                     );
@@ -265,7 +331,8 @@ class KlpbbsApp extends StatelessWidget {
                   },
                 };
 
-                return CallbackShortcuts(
+                return RgbThemeScope(
+                    child: CallbackShortcuts(
                   bindings: globalShortcuts,
                   child: FocusScope(
                     child: RepaintBoundary(
@@ -275,19 +342,22 @@ class KlpbbsApp extends StatelessWidget {
                         child: MediaQuery(
                           data: MediaQuery.of(context).copyWith(
                             textScaler: TextScaler.linear(AppConfig.fontScale),
+                            disableAnimations: AppConfig.reduceMotion ||
+                                MediaQuery.disableAnimationsOf(context),
                           ),
-                          child: GlobalInAppNotificationOverlay(child: child!),
+                          child: AppMotionSettings(
+                              child: GlobalInAppNotificationOverlay(
+                                  child: child!)),
                         ),
                       ),
                     ),
                   ),
-                );
+                ));
               },
               scrollBehavior: const MaterialScrollBehavior().copyWith(
                 scrollbars: true,
-                physics: const BouncingScrollPhysics(
-                  parent: AlwaysScrollableScrollPhysics(),
-                ),
+                physics: const ClampingScrollPhysics(
+                    parent: AlwaysScrollableScrollPhysics()),
                 dragDevices: {
                   PointerDeviceKind.touch,
                   PointerDeviceKind.mouse,
@@ -304,12 +374,14 @@ class KlpbbsApp extends StatelessWidget {
   }
 }
 
-/// 针对全局动态主题与 RGB 炫彩流光的内存级高性能 ThemeData 缓存池
+/// The static themes have a bounded cache including the full color scheme.
 class _AppThemeDataCache {
-  static final Map<int, ThemeData> _lightCache = {};
-  static final Map<int, ThemeData> _darkCache = {};
-  static VisualDensity? _lastDensity;
-  static bool? _lastIsOled;
+  static final _lightCache =
+      BoundedValueCache<(int, ColorScheme, VisualDensity), ThemeData>(
+          capacity: 8);
+  static final _darkCache =
+      BoundedValueCache<(int, ColorScheme, bool, VisualDensity), ThemeData>(
+          capacity: 8);
 
   static ThemeData getLight({
     required int key,
@@ -318,17 +390,14 @@ class _AppThemeDataCache {
     required bool useDynamic,
     required VisualDensity density,
   }) {
-    if (_lastDensity != density) {
-      _lastDensity = density;
-      _lightCache.clear();
-      _darkCache.clear();
-    }
-    return _lightCache[key] ??= _buildLightTheme(
-      colorScheme: colorScheme,
-      seed: seed,
-      useDynamic: useDynamic,
-      density: density,
-    );
+    return _lightCache.getOrCreate(
+        (key, colorScheme, density),
+        () => _buildLightTheme(
+              colorScheme: colorScheme,
+              seed: seed,
+              useDynamic: useDynamic,
+              density: density,
+            ));
   }
 
   static ThemeData getDark({
@@ -337,17 +406,13 @@ class _AppThemeDataCache {
     required bool isOled,
     required VisualDensity density,
   }) {
-    if (_lastIsOled != isOled || _lastDensity != density) {
-      _lastIsOled = isOled;
-      _lastDensity = density;
-      _lightCache.clear();
-      _darkCache.clear();
-    }
-    return _darkCache[key] ??= _buildDarkTheme(
-      colorScheme: colorScheme,
-      isOled: isOled,
-      density: density,
-    );
+    return _darkCache.getOrCreate(
+        (key, colorScheme, isOled, density),
+        () => _buildDarkTheme(
+              colorScheme: colorScheme,
+              isOled: isOled,
+              density: density,
+            ));
   }
 
   static ThemeData _buildLightTheme({
@@ -356,7 +421,7 @@ class _AppThemeDataCache {
     required bool useDynamic,
     required VisualDensity density,
   }) {
-    return ThemeData(
+    return AppTheme.polish(ThemeData(
       useMaterial3: true,
       colorScheme: colorScheme,
       fontFamily: (!kIsWeb && Platform.isWindows) ? 'Microsoft YaHei UI' : null,
@@ -371,21 +436,24 @@ class _AppThemeDataCache {
         'Apple Color Emoji',
       ],
       visualDensity: density,
-      scaffoldBackgroundColor: const Color(0xFFF6F8F7),
+      scaffoldBackgroundColor: colorScheme.surface,
       appBarTheme: AppBarTheme(
-        leadingWidth: (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) ? 96.0 : null,
-        elevation: 1,
+        leadingWidth: (!kIsWeb &&
+                (Platform.isWindows || Platform.isMacOS || Platform.isLinux))
+            ? 96.0
+            : null,
+        elevation: 0,
         centerTitle: false,
         scrolledUnderElevation: 2,
-        backgroundColor: useDynamic ? colorScheme.primary : seed,
-        foregroundColor: Colors.white,
-        iconTheme: const IconThemeData(color: Colors.white),
-        actionsIconTheme: const IconThemeData(color: Colors.white),
-        titleTextStyle: const TextStyle(
+        backgroundColor: colorScheme.surface,
+        foregroundColor: colorScheme.onSurface,
+        iconTheme: IconThemeData(color: colorScheme.onSurfaceVariant),
+        actionsIconTheme: IconThemeData(color: colorScheme.onSurfaceVariant),
+        titleTextStyle: TextStyle(
           fontSize: 17.5,
           fontWeight: FontWeight.w600,
           letterSpacing: 0.3,
-          color: Colors.white,
+          color: colorScheme.onSurface,
         ),
       ),
       navigationBarTheme: const NavigationBarThemeData(
@@ -393,10 +461,10 @@ class _AppThemeDataCache {
       ),
       cardTheme: CardThemeData(
         clipBehavior: Clip.none,
-        elevation: 0.5,
-        color: Colors.white,
+        elevation: 0,
+        color: colorScheme.surfaceContainerLow,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(18),
           side: BorderSide(
             color: colorScheme.outlineVariant.withAlpha(50),
             width: 0.8,
@@ -412,8 +480,8 @@ class _AppThemeDataCache {
           TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
           TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
           TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
-          TargetPlatform.windows: ZoomPageTransitionsBuilder(),
-          TargetPlatform.linux: ZoomPageTransitionsBuilder(),
+          TargetPlatform.windows: DesktopPageTransitionsBuilder(),
+          TargetPlatform.linux: DesktopPageTransitionsBuilder(),
         },
       ),
       snackBarTheme: SnackBarThemeData(
@@ -426,7 +494,7 @@ class _AppThemeDataCache {
           color: colorScheme.onSecondaryContainer,
         ),
       ),
-    );
+    ));
   }
 
   static ThemeData _buildDarkTheme({
@@ -434,7 +502,7 @@ class _AppThemeDataCache {
     required bool isOled,
     required VisualDensity density,
   }) {
-    return ThemeData(
+    return AppTheme.polish(ThemeData(
       useMaterial3: true,
       brightness: Brightness.dark,
       fontFamily: (!kIsWeb && Platform.isWindows) ? 'Microsoft YaHei UI' : null,
@@ -449,35 +517,38 @@ class _AppThemeDataCache {
         'Apple Color Emoji',
       ],
       colorScheme: colorScheme,
-      scaffoldBackgroundColor: isOled ? Colors.black : const Color(0xFF111413),
+      scaffoldBackgroundColor: isOled ? Colors.black : colorScheme.surface,
       visualDensity: density,
       appBarTheme: AppBarTheme(
-        leadingWidth: (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) ? 96.0 : null,
+        leadingWidth: (!kIsWeb &&
+                (Platform.isWindows || Platform.isMacOS || Platform.isLinux))
+            ? 96.0
+            : null,
         elevation: 0,
         centerTitle: false,
         scrolledUnderElevation: 1.5,
-        backgroundColor: isOled ? Colors.black : const Color(0xFF171B19),
-        foregroundColor: Colors.white,
-        iconTheme: const IconThemeData(color: Colors.white),
-        actionsIconTheme: const IconThemeData(color: Colors.white),
-        titleTextStyle: const TextStyle(
+        backgroundColor: colorScheme.surface,
+        foregroundColor: colorScheme.onSurface,
+        iconTheme: IconThemeData(color: colorScheme.onSurfaceVariant),
+        actionsIconTheme: IconThemeData(color: colorScheme.onSurfaceVariant),
+        titleTextStyle: TextStyle(
           fontSize: 17.5,
           fontWeight: FontWeight.w600,
           letterSpacing: 0.3,
-          color: Colors.white,
+          color: colorScheme.onSurface,
         ),
       ),
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: isOled ? Colors.black : const Color(0xFF171B19),
+        backgroundColor: colorScheme.surfaceContainer,
         surfaceTintColor: Colors.transparent,
         indicatorColor: colorScheme.primary.withAlpha(50),
       ),
       cardTheme: CardThemeData(
         clipBehavior: Clip.none,
         elevation: 0,
-        color: isOled ? const Color(0xFF111312) : const Color(0xFF1B201D),
+        color: colorScheme.surfaceContainerLow,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(18),
           side: BorderSide(
             color: colorScheme.outlineVariant.withAlpha(70),
             width: 0.8,
@@ -485,22 +556,23 @@ class _AppThemeDataCache {
         ),
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: isOled ? const Color(0xFF141615) : const Color(0xFF1F2522),
+        backgroundColor: colorScheme.surfaceContainerHigh,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         elevation: 6,
       ),
       bottomSheetTheme: BottomSheetThemeData(
-        backgroundColor: isOled ? const Color(0xFF141615) : const Color(0xFF1F2522),
-        modalBackgroundColor: isOled ? const Color(0xFF141615) : const Color(0xFF1F2522),
+        backgroundColor: colorScheme.surfaceContainerLow,
+        modalBackgroundColor: colorScheme.surfaceContainerLow,
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
         ),
       ),
       popupMenuTheme: PopupMenuThemeData(
-        color: isOled ? const Color(0xFF181A19) : const Color(0xFF242A27),
+        color: colorScheme.surfaceContainer,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
-          side: BorderSide(color: colorScheme.outlineVariant.withAlpha(60), width: 0.6),
+          side: BorderSide(
+              color: colorScheme.outlineVariant.withAlpha(60), width: 0.6),
         ),
         elevation: 4,
         textStyle: const TextStyle(
@@ -510,15 +582,18 @@ class _AppThemeDataCache {
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: isOled ? const Color(0xFF121413) : const Color(0xFF1A1F1D),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        fillColor: colorScheme.surfaceContainerHighest,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
-          borderSide: BorderSide(color: colorScheme.outlineVariant.withAlpha(70)),
+          borderSide:
+              BorderSide(color: colorScheme.outlineVariant.withAlpha(70)),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
-          borderSide: BorderSide(color: colorScheme.outlineVariant.withAlpha(70)),
+          borderSide:
+              BorderSide(color: colorScheme.outlineVariant.withAlpha(70)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
@@ -526,10 +601,12 @@ class _AppThemeDataCache {
         ),
       ),
       chipTheme: ChipThemeData(
-        backgroundColor: isOled ? const Color(0xFF161817) : const Color(0xFF222825),
+        backgroundColor: colorScheme.surfaceContainerHigh,
         labelStyle: const TextStyle(color: Color(0xFFE2E8F0), fontSize: 12.5),
-        secondaryLabelStyle: const TextStyle(color: Colors.white, fontSize: 12.5),
-        side: BorderSide(color: colorScheme.outlineVariant.withAlpha(50), width: 0.6),
+        secondaryLabelStyle:
+            const TextStyle(color: Colors.white, fontSize: 12.5),
+        side: BorderSide(
+            color: colorScheme.outlineVariant.withAlpha(50), width: 0.6),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
       listTileTheme: const ListTileThemeData(
@@ -546,7 +623,8 @@ class _AppThemeDataCache {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
         ),
-        backgroundColor: isOled ? const Color(0xFF222624) : const Color(0xFF262E2A),
+        backgroundColor:
+            isOled ? const Color(0xFF222624) : const Color(0xFF262E2A),
         contentTextStyle: const TextStyle(
           color: Colors.white,
           fontSize: 13.5,
@@ -561,11 +639,11 @@ class _AppThemeDataCache {
           TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
           TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
           TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
-          TargetPlatform.windows: ZoomPageTransitionsBuilder(),
-          TargetPlatform.linux: ZoomPageTransitionsBuilder(),
+          TargetPlatform.windows: DesktopPageTransitionsBuilder(),
+          TargetPlatform.linux: DesktopPageTransitionsBuilder(),
         },
       ),
-    );
+    ));
   }
 }
 
@@ -723,27 +801,33 @@ class _MainShellState extends State<_MainShell> {
       child: AdaptiveScaffold(
         scaffoldKey: _scaffoldKey,
         currentIndex: _index.clamp(0, pages.length - 1),
-      onNavigationChanged: (i) {
-        if (i < pages.length) {
-          if (_index == i) {
-            HapticFeedback.lightImpact();
-          } else {
-            HapticFeedback.selectionClick();
-            setState(() => _index = i);
-            mainTabIndex.value = i;
+        onNavigationChanged: (i) {
+          if (i < pages.length) {
+            if (_index == i) {
+              HapticFeedback.lightImpact();
+            } else {
+              HapticFeedback.selectionClick();
+              setState(() => _index = i);
+              mainTabIndex.value = i;
+            }
           }
-        }
-      },
-      navItems: navItems,
-      drawer: GlobalAppDrawer(currentTabIndex: _index),
-      floatingActionButton: null,
-      body: FadeIndexedStack(
-        index: _index.clamp(0, pages.length - 1),
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
-        children: pages,
+        },
+        navItems: navItems.take(5).toList(),
+        drawer: GlobalAppDrawer(currentTabIndex: _index),
+        floatingActionButton: null,
+        body: ValueListenableBuilder<int>(
+          valueListenable: DioClient.sessionChanges,
+          builder: (context, session, child) => KeyedSubtree(
+            key: ValueKey(session),
+            child: FadeIndexedStack(
+              index: _index.clamp(0, pages.length - 1),
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              children: pages,
+            ),
+          ),
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 }

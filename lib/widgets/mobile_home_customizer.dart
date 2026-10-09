@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/app_config.dart';
+import 'responsive_layout.dart';
 
 /// 移动端首页轻量组件元数据
 class MobileSectionMeta {
@@ -20,7 +21,7 @@ class MobileSectionMeta {
   });
 }
 
-/// 快捷金刚区元数据
+/// 常用快捷入口元数据
 class QuickActionMeta {
   final String id;
   final String label;
@@ -43,7 +44,7 @@ class MobileHomeCustomizer extends StatefulWidget {
 
   /// 呼出底部面板或弹窗
   static Future<void> show(BuildContext context) {
-    final isDesktop = MediaQuery.sizeOf(context).width >= 700;
+    final isDesktop = ResponsiveBreakpoints.isDesktop(context);
     if (isDesktop) {
       return showDialog(
         context: context,
@@ -85,7 +86,7 @@ class MobileHomeCustomizer extends StatefulWidget {
     ),
     'quick_actions': MobileSectionMeta(
       id: 'quick_actions',
-      title: '快捷金刚区',
+      title: '常用快捷入口',
       subtitle: '高频功能快捷入口（支持 4~8 项）',
       icon: Icons.grid_view_rounded,
       color: Color(0xFF00BCD4),
@@ -145,7 +146,7 @@ class MobileHomeCustomizer extends StatefulWidget {
     ),
     QuickActionMeta(
       id: 'search',
-      label: '全站搜索',
+      label: '论坛搜索',
       icon: Icons.search,
       color: Color(0xFF00ACC1),
       tabIndex: 11,
@@ -277,6 +278,8 @@ class _MobileHomeCustomizerState extends State<MobileHomeCustomizer> {
         current.remove(id);
       } else {
         current.add(id);
+        current.sort(
+            (a, b) => _sections.indexOf(a).compareTo(_sections.indexOf(b)));
       }
       AppConfig.setMobileHomeSections(current);
     });
@@ -302,7 +305,7 @@ class _MobileHomeCustomizerState extends State<MobileHomeCustomizer> {
         if (_quickActions.length <= 4) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('金刚区最少保留 4 个快捷功能'),
+              content: Text('快捷入口最少保留 4 个快捷功能'),
               duration: Duration(milliseconds: 1500),
             ),
           );
@@ -313,7 +316,7 @@ class _MobileHomeCustomizerState extends State<MobileHomeCustomizer> {
         if (_quickActions.length >= 8) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('金刚区最多容纳 8 个快捷功能，保持屏幕清爽'),
+              content: Text('快捷入口最多容纳 8 个快捷功能，保持屏幕清爽'),
               duration: Duration(milliseconds: 1500),
             ),
           );
@@ -323,6 +326,16 @@ class _MobileHomeCustomizerState extends State<MobileHomeCustomizer> {
       }
       AppConfig.setMobileQuickActions(_quickActions);
     });
+  }
+
+  void _moveQuickAction(int index, int direction) {
+    final target = index + direction;
+    if (target < 0 || target >= _quickActions.length) return;
+    setState(() {
+      final item = _quickActions.removeAt(index);
+      _quickActions.insert(target, item);
+    });
+    AppConfig.setMobileQuickActions(_quickActions);
   }
 
   Future<void> _applyPreset(String key) async {
@@ -388,7 +401,7 @@ class _MobileHomeCustomizerState extends State<MobileHomeCustomizer> {
                       ),
                     ),
                     Text(
-                      '轻量定制组件与金刚区，保持简洁优雅',
+                      '选择模块、调整顺序和常用功能',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: colorScheme.outline,
                         fontSize: 11,
@@ -423,9 +436,9 @@ class _MobileHomeCustomizerState extends State<MobileHomeCustomizer> {
             spacing: 8,
             runSpacing: 8,
             children: [
-              _buildPresetChip('classic', '🌟 标准全能', '全部组件 + 8个快捷功能'),
-              _buildPresetChip('minimal', '⚡ 极简流畅', '仅金刚区与推荐，轻快省流'),
-              _buildPresetChip('nav', '📖 导航优先', '喇叭公告 + 4快捷 + 版块导航'),
+              _buildPresetChip('classic', '标准全能', '全部组件与常用快捷入口'),
+              _buildPresetChip('minimal', '极简流畅', '仅保留快捷区与推荐流，轻快省流'),
+              _buildPresetChip('nav', '导航优先', '公告与分类版块导航'),
             ],
           ),
           const SizedBox(height: 18),
@@ -476,12 +489,15 @@ class _MobileHomeCustomizerState extends State<MobileHomeCustomizer> {
 
                 return ListTile(
                   dense: true,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                   leading: Container(
                     width: 36,
                     height: 36,
                     decoration: BoxDecoration(
-                      color: isActive ? meta.color.withAlpha(25) : colorScheme.surfaceContainerLow,
+                      color: isActive
+                          ? meta.color.withAlpha(25)
+                          : colorScheme.surfaceContainerLow,
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Icon(
@@ -494,8 +510,11 @@ class _MobileHomeCustomizerState extends State<MobileHomeCustomizer> {
                     meta.title,
                     style: TextStyle(
                       fontSize: 13.5,
-                      fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
-                      color: isActive ? colorScheme.onSurface : colorScheme.outline,
+                      fontWeight:
+                          isActive ? FontWeight.w600 : FontWeight.normal,
+                      color: isActive
+                          ? colorScheme.onSurface
+                          : colorScheme.outline,
                     ),
                   ),
                   subtitle: Text(
@@ -513,17 +532,23 @@ class _MobileHomeCustomizerState extends State<MobileHomeCustomizer> {
                         icon: const Icon(Icons.arrow_upward_rounded, size: 17),
                         visualDensity: VisualDensity.compact,
                         padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                        constraints:
+                            const BoxConstraints(minWidth: 26, minHeight: 26),
                         tooltip: '上移',
-                        onPressed: index > 0 ? () => _moveSection(index, -1) : null,
+                        onPressed:
+                            index > 0 ? () => _moveSection(index, -1) : null,
                       ),
                       IconButton(
-                        icon: const Icon(Icons.arrow_downward_rounded, size: 17),
+                        icon:
+                            const Icon(Icons.arrow_downward_rounded, size: 17),
                         visualDensity: VisualDensity.compact,
                         padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                        constraints:
+                            const BoxConstraints(minWidth: 26, minHeight: 26),
                         tooltip: '下移',
-                        onPressed: index < _sections.length - 1 ? () => _moveSection(index, 1) : null,
+                        onPressed: index < _sections.length - 1
+                            ? () => _moveSection(index, 1)
+                            : null,
                       ),
                       const SizedBox(width: 4),
                       Switch(
@@ -538,12 +563,12 @@ class _MobileHomeCustomizerState extends State<MobileHomeCustomizer> {
           ),
           const SizedBox(height: 20),
 
-          // 区域二：金刚区快捷功能挑选
+          // 区域二：快捷入口快捷功能挑选
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                '金刚区快捷功能（4 ~ 8 项）',
+                '快捷入口快捷功能（4 ~ 8 项）',
                 style: theme.textTheme.labelMedium?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: colorScheme.primary,
@@ -574,13 +599,42 @@ class _MobileHomeCustomizerState extends State<MobileHomeCustomizer> {
           ),
           const SizedBox(height: 6),
           Text(
-            '提示：选择 4 个功能时将以单行展示，节省宝贵纵向屏幕空间；5~8 个功能展示双行。',
+            '提示：选择 4 个功能时将以单行展示，节省屏幕空间；5~8 个功能展示双行。',
             style: theme.textTheme.bodySmall?.copyWith(
               color: colorScheme.outline,
               fontSize: 11,
             ),
           ),
           const SizedBox(height: 10),
+
+          for (var index = 0; index < _quickActions.length; index++)
+            Builder(builder: (context) {
+              final action = MobileHomeCustomizer.allQuickActions
+                  .where((action) => action.id == _quickActions[index])
+                  .firstOrNull;
+              if (action == null) return const SizedBox.shrink();
+              return ListTile(
+                key: ValueKey('quick-order-${action.id}'),
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(action.icon, size: 20),
+                title: Text(action.label),
+                trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                  IconButton(
+                      tooltip: '向前移动',
+                      onPressed:
+                          index > 0 ? () => _moveQuickAction(index, -1) : null,
+                      icon: const Icon(Icons.arrow_upward_rounded, size: 18)),
+                  IconButton(
+                      tooltip: '向后移动',
+                      onPressed: index + 1 < _quickActions.length
+                          ? () => _moveQuickAction(index, 1)
+                          : null,
+                      icon: const Icon(Icons.arrow_downward_rounded, size: 18)),
+                ]),
+              );
+            }),
+          const SizedBox(height: 12),
 
           // 快捷功能 Chip 矩阵
           Wrap(
@@ -601,7 +655,9 @@ class _MobileHomeCustomizerState extends State<MobileHomeCustomizer> {
                 labelStyle: TextStyle(
                   fontSize: 12,
                   fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                  color: isSelected ? colorScheme.onSurface : colorScheme.onSurfaceVariant,
+                  color: isSelected
+                      ? colorScheme.onSurface
+                      : colorScheme.onSurfaceVariant,
                 ),
                 onSelected: (_) => _toggleQuickAction(action.id),
               );

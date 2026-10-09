@@ -1,1049 +1,749 @@
+import '../widgets/app_motion.dart';
+import 'dart:async';
 import 'package:flutter/material.dart';
-
 import '../api/klpbbs_api.dart';
 import '../core/app_config.dart';
+import '../core/dio_client.dart';
+import '../core/klpbbs_facemall.dart';
 import '../widgets/global_app_drawer.dart';
 import '../widgets/global_nav.dart';
 import '../widgets/thread_card.dart';
-import 'profile_settings_page.dart';
 
-/// 苦力怕论坛头像挂件数据模型（对齐 Discuz sunju_facemall 插件规范）
-class FacemallItem {
-  final String id;
-  final String name;
-  final String desc;
-  final String frameUrl;
-  final String priceText;
-  final int priceCredit;
-  final String creditType;
-  final String validity;
-  final String category; // 默认, 二次元, 我的世界, 综合, 其他
-  final bool isFree;
-
-  const FacemallItem({
-    required this.id,
-    required this.name,
-    required this.desc,
-    required this.frameUrl,
-    required this.priceText,
-    this.priceCredit = 0,
-    this.creditType = '铁粒',
-    this.validity = '永久有效',
-    this.category = '默认',
-    this.isFree = false,
-  });
-}
-
-/// 苦力怕论坛头像挂件中心（1:1 深度复刻 KLPBBS 网页端 sunju_facemall:face 视觉与交互）
 class FacemallPage extends StatefulWidget {
   final int? uid;
   final String? username;
   final String? avatarUrl;
-
-  const FacemallPage({
-    super.key,
-    this.uid,
-    this.username,
-    this.avatarUrl,
-  });
+  const FacemallPage({super.key, this.uid, this.username, this.avatarUrl});
 
   @override
   State<FacemallPage> createState() => _FacemallPageState();
 }
 
-class _FacemallPageState extends State<FacemallPage>
-    with SingleTickerProviderStateMixin {
-  late TabController _tabController;
-  int _currentUid = 0;
-  String _currentUsername = '坛友';
-  String? _equippedFrameId;
-  String? _formhash;
-  bool _initialLoading = true;
-  bool _loadingCategory = false;
-  bool _loadingMyPendants = false;
-  bool _loadingPayList = false;
-
-  List<(int, String)> _categories = [
-    (1, '默认'),
-    (2, '二次元'),
-    (3, '我的世界'),
-    (4, '综合'),
-    (5, '其他'),
-  ];
-  late (int, String) _selectedCategory;
-  final Map<int, List<FacemallItem>> _categoryItemsMap = {};
-  List<Map<String, dynamic>> _myPendants = [];
-  List<Map<String, dynamic>> _payList = [];
-  int _userIronPoints = 0;
+class _FacemallPageState extends State<FacemallPage> {
+  final _searchController = TextEditingController();
+  KlpFacemallCatalog? _catalog;
+  int? _uid;
+  String _username = '';
+  int _tab = 0;
+  int? _category;
+  int _generation = 0;
+  int _categoryRequest = 0;
+  int _recordPage = 1;
+  bool _loading = true;
+  bool _busy = false;
+  final List<bool> _tabLoading = [false, false, false];
+  String? _error;
+  final List<String?> _tabErrors = [null, null, null];
+  final Map<int, List<Map<String, dynamic>>> _items = {};
+  List<Map<String, dynamic>>? _owned;
+  List<Map<String, dynamic>>? _records;
+  FacemallPayListPage? _recordResult;
 
   @override
   void initState() {
     super.initState();
-    _selectedCategory = _categories.first;
-    _equippedFrameId = null; // 默认不要带挂件
-    _tabController = TabController(length: 3, vsync: this);
-    _tabController.addListener(_handleTabChange);
-    _initUser();
+    DioClient.sessionChanges.addListener(_sessionChanged);
+    unawaited(_loadCatalog());
   }
 
   @override
   void dispose() {
-    _tabController.removeListener(_handleTabChange);
-    _tabController.dispose();
+    _searchController.dispose();
+    DioClient.sessionChanges.removeListener(_sessionChanged);
     super.dispose();
   }
 
-  void _handleTabChange() {
-    if (_tabController.indexIsChanging) return;
-    if (_tabController.index == 1) {
-      _loadMyPendants();
-    } else if (_tabController.index == 2) {
-      _loadPayList();
-    }
+  void _sessionChanged() {
+    if (!mounted) return;
+    _searchController.clear();
+    setState(() {
+      _catalog = null;
+      _uid = null;
+      _username = '';
+      _category = null;
+      _items.clear();
+      _owned = null;
+      _records = null;
+      _recordResult = null;
+      _recordPage = 1;
+      _busy = false;
+      for (var i = 0; i < 3; i++) {
+        _tabErrors[i] = null;
+        _tabLoading[i] = false;
+      }
+    });
+    unawaited(_loadCatalog());
   }
 
-  Future<void> _initUser() async {
-    final myUid = widget.uid ?? await KlpbbsApi.getMyUid();
-    if (myUid != null && mounted) {
-      setState(() {
-        _currentUid = myUid;
-        _currentUsername = widget.username ?? '坛友';
-      });
+  bool _current(int generation, String session) =>
+      mounted && generation == _generation && session == DioClient.sessionKey;
+  String _message(Object error) =>
+      error.toString().replaceFirst(RegExp(r'^(Bad state:|Exception:)\s*'), '');
 
-      // 拉取当前用户真实铁粒资产
-      KlpbbsApi.getUserSpace(myUid).then((space) {
-        if (space != null && mounted) {
-          final ironStr = space.creditsDetail['铁粒'] ?? space.credits;
-          final pts = int.tryParse(ironStr.replaceAll(RegExp(r'\D'), '')) ?? 0;
-          setState(() => _userIronPoints = pts);
+  Future<void> _loadCatalog({bool refresh = false}) async {
+    final generation = ++_generation;
+    final session = DioClient.sessionKey;
+    setState(() {
+      _loading = true;
+      _error = null;
+      if (refresh) {
+        _owned = null;
+        _records = null;
+        _recordResult = null;
+        _recordPage = 1;
+      }
+      // Stale completions cannot clear their flags after generation changes.
+      for (var index = 0; index < _tabLoading.length; index++) {
+        _tabLoading[index] = false;
+        _tabErrors[index] = null;
+      }
+    });
+    try {
+      if (!DioClient.isLoggedIn) throw StateError('请先登录后查看头像挂件');
+      final uid = await KlpbbsApi.getMyUid();
+      final catalog =
+          await KlpbbsApi.getFacemallInitData(forceRefresh: refresh);
+      if (!_current(generation, session)) return;
+      await AppConfig.setMyFaceUrl(catalog.myFaceUrl);
+      if (!_current(generation, session)) return;
+      setState(() {
+        _uid = uid;
+        _catalog = catalog;
+        _loading = false;
+        if (!catalog.categories.any((c) => c.$1 == _category)) {
+          _category =
+              catalog.selectedCategory ?? catalog.categories.firstOrNull?.$1;
+        }
+        _items.clear();
+        final initialCategory =
+            catalog.selectedCategory ?? catalog.categories.firstOrNull?.$1;
+        // 商城首屏只有占位容器时，列表要由 facelist 请求加载。
+        // 空 HTML 不能代表分类已确认没有挂件。
+        if (initialCategory != null && catalog.initialItems.isNotEmpty) {
+          _items[initialCategory] = catalog.initialItems;
         }
       });
-    }
-
-    // 1. 实时拉取官方 sunju_facemall 页面初始化数据（当前挂件、分类、首屏商品）
-    try {
-      final initData = await KlpbbsApi.getFacemallInitData();
-      if (!mounted) return;
-
-      if (initData.formhash != null && initData.formhash!.isNotEmpty) {
-        _formhash = initData.formhash;
-      }
-
-      if (initData.categories.isNotEmpty) {
-        setState(() {
-          _categories = initData.categories;
-          if (!_categories.any((c) => c.$1 == _selectedCategory.$1)) {
-            _selectedCategory = _categories.first;
+      if (uid != null) {
+        unawaited(KlpbbsApi.getUserSpace(uid).then((space) {
+          if (_current(generation, session) && space != null) {
+            setState(() => _username = space.username);
           }
+        }).catchError((_) {}));
+      }
+      if (_tab == 0 && _category != null && !_items.containsKey(_category)) {
+        await _loadCategory(_category!);
+      }
+      if (_tab != 0) await _loadTab(_tab);
+    } catch (error) {
+      if (_current(generation, session)) {
+        setState(() {
+          _loading = false;
+          _error = _message(error);
         });
       }
+    }
+  }
 
-      if (initData.myFaceUrl != null && initData.myFaceUrl!.isNotEmpty && initData.myFaceUrl != 'none') {
-        await AppConfig.setMyFaceUrl(initData.myFaceUrl);
+  Future<void> _loadCategory(int category) async {
+    final request = ++_categoryRequest;
+    final generation = _generation;
+    final session = DioClient.sessionKey;
+    setState(() {
+      _tabLoading[0] = true;
+      _tabErrors[0] = null;
+    });
+    try {
+      final items = await KlpbbsApi.getFacemallCategoryItems(category,
+          formhash: _catalog?.formhash);
+      if (!_current(generation, session) || request != _categoryRequest) return;
+      setState(() {
+        _items[category] = items;
+        _tabLoading[0] = false;
+      });
+    } catch (error) {
+      if (_current(generation, session) && request == _categoryRequest) {
         setState(() {
-          _equippedFrameId = initData.myFaceUrl;
+          _tabLoading[0] = false;
+          _tabErrors[0] = _message(error);
         });
+      }
+    }
+  }
+
+  Future<void> _loadTab(int tab) async {
+    if (tab == 0) {
+      if (_category != null) {
+        await _loadCategory(_category!);
+      }
+      return;
+    }
+    if (_tabLoading[tab]) return;
+    final generation = _generation;
+    final session = DioClient.sessionKey;
+    setState(() {
+      _tabLoading[tab] = true;
+      _tabErrors[tab] = null;
+    });
+    try {
+      final List<Map<String, dynamic>> list;
+      FacemallPayListPage? recordResult;
+      if (tab == 1) {
+        list = await KlpbbsApi.getMyFacemallList(formhash: _catalog?.formhash);
       } else {
-        await AppConfig.setMyFaceUrl(null);
-        setState(() {
-          _equippedFrameId = null;
-        });
+        final result = await KlpbbsApi.getFacemallPayListPage(
+            page: _recordPage, limit: 20, formhash: _catalog?.formhash);
+        recordResult = result;
+        list = result.items;
       }
-
-      if (initData.initialItems.isNotEmpty) {
-        final firstList = initData.initialItems.map((m) => FacemallItem(
-          id: m['id'] ?? '',
-          name: m['title'] ?? '',
-          desc: '${m['title']} 论坛专属头像挂件',
-          frameUrl: m['img'] ?? '',
-          priceText: m['price'] == '0' || m['price'] == '' ? '免费' : '${m['price']} 铁粒',
-          priceCredit: int.tryParse(m['price'] ?? '0') ?? 0,
-          isFree: m['price'] == '0' || m['price'] == '',
-          creditType: '铁粒',
-          validity: '30天',
-          category: _categories.first.$2,
-        )).toList();
-
-        setState(() {
-          _categoryItemsMap[_categories.first.$1] = firstList;
-          _initialLoading = false;
-        });
-      } else {
-        _loadCategoryItems(_selectedCategory.$1);
-      }
-    } catch (_) {
-      if (mounted) _loadCategoryItems(_selectedCategory.$1);
-    }
-  }
-
-  /// 动态从官方 AJAX 接口拉取指定分类下的真实商品列表
-  Future<void> _loadCategoryItems(int catId) async {
-    setState(() => _loadingCategory = true);
-    try {
-      final items = await KlpbbsApi.getFacemallCategoryItems(catId, formhash: _formhash);
-      if (!mounted) return;
-
-      final catName = _categories.firstWhere((c) => c.$1 == catId, orElse: () => (catId, '默认')).$2;
-      final parsedList = items.map((m) => FacemallItem(
-        id: m['id'] ?? '',
-        name: m['title'] ?? '',
-        desc: '${m['title']} 论坛专属头像挂件',
-        frameUrl: m['img'] ?? '',
-        priceText: m['price'] == '0' || m['price'] == '' ? '免费' : '${m['price']} 铁粒',
-        priceCredit: int.tryParse(m['price'] ?? '0') ?? 0,
-        isFree: m['price'] == '0' || m['price'] == '',
-        creditType: '铁粒',
-        validity: '30天',
-        category: catName,
-      )).toList();
-
+      if (!_current(generation, session)) return;
       setState(() {
-        _categoryItemsMap[catId] = parsedList;
-        _loadingCategory = false;
-        _initialLoading = false;
+        if (tab == 1) {
+          _owned = list;
+        } else {
+          _records = list;
+          _recordResult = recordResult;
+        }
+        _tabLoading[tab] = false;
       });
-    } catch (_) {
-      if (mounted) {
+    } catch (error) {
+      if (_current(generation, session)) {
         setState(() {
-          _loadingCategory = false;
-          _initialLoading = false;
+          _tabLoading[tab] = false;
+          _tabErrors[tab] = _message(error);
         });
       }
     }
   }
 
-  /// 动态从官方接口拉取我的挂件列表
-  Future<void> _loadMyPendants() async {
-    setState(() => _loadingMyPendants = true);
-    try {
-      final list = await KlpbbsApi.getMyFacemallList(formhash: _formhash);
-      if (mounted) {
-        setState(() {
-          _myPendants = list;
-          _loadingMyPendants = false;
-        });
-      }
-    } catch (_) {
-      if (mounted) setState(() => _loadingMyPendants = false);
+  Future<void> _changeEquipment({String? id}) async {
+    if (_busy) return;
+    final session = DioClient.sessionKey;
+    setState(() => _busy = true);
+    final success = id == null
+        ? await KlpbbsApi.dropFacemall()
+        : await KlpbbsApi.setFacemall(id);
+    if (!mounted || session != DioClient.sessionKey) return;
+    setState(() => _busy = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            success ? (id == null ? '已卸下挂件' : '已佩戴挂件') : '网站未确认操作结果，请刷新查看')));
+    if (success) {
+      await _loadCatalog(refresh: true);
+      if (mounted && _tab != 1) await _loadTab(1);
     }
   }
 
-  /// 动态从官方接口拉取激活记录
-  Future<void> _loadPayList() async {
-    setState(() => _loadingPayList = true);
-    try {
-      final list = await KlpbbsApi.getFacemallPayList(formhash: _formhash);
-      if (mounted) {
-        setState(() {
-          _payList = list;
-          _loadingPayList = false;
-        });
-      }
-    } catch (_) {
-      if (mounted) setState(() => _loadingPayList = false);
+  Future<void> _buy(Map<String, dynamic> item) async {
+    if (_busy || _catalog == null) return;
+    final price = int.tryParse(item['price']?.toString() ?? '');
+    if (price == null || price < 0) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('尚未读取到挂件价格，请刷新商城后再查看')));
+      return;
     }
-  }
-
-  Future<void> _unequipPendant() async {
-    final messenger = ScaffoldMessenger.of(context);
-    final ok = await KlpbbsApi.dropFacemall();
-    if (!mounted) return;
-    if (ok) {
-      await AppConfig.setMyFaceUrl(null);
-      setState(() {
-        _equippedFrameId = null;
-      });
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text('已卸下当前头像挂件！'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    } else {
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text('卸下挂件失败，请重试'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
-  }
-
-  Future<void> _equipPendant(FacemallItem item) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final ok = await KlpbbsApi.setFacemall(item.id, frameUrl: item.frameUrl);
-    if (!mounted) return;
-    if (ok) {
-      await AppConfig.setMyFaceUrl(item.frameUrl);
-      setState(() {
-        _equippedFrameId = item.id;
-      });
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text('已佩戴「${item.name}」头像挂件！'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    } else {
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text('佩戴挂件失败，请重试'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
-  }
-
-  /// 1:1 复刻截图一官方购买/佩戴对话框
-  void _showPendantDialog(FacemallItem item) {
-    int selectedDays = 30;
-    int customDays = 30;
-    bool equipNow = true;
-    final customCtrl = TextEditingController(text: '30');
-
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (context, setModalState) {
-          final unitPrice = item.priceCredit > 0 ? item.priceCredit : 80;
-          final effectiveDays = selectedDays > 0 ? selectedDays : customDays.clamp(1, 9999);
-          final totalPrice = item.isFree
-              ? 0
-              : (selectedDays == 30
-                  ? unitPrice
-                  : (selectedDays == 90
-                      ? (unitPrice * 2.5).round()
-                      : (selectedDays == 360
-                          ? (unitPrice * 8).round()
-                          : ((unitPrice * effectiveDays) / 30).round())));
-
-          final shortage = (totalPrice - _userIronPoints).clamp(0, 999999);
-          final theme = Theme.of(ctx);
-
-          return Dialog(
-            backgroundColor: theme.colorScheme.surface,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 420),
-              child: Stack(
-                children: [
-                  Positioned(
-                    top: 10,
-                    right: 10,
-                    child: IconButton(
-                      icon: Icon(Icons.close, color: theme.colorScheme.outline, size: 20),
-                      onPressed: () => Navigator.of(ctx).pop(),
-                    ),
-                  ),
-
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(24, 28, 24, 20),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        UserAvatarWidget(
-                          uid: _currentUid > 0 ? _currentUid : null,
-                          author: _currentUsername,
-                          size: 80,
-                          faceUrl: (item.frameUrl.isNotEmpty && !item.frameUrl.contains('avatar'))
-                              ? item.frameUrl
-                              : (item.id.isNotEmpty ? 'fm_${item.id}.png' : item.name),
-                        ),
-                        const SizedBox(height: 14),
-                        Text(
-                          item.name,
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: theme.colorScheme.onSurface,
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: Text(
-                            '购买天数',
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            for (final d in [30, 90, 360, 0]) ...[
-                              Expanded(
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 3),
-                                  child: InkWell(
-                                    borderRadius: BorderRadius.circular(4),
-                                    onTap: () => setModalState(() => selectedDays = d),
-                                    child: Container(
-                                      height: 36,
-                                      alignment: Alignment.center,
-                                      decoration: BoxDecoration(
-                                        color: selectedDays == d
-                                            ? theme.colorScheme.primaryContainer.withAlpha(120)
-                                            : theme.colorScheme.surfaceContainerHighest.withAlpha(60),
-                                        borderRadius: BorderRadius.circular(6),
-                                        border: Border.all(
-                                          color: selectedDays == d
-                                              ? theme.colorScheme.primary
-                                              : theme.colorScheme.outlineVariant.withAlpha(80),
-                                          width: selectedDays == d ? 1.4 : 0.8,
-                                        ),
-                                      ),
-                                      child: Text(
-                                        d > 0 ? '$d天' : '自定义',
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          color: selectedDays == d
-                                              ? (theme.brightness == Brightness.dark ? const Color(0xFF4ADE80) : theme.colorScheme.primary)
-                                              : theme.colorScheme.onSurfaceVariant,
-                                          fontWeight: selectedDays == d ? FontWeight.bold : FontWeight.normal,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-
-                        if (selectedDays == 0) ...[
-                          const SizedBox(height: 10),
-                          Row(
-                            children: [
-                              Text('自定义天数：', style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurfaceVariant)),
-                              Expanded(
-                                child: SizedBox(
-                                  height: 36,
-                                  child: TextField(
-                                    controller: customCtrl,
-                                    keyboardType: TextInputType.number,
-                                    decoration: InputDecoration(
-                                      hintText: '输入天数 (1-999)',
-                                      border: const OutlineInputBorder(),
-                                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                                      fillColor: theme.colorScheme.surfaceContainerHighest.withAlpha(80),
-                                    ),
-                                    onChanged: (v) {
-                                      final val = int.tryParse(v) ?? 30;
-                                      setModalState(() => customDays = val);
-                                    },
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                        const SizedBox(height: 12),
-
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.primaryContainer.withAlpha(80),
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(color: theme.colorScheme.primary.withAlpha(120)),
-                            ),
-                            child: Text(
-                              '铁粒兑换',
-                              style: TextStyle(
-                                fontSize: 12.5,
-                                color: theme.brightness == Brightness.dark ? const Color(0xFF4ADE80) : theme.colorScheme.primary,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: RichText(
-                            text: TextSpan(
-                              text: item.isFree ? '免费' : '$totalPrice',
-                              style: const TextStyle(
-                                fontSize: 26,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFFF5222D),
-                              ),
+    final catalog = _catalog!;
+    final session = DioClient.sessionKey;
+    final minimum = catalog.minimumDays ?? 1;
+    final options = catalog.dayOptions.where((day) => day >= minimum).toList();
+    var days = options.firstOrNull ?? minimum;
+    var custom = options.isEmpty;
+    var equip = true;
+    final input = TextEditingController(text: '$days');
+    final selection = await showDialog<({int days, bool equip})>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(builder: (context, update) {
+              final selected = custom ? int.tryParse(input.text) : days;
+              final valid = selected != null && selected >= minimum;
+              final total = valid ? price * selected : null;
+              final sufficient = total != null &&
+                  (catalog.userIronPoints == null ||
+                      catalog.userIronPoints! >= total);
+              return AlertDialog(
+                  title: Text(item['title']?.toString() ?? '购买挂件'),
+                  content: SizedBox(
+                      width: 380,
+                      child: SingleChildScrollView(
+                          child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                if (!item.isFree)
-                                  TextSpan(
-                                    text: ' 铁粒',
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.normal,
-                                      color: theme.colorScheme.outline,
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ),
-                        ),
+                            Center(
+                                child: _avatar(
+                                    size: 92, frame: item['img']?.toString())),
+                            const SizedBox(height: 24),
+                            Text('$price 铁粒 / 天',
+                                style: Theme.of(context).textTheme.titleMedium),
+                            const SizedBox(height: 16),
+                            Wrap(spacing: 8, runSpacing: 8, children: [
+                              for (final day in options)
+                                ChoiceChip(
+                                    label: Text('$day 天'),
+                                    selected: !custom && days == day,
+                                    onSelected: (_) => update(() {
+                                          days = day;
+                                          custom = false;
+                                        })),
+                              ChoiceChip(
+                                  label: const Text('自定义'),
+                                  selected: custom,
+                                  onSelected: (_) =>
+                                      update(() => custom = true)),
+                            ]),
+                            if (custom)
+                              Padding(
+                                  padding: const EdgeInsets.only(top: 16),
+                                  child: TextField(
+                                      controller: input,
+                                      keyboardType: TextInputType.number,
+                                      decoration: InputDecoration(
+                                          labelText: '购买天数',
+                                          helperText:
+                                              catalog.minimumDays == null
+                                                  ? null
+                                                  : '网站要求至少 $minimum 天'),
+                                      onChanged: (_) => update(() {}))),
+                            const SizedBox(height: 20),
+                            Text(total == null ? '请输入有效天数' : '合计 $total 铁粒',
+                                style: Theme.of(context).textTheme.titleLarge),
+                            if (catalog.userIronPoints != null)
+                              Text('当前余额 ${catalog.userIronPoints} 铁粒'),
+                            CheckboxListTile(
+                                value: equip,
+                                onChanged: (value) =>
+                                    update(() => equip = value ?? true),
+                                contentPadding: EdgeInsets.zero,
+                                title: const Text('购买后立即佩戴')),
+                          ]))),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(dialogContext),
+                        child: const Text('取消')),
+                    FilledButton(
+                        onPressed: valid && sufficient
+                            ? () => Navigator.pop(
+                                dialogContext, (days: selected, equip: equip))
+                            : null,
+                        child: Text(valid && !sufficient ? '铁粒不足' : '确认购买'))
+                  ]);
+            }));
+    input.dispose();
+    if (selection == null || !mounted || session != DioClient.sessionKey) {
+      return;
+    }
+    setState(() => _busy = true);
+    final result = await KlpbbsApi.buyFacemall(item['id']?.toString() ?? '',
+        sDay: selection.days, sNow: selection.equip);
+    if (!mounted || session != DioClient.sessionKey) return;
+    setState(() => _busy = false);
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(result.message)));
+    if (result.success) {
+      _owned = null;
+      _records = null;
+      _recordResult = null;
+      await _loadCatalog(refresh: true);
+    }
+  }
+
+  Widget _avatar({double size = 76, String? frame}) => UserAvatarWidget(
+      uid: _uid,
+      author: _username,
+      avatarUrl: _catalog?.userAvatarUrl,
+      faceUrl: frame ?? _catalog?.myFaceUrl,
+      useObservedAppearance: false,
+      reserveFrameSpace: true,
+      size: size);
+
+  Widget _accountCard({bool compact = false}) => Card.filled(
+      child: Padding(
+          padding: EdgeInsets.all(compact ? 16 : 24),
+          child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  _avatar(size: compact ? 48 : 76),
+                  SizedBox(width: compact ? 12 : 16),
+                  Expanded(
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                        Text(_username.isEmpty ? '我的挂件' : _username,
+                            maxLines: compact ? 1 : null,
+                            overflow: compact ? TextOverflow.ellipsis : null,
+                            style: Theme.of(context).textTheme.titleMedium),
                         const SizedBox(height: 6),
-
-                        Row(
-                          children: [
-                            Text(
-                              '当前拥有: $_userIronPoints',
-                              style: TextStyle(fontSize: 12, color: theme.colorScheme.outline),
-                            ),
-                            const Spacer(),
-                            InkWell(
-                              onTap: () {
-                                Navigator.of(ctx).pop();
-                                Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (_) => const ProfileSettingsPage(),
-                                  ),
-                                );
-                              },
-                              child: Text(
-                                '还差$shortage，如何获取？',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: theme.brightness == Brightness.dark ? const Color(0xFF60A5FA) : const Color(0xFF1890FF),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 18),
-
-                        SizedBox(
-                          width: double.infinity,
-                          height: 42,
-                          child: FilledButton(
-                            style: FilledButton.styleFrom(
-                              backgroundColor: const Color(0xFF00A2FF),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-                            ),
-                            onPressed: () async {
-                              final messenger = ScaffoldMessenger.of(context);
-                              Navigator.of(ctx).pop();
-                              final res = await KlpbbsApi.buyFacemall(
-                                item.id,
-                                sDay: effectiveDays,
-                                sNow: equipNow,
-                              );
-                              if (!mounted) return;
-                              messenger.showSnackBar(
-                                SnackBar(
-                                  content: Text(res.message),
-                                  behavior: SnackBarBehavior.floating,
-                                ),
-                              );
-                              if (res.success && equipNow) {
-                                _equipPendant(item);
-                              }
-                            },
-                            child: const Text(
-                              '确认购买',
-                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Checkbox(
-                              value: equipNow,
-                              activeColor: const Color(0xFF00A2FF),
-                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                              onChanged: (v) => setModalState(() => equipNow = v ?? true),
-                            ),
-                            const Text(
-                              '立即装备',
-                              style: TextStyle(fontSize: 13, color: Color(0xFF595959)),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
+                        Text(_catalog?.myFaceUrl == null
+                            ? '当前未佩戴挂件'
+                            : '当前已佩戴挂件'),
+                      ]))
+                ]),
+                SizedBox(height: compact ? 12 : 24),
+                if (compact)
+                  Wrap(spacing: 12, runSpacing: 6, children: [
+                    Text('可用铁粒 ${_catalog?.userIronPoints?.toString() ?? '—'}',
+                        style: Theme.of(context).textTheme.labelLarge),
+                    if (_catalog?.minimumDays != null)
+                      Text('最低购买 ${_catalog!.minimumDays} 天',
+                          style: Theme.of(context).textTheme.bodySmall),
+                  ])
+                else ...[
+                  Text('可用铁粒', style: Theme.of(context).textTheme.labelLarge),
+                  Text(_catalog?.userIronPoints?.toString() ?? '—',
+                      style: Theme.of(context).textTheme.headlineMedium),
                 ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
+                if (!compact && _catalog?.minimumDays != null)
+                  Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Text('最低购买 ${_catalog!.minimumDays} 天')),
+                if (_catalog?.myFaceUrl != null)
+                  Padding(
+                      padding: const EdgeInsets.only(top: 16),
+                      child: OutlinedButton.icon(
+                          onPressed: _busy ? null : () => _changeEquipment(),
+                          icon: const Icon(Icons.remove_circle_outline),
+                          label: const Text('卸下当前挂件'))),
+              ])));
+
+  Widget _problem(String message, VoidCallback retry) => Center(
+      child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.cloud_off_outlined, size: 36),
+            const SizedBox(height: 16),
+            SelectableText(message, textAlign: TextAlign.center),
+            const SizedBox(height: 16),
+            FilledButton.tonalIcon(
+                onPressed: retry,
+                icon: const Icon(Icons.refresh),
+                label: const Text('重试'))
+          ])));
+
+  Widget _mall() {
+    final categoryItems = _items[_category] ?? const [];
+    final query = _searchController.text.trim().toLowerCase();
+    final list = categoryItems
+        .where((item) =>
+            query.isEmpty ||
+            (item['title']?.toString() ?? '').toLowerCase().contains(query))
+        .toList();
+    return Column(children: [
+      SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Row(children: [
+            for (final category in _catalog!.categories)
+              Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                      label: Text(category.$2),
+                      selected: _category == category.$1,
+                      onSelected: _busy
+                          ? null
+                          : (_) {
+                              if (_category == category.$1) return;
+                              setState(() {
+                                _category = category.$1;
+                                _tabErrors[0] = null;
+                              });
+                              unawaited(_loadCategory(category.$1));
+                            })),
+          ])),
+      Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: TextField(
+            key: const ValueKey('facemall-search'),
+            controller: _searchController,
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+                hintText: '搜索当前分类的挂件',
+                prefixIcon: const Icon(Icons.search_rounded),
+                suffixIcon: query.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: '清除搜索',
+                        onPressed: () => setState(_searchController.clear),
+                        icon: const Icon(Icons.close_rounded))),
+          )),
+      if (_tabLoading[0]) const AppLoadingBar(),
+      Expanded(
+          child: _tabErrors[0] != null
+              ? _problem(_tabErrors[0]!, () => _loadTab(0))
+              : _tabLoading[0] && categoryItems.isEmpty
+                  ? const Center(
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      AppLoadingIndicator(),
+                      SizedBox(height: 16),
+                      Text('正在读取挂件…')
+                    ]))
+                  : list.isEmpty
+                      ? Center(
+                          child:
+                              Text(query.isEmpty ? '此分类暂无挂件' : '当前分类没有匹配的挂件'))
+                      : RefreshIndicator(
+                          onRefresh: () => _loadTab(0),
+                          child: GridView.builder(
+                              key: PageStorageKey(
+                                  'facemall-category-$_category'),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              gridDelegate:
+                                  SliverGridDelegateWithMaxCrossAxisExtent(
+                                      maxCrossAxisExtent: 280,
+                                      mainAxisExtent: 274 +
+                                          (MediaQuery.textScalerOf(context)
+                                                          .scale(20) -
+                                                      20)
+                                                  .clamp(0.0, 80.0) *
+                                              3,
+                                      crossAxisSpacing: 12,
+                                      mainAxisSpacing: 12),
+                              itemCount: list.length,
+                              itemBuilder: (context, index) {
+                                final item = list[index];
+                                final price = int.tryParse(
+                                    item['price']?.toString() ?? '');
+                                return LayoutBuilder(
+                                    builder: (context, itemConstraints) =>
+                                        Card.filled(
+                                            margin: EdgeInsets.zero,
+                                            child: InkWell(
+                                                borderRadius:
+                                                    BorderRadius.circular(24),
+                                                onTap: _busy
+                                                    ? null
+                                                    : () => _buy(item),
+                                                child: Padding(
+                                                    padding:
+                                                        const EdgeInsets.all(
+                                                            16),
+                                                    child: Column(children: [
+                                                      _avatar(
+                                                          size: 86,
+                                                          frame: item['img']
+                                                                  ?.toString() ??
+                                                              ''),
+                                                      const SizedBox(
+                                                          height: 16),
+                                                      Text(
+                                                          item['title']
+                                                                  ?.toString() ??
+                                                              '',
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                          style:
+                                                              Theme.of(context)
+                                                                  .textTheme
+                                                                  .titleMedium),
+                                                      const SizedBox(height: 8),
+                                                      Text(price == null ||
+                                                              price < 0
+                                                          ? '价格暂未读取'
+                                                          : price == 0
+                                                              ? '免费'
+                                                              : '$price 铁粒 / 天'),
+                                                      const Spacer(),
+                                                      FilledButton.tonalIcon(
+                                                          onPressed: _busy ||
+                                                                  price ==
+                                                                      null ||
+                                                                  price < 0
+                                                              ? null
+                                                              : () =>
+                                                                  _buy(item),
+                                                          icon: const Icon(
+                                                              Icons
+                                                                  .shopping_bag_outlined,
+                                                              size: 18),
+                                                          label: Text(
+                                                              itemConstraints
+                                                                          .maxWidth <
+                                                                      200
+                                                                  ? '查看'
+                                                                  : '查看与购买')),
+                                                    ])))));
+                              }))),
+    ]);
+  }
+
+  Widget _ownedList() {
+    if (_tabErrors[1] != null) {
+      return _problem(_tabErrors[1]!, () => _loadTab(1));
+    }
+    if (_tabLoading[1] && _owned == null) {
+      return const Center(child: AppLoadingIndicator());
+    }
+    if (_owned?.isEmpty != false) return const Center(child: Text('暂无已购挂件'));
+    return RefreshIndicator(
+        onRefresh: () => _loadTab(1),
+        child: ListView.separated(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            itemCount: _owned!.length,
+            separatorBuilder: (context, index) => const SizedBox(height: 8),
+            itemBuilder: (context, index) {
+              final item = _owned![index];
+              final equipped = item['use'] == '1';
+              final id = item['s_fid']?.toString() ?? '';
+              final canEquip = KlpFacemallResponse.canEquip(item);
+              return Card.filled(
+                  margin: EdgeInsets.zero,
+                  child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(children: [
+                        _avatar(size: 56, frame: item['img']?.toString() ?? ''),
+                        const SizedBox(width: 16),
+                        Expanded(
+                            child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                              Text(item['title']?.toString() ?? '',
+                                  style:
+                                      Theme.of(context).textTheme.titleMedium),
+                              const SizedBox(height: 4),
+                              Text('到期 ${item['endtime']}',
+                                  style: Theme.of(context).textTheme.bodySmall),
+                            ])),
+                        const SizedBox(width: 8),
+                        FilledButton.tonal(
+                            onPressed: !canEquip || _busy
+                                ? null
+                                : () => _changeEquipment(id: id),
+                            child: Text(equipped
+                                ? '已佩戴'
+                                : canEquip
+                                    ? '佩戴'
+                                    : '不可佩戴')),
+                      ])));
+            }));
+  }
+
+  Widget _recordList() {
+    if (_tabErrors[2] != null) {
+      return _problem(_tabErrors[2]!, () => _loadTab(2));
+    }
+    if (_tabLoading[2] && _records == null) {
+      return const Center(child: AppLoadingIndicator());
+    }
+    final records = _records ?? const [];
+    return Column(children: [
+      if (_tabLoading[2]) const AppLoadingBar(),
+      Expanded(
+          child: records.isEmpty
+              ? const Center(child: Text('暂无购买与激活记录'))
+              : ListView.separated(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  itemCount: records.length,
+                  separatorBuilder: (context, index) => const Divider(),
+                  itemBuilder: (context, index) {
+                    final item = records[index];
+                    return ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(item['title']?.toString() ?? ''),
+                        subtitle: Text('${item['time']} · ${item['day']} 天'),
+                        trailing: Text(
+                            item['price']?.toString().isNotEmpty == true
+                                ? '${item['price']} 铁粒'
+                                : '—'));
+                  })),
+      Wrap(
+          alignment: WrapAlignment.center,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            IconButton(
+                onPressed: _recordResult?.hasPrevious == true && !_tabLoading[2]
+                    ? () {
+                        setState(() => _recordPage--);
+                        _loadTab(2);
+                      }
+                    : null,
+                tooltip: '上一页',
+                icon: const Icon(Icons.chevron_left)),
+            Text(_recordResult?.totalCount == null
+                ? '第 $_recordPage 页'
+                : '第 $_recordPage 页 · 共 ${_recordResult!.totalCount} 条'),
+            IconButton(
+                onPressed: _recordResult?.hasNext == true && !_tabLoading[2]
+                    ? () {
+                        setState(() => _recordPage++);
+                        _loadTab(2);
+                      }
+                    : null,
+                tooltip: '下一页',
+                icon: const Icon(Icons.chevron_right)),
+          ]),
+    ]);
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return Scaffold(
-      drawer: const GlobalAppDrawer(),
-      drawerEdgeDragWidth: 50.0,
-      appBar: AppBar(
-        leading: const GlobalNavLeading(),
-        leadingWidth: GlobalNavLeading.preferredLeadingWidth(context),
-        title: const Text('头像挂件'),
-        centerTitle: true,
-      ),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 880),
-          child: Column(
-            children: [
-              // 1. 顶部大圆形挂件预览舞台 (1:1 深度对齐网页截图)
-              _buildTopPreviewStage(theme),
-
-              // 2. 核心导航标签 (挂件商城 / 我的挂件 / 激活记录) - 语义化主题高亮下划线
-              Container(
-                color: colorScheme.surface,
-                child: TabBar(
-                  controller: _tabController,
-                  labelColor: colorScheme.primary,
-                  unselectedLabelColor: colorScheme.onSurfaceVariant,
-                  indicatorColor: colorScheme.primary,
-                  indicatorWeight: 3,
-                  labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5),
-                  tabs: const [
-                    Tab(text: '挂件商城'),
-                    Tab(text: '我的挂件'),
-                    Tab(text: '激活记录'),
-                  ],
-                ),
-              ),
-
-              // 3. 页面内容
-              Expanded(
-                child: TabBarView(
-                  controller: _tabController,
-                  children: [
-                    _buildMallTab(theme),
-                    _buildMyPendantsTab(theme),
-                    _buildActivationRecordsTab(theme),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 顶部预览区（对齐图二：居中头像、虚线环、更换头像、卸下挂件）
-  Widget _buildTopPreviewStage(ThemeData theme) {
-    final colorScheme = theme.colorScheme;
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
-      decoration: BoxDecoration(
-        color: colorScheme.surface,
-        border: Border(
-          bottom: BorderSide(
-            color: colorScheme.outlineVariant.withAlpha(40),
-          ),
-        ),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          // 更换头像按钮 (主题色圆形)
-          InkWell(
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => ProfileSettingsPage(uid: _currentUid > 0 ? _currentUid : null),
-                ),
-              );
-            },
-            borderRadius: BorderRadius.circular(30),
-            child: Container(
-              width: 58,
-              height: 58,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: colorScheme.primary,
-              ),
-              child: const Center(
-                child: Text(
-                  '更换\n头像',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    height: 1.25,
-                  ),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 32),
-          // 居中大头像挂件预览 (带虚线环与真实挂件叠加)
-          Stack(
-            alignment: Alignment.center,
-            children: [
-              Container(
-                width: 110,
-                height: 110,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: colorScheme.outlineVariant.withAlpha(120),
-                    width: 1.5,
-                  ),
-                ),
-              ),
-              _buildEquippedAvatarPreview(78),
-            ],
-          ),
-          const SizedBox(width: 32),
-          // 卸下挂件按钮 (自适应深浅色背景与边框)
-          InkWell(
-            onTap: _unequipPendant,
-            borderRadius: BorderRadius.circular(30),
-            child: Container(
-              width: 58,
-              height: 58,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: colorScheme.surfaceContainerHigh,
-                border: Border.all(
-                  color: colorScheme.outlineVariant.withAlpha(120),
-                  width: 1.5,
-                ),
-              ),
-              child: Center(
-                child: Text(
-                  '卸下\n挂件',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: colorScheme.onSurfaceVariant,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    height: 1.25,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildEquippedAvatarPreview(double avatarSize) {
-    final hasFrame = _equippedFrameId != null && _equippedFrameId != 'none' && _equippedFrameId!.isNotEmpty;
-
-    return UserAvatarWidget(
-      uid: _currentUid > 0 ? _currentUid : null,
-      author: _currentUsername,
-      size: avatarSize,
-      faceUrl: hasFrame ? _equippedFrameId : '',
-    );
-  }
-
-  /// 挂件商城 Tab（分类标签 + 挂件网格 3 列）
-  Widget _buildMallTab(ThemeData theme) {
-    final currentList = _categoryItemsMap[_selectedCategory.$1] ?? const <FacemallItem>[];
-
-    return Column(
-      children: [
-        // 分类标签栏 (默认 / 二次元 / 我的世界 / 综合 / 其他 - 蓝色药丸胶囊)
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          alignment: Alignment.centerLeft,
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: _categories.map((cat) {
-                final isSelected = _selectedCategory.$1 == cat.$1;
-                return Padding(
-                  padding: const EdgeInsets.only(right: 12),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(16),
-                    onTap: () {
-                      setState(() => _selectedCategory = cat);
-                      _loadCategoryItems(cat.$1);
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: isSelected ? theme.colorScheme.primary : Colors.transparent,
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Text(
-                        cat.$2,
-                        style: TextStyle(
-                          fontSize: 13.5,
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                          color: isSelected ? theme.colorScheme.onPrimary : theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              }).toList(),
-            ),
-          ),
-        ),
-        const Divider(height: 1, thickness: 0.8),
-        // 挂件网格列表 (3 列卡片布局)
-        Expanded(
-          child: (_initialLoading || _loadingCategory) && currentList.isEmpty
-              ? const Center(child: CircularProgressIndicator())
-              : currentList.isEmpty
-                  ? Center(
-                      child: Text(
-                        '该分类下暂无挂件商品',
-                        style: TextStyle(fontSize: 14, color: theme.colorScheme.outline),
-                      ),
-                    )
-                  : GridView.builder(
-                  padding: const EdgeInsets.all(12),
-                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 160,
-                    mainAxisExtent: 150,
-                    crossAxisSpacing: 10,
-                    mainAxisSpacing: 10,
-                  ),
-                  itemCount: currentList.length,
-                  itemBuilder: (ctx, i) {
-                    final item = currentList[i];
-                    final isEquipped = _equippedFrameId == item.id || _equippedFrameId == item.frameUrl;
-
-                    return Container(
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.surfaceContainerLow,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: isEquipped
-                              ? theme.colorScheme.primary
-                              : theme.colorScheme.outlineVariant.withAlpha(70),
-                          width: isEquipped ? 2 : 1,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: theme.colorScheme.shadow.withAlpha(10),
-                            blurRadius: 4,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: InkWell(
-                        onTap: () => _showPendantDialog(item),
-                        borderRadius: BorderRadius.circular(8),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              // 头像叠放挂件微缩预览图 (56px)
-                              UserAvatarWidget(
-                                uid: _currentUid > 0 ? _currentUid : null,
-                                author: _currentUsername,
-                                size: 56,
-                                faceUrl: (item.frameUrl.isNotEmpty && !item.frameUrl.contains('avatar'))
-                                    ? item.frameUrl
-                                    : (item.id.isNotEmpty ? 'fm_${item.id}.png' : item.name),
-                              ),
-                              const SizedBox(height: 10),
-                              Text(
-                                item.name,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  color: theme.colorScheme.onSurface,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-        ),
-      ],
-    );
-  }
-
-  /// 我的挂件 Tab (100% 官方接口 action=mylist 真实数据)
-  Widget _buildMyPendantsTab(ThemeData theme) {
-    if (_loadingMyPendants) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    if (_myPendants.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.face_retouching_natural, size: 54, color: theme.colorScheme.outlineVariant),
-            const SizedBox(height: 12),
-            Text('您尚未拥有任何头像挂件', style: TextStyle(fontSize: 15, color: theme.colorScheme.outline)),
-            const SizedBox(height: 12),
-            FilledButton(
-              onPressed: () => _tabController.animateTo(0),
-              child: const Text('前往挂件商城挑选'),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return GridView.builder(
-      padding: const EdgeInsets.all(12),
-      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 180,
-        mainAxisExtent: 180,
-        crossAxisSpacing: 10,
-        mainAxisSpacing: 10,
-      ),
-      itemCount: _myPendants.length,
-      itemBuilder: (ctx, i) {
-        final item = _myPendants[i];
-        final imgUrl = item['img']?.toString() ?? '';
-        final title = item['title']?.toString() ?? '头像挂件';
-        final endtime = item['endtime']?.toString() ?? '';
-        final sFid = item['s_fid']?.toString() ?? item['id']?.toString() ?? '';
-        final isEquipped = item['use'] == '1' || _equippedFrameId == imgUrl || _equippedFrameId == sFid;
-
-        return Container(
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: isEquipped
-                  ? theme.colorScheme.primary
-                  : theme.colorScheme.outlineVariant.withAlpha(70),
-              width: isEquipped ? 2 : 1,
-            ),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              UserAvatarWidget(
-                uid: _currentUid > 0 ? _currentUid : null,
-                author: _currentUsername,
-                size: 56,
-                faceUrl: (imgUrl.isNotEmpty && !imgUrl.contains('avatar'))
-                    ? imgUrl
-                    : (sFid.isNotEmpty ? 'fm_$sFid.png' : title),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
-                  color: theme.colorScheme.onSurface,
-                ),
-              ),
-              if (endtime.isNotEmpty) ...[
-                const SizedBox(height: 2),
-                Text(
-                  '$endtime 到期',
-                  style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
-                ),
-              ],
-              const SizedBox(height: 8),
-              SizedBox(
-                height: 28,
-                child: isEquipped
-                    ? OutlinedButton(
-                        onPressed: () async {
-                          await _unequipPendant();
-                          _loadMyPendants();
-                        },
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                          visualDensity: VisualDensity.compact,
-                        ),
-                        child: const Text('卸下', style: TextStyle(fontSize: 11.5)),
-                      )
-                    : FilledButton(
-                        onPressed: () async {
-                          final fItem = FacemallItem(
-                            id: sFid,
-                            name: title,
-                            desc: title,
-                            frameUrl: imgUrl,
-                            priceText: '已拥有',
-                          );
-                          await _equipPendant(fItem);
-                          _loadMyPendants();
-                        },
-                        style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                          visualDensity: VisualDensity.compact,
-                        ),
-                        child: const Text('佩戴', style: TextStyle(fontSize: 11.5)),
-                      ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  /// 激活记录 Tab (100% 官方接口 action=paylist 真实数据)
-  Widget _buildActivationRecordsTab(ThemeData theme) {
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('挂件购买与激活记录', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 12),
-          Expanded(
-            child: _loadingPayList
-                ? const Center(child: CircularProgressIndicator())
-                : _payList.isEmpty
-                    ? Center(
-                        child: Text(
-                          '暂无挂件激活与购买记录',
-                          style: TextStyle(fontSize: 14, color: theme.colorScheme.outline),
-                        ),
-                      )
-                    : ListView.separated(
-                        itemCount: _payList.length,
-                        separatorBuilder: (_, __) => Divider(
-                          height: 1,
-                          color: theme.colorScheme.outlineVariant.withAlpha(50),
-                        ),
-                        itemBuilder: (ctx, i) {
-                          final item = _payList[i];
-                          final title = item['title']?.toString() ?? '头像挂件';
-                          final day = item['day']?.toString() ?? '';
-                          final price = item['price']?.toString() ?? '0';
-                          final time = item['time']?.toString() ?? '';
-
-                          return ListTile(
-                            leading: Icon(Icons.history, color: theme.colorScheme.primary),
-                            title: Text('$title · $day 天'),
-                            subtitle: Text('$time · 消耗 $price 铁粒'),
-                            dense: true,
-                          );
-                        },
-                      ),
-          ),
-        ],
-      ),
-    );
+    final wide = MediaQuery.sizeOf(context).width >= 1050;
+    final body = _loading && _catalog == null
+        ? const Center(child: AppLoadingIndicator())
+        : _error != null
+            ? _problem(_error!, () => _loadCatalog(refresh: true))
+            : _catalog == null
+                ? const SizedBox.shrink()
+                : Padding(
+                    padding: EdgeInsets.all(wide ? 24 : 16),
+                    child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                              child: Column(children: [
+                            if (!wide)
+                              AnimatedSize(
+                                  duration: AppMotion.duration(context, 240),
+                                  curve: AppMotion.emphasized,
+                                  alignment: Alignment.topCenter,
+                                  child:
+                                      MediaQuery.viewInsetsOf(context).bottom >
+                                              0
+                                          ? const SizedBox.shrink()
+                                          : _accountCard(compact: true)),
+                            if (_busy || _loading) const AppLoadingBar(),
+                            TabBar(
+                                onTap: (index) {
+                                  setState(() => _tab = index);
+                                  if (index == 1 && _owned == null ||
+                                      index == 2 && _records == null) {
+                                    _loadTab(index);
+                                  }
+                                },
+                                tabs: const [
+                                  Tab(text: '商城'),
+                                  Tab(text: '我的挂件'),
+                                  Tab(text: '激活记录')
+                                ]),
+                            Expanded(
+                                child: switch (_tab) {
+                              1 => _ownedList(),
+                              2 => _recordList(),
+                              _ => _mall()
+                            }),
+                          ])),
+                          if (wide) ...[
+                            const SizedBox(width: 24),
+                            SizedBox(width: 280, child: _accountCard())
+                          ],
+                        ]));
+    return DefaultTabController(
+        length: 3,
+        child: Scaffold(
+            drawer: const GlobalAppDrawer(),
+            appBar: AppBar(
+                leading: const GlobalNavLeading(),
+                title: const Text('头像挂件'),
+                actions: [
+                  IconButton(
+                      onPressed: _busy || _loading
+                          ? null
+                          : () => _loadCatalog(refresh: true),
+                      tooltip: '刷新',
+                      icon: const Icon(Icons.refresh)),
+                ]),
+            body: Center(
+                child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1400),
+                    child: body))));
   }
 }

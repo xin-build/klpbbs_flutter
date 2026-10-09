@@ -1,3 +1,4 @@
+import 'app_motion.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:html/dom.dart' as html_dom;
@@ -11,7 +12,7 @@ import 'retry_image.dart';
 ///
 /// 用于楼中楼（replyfloor）、楼中楼点评等短 HTML 片段；区别于
 /// [DiscuzPostRenderer] 的结构化正文引擎，本组件只做单段 RichText。
-class InlineHtmlText extends StatelessWidget {
+class InlineHtmlText extends StatefulWidget {
   final String html;
   final TextStyle? baseStyle;
   final double? emojiSize;
@@ -26,22 +27,71 @@ class InlineHtmlText extends StatelessWidget {
   });
 
   @override
+  State<InlineHtmlText> createState() => _InlineHtmlTextState();
+}
+
+class _InlineHtmlTextState extends State<InlineHtmlText> {
+  final Set<int> _revealedSpoilers = <int>{};
+  final List<TapGestureRecognizer> _recognizers = [];
+
+  void _disposeRecognizers() {
+    for (final r in _recognizers) {
+      r.dispose();
+    }
+    _recognizers.clear();
+  }
+
+  void _toggleSpoiler(int id) {
+    if (!mounted) return;
+    setState(() {
+      if (_revealedSpoilers.contains(id)) {
+        _revealedSpoilers.remove(id);
+      } else {
+        _revealedSpoilers.add(id);
+      }
+    });
+  }
+
+  TapGestureRecognizer _registerRecognizer(VoidCallback onTap) {
+    final r = TapGestureRecognizer()..onTap = onTap;
+    _recognizers.add(r);
+    return r;
+  }
+
+  @override
+  void didUpdateWidget(InlineHtmlText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.html != widget.html) {
+      _revealedSpoilers.clear();
+      _disposeRecognizers();
+    }
+  }
+
+  @override
+  void dispose() {
+    _disposeRecognizers();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (html.isEmpty) return const SizedBox.shrink();
+    if (widget.html.isEmpty) return const SizedBox.shrink();
+
+    _disposeRecognizers();
 
     final theme = Theme.of(context);
     final defaultStyle = DefaultTextStyle.of(context).style;
-    final base = baseStyle ??
+    final base = widget.baseStyle ??
         theme.textTheme.bodyMedium ??
         defaultStyle;
 
-    final spans = _htmlToSpans(context, html, base, theme);
+    final spans = _htmlToSpans(context, widget.html, base, theme);
     if (spans.isEmpty) return const SizedBox.shrink();
 
-    final effectiveAlign = textAlign ??
-        (html.contains('align="center"') ||
-                html.contains('align=center') ||
-                html.contains('<center>')
+    final effectiveAlign = widget.textAlign ??
+        (widget.html.contains('align="center"') ||
+                widget.html.contains('align=center') ||
+                widget.html.contains('<center>')
             ? TextAlign.center
             : TextAlign.start);
 
@@ -50,6 +100,36 @@ class InlineHtmlText extends StatelessWidget {
       style: base,
       textAlign: effectiveAlign,
     );
+  }
+
+  static bool _isDarkColor(Color color) {
+    return color.computeLuminance() < 0.25;
+  }
+
+  static bool _isDarkColorString(String raw) {
+    var clean = raw.trim().toLowerCase().replaceAll(RegExp(r'''['";\s]'''), '');
+    if (clean == 'black' || clean == '#000' || clean == '#000000' || clean == 'rgb(0,0,0)') {
+      return true;
+    }
+    if (clean == '#111' || clean == '#222' || clean == '#333' || clean == '#111111' || clean == '#222222' || clean == '#333333') {
+      return true;
+    }
+    final hexCandidate = clean.startsWith('#') ? clean.substring(1) : clean;
+    if (RegExp(r'^[0-9a-f]{6}$').hasMatch(hexCandidate)) {
+      final r = int.parse(hexCandidate.substring(0, 2), radix: 16);
+      final g = int.parse(hexCandidate.substring(2, 4), radix: 16);
+      final b = int.parse(hexCandidate.substring(4, 6), radix: 16);
+      return (0.299 * r + 0.587 * g + 0.114 * b) < 60;
+    }
+    return false;
+  }
+
+  static bool _areColorsSimilar(String c1, String c2) {
+    var cl1 = c1.trim().toLowerCase().replaceAll(RegExp(r'''['";\s]'''), '');
+    var cl2 = c2.trim().toLowerCase().replaceAll(RegExp(r'''['";\s]'''), '');
+    if (cl1 == cl2) return true;
+    if (_isDarkColorString(cl1) && _isDarkColorString(cl2)) return true;
+    return false;
   }
 
   List<InlineSpan> _htmlToSpans(
@@ -74,13 +154,49 @@ class InlineHtmlText extends StatelessWidget {
     });
 
     final doc = html_parser.parseFragment(clean);
+    int spoilerCounter = 0;
 
-    List<InlineSpan> walk(html_dom.Node node, TextStyle currentStyle, {bool insideLink = false, String? linkHref}) {
+    List<InlineSpan> walk(
+      html_dom.Node node,
+      TextStyle currentStyle, {
+      bool insideLink = false,
+      String? linkHref,
+      bool insideSpoiler = false,
+      int? spoilerId,
+    }) {
       final spans = <InlineSpan>[];
       for (final n in node.nodes) {
         if (n.nodeType == html_dom.Node.TEXT_NODE) {
           final text = _cleanContentText(n.text ?? '');
           if (text.isNotEmpty) {
+            // 剧透黑幕文本节点
+            if (insideSpoiler && spoilerId != null) {
+              final isRevealed = _revealedSpoilers.contains(spoilerId);
+              final isDark = theme.brightness == Brightness.dark;
+              final maskColor = isDark ? const Color(0xFF383A40) : const Color(0xFF1E293B);
+              final revealBg = isDark
+                  ? theme.colorScheme.surfaceContainerHighest
+                  : theme.colorScheme.primary.withAlpha(25);
+              final revealColor = theme.colorScheme.onSurface;
+
+              final spoilerStyle = currentStyle.copyWith(
+                backgroundColor: isRevealed ? revealBg : maskColor,
+                color: isRevealed ? revealColor : maskColor,
+              );
+
+              final recognizer = _registerRecognizer(() => _toggleSpoiler(spoilerId));
+
+              spans.add(
+                TextSpan(
+                  text: text,
+                  style: spoilerStyle,
+                  mouseCursor: SystemMouseCursors.click,
+                  recognizer: recognizer,
+                ),
+              );
+              continue;
+            }
+
             // 检查文本是否包含「💰 土豪」或「[💰 土豪]」
             final bossRegex = RegExp(r'\[?💰\s*土豪\]?');
             final bossMatch = bossRegex.firstMatch(text);
@@ -129,6 +245,62 @@ class InlineHtmlText extends StatelessWidget {
           }
 
           TextStyle? style = currentStyle;
+          final styleAttr = el.attributes['style'] ?? '';
+          final colorAttr = el.attributes['color'];
+
+          // 剧透黑幕 (Heimu / Spoiler / Mask) 检测逻辑：
+          // 1. 显式 class: heimu / spoiler / mask
+          // 2. 黑色或深色背景色 (background-color: black / #000 等)，且文字颜色也是黑色或未指定 (Discuz 网页默认黑字)
+          // 3. 显式前景色与背景色相同或几乎相同 (如白底白字、黑底黑字)
+          bool nodeIsSpoiler = insideSpoiler;
+          int? currentSpoilerId = spoilerId;
+
+          if (!insideSpoiler) {
+            final isExplicitSpoiler = el.classes.contains('heimu') ||
+                el.classes.contains('spoiler') ||
+                el.classes.contains('mask');
+
+            final bgM = RegExp(r'background(?:-color)?\s*:\s*([^;]+)', caseSensitive: false).firstMatch(styleAttr);
+            final rawBg = bgM?.group(1)?.trim();
+            final colorM = RegExp(r'(?:^|;|\s)color\s*:\s*([^;]+)', caseSensitive: false).firstMatch(styleAttr);
+            final rawFg = colorAttr ?? colorM?.group(1)?.trim();
+
+            final isDarkBg = rawBg != null && _isDarkColorString(rawBg);
+
+            if (isExplicitSpoiler) {
+              nodeIsSpoiler = true;
+            } else if (rawBg != null && rawFg != null && _areColorsSimilar(rawBg, rawFg)) {
+              nodeIsSpoiler = true;
+            } else if (isDarkBg) {
+              if (rawFg != null) {
+                if (_isDarkColorString(rawFg)) {
+                  nodeIsSpoiler = true;
+                }
+              } else {
+                final childFontWithColor = el.querySelector('font[color], [style*="color"]');
+                if (childFontWithColor != null) {
+                  final childFg = childFontWithColor.attributes['color'] ??
+                      RegExp(r'(?:^|;|\s)color\s*:\s*([^;]+)', caseSensitive: false)
+                          .firstMatch(childFontWithColor.attributes['style'] ?? '')
+                          ?.group(1)
+                          ?.trim();
+                  if (childFg != null && _isDarkColorString(childFg)) {
+                    nodeIsSpoiler = true;
+                  }
+                } else {
+                  nodeIsSpoiler = true;
+                }
+              }
+            } else if (currentStyle.backgroundColor != null && _isDarkColor(currentStyle.backgroundColor!)) {
+              if (rawFg != null && _isDarkColorString(rawFg)) {
+                nodeIsSpoiler = true;
+              }
+            }
+
+            if (nodeIsSpoiler) {
+              currentSpoilerId = spoilerCounter++;
+            }
+          }
 
           // 样式解析
           switch (tag) {
@@ -150,8 +322,14 @@ class InlineHtmlText extends StatelessWidget {
               break;
             case 'font':
               final color = el.attributes['color'];
-              if (color != null && color.isNotEmpty) {
-                style = style.copyWith(color: _parseColor(color, brightness: theme.brightness));
+              if (color != null && color.isNotEmpty && !nodeIsSpoiler) {
+                style = style.copyWith(
+                  color: _parseColor(
+                    color,
+                    brightness: theme.brightness,
+                    currentBackground: style.backgroundColor,
+                  ),
+                );
               }
               final size = el.attributes['size'];
               if (size != null) {
@@ -174,8 +352,7 @@ class InlineHtmlText extends StatelessWidget {
           }
 
           // 行内 style 属性
-          final styleAttr = el.attributes['style'];
-          if (styleAttr != null && styleAttr.isNotEmpty) {
+          if (styleAttr.isNotEmpty) {
             final bgM = RegExp(r'background(?:-color)?\s*:\s*([^;]+)', caseSensitive: false).firstMatch(styleAttr);
             if (bgM != null) {
               final bgStr = bgM.group(1)!.trim();
@@ -186,8 +363,14 @@ class InlineHtmlText extends StatelessWidget {
               }
             }
             final colorM = RegExp(r'(?:^|;|\s)color\s*:\s*([^;]+)', caseSensitive: false).firstMatch(styleAttr);
-            if (colorM != null) {
-              style = style.copyWith(color: _parseColor(colorM.group(1)!.trim(), brightness: theme.brightness));
+            if (colorM != null && !nodeIsSpoiler) {
+              style = style.copyWith(
+                color: _parseColor(
+                  colorM.group(1)!.trim(),
+                  brightness: theme.brightness,
+                  currentBackground: style.backgroundColor,
+                ),
+              );
             }
             final weightM = RegExp(r'font-weight\s*:\s*bold', caseSensitive: false).firstMatch(styleAttr);
             if (weightM != null) {
@@ -213,10 +396,22 @@ class InlineHtmlText extends StatelessWidget {
               decoration: TextDecoration.underline,
             );
             if (href.isNotEmpty) {
-              final childSpans = walk(n, linkStyle, insideLink: true, linkHref: link);
+              final childSpans = walk(
+                n,
+                linkStyle,
+                insideLink: true,
+                linkHref: link,
+                insideSpoiler: nodeIsSpoiler,
+                spoilerId: currentSpoilerId,
+              );
               spans.addAll(childSpans);
             } else {
-              spans.addAll(walk(n, linkStyle));
+              spans.addAll(walk(
+                n,
+                linkStyle,
+                insideSpoiler: nodeIsSpoiler,
+                spoilerId: currentSpoilerId,
+              ));
             }
           } else if (tag == 'img') {
             var rawSrc = el.attributes['src'] ?? el.attributes['file'] ?? el.attributes['data-src'] ?? '';
@@ -230,7 +425,7 @@ class InlineHtmlText extends StatelessWidget {
                   src.contains('image/smiles');
 
               if (isSmiley) {
-                final size = emojiSize ?? 18.0;
+                final size = widget.emojiSize ?? 18.0;
                 spans.add(
                   WidgetSpan(
                     alignment: PlaceholderAlignment.middle,
@@ -269,7 +464,7 @@ class InlineHtmlText extends StatelessWidget {
                                 child: SizedBox(
                                   width: 14,
                                   height: 14,
-                                  child: CircularProgressIndicator(strokeWidth: 1.5),
+                                  child: AppLoadingIndicator(strokeWidth: 1.5),
                                 ),
                               ),
                             ),
@@ -297,7 +492,14 @@ class InlineHtmlText extends StatelessWidget {
               }
             }
           } else {
-            spans.addAll(walk(n, style, insideLink: insideLink, linkHref: linkHref));
+            spans.addAll(walk(
+              n,
+              style,
+              insideLink: insideLink,
+              linkHref: linkHref,
+              insideSpoiler: nodeIsSpoiler,
+              spoilerId: currentSpoilerId,
+            ));
             if (tag == 'br') spans.add(const TextSpan(text: '\n'));
             if (tag == 'p' || tag == 'div') {
               spans.add(const TextSpan(text: '\n'));
@@ -360,8 +562,7 @@ class InlineHtmlText extends StatelessWidget {
         TextSpan(
           text: text,
           style: currentStyle,
-          recognizer: TapGestureRecognizer()
-            ..onTap = () => _openLink(context, linkHref),
+          recognizer: _registerRecognizer(() => _openLink(context, linkHref)),
         ),
       );
     } else {
@@ -388,8 +589,7 @@ class InlineHtmlText extends StatelessWidget {
             TextSpan(
               text: matchedUrl,
               style: linkStyle,
-              recognizer: TapGestureRecognizer()
-                ..onTap = () => _openLink(context, matchedUrl),
+              recognizer: _registerRecognizer(() => _openLink(context, matchedUrl)),
             ),
           );
           if (trailingPunct.isNotEmpty) {
@@ -411,7 +611,12 @@ class InlineHtmlText extends StatelessWidget {
     return text.replaceAll(RegExp(r'[-​‎‏﻿]'), '');
   }
 
-  Color _parseColor(String raw, {Brightness? brightness, bool isBackground = false}) {
+  Color _parseColor(
+    String raw, {
+    Brightness? brightness,
+    bool isBackground = false,
+    Color? currentBackground,
+  }) {
     var clean = raw.trim().toLowerCase();
     // 移除单双引号、分号与首尾空白 (例如 [color='deepskyblue'] 或 style="color: red;")
     clean = clean.replaceAll(RegExp(r'''['";\s]'''), '');
@@ -491,8 +696,14 @@ class InlineHtmlText extends StatelessWidget {
     }
 
     if (!isBackground && brightness != null) {
+      final currentBgIsDark = currentBackground != null && _isDarkColor(currentBackground);
+      final currentBgIsLight = currentBackground != null && !_isDarkColor(currentBackground);
+
       final hsl = HSLColor.fromColor(baseColor);
       if (brightness == Brightness.dark) {
+        if (currentBgIsDark && hsl.lightness < 0.35) {
+          return baseColor;
+        }
         // 深色模式下：如果纯黑或极暗灰（无彩度），调整为银白色
         if (hsl.saturation < 0.12 && hsl.lightness < 0.35) {
           return const Color(0xFFE2E8F0);
@@ -502,6 +713,9 @@ class InlineHtmlText extends StatelessWidget {
           return hsl.withLightness(0.68).toColor();
         }
       } else {
+        if (currentBgIsLight && hsl.lightness > 0.82) {
+          return baseColor;
+        }
         // 浅色模式下：如果纯白或极浅灰，调整为深青灰色
         if (hsl.saturation < 0.12 && hsl.lightness > 0.82) {
           return const Color(0xFF1E293B);

@@ -69,6 +69,7 @@ class ServerStatusService {
   final String currentStatusRaw;
   final String lastCheckedAt;
   final int lastLatencyMs;
+  final bool hasLatency;
   final int sortOrder;
   final int includeInStatus;
 
@@ -79,15 +80,20 @@ class ServerStatusService {
     this.description = '',
     required this.currentStatusRaw,
     this.lastCheckedAt = '',
-    this.lastLatencyMs = 0,
+    int? lastLatencyMs,
     this.sortOrder = 0,
     this.includeInStatus = 1,
-  });
+  })  : lastLatencyMs = lastLatencyMs ?? 0,
+        hasLatency = lastLatencyMs != null;
 
-  ServerHealthStatus get status => ServerHealthStatus.fromString(currentStatusRaw);
+  String get latencyLabel => hasLatency ? '${lastLatencyMs}ms' : '—';
+
+  ServerHealthStatus get status =>
+      ServerHealthStatus.fromString(currentStatusRaw);
 
   /// 延迟等级色彩
   Color get latencyColor {
+    if (!hasLatency) return const Color(0xFF9CA3AF);
     if (status == ServerHealthStatus.down) return const Color(0xFFEF4444);
     if (lastLatencyMs <= 100) return const Color(0xFF10B981);
     if (lastLatencyMs <= 300) return const Color(0xFF3B82F6);
@@ -101,9 +107,9 @@ class ServerStatusService {
       groupId: (json['group_id'] as num?)?.toInt() ?? 0,
       name: json['name'] as String? ?? '',
       description: json['description'] as String? ?? '',
-      currentStatusRaw: json['current_status'] as String? ?? 'operational',
+      currentStatusRaw: json['current_status'] as String? ?? 'unknown',
       lastCheckedAt: json['last_checked_at'] as String? ?? '',
-      lastLatencyMs: (json['last_latency_ms'] as num?)?.toInt() ?? 0,
+      lastLatencyMs: (json['last_latency_ms'] as num?)?.toInt(),
       sortOrder: (json['sort_order'] as num?)?.toInt() ?? 0,
       includeInStatus: (json['include_in_status'] as num?)?.toInt() ?? 1,
     );
@@ -206,7 +212,8 @@ class ServerStatusData {
     required this.updatedAt,
   });
 
-  ServerHealthStatus get overallStatus => ServerHealthStatus.fromString(overallRaw);
+  ServerHealthStatus get overallStatus =>
+      ServerHealthStatus.fromString(overallRaw);
 
   /// 快捷获取核心服务
   List<ServerStatusService> get coreServices =>
@@ -221,25 +228,29 @@ class ServerStatusData {
       services.where((s) => s.groupId == 4).toList();
 
   factory ServerStatusData.fromJson(Map<String, dynamic> json) {
-    final data = json['data'] is Map ? Map<String, dynamic>.from(json['data'] as Map) : json;
+    final data = json['data'] is Map
+        ? Map<String, dynamic>.from(json['data'] as Map)
+        : json;
     final groupsRaw = data['groups'] as List<dynamic>? ?? [];
     final servicesRaw = data['services'] as List<dynamic>? ?? [];
     final incidentsRaw = data['incidents'] as List<dynamic>? ?? [];
 
     return ServerStatusData(
       siteName: data['site_name'] as String? ?? '服务状态面板',
-      overallRaw: data['overall'] as String? ?? 'operational',
+      overallRaw: data['overall'] as String? ?? 'unknown',
       groups: groupsRaw
           .whereType<Map>()
           .map((g) => ServerStatusGroup.fromJson(Map<String, dynamic>.from(g)))
           .toList(),
       services: servicesRaw
           .whereType<Map>()
-          .map((s) => ServerStatusService.fromJson(Map<String, dynamic>.from(s)))
+          .map(
+              (s) => ServerStatusService.fromJson(Map<String, dynamic>.from(s)))
           .toList(),
       incidents: incidentsRaw
           .whereType<Map>()
-          .map((i) => ServerStatusIncident.fromJson(Map<String, dynamic>.from(i)))
+          .map((i) =>
+              ServerStatusIncident.fromJson(Map<String, dynamic>.from(i)))
           .toList(),
       updatedAt: DateTime.now(),
     );

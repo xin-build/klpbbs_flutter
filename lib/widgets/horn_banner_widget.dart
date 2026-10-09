@@ -1,9 +1,11 @@
+import 'app_motion.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 
 import '../api/klpbbs_api.dart';
 import '../core/preload_service.dart';
+import '../core/dio_client.dart';
 import '../core/url_helper.dart';
 import '../models/horn_message.dart';
 import '../widgets/inline_html_text.dart';
@@ -16,8 +18,13 @@ import 'tuhao_banner_widget.dart';
 /// 小喇叭（ahome_horn）：仿原版显示头像 + 用户名 + 内容 + 时间，可进主页/帖子
 class HornBannerWidget extends StatefulWidget {
   final List<HornMessage>? initialMessages;
+  final bool isPreview;
 
-  const HornBannerWidget({super.key, this.initialMessages});
+  const HornBannerWidget({
+    super.key,
+    this.initialMessages,
+    this.isPreview = false,
+  });
 
   @override
   State<HornBannerWidget> createState() => _HornBannerWidgetState();
@@ -27,54 +34,121 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
   List<HornMessage> _messages = const [];
   bool _loading = false;
   int? _myUid;
+  int _generation = 0;
+  bool _listeningForSession = false;
 
   @override
   void initState() {
     super.initState();
-    KlpbbsApi.getMyUid().then((uid) {
-      if (mounted) setState(() => _myUid = uid);
-    }).catchError((_) {});
+    _messages = _initialMessages();
+    if (!widget.isPreview) _startLiveUpdates();
+  }
 
-    // 优先读取内存缓存与传入参数，实现 0 延迟秒开渲染，避免布局跳变
-    final cached = widget.initialMessages ??
-        PreloadService.instance.get<List<HornMessage>>('horn_messages');
-    if (cached != null && cached.isNotEmpty) {
-      _messages = cached;
+  List<HornMessage> _initialMessages() => List.of(widget.initialMessages ??
+      PreloadService.instance.get<List<HornMessage>>('horn_messages',
+          ignoreExpired: widget.isPreview) ??
+      const <HornMessage>[]);
+
+  void _startLiveUpdates() {
+    if (!_listeningForSession) {
+      DioClient.sessionChanges.addListener(_sessionChanged);
+      _listeningForSession = true;
+    }
+    _loadIdentity();
+    unawaited(_load(silent: _messages.isNotEmpty));
+  }
+
+  @override
+  void didUpdateWidget(covariant HornBannerWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isPreview != oldWidget.isPreview) {
+      _generation++;
       _loading = false;
-      _load(silent: true); // 后台静默刷新最新数据
-    } else {
-      _load(silent: false);
+      _myUid = null;
+      _messages = _initialMessages();
+      if (widget.isPreview) {
+        DioClient.sessionChanges.removeListener(_sessionChanged);
+        _listeningForSession = false;
+      } else {
+        _startLiveUpdates();
+      }
+    } else if (widget.initialMessages != oldWidget.initialMessages &&
+        (widget.isPreview || widget.initialMessages != null)) {
+      _messages = _initialMessages();
     }
   }
 
+  void _loadIdentity() {
+    if (widget.isPreview || !mounted) return;
+    final session = DioClient.sessionKey, generation = _generation;
+    KlpbbsApi.getMyUid().then((uid) {
+      if (mounted &&
+          !widget.isPreview &&
+          generation == _generation &&
+          session == DioClient.sessionKey) {
+        setState(() => _myUid = uid);
+      }
+    }).catchError((_) {});
+  }
+
+  void _sessionChanged() {
+    if (widget.isPreview) return;
+    _generation++;
+    if (!mounted) return;
+    setState(() {
+      _messages = const [];
+      _myUid = null;
+    });
+    _loadIdentity();
+    _load(silent: true);
+  }
+
+  @override
+  void dispose() {
+    _generation++;
+    if (_listeningForSession) {
+      DioClient.sessionChanges.removeListener(_sessionChanged);
+    }
+    super.dispose();
+  }
+
   Future<void> _load({bool silent = false}) async {
+    if (widget.isPreview || !mounted) return;
+    final session = DioClient.sessionKey, generation = _generation;
     if (!silent) setState(() => _loading = true);
     try {
       final list = await KlpbbsApi.getHornMessages();
-      if (list.isNotEmpty) {
-        PreloadService.instance.set('horn_messages', list);
-      }
-      if (mounted) {
+      if (mounted &&
+          !widget.isPreview &&
+          session == DioClient.sessionKey &&
+          generation == _generation) {
         setState(() {
-          _messages = list;
+          _messages = List.of(list);
           _loading = false;
         });
       }
     } catch (_) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted &&
+          !widget.isPreview &&
+          session == DioClient.sessionKey &&
+          generation == _generation) {
+        setState(() => _loading = false);
+      }
     }
   }
 
   void _openUserSpace(HornMessage m) {
-    if (m.uid == null || m.uid! <= 0) return;
+    if (widget.isPreview || m.uid == null || m.uid! <= 0) return;
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => UserSpacePage(uid: m.uid!)),
     );
   }
 
   void _openLink(HornMessage m) {
+    if (widget.isPreview) return;
     final candidate = m.linkUrl ?? '';
-    final reg = RegExp(r'thread-(\d+)|(?:mod=viewthread[^\s]*tid=|tid=)(\d+)').firstMatch(candidate);
+    final reg = RegExp(r'thread-(\d+)|(?:mod=viewthread[^\s]*tid=|tid=)(\d+)')
+        .firstMatch(candidate);
     if (reg != null) {
       final tid = int.tryParse(reg.group(1) ?? reg.group(2) ?? '');
       if (tid != null && tid > 0) {
@@ -87,9 +161,12 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
 
     // 若 linkUrl 为空，尝试从正文中提取包含的帖子地址
     if (candidate.isEmpty && m.content.isNotEmpty) {
-      final contentReg = RegExp(r'thread-(\d+)|(?:mod=viewthread[^\s]*tid=|tid=)(\d+)').firstMatch(m.content);
+      final contentReg =
+          RegExp(r'thread-(\d+)|(?:mod=viewthread[^\s]*tid=|tid=)(\d+)')
+              .firstMatch(m.content);
       if (contentReg != null) {
-        final tid = int.tryParse(contentReg.group(1) ?? contentReg.group(2) ?? '');
+        final tid =
+            int.tryParse(contentReg.group(1) ?? contentReg.group(2) ?? '');
         if (tid != null && tid > 0) {
           Navigator.of(context).push(
             MaterialPageRoute(builder: (_) => ThreadDetailPage(tid: tid)),
@@ -116,38 +193,57 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
         decoration: BoxDecoration(
           color: theme.colorScheme.surfaceContainerLow,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(40)),
+          border:
+              Border.all(color: theme.colorScheme.outlineVariant.withAlpha(40)),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 完美还原网页端：小喇叭容器顶部直接挂载土豪霸屏横幅（#ahorn_boss）
-            const TuhaoBannerWidget(showStatsBar: false),
+            TuhaoBannerWidget(
+              isPreview: widget.isPreview,
+              showStatsBar: false,
+              initialBanners:
+                  _messages.where((message) => message.tag == '土豪').toList(),
+            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 8, 14, 6),
               child: Row(
                 children: [
-                  const Icon(Icons.campaign_rounded, size: 18, color: Color(0xFFFF9800)),
+                  const Icon(Icons.campaign_rounded,
+                      size: 18, color: Color(0xFFFF9800)),
                   const SizedBox(width: 6),
-                  Text(
-                    '小喇叭',
-                    style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+                  Expanded(
+                    child: Text(
+                      '小喇叭',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall
+                          ?.copyWith(fontWeight: FontWeight.bold),
+                    ),
                   ),
-                  const Spacer(),
                   InkWell(
                     borderRadius: BorderRadius.circular(6),
-                    onTap: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const HornPostPage()),
-                      );
-                    },
+                    onTap: widget.isPreview
+                        ? null
+                        : () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                  builder: (_) => const HornPostPage()),
+                            );
+                          },
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 3),
                       child: Row(
                         children: [
-                          Icon(Icons.edit_outlined, size: 14, color: theme.colorScheme.onSurfaceVariant),
+                          Icon(Icons.edit_outlined,
+                              size: 14,
+                              color: theme.colorScheme.onSurfaceVariant),
                           const SizedBox(width: 3),
-                          Text('发布', style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant)),
+                          Text('发布',
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: theme.colorScheme.onSurfaceVariant)),
                         ],
                       ),
                     ),
@@ -155,26 +251,31 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
                   const SizedBox(width: 6),
                   InkWell(
                     borderRadius: BorderRadius.circular(6),
-                    onTap: _loading ? null : () => _load(silent: false),
+                    onTap: widget.isPreview || _loading
+                        ? null
+                        : () => _load(silent: false),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 3),
                       child: Row(
                         children: [
                           if (_loading)
                             SizedBox(
                               width: 12,
                               height: 12,
-                              child: CircularProgressIndicator(
+                              child: AppLoadingIndicator(
                                 strokeWidth: 1.8,
                                 color: theme.colorScheme.primary,
                               ),
                             )
                           else
-                            Icon(Icons.refresh_rounded, size: 14, color: theme.colorScheme.primary),
+                            Icon(Icons.refresh_rounded,
+                                size: 14, color: theme.colorScheme.primary),
                           const SizedBox(width: 4),
                           Text(
                             _loading ? '刷新中' : '刷新',
-                            style: TextStyle(fontSize: 12, color: theme.colorScheme.primary),
+                            style: TextStyle(
+                                fontSize: 12, color: theme.colorScheme.primary),
                           ),
                         ],
                       ),
@@ -185,14 +286,16 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
             ),
             if (_loading && displayMessages.isEmpty)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                 child: Row(
                   children: [
                     Container(
                       width: 36,
                       height: 36,
                       decoration: BoxDecoration(
-                        color: theme.colorScheme.surfaceContainerHighest.withAlpha(160),
+                        color: theme.colorScheme.surfaceContainerHighest
+                            .withAlpha(160),
                         shape: BoxShape.circle,
                       ),
                     ),
@@ -205,7 +308,8 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
                             width: 90,
                             height: 11,
                             decoration: BoxDecoration(
-                              color: theme.colorScheme.surfaceContainerHighest.withAlpha(160),
+                              color: theme.colorScheme.surfaceContainerHighest
+                                  .withAlpha(160),
                               borderRadius: BorderRadius.circular(3),
                             ),
                           ),
@@ -214,7 +318,8 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
                             width: double.infinity,
                             height: 12,
                             decoration: BoxDecoration(
-                              color: theme.colorScheme.surfaceContainerHighest.withAlpha(160),
+                              color: theme.colorScheme.surfaceContainerHighest
+                                  .withAlpha(160),
                               borderRadius: BorderRadius.circular(3),
                             ),
                           ),
@@ -226,7 +331,8 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
               )
             else if (displayMessages.isEmpty)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -243,7 +349,8 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: 12,
-                          color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
+                          color:
+                              theme.colorScheme.onSurfaceVariant.withAlpha(180),
                         ),
                       ),
                     ),
@@ -264,47 +371,58 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
                     color: theme.colorScheme.outlineVariant.withAlpha(40),
                   ),
                   itemBuilder: (context, i) => _HornCard(
-                  message: displayMessages[i],
-                  canDelete: _myUid != null && (displayMessages[i].uid == _myUid || _myUid == 1),
-                  onAuthorTap: () => _openUserSpace(displayMessages[i]),
-                  onContentTap: () => _openLink(displayMessages[i]),
-                  onDelete: () async {
-                    final confirm = await showDialog<bool>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text('删除广播'),
-                        content: const Text('确定要删除这条小喇叭广播吗？'),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.of(ctx).pop(false),
-                            child: const Text('取消'),
-                          ),
-                          FilledButton(
-                            onPressed: () => Navigator.of(ctx).pop(true),
-                            child: const Text('确认删除'),
-                          ),
-                        ],
-                      ),
-                    );
-                    if (confirm != true || !context.mounted) return;
-                    final target = displayMessages[i];
-                    setState(() {
-                      _messages.removeWhere((m) => m.id == target.id && m.content == target.content);
-                    });
-                    final messenger = ScaffoldMessenger.of(context);
-                    final ok = await KlpbbsApi.deleteHorn(
-                      target.id,
-                      deleteUrl: target.deleteUrl,
-                    );
-                    if (!mounted) return;
-                    messenger.showSnackBar(
-                      SnackBar(content: Text(ok ? '小喇叭已删除' : '删除失败（未登录/无权限）')),
-                    );
-                    _load(silent: true);
-                  },
+                    message: displayMessages[i],
+                    isPreview: widget.isPreview,
+                    canDelete: !widget.isPreview &&
+                        _myUid != null &&
+                        (displayMessages[i].uid == _myUid || _myUid == 1),
+                    onAuthorTap: widget.isPreview
+                        ? null
+                        : () => _openUserSpace(displayMessages[i]),
+                    onContentTap: widget.isPreview
+                        ? null
+                        : () => _openLink(displayMessages[i]),
+                    onDelete: () async {
+                      if (widget.isPreview) return;
+                      final confirm = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: const Text('删除广播'),
+                          content: const Text('确定要删除这条小喇叭广播吗？'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(ctx).pop(false),
+                              child: const Text('取消'),
+                            ),
+                            FilledButton(
+                              onPressed: () => Navigator.of(ctx).pop(true),
+                              child: const Text('确认删除'),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (confirm != true || !context.mounted) return;
+                      if (widget.isPreview) return;
+                      final target = displayMessages[i];
+                      setState(() {
+                        _messages.removeWhere((m) =>
+                            m.id == target.id && m.content == target.content);
+                      });
+                      final messenger = ScaffoldMessenger.of(context);
+                      final ok = await KlpbbsApi.deleteHorn(
+                        target.id,
+                        deleteUrl: target.deleteUrl,
+                      );
+                      if (!mounted) return;
+                      messenger.showSnackBar(
+                        SnackBar(
+                            content: Text(ok ? '小喇叭已删除' : '删除失败（未登录/无权限）')),
+                      );
+                      _load(silent: true);
+                    },
+                  ),
                 ),
               ),
-            ),
             const SizedBox(height: 6),
           ],
         ),
@@ -315,6 +433,7 @@ class _HornBannerWidgetState extends State<HornBannerWidget> {
 
 class _HornCard extends StatelessWidget {
   final HornMessage message;
+  final bool isPreview;
   final VoidCallback? onAuthorTap;
   final VoidCallback? onContentTap;
   final bool canDelete;
@@ -322,6 +441,7 @@ class _HornCard extends StatelessWidget {
 
   const _HornCard({
     required this.message,
+    this.isPreview = false,
     this.onAuthorTap,
     this.onContentTap,
     this.canDelete = false,
@@ -334,7 +454,7 @@ class _HornCard extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           UserAvatarWidget(
             uid: message.uid,
@@ -342,6 +462,7 @@ class _HornCard extends StatelessWidget {
             avatarUrl: message.avatarUrl,
             faceUrl: UserAvatarWidget.sanitizeFaceUrl(message.faceUrl),
             size: 34,
+            reserveFrameSpace: true,
             onTap: onAuthorTap,
           ),
           const SizedBox(width: 10),
@@ -387,11 +508,14 @@ class _HornCard extends StatelessWidget {
                 const SizedBox(height: 3),
                 GestureDetector(
                   onTap: onContentTap,
-                  child: InlineHtmlText(
-                    html: message.content,
-                    baseStyle:
-                        theme.textTheme.bodySmall?.copyWith(height: 1.4),
-                    emojiSize: 18,
+                  child: IgnorePointer(
+                    ignoring: isPreview,
+                    child: InlineHtmlText(
+                      html: message.content,
+                      baseStyle:
+                          theme.textTheme.bodySmall?.copyWith(height: 1.4),
+                      emojiSize: 18,
+                    ),
                   ),
                 ),
               ],
